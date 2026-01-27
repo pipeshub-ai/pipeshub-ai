@@ -57,28 +57,20 @@ export const NodeInputHandles: React.FC<NodeHandlesProps> = ({ data }) => {
               left: HANDLE_CONFIG.INPUT.OFFSET_LEFT,
               width: HANDLE_CONFIG.INPUT.SIZE,
               height: HANDLE_CONFIG.INPUT.SIZE,
-              backgroundColor: theme.palette.background.paper,
-              border: `${HANDLE_CONFIG.INPUT.BORDER_WIDTH}px solid ${theme.palette.primary.main}`,
+              backgroundColor: theme.palette.text.secondary,
+              border: `1px solid ${theme.palette.background.paper}`,
               borderRadius: '50%',
               cursor: 'crosshair',
               zIndex: HANDLE_CONFIG.INPUT.Z_INDEX,
-              transition: 'all 0.2s ease',
-              boxShadow: `0 0 0 2px ${alpha(theme.palette.primary.main, 0.1)}`,
-              transformOrigin: 'center',
+              transition: 'all 0.15s ease',
             }}
             onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
+              e.currentTarget.style.backgroundColor = theme.palette.text.primary;
               e.currentTarget.style.transform = 'scale(1.2)';
-              e.currentTarget.style.boxShadow = `0 0 0 4px ${alpha(
-                theme.palette.primary.main,
-                0.2
-              )}`;
             }}
             onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => {
+              e.currentTarget.style.backgroundColor = theme.palette.text.secondary;
               e.currentTarget.style.transform = 'scale(1)';
-              e.currentTarget.style.boxShadow = `0 0 0 2px ${alpha(
-                theme.palette.primary.main,
-                0.1
-              )}`;
             }}
           />
         );
@@ -128,13 +120,20 @@ export const NodeOutputHandles: React.FC<NodeHandlesProps> = ({ data }) => {
               right: HANDLE_CONFIG.OUTPUT.OFFSET_RIGHT,
               width: HANDLE_CONFIG.OUTPUT.SIZE,
               height: HANDLE_CONFIG.OUTPUT.SIZE,
-              backgroundColor: theme.palette.background.paper,
-              border: `${HANDLE_CONFIG.OUTPUT.BORDER_WIDTH}px solid ${theme.palette.success.main}`,
+              backgroundColor: theme.palette.text.secondary,
+              border: `1px solid ${theme.palette.background.paper}`,
               borderRadius: '50%',
               cursor: 'crosshair',
               zIndex: HANDLE_CONFIG.OUTPUT.Z_INDEX,
-              boxShadow: `0 0 0 2px ${alpha(theme.palette.success.main, 0.1)}`,
-              transformOrigin: 'center',
+              transition: 'all 0.15s ease',
+            }}
+            onMouseEnter={(e: React.MouseEvent<HTMLDivElement>) => {
+              e.currentTarget.style.backgroundColor = theme.palette.text.primary;
+              e.currentTarget.style.transform = 'scale(1.2)';
+            }}
+            onMouseLeave={(e: React.MouseEvent<HTMLDivElement>) => {
+              e.currentTarget.style.backgroundColor = theme.palette.text.secondary;
+              e.currentTarget.style.transform = 'scale(1)';
             }}
           />
         );

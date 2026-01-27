@@ -461,6 +461,54 @@ class Jira:
 
     @tool(
         app_name="jira",
+        tool_name="get_current_user",
+        description=(
+            "Get the current authenticated user's JIRA account details. "
+            "Returns the accountId, displayName, and emailAddress of the user making the request. "
+            "IMPORTANT: For JQL queries about 'my tickets' or 'assigned to me', you DON'T need to call "
+            "this tool - just use `assignee = currentUser()` directly in the JQL query."
+        ),
+        parameters=[],
+        returns="Current user's account details (accountId, displayName, emailAddress)"
+    )
+    def get_current_user(self) -> Tuple[bool, str]:
+        """Get the current authenticated JIRA user's details"""
+        try:
+            response = self._run_async(self.client.get_current_user())
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                user_data = response.json()
+                # Clean user data
+                cleaned_user = (
+                    ResponseTransformer(user_data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("accountId", "displayName", "emailAddress")
+                    .clean()
+                )
+
+                return True, json.dumps({
+                    "message": "Current user fetched successfully",
+                    "data": {
+                        "accountId": cleaned_user.get("accountId"),
+                        "displayName": cleaned_user.get("displayName"),
+                        "emailAddress": cleaned_user.get("emailAddress")
+                    }
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Current user fetched",
+                    include_guidance=True
+                )
+
+        except Exception as e:
+            logger.error(f"Error getting current user: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="jira",
         tool_name="convert_text_to_adf",
         description="Convert plain text to Atlassian Document Format (ADF)",
         parameters=[
@@ -736,7 +784,7 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="get_issues",
-        description="Get issues from a JIRA project",
+        description="Get issues from a JIRA project. For more specific queries, use search_issues with custom JQL.",
         parameters=[
             ToolParameter(
                 name="project_key",
@@ -744,15 +792,39 @@ class Jira:
                 description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
                 required=True
             ),
+            ToolParameter(
+                name="days",
+                type=ParameterType.INTEGER,
+                description="Number of days to look back (default 30). Use larger values for older issues.",
+                required=False
+            ),
+            ToolParameter(
+                name="max_results",
+                type=ParameterType.INTEGER,
+                description="Maximum number of results to return (default 50)",
+                required=False
+            ),
         ],
-        returns="List of issues"
+        returns="List of issues from the project"
     )
-    def get_issues(self, project_key: str) -> Tuple[bool, str]:
-        """Get issues from a project"""
+    def get_issues(
+        self,
+        project_key: str,
+        days: Optional[int] = None,
+        max_results: Optional[int] = None
+    ) -> Tuple[bool, str]:
+        """Get issues from a project with configurable time range"""
         try:
+            # Escape project key and add time filter to avoid unbounded query errors
+            escaped_project_key = project_key.replace('"', '\\"')
+            time_filter = days or 30  # Default to 30 days if not specified
+            jql = f'project = "{escaped_project_key}" AND updated >= -{time_filter}d ORDER BY updated DESC'
+
+            # Use enhanced search endpoint (standard search has been removed - 410 Gone)
             response = self._run_async(
                 self.client.search_and_reconsile_issues_using_jql_post(
-                    jql=f"project = {project_key}",
+                    jql=jql,
+                    maxResults=max_results or 50,
                     # Explicitly request key field to ensure issue keys are returned
                     fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
                 )
@@ -769,7 +841,7 @@ class Jira:
                             "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
                     .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
                           "priority", "issuetype", "created", "updated", "description", "fields",
-                          "nextPageToken", "isLast")
+                          "total", "startAt", "maxResults", "nextPageToken", "isLast")
                     .clean()
                 )
                 return True, json.dumps({
@@ -836,44 +908,48 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="search_issues",
-        description="Search for JIRA issues using JQL (JIRA Query Language). CRITICAL: Use correct JQL syntax. Common mistakes: 'resolution = Unresolved' is INVALID - use 'resolution IS EMPTY' instead. For empty/null fields, use 'IS EMPTY' or 'IS NULL', not '='. Always use 'currentUser()' with parentheses for current user queries.",
+        description=(
+            "Search for JIRA issues using JQL (JIRA Query Language). "
+            "For 'my tickets' or 'assigned to me': Use `assignee = currentUser()` - NO need to look up accountId! "
+            "MUST include a time filter (e.g., `updated >= -30d`) to avoid 'unbounded query' errors."
+        ),
         parameters=[
             ToolParameter(
                 name="jql",
                 type=ParameterType.STRING,
                 description=(
-                    "JQL (JIRA Query Language) query string. CRITICAL SYNTAX RULES:\n"
-                    "1. For unresolved issues: Use 'resolution IS EMPTY' NOT 'resolution = Unresolved'\n"
-                    "2. For current user: Use 'currentUser()' with parentheses, NOT 'currentUser'\n"
-                    "3. For empty/null fields: Use 'IS EMPTY' or 'IS NULL', NOT '=' operator\n"
-                    "4. For status values: Use 'status = \"Open\"' with quotes for text values\n"
-                    "5. For assignee: Use accountId (find via search_users first) or 'currentUser()'\n"
-                    "6. Combine conditions with AND/OR, use parentheses for grouping\n"
-                    "7. Order results with 'ORDER BY field ASC/DESC'\n"
+                    "JQL query string.\n"
                     "\n"
-                    "CORRECT EXAMPLES:\n"
-                    "- 'assignee = currentUser() AND resolution IS EMPTY ORDER BY updated DESC'\n"
-                    "- 'project = \"PROJ\" AND status = \"In Progress\"'\n"
-                    "- 'reporter = currentUser() AND created >= -7d'\n"
+                    "CURRENT USER QUERIES:\n"
+                    "- Use `assignee = currentUser()` for 'my tickets' or 'assigned to me'\n"
+                    "- Do NOT call search_users first - currentUser() auto-resolves\n"
                     "\n"
-                    "WRONG EXAMPLES (DO NOT USE):\n"
-                    "- 'resolution = Unresolved' ❌ (use 'resolution IS EMPTY')\n"
-                    "- 'assignee = currentUser' ❌ (use 'currentUser()')\n"
-                    "- 'status = Open' ❌ (use 'status = \"Open\"' with quotes)"
+                    "REQUIRED TIME FILTER (prevents unbounded query errors):\n"
+                    "- Always include: `AND updated >= -30d` or `AND created >= -7d`\n"
+                    "\n"
+                    "JQL SYNTAX RULES:\n"
+                    "- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)\n"
+                    "- Current user: `currentUser()` with parentheses\n"
+                    "- Status values: `status = \"Open\"` with quotes\n"
+                    "\n"
+                    "EXAMPLES:\n"
+                    "- `project = \"PA\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`\n"
+                    "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
+                    "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
                 ),
                 required=True
             ),
             ToolParameter(
                 name="maxResults",
                 type=ParameterType.INTEGER,
-                description="Maximum number of results to return (optional, default is API default)",
+                description="Maximum number of results to return (default 50)",
                 required=False
             ),
         ],
-        returns="List of matching issues"
+        returns="List of matching issues with key, summary, status, assignee, etc."
     )
     def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
-        """Search for JIRA issues"""
+        """Search for JIRA issues using the enhanced search endpoint"""
         try:
             # Validate and fix JQL query
             fixed_jql, jql_warning = self._validate_and_fix_jql(jql)
@@ -881,10 +957,27 @@ class Jira:
             if fixed_jql != jql:
                 logger.info(f"JQL query auto-corrected: '{jql}' -> '{fixed_jql}'")
 
+            # Resolve currentUser() to actual accountId to avoid "unbounded query" errors
+            # The enhanced search API may not properly recognize currentUser() as a restriction
+            if "currentUser()" in fixed_jql:
+                try:
+                    user_response = self._run_async(self.client.get_current_user())
+                    if user_response.status == HttpStatusCode.SUCCESS.value:
+                        user_data = user_response.json()
+                        account_id = user_data.get("accountId")
+                        if account_id:
+                            # Replace currentUser() with the actual accountId
+                            fixed_jql = fixed_jql.replace("currentUser()", f'"{account_id}"')
+                            logger.info(f"Resolved currentUser() to accountId: {account_id}")
+                except Exception as e:
+                    logger.warning(f"Could not resolve currentUser(), using as-is: {e}")
+
+            # Use the enhanced search endpoint (POST /rest/api/3/search/jql)
+            # The standard search endpoint (/rest/api/3/search) has been removed (410 Gone)
             response = self._run_async(
-                self.client.search_and_reconsile_issues_using_jql(
+                self.client.search_and_reconsile_issues_using_jql_post(
                     jql=fixed_jql,
-                    maxResults=maxResults,
+                    maxResults=maxResults or 50,
                     # Explicitly request key field to ensure issue keys are returned
                     fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
                 )
@@ -901,7 +994,7 @@ class Jira:
                             "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
                     .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
                           "priority", "issuetype", "created", "updated", "description", "fields",
-                          "nextPageToken", "isLast")
+                          "total", "startAt", "maxResults", "nextPageToken", "isLast")
                     .clean()
                 )
                 result = {
@@ -1044,12 +1137,19 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="search_users",
-        description="Search JIRA users by name or email",
+        description=(
+            "Search JIRA users by name or email. Returns user accountId needed for JQL queries. "
+            "NOTE: For searching issues assigned to the CURRENT user (self), use `assignee = currentUser()` "
+            "in JQL instead of calling this tool - it's faster and more reliable."
+        ),
         parameters=[
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Name or email to search",
+                description=(
+                    "Search query - can be part of a user's name, email, or display name. "
+                    "Must be at least 1 character. Example: 'john', 'john.doe@company.com'"
+                ),
                 required=True
             ),
             ToolParameter(
@@ -1059,37 +1159,65 @@ class Jira:
                 required=False
             ),
         ],
-        returns="List of users with account IDs"
+        returns="List of users with account IDs (accountId, displayName, emailAddress)"
     )
     def search_users(
         self,
         query: str,
         max_results: Optional[int] = None
     ) -> Tuple[bool, str]:
-        """Search JIRA users"""
+        """Search JIRA users using the user picker API (more reliable than the search API)"""
         try:
+            # Validate query parameter
+            if not query or not query.strip():
+                error_msg = "Query parameter is required and cannot be empty."
+                logger.error(f"search_users validation failed: {error_msg}")
+                return False, json.dumps({
+                    "error": error_msg,
+                    "guidance": (
+                        "Provide a user name or email to search. "
+                        "TIP: For issues assigned to yourself, use `assignee = currentUser()` in JQL instead."
+                    )
+                })
 
+            query = query.strip()
+
+            # Use find_users_for_picker which is more reliable than find_users
+            # The /rest/api/3/user/picker endpoint always requires query and works correctly
             response = self._run_async(
-                self.client.find_users(
+                self.client.find_users_for_picker(
                     query=query,
-                    maxResults=max_results
+                    maxResults=max_results or 20
                 )
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
-                # Clean response: remove redundant fields, keep essential user info
-                cleaned_data = (
-                    ResponseTransformer(data)
-                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links")
-                    .keep("accountId", "displayName", "emailAddress")
-                    .clean()
-                )
+                # The user picker returns {"users": [...], "total": n, "header": "..."}
+                users = data.get("users", []) if isinstance(data, dict) else data
+
+                # Clean response: extract essential user info
+                cleaned_users = []
+                for user in users:
+                    cleaned_user = {
+                        "accountId": user.get("accountId"),
+                        "displayName": user.get("displayName"),
+                    }
+                    # Try to extract email from html field if available
+                    html = user.get("html", "")
+                    if "(" in html and ")" in html:
+                        # Extract email from format like "Name (email@example.com)"
+                        email_part = html.split("(")[-1].rstrip(")")
+                        if "@" in email_part:
+                            cleaned_user["emailAddress"] = email_part
+
+                    # Only include if accountId exists
+                    if cleaned_user.get("accountId"):
+                        cleaned_users.append(cleaned_user)
+
                 return True, json.dumps({
                     "message": "Users fetched successfully",
-                    "data": cleaned_data
+                    "data": cleaned_users
                 })
             else:
                 return self._handle_response(

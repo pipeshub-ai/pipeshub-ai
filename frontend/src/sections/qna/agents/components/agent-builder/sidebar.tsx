@@ -31,6 +31,7 @@ import {
   groupConnectorInstances,
   groupToolsByConnectorType,
 } from './sidebar/index';
+import { SidebarSkeleton } from '../skeleton-loader';
 
 interface FlowBuilderSidebarProps {
   sidebarOpen: boolean;
@@ -211,6 +212,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     },
   ];
 
+  const isDark = theme.palette.mode === 'dark';
+
   return (
     <Drawer
       variant="persistent"
@@ -220,8 +223,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
         width: sidebarOpen ? sidebarWidth : 0,
         flexShrink: 0,
         transition: theme.transitions.create(['width'], {
-          easing: theme.transitions.easing.sharp,
-          duration: theme.transitions.duration.leavingScreen,
+          easing: theme.transitions.easing.easeInOut,
+          duration: theme.transitions.duration.standard,
         }),
         '& .MuiDrawer-paper': {
           width: sidebarWidth,
@@ -235,8 +238,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
           overflowX: 'hidden',
           boxShadow: 'none',
           transition: theme.transitions.create(['width'], {
-            easing: theme.transitions.easing.sharp,
-            duration: theme.transitions.duration.leavingScreen,
+            easing: theme.transitions.easing.easeInOut,
+            duration: theme.transitions.duration.standard,
           }),
         },
       }}
@@ -248,18 +251,18 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       <Box
         sx={{
           overflow: 'auto',
-          height: 'calc(100% - 140px)',
+          height: 'calc(100% - 100px)',
           minHeight: 0,
           overflowX: 'hidden',
           '&::-webkit-scrollbar': {
-            width: '4px',
+            width: '6px',
           },
           '&::-webkit-scrollbar-track': {
             background: 'transparent',
           },
           '&::-webkit-scrollbar-thumb': {
             backgroundColor: alpha(theme.palette.text.secondary, 0.2),
-            borderRadius: '8px',
+            borderRadius: '3px',
             '&:hover': {
               backgroundColor: alpha(theme.palette.text.secondary, 0.3),
             },
@@ -267,9 +270,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
         }}
       >
         {loading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', p: 3 }}>
-            <CircularProgress size={24} />
-          </Box>
+          <SidebarSkeleton />
         ) : (
           <Box>
             {/* Main Categories */}
@@ -294,23 +295,33 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                       py: 1,
                       px: 2,
                       cursor: 'pointer',
+                      borderRadius: 1,
+                      mx: 1,
+                      my: 0.25,
+                      transition: 'all 0.2s ease',
                       '&:hover': {
-                        backgroundColor: alpha(theme.palette.text.secondary, 0.05),
+                        backgroundColor: theme.palette.action.hover,
                       },
                     }}
                   >
-                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%', position: 'relative', zIndex: 1 }}>
                       <Icon
                         icon={isExpanded ? UI_ICONS.chevronDown : UI_ICONS.chevronRight}
-                        width={16}
-                        height={16}
-                        style={{ color: theme.palette.text.secondary }}
+                        width={18}
+                        height={18}
+                        style={{ 
+                          color: theme.palette.text.secondary,
+                          transition: 'transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
+                          transform: isExpanded ? 'rotate(0deg)' : 'rotate(0deg)',
+                        }}
                       />
                       <Icon
                         icon={config.icon}
                         width={16}
                         height={16}
-                        style={{ color: theme.palette.text.secondary }}
+                        style={{ 
+                          color: theme.palette.text.secondary,
+                        }}
                       />
                       <Typography
                         variant="body2"
@@ -318,16 +329,41 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                           flex: 1,
                           fontSize: '0.875rem',
                           color: theme.palette.text.primary,
-                          fontWeight: 500,
+                          fontWeight: isExpanded ? 600 : 500,
                         }}
                       >
                         {config.name}
                       </Typography>
+                      {hasItems && (
+                        <Typography
+                          variant="caption"
+                          sx={{
+                            fontSize: '0.75rem',
+                            fontWeight: 400,
+                            color: theme.palette.text.secondary,
+                          }}
+                        >
+                          {config.name === 'Tools' 
+                            ? Object.keys(toolsGroupedByConnectorType).length
+                            : categoryTemplates.length}
+                        </Typography>
+                      )}
                     </Box>
                   </ListItem>
 
-                  {/* Category Content */}
-                  <Collapse in={isExpanded} timeout="auto" unmountOnExit>
+                  {/* Category Content with Animation */}
+                  <Collapse 
+                    in={isExpanded} 
+                    timeout={{
+                      enter: 400,
+                      exit: 300,
+                    }}
+                    easing={{
+                      enter: 'cubic-bezier(0.4, 0, 0.2, 1)',
+                      exit: 'cubic-bezier(0.4, 0, 0.2, 1)',
+                    }}
+                    unmountOnExit
+                  >
                     {config.name === 'Tools' ? (
                       <SidebarToolsSection
                         toolsGroupedByConnectorType={toolsGroupedByConnectorType}

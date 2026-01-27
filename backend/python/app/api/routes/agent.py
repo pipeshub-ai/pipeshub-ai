@@ -90,9 +90,18 @@ async def get_user_org_info(request: Request, user_info: Dict[str, Any], arango_
         if not user_email:
             raise HTTPException(status_code=400, detail="User email missing")
 
-        # Add user_email and _key to user_info
+        # Add user_email, _key, and name fields to user_info
         user_info["userEmail"] = user_email
         user_info["_key"] = user.get("_key")
+        # Include name fields for user context
+        if user.get("fullName"):
+            user_info["fullName"] = user.get("fullName")
+        if user.get("firstName"):
+            user_info["firstName"] = user.get("firstName")
+        if user.get("lastName"):
+            user_info["lastName"] = user.get("lastName")
+        if user.get("displayName"):
+            user_info["displayName"] = user.get("displayName")
 
         # Get organization document
         org_doc = await arango_service.get_document(user_info.get("orgId"), CollectionNames.ORGS.value)
