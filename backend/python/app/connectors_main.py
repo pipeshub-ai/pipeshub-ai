@@ -92,8 +92,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             logger.info("Found %d users for organization %s", len(users), org_id)
 
-
-            gmail_sync_service = None
             config_service = app_container.config_service()
             arango_service = await app_container.arango_service()
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
@@ -118,21 +116,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                     # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
                     app_container.connectors_map[connector_id] = connector
                     logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
-
-            if gmail_sync_service is not None:
-                try:
-                    asyncio.create_task(gmail_sync_service.perform_initial_sync(org_id, connector_id))  # type: ignore
-                    logger.info(
-                        "✅ Resumed Gmail sync for org %s",
-                        org_id,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "❌ Error resuming Gmail sync for org %s: %s",
-                        org_id,
-                        str(e),
-                    )
-
 
             logger.info("✅ Sync services resumed for org %s", org_id)
         logger.info("✅ Sync services resumed for all orgs")
@@ -386,8 +369,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Google Drive Sync Service",
-    description="Service for syncing Google Drive content to ArangoDB",
+    title="Connectors Sync Service",
+    description="Service for syncing content from connectors to GraphDB",
     version="1.0.0",
     lifespan=lifespan,
     dependencies=[Depends(get_initialized_container)],
