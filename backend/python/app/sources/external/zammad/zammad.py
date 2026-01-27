@@ -2191,42 +2191,29 @@ class ZammadDataSource:
         self,
         query: str,
         limit: Optional[int] = None,
-        page: Optional[int] = None,
-        per_page: Optional[int] = None,
-        expand: Optional[bool] = None,
-        with_total_count: Optional[bool] = None,
-        only_total_count: Optional[bool] = None
+        offset: Optional[int] = None
     ) -> ZammadResponse:
-        """Search tickets
+        """Search tickets using global search API with objects=Ticket
 
         Args:
-            query: str (required)
-            limit: Optional[int] (optional)
-            page: Optional[int] (optional)
-            per_page: Optional[int] (optional)
-            expand: Optional[bool] (optional)
-            with_total_count: Optional[bool] (optional)
-            only_total_count: Optional[bool] (optional)
+            query: str (required) - Search query using Elasticsearch syntax
+            limit: Optional[int] (optional) - Number of results to return
+            offset: Optional[int] (optional) - Number of results to skip for pagination
 
         Returns:
-            ZammadResponse
+            ZammadResponse with tickets extracted from assets.Ticket as a list
         """
-        url = f"{self.base_url}/api/v1/tickets/search"
-        query_params = {}
+        # Use global search endpoint with objects=Ticket
+        url = f"{self.base_url}/api/v1/search"
+        query_params = {"objects": "Ticket"}
+
         if query is not None:
             query_params["query"] = query
         if limit is not None:
             query_params["limit"] = str(limit)
-        if page is not None:
-            query_params["page"] = str(page)
-        if per_page is not None:
-            query_params["per_page"] = str(per_page)
-        if expand is not None:
-            query_params["expand"] = str(expand).lower()
-        if with_total_count is not None:
-            query_params["with_total_count"] = str(with_total_count).lower()
-        if only_total_count is not None:
-            query_params["only_total_count"] = str(only_total_count).lower()
+        if offset is not None:
+            query_params["offset"] = str(offset)
+
         request_body = None
 
         try:
@@ -2241,9 +2228,28 @@ class ZammadDataSource:
 
             response_text = response.text()
             status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+
+            # Parse response: extract tickets from assets.Ticket dict
+            data = None
+            if response_text:
+                json_data = response.json()
+                if isinstance(json_data, dict):
+                    # Response structure:
+                    # {
+                    #   "assets": {"Ticket": {"1": {...}, "7": {...}}, ...},
+                    #   "result": [{"type": "Ticket", "id": 1}, ...]
+                    # }
+                    assets = json_data.get("assets", {})
+                    ticket_assets = assets.get("Ticket", {})
+                    # Convert dict {id: ticket_obj} to list of ticket objects
+                    data = list(ticket_assets.values()) if ticket_assets else []
+                else:
+                    # Fallback: if response is not a dict, return as-is
+                    data = json_data if isinstance(json_data, list) else []
+
             return ZammadResponse(
                 success=status_ok,
-                data=response.json() if response_text else None,
+                data=data,
                 message="search_tickets succeeded" if status_ok else "search_tickets failed"
             )
         except Exception as e:

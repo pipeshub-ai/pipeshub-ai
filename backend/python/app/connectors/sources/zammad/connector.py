@@ -1,6 +1,6 @@
 """Zammad Connector Implementation"""
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from logging import Logger
 from typing import (
     Any,
@@ -13,6 +13,7 @@ from typing import (
 from uuid import uuid4
 
 from fastapi.responses import StreamingResponse
+from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -42,7 +43,6 @@ from app.connectors.core.registry.connector_builder import (
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
-    FilterOperatorType,
     FilterOption,
     FilterOptionsResponse,
     FilterType,
@@ -52,6 +52,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.zammad.common.apps import ZammadApp
+from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
@@ -69,6 +70,7 @@ from app.models.entities import (
     AppUserGroup,
     FileRecord,
     IndexingStatus,
+    ItemType,
     MimeTypes,
     OriginTypes,
     Priority,
@@ -93,7 +95,6 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 # Constants for batch processing and parsing
 BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
-
 
 @ConnectorBuilder("Zammad")\
     .in_group(AppGroups.ZAMMAD.value)\
@@ -133,14 +134,6 @@ ATTACHMENT_ID_PARTS_COUNT = 3
         .with_scheduled_config(True, 60)
         .with_sync_support(True)
         .with_agent_support(False)
-        .add_filter_field(FilterField(
-            name="organization_ids",
-            display_name="Organizations",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            description="Filter tickets by organization (leave empty for all organizations)",
-            option_source_type=OptionSourceType.DYNAMIC
-        ))
         .add_filter_field(FilterField(
             name="group_ids",
             display_name="Groups",
@@ -182,6 +175,8 @@ class ZammadConnector(BaseConnector):
     """
     Zammad connector for syncing tickets, articles, knowledge base, and users from Zammad
     """
+    # ==================== INITIALIZATION ====================
+
     def __init__(
         self,
         logger: Logger,
@@ -204,6 +199,9 @@ class ZammadConnector(BaseConnector):
         self.connector_id = connector_id
         self.connector_name = Connectors.ZAMMAD
 
+        # Initialize value mapper (Zammad-specific mappings are in ValueMapper defaults)
+        self.value_mapper = ValueMapper()
+
         # Initialize sync points
         org_id = self.data_entities_processor.org_id
 
@@ -224,7 +222,6 @@ class ZammadConnector(BaseConnector):
         self._state_map: Dict[int, str] = {}  # state_id -> state_name
         self._priority_map: Dict[int, str] = {}  # priority_id -> priority_name
         self._user_id_to_data: Dict[int, Dict[str, Any]] = {}  # user_id -> {"email": str, "role_ids": List[int]} (lightweight mapping)
-        self._organization_map: Dict[int, Dict[str, Any]] = {}  # organization_id -> organization_data
 
         # Filter collections (initialized in run_sync)
         self.sync_filters: Any = None
@@ -363,6 +360,8 @@ class ZammadConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Failed to load ticket priorities: {e}")
 
+    # ==================== MAIN SYNC ORCHESTRATION ====================
+
     async def run_sync(self) -> None:
         """Main sync orchestration method"""
         self.logger.info(f"🔄 Starting Zammad sync for connector {self.connector_id}")
@@ -390,62 +389,91 @@ class ZammadConnector(BaseConnector):
                 self.logger.info(f"✅ Synced {len(users)} users")
 
             # Step 2: Fetch and sync groups (creates BOTH RecordGroups AND UserGroups)
-            # Groups are the permission boundary for tickets in Zammad
             self.logger.info("👥 Step 2: Syncing groups...")
             group_record_groups, group_user_groups = await self._fetch_groups(user_email_map)
 
-            # Sync RecordGroups from groups (for ticket permission inheritance)
-            if group_record_groups:
-                await self.data_entities_processor.on_new_record_groups(group_record_groups)
-                self.logger.info(f"✅ Synced {len(group_record_groups)} groups as RecordGroups")
-
-            # Sync UserGroups from groups (for membership tracking)
+            # IMPORTANT: Sync UserGroups BEFORE RecordGroups!
+            # so UserGroups must exist first for permission edges to be created.
             if group_user_groups:
                 await self.data_entities_processor.on_new_user_groups(group_user_groups)
                 self.logger.info(f"✅ Synced {len(group_user_groups)} groups as UserGroups")
+
+            if group_record_groups:
+                await self.data_entities_processor.on_new_record_groups(group_record_groups)
+                self.logger.info(f"✅ Synced {len(group_record_groups)} groups as RecordGroups")
 
             # Step 3: Fetch and sync roles
             self.logger.info("🎭 Step 3: Syncing roles...")
             await self._sync_roles(users, user_email_map)
 
-            # Step 4: Get organization_ids filter and fetch organizations (for filtering only, not permissions)
-            organization_ids = None
-            organization_ids_operator = None
-            organization_ids_filter = self.sync_filters.get(SyncFilterKey.ORGANIZATION_IDS) if self.sync_filters else None
+            # Step 5: Sync tickets (linked to group RecordGroups via group_id)
+            self.logger.info("🎫 Step 5: Syncing tickets...")
+            await self._sync_tickets_for_groups(group_record_groups)
 
-            if organization_ids_filter:
-                organization_ids = organization_ids_filter.get_value(default=[])
-                organization_ids_operator = organization_ids_filter.get_operator()
-                if organization_ids:
-                    # Extract operator value string (handles both enum and string)
-                    operator_value = organization_ids_operator.value if hasattr(organization_ids_operator, 'value') else str(organization_ids_operator) if organization_ids_operator else "in"
-                    action = "Excluding" if operator_value == "not_in" else "Including"
-                    self.logger.info(f"📋 Filter: {action} organizations by IDs: {organization_ids}")
-                else:
-                    self.logger.info("📋 Organization filter is empty, will fetch no organizations")
-            else:
-                self.logger.info("📋 No organization filter set - will fetch all organizations")
-
-            # Step 5: Fetch organizations (for filtering and metadata, NOT for permissions)
-            self.logger.info("🏢 Step 5: Fetching organizations for filter options...")
-            await self._fetch_organizations(
-                organization_ids=organization_ids,
-                organization_ids_operator=organization_ids_operator
-            )
-
-            # Step 6: Sync tickets (linked to group RecordGroups via group_id)
-            self.logger.info("🎫 Step 6: Syncing tickets...")
-            await self._sync_tickets_for_groups()
-
-            # Step 7: Sync knowledge base (always fetch, indexing filters control indexing_status)
-            self.logger.info("📚 Step 7: Syncing knowledge base...")
-            await self._sync_knowledge_bases()
+            # Step 6: Sync knowledge base (always fetch, indexing filters control indexing_status)
+            # self.logger.info("📚 Step 7: Syncing knowledge base...")
+            # await self._sync_knowledge_bases()
 
             self.logger.info(f"✅ Zammad sync completed for connector {self.connector_id}")
 
         except Exception as e:
             self.logger.error(f"❌ Zammad sync failed: {e}", exc_info=True)
             raise
+
+    def _filter_groups_by_sync_filter(
+        self,
+        all_groups: List[Tuple[RecordGroup, List[Permission]]]
+    ) -> List[Tuple[RecordGroup, List[Permission]]]:
+        """
+        Apply group_ids sync filter to determine which groups to process.
+
+        Args:
+            all_groups: List of all (RecordGroup, permissions) tuples
+
+        Returns:
+            Filtered list of groups to process
+        """
+        # Check if filter is set
+        if not self.sync_filters:
+            return all_groups  # No filter, process all
+
+        group_ids_filter = self.sync_filters.get(SyncFilterKey.GROUP_IDS)
+        if not group_ids_filter:
+            return all_groups  # No group filter, process all
+
+        selected_group_ids = group_ids_filter.get_value(default=[])
+        if not selected_group_ids:
+            return all_groups  # Empty filter, process all
+
+        # Convert to set of strings for easy lookup
+        filter_set = set(str(gid) for gid in selected_group_ids)
+
+        # Check operator: "in" (include) or "not_in" (exclude)
+        group_ids_operator = group_ids_filter.get_operator()
+        operator_value = "in"
+        if group_ids_operator:
+            operator_value = group_ids_operator.value if hasattr(group_ids_operator, 'value') else str(group_ids_operator)
+
+        is_exclude = operator_value == "not_in"
+
+        filtered_groups = []
+        for group_record_group, group_perms in all_groups:
+            # Extract group_id from external_group_id (e.g., "group_1" -> "1")
+            group_id = group_record_group.short_name or group_record_group.external_group_id.replace("group_", "")
+
+            if is_exclude:
+                # NOT_IN: include if NOT in filter list
+                if group_id not in filter_set:
+                    filtered_groups.append((group_record_group, group_perms))
+            else:
+                # IN: include if IN filter list
+                if group_id in filter_set:
+                    filtered_groups.append((group_record_group, group_perms))
+
+        self.logger.debug(f"📋 Filtered groups: {len(filtered_groups)}/{len(all_groups)} (filter: {operator_value} {list(filter_set)})")
+        return filtered_groups
+
+    # ==================== ENTITY FETCHING & SYNCING ====================
 
     async def _fetch_users(self) -> Tuple[List[AppUser], Dict[str, AppUser]]:
         """
@@ -604,7 +632,7 @@ class ZammadConnector(BaseConnector):
                 # Permission: UserGroup -> RecordGroup (group members can access)
                 permissions: List[Permission] = [
                     Permission(
-                        entity_type=EntityType.USER_GROUP,
+                        entity_type=EntityType.GROUP,
                         type=PermissionType.READ,
                         external_id=str(group_id)  # Links to UserGroup.source_user_group_id
                     )
@@ -702,7 +730,6 @@ class ZammadConnector(BaseConnector):
                     if not active:
                         continue
 
-
                     # Parse timestamps
                     created_at = self._parse_zammad_datetime(role_data.get("created_at", ""))
                     updated_at = self._parse_zammad_datetime(role_data.get("updated_at", ""))
@@ -748,296 +775,170 @@ class ZammadConnector(BaseConnector):
             self.logger.error(f"❌ Error syncing roles: {e}", exc_info=True)
             raise
 
-    async def _fetch_organizations(
+    # ==================== TICKET SYNCING ====================
+
+    async def _sync_tickets_for_groups(
         self,
-        organization_ids: Optional[List[str]] = None,
-        organization_ids_operator: Optional[FilterOperatorType] = None
+        group_record_groups: List[Tuple[RecordGroup, List[Permission]]]
     ) -> None:
         """
-        Fetch organizations from Zammad and cache for filter options and ticket metadata.
-        Organizations are NOT used for permissions - Groups control ticket access.
+        Sync tickets per group with group-level sync points.
+        Similar to Linear's per-team sync pattern.
 
         Args:
-            organization_ids: Optional list of organization IDs to include/exclude
-            organization_ids_operator: Optional filter operator (IN or NOT_IN)
+            group_record_groups: List of (RecordGroup, permissions) tuples from Step 2
         """
-        try:
-            datasource = await self._get_fresh_datasource()
-            page = 1
-            per_page = 100
-            all_organizations = []
+        if not group_record_groups:
+            self.logger.info("ℹ️ No groups to sync tickets for")
+            return
 
-            while True:
-                response = await datasource.list_organizations(
-                    page=page,
-                    per_page=per_page
-                )
+        # Apply filter to get groups to process
+        groups_to_process = self._filter_groups_by_sync_filter(group_record_groups)
 
-                if not response.success:
-                    self.logger.warning(f"Failed to fetch organizations (page {page}): {response.message if hasattr(response, 'message') else 'Unknown error'}")
-                    break
+        if not groups_to_process:
+            self.logger.info("ℹ️ No groups match the filter criteria")
+            return
 
-                if not response.data:
-                    break
+        self.logger.info(f"📋 Will sync tickets for {len(groups_to_process)} groups")
 
-                organizations_data = response.data
-                if not isinstance(organizations_data, list):
-                    organizations_data = [organizations_data]
+        total_records_all_groups = 0
 
-                if not organizations_data:
-                    break
+        # Sync each group independently
+        for group_record_group, group_perms in groups_to_process:
+            try:
+                # Extract group info
+                external_group_id = group_record_group.external_group_id
+                group_id = external_group_id.replace("group_", "") if external_group_id else None
+                group_name = group_record_group.name
 
-                all_organizations.extend(organizations_data)
+                if not group_id:
+                    self.logger.warning(f"⚠️ Skipping group {group_name}: missing group_id")
+                    continue
 
-                # Check if there are more pages
-                if len(organizations_data) < per_page:
-                    break
+                self.logger.info(f"📋 Starting ticket sync for group: {group_name}")
 
-                page += 1
+                # Read group-level sync point (using group name as key)
+                last_sync_time = await self._get_group_sync_checkpoint(group_name)
 
-            if not all_organizations:
-                self.logger.info("No organizations found")
-                return
-
-            # Apply organization_ids filter if specified
-            if organization_ids:
-                # Check operator: "in" (include) or "not_in" (exclude)
-                if organization_ids_operator:
-                    operator_value = organization_ids_operator.value if hasattr(organization_ids_operator, 'value') else str(organization_ids_operator)
+                if last_sync_time:
+                    self.logger.info(f"🔄 Incremental sync for group {group_name} from {last_sync_time}")
                 else:
-                    operator_value = "in"
+                    self.logger.info(f"🔄 Full sync for group {group_name} (first time)")
 
-                is_exclude = operator_value == "not_in"
+                # Fetch and process tickets for this group only
+                total_records = 0
+                max_ticket_updated_at: Optional[int] = None
 
-                # Convert organization_ids to integers for comparison
-                org_id_set = {int(oid) for oid in organization_ids if oid}
+                async for batch_records in self._fetch_tickets_for_group_batch(
+                    group_id=int(group_id),
+                    group_name=group_name,
+                    last_sync_time=last_sync_time
+                ):
+                    if not batch_records:
+                        continue
 
-                # Filter organizations based on operator
-                if is_exclude:
-                    # Exclude organizations in the list
-                    filtered_organizations = [
-                        org for org in all_organizations
-                        if org.get("id") not in org_id_set
-                    ]
+                    # Track max updated_at from tickets for sync point
+                    for record, _ in batch_records:
+                        if isinstance(record, TicketRecord) and record.source_updated_at:
+                            if max_ticket_updated_at is None or record.source_updated_at > max_ticket_updated_at:
+                                max_ticket_updated_at = record.source_updated_at
+
+                    # Process batch
+                    total_records += len(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    self.logger.debug(f"📝 Synced batch of {len(batch_records)} records for group {group_name}")
+
+                    # Update sync point after each batch (fault tolerance)
+                    if max_ticket_updated_at:
+                        await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
+
+                # Final sync point update: Only update to current time if we processed tickets
+                if total_records > 0:
+                    # If max_ticket_updated_at wasn't set (edge case), use current time as fallback
+                    if not max_ticket_updated_at:
+                        self.logger.warning(f"Processed {total_records} records but max_ticket_updated_at not set, using current time")
+                        await self._update_group_sync_checkpoint(group_name)
+                    # else: max_ticket_updated_at was already set above, no need to update again
                 else:
-                    # Include only organizations in the list
-                    filtered_organizations = [
-                        org for org in all_organizations
-                        if org.get("id") in org_id_set
-                    ]
+                    self.logger.debug(f"No tickets found for group {group_name}, keeping existing checkpoint to avoid skipping older tickets")
 
-                all_organizations = filtered_organizations
-                self.logger.info(f"📋 Filtered to {len(all_organizations)} organizations (operator: {operator_value})")
+                total_records_all_groups += total_records
+                self.logger.info(f"✅ Synced {total_records} records for group {group_name}")
 
-            # Cache organizations for filter options and ticket metadata (NOT for permissions)
-            for org_data in all_organizations:
-                org_id = org_data.get("id")
-                if org_id:
-                    self._organization_map[org_id] = org_data
+            except Exception as e:
+                self.logger.error(f"❌ Error syncing tickets for group {group_record_group.name}: {e}", exc_info=True)
+                continue  # Continue with next group even if one fails
 
-            self.logger.info(f"📥 Cached {len(self._organization_map)} organizations for filter options")
+        self.logger.info(f"✅ Total: Synced {total_records_all_groups} records across {len(groups_to_process)} groups")
 
-        except Exception as e:
-            self.logger.error(f"❌ Error fetching organizations: {e}", exc_info=True)
-            raise
-
-    async def _sync_tickets_for_groups(self) -> None:
-        """
-        Sync tickets linked to groups.
-        Tickets are organized by groups (agent teams), which control access permissions.
-        """
-        # Build group map for quick lookup from database
-        group_map: Dict[str, RecordGroup] = {}
-
-        # Fetch group RecordGroups from database
-        # Groups use external_group_id format: "group_{group_id}"
-        async with self.data_store_provider.transaction() as tx_store:
-            # Get all group RecordGroups for this connector
-            # We need to query by connector_id and filter by group_ prefix
-            all_record_groups = await tx_store.get_record_groups_by_connector(
-                connector_id=self.connector_id
-            )
-            for rg in all_record_groups:
-                if rg.external_group_id and rg.external_group_id.startswith("group_"):
-                    group_map[rg.external_group_id] = rg
-
-        self.logger.info(f"📊 Found {len(group_map)} group RecordGroups for ticket linking")
-
-        # Get last sync timestamp for incremental sync
-        sync_point_key = "tickets"
-        sync_point_data = await self.tickets_sync_point.read_sync_point(sync_point_key)
-        last_sync_time = sync_point_data.get("last_sync_time") if sync_point_data else None
-
-        # Sync tickets with incremental support
-        total_tickets = 0
-        async for batch in self._fetch_tickets_batch(group_map, last_sync_time):
-            if batch:
-                await self.data_entities_processor.on_new_records(batch)
-                total_tickets += len(batch)
-                self.logger.info(f"📝 Synced batch of {len(batch)} tickets (total: {total_tickets})")
-
-        # Update sync point
-        current_time = get_epoch_timestamp_in_ms()
-        await self.tickets_sync_point.update_sync_point(
-            sync_point_key,
-            {"last_sync_time": current_time}
-        )
-
-        self.logger.info(f"✅ Synced {total_tickets} tickets")
-
-    async def _fetch_tickets_batch(
+    async def _fetch_tickets_for_group_batch(
         self,
-        group_map: Dict[str, RecordGroup],
+        group_id: int,
+        group_name: str,
         last_sync_time: Optional[int]
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
-        Fetch tickets in batches with incremental sync support.
+        Fetch tickets for a specific group with pagination and incremental sync support.
 
         Args:
-            group_map: Map of external_group_id -> RecordGroup
+            group_id: Zammad group ID to fetch tickets for
+            group_name: Group name for logging
             last_sync_time: Last sync timestamp (epoch ms) or None for full sync
-            filters: Filter configuration
 
         Yields:
-            Batches of (TicketRecord, permissions) tuples
+            Batches of (Record, permissions) tuples (includes TicketRecords and FileRecords)
         """
         datasource = await self._get_fresh_datasource()
-        page = 1
-        per_page = 100
+        limit = 50
+        offset = 0
         batch_size = 50
 
-        # Get group_ids from sync filter to filter at API level (for efficiency)
-        selected_group_ids = []
-        group_ids_operator = None
-        if self.sync_filters:
-            group_ids_filter = self.sync_filters.get(SyncFilterKey.GROUP_IDS)
-            if group_ids_filter:
-                selected_group_ids = group_ids_filter.get_value(default=[])
-                group_ids_operator = group_ids_filter.get_operator()
+        # Build query: always filter by group_id
+        query_parts = [f"group_id:{group_id}"]
 
-        # Get organization_ids from sync filter to filter at API level (for efficiency)
-        selected_organization_ids = []
-        organization_ids_operator = None
-        if self.sync_filters:
-            organization_ids_filter = self.sync_filters.get(SyncFilterKey.ORGANIZATION_IDS)
-            if organization_ids_filter:
-                selected_organization_ids = organization_ids_filter.get_value(default=[])
-                organization_ids_operator = organization_ids_filter.get_operator()
-
-        # Build query for filtering
-        query_parts = []
+        # Add timestamp filter if incremental sync
         if last_sync_time:
             # Convert timestamp to ISO format with UTC timezone
-            dt = datetime.fromtimestamp(last_sync_time / 1000)
-            # Ensure UTC timezone for Zammad API
-            if dt.tzinfo is None:
-                from datetime import timezone
-                dt = dt.replace(tzinfo=timezone.utc)
-            iso_format = dt.isoformat().replace('+00:00', 'Z')
-            query_parts.append(f"updated_at:>={iso_format}")
+            dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
+            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            query_parts.append(f"updated_at:[{iso_format} TO *]")
 
-        # Apply group_ids filter at API level if specified
-        if selected_group_ids:
-            # Check operator: "in" (include) or "not_in" (exclude)
-            if group_ids_operator:
-                operator_value = group_ids_operator.value if hasattr(group_ids_operator, 'value') else str(group_ids_operator)
-            else:
-                operator_value = "in"
-
-            is_exclude = operator_value == "not_in"
-
-            if is_exclude:
-                # For NOT_IN, we need to exclude these group IDs
-                # Zammad search syntax: NOT group_id:1 AND NOT group_id:2
-                group_exclude_parts = [f"NOT group_id:{gid}" for gid in selected_group_ids]
-                query_parts.append(f"({' AND '.join(group_exclude_parts)})")
-            else:
-                # For IN, include only these group IDs
-                # Zammad search syntax: (group_id:1 OR group_id:2)
-                group_ids_str = " OR ".join([f"group_id:{gid}" for gid in selected_group_ids])
-                query_parts.append(f"({group_ids_str})")
-
-        # Apply organization_ids filter at API level if specified
-        if selected_organization_ids:
-            # Check operator: "in" (include) or "not_in" (exclude)
-            if organization_ids_operator:
-                operator_value = organization_ids_operator.value if hasattr(organization_ids_operator, 'value') else str(organization_ids_operator)
-            else:
-                operator_value = "in"
-
-            is_exclude = operator_value == "not_in"
-
-            if is_exclude:
-                # For NOT_IN, we need to exclude these organization IDs
-                # Zammad search syntax: NOT organization_id:4 AND NOT organization_id:5
-                org_exclude_parts = [f"NOT organization_id:{oid}" for oid in selected_organization_ids]
-                query_parts.append(f"({' AND '.join(org_exclude_parts)})")
-            else:
-                # For IN, include only these organization IDs
-                # Zammad search syntax: (organization_id:4 OR organization_id:5)
-                org_ids_str = " OR ".join([f"organization_id:{oid}" for oid in selected_organization_ids])
-                query_parts.append(f"({org_ids_str})")
+        # Build final query
+        query = " AND ".join(query_parts)
+        self.logger.debug(f"Fetching tickets for group '{group_name}' with query: {query}")
 
         while True:
-            # Fetch tickets with pagination and expand for resolved names
-            if query_parts:
-                # Use search with query filters (incremental + organization filter)
-                query = " AND ".join(query_parts)
-                response = await datasource.search_tickets(
-                    query=query,
-                    page=page,
-                    per_page=per_page,
-                    expand=True
-                )
-            elif last_sync_time:
-                # Convert timestamp to ISO format with UTC timezone
-                dt = datetime.fromtimestamp(last_sync_time / 1000)
-                # Ensure UTC timezone for Zammad API
-                if dt.tzinfo is None:
-                    from datetime import timezone
-                    dt = dt.replace(tzinfo=timezone.utc)
-                iso_format = dt.isoformat().replace('+00:00', 'Z')
-                query = f"updated_at:>={iso_format}"
-                response = await datasource.search_tickets(
-                    query=query,
-                    page=page,
-                    per_page=per_page,
-                    expand=True
-                )
-            else:
-                # Full sync (no filters)
-                response = await datasource.list_tickets(
-                    page=page,
-                    per_page=per_page,
-                    expand=True
-                )
+            # Use search_tickets for fetching
+            response = await datasource.search_tickets(
+                query=query,
+                limit=limit,
+                offset=offset
+            )
 
             if not response.success:
-                self.logger.warning(f"Failed to fetch tickets (page {page}): {response.message if hasattr(response, 'message') else 'Unknown error'}")
+                self.logger.warning(f"Failed to fetch tickets for group '{group_name}' (offset {offset}): {response.message if hasattr(response, 'message') else 'Unknown error'}")
                 break
 
             if not response.data:
-                self.logger.debug(f"No ticket data returned for page {page}")
+                self.logger.debug(f"No ticket data returned for group '{group_name}' at offset {offset}")
                 break
 
+            # Response.data is now a list of ticket objects (already extracted from assets.Ticket)
             tickets_data = response.data
             if not isinstance(tickets_data, list):
-                tickets_data = [tickets_data]
+                tickets_data = [tickets_data] if tickets_data else []
 
             if not tickets_data:
-                self.logger.debug(f"Empty tickets list for page {page}")
+                self.logger.debug(f"Empty tickets list for group '{group_name}' at offset {offset}")
                 break
 
-            self.logger.debug(f"Fetched {len(tickets_data)} tickets from page {page}")
+            self.logger.debug(f"Fetched {len(tickets_data)} tickets for group '{group_name}' from offset {offset}")
 
             batch_records: List[Tuple[Record, List[Permission]]] = []
 
             for ticket_data in tickets_data:
                 try:
-                    ticket_record = await self._transform_ticket_to_ticket_record(
-                        ticket_data,
-                        group_map
-                    )
+                    ticket_record = await self._transform_ticket_to_ticket_record(ticket_data)
 
                     if ticket_record:
                         # Set indexing status based on indexing filters
@@ -1068,23 +969,94 @@ class ZammadConnector(BaseConnector):
             if batch_records:
                 yield batch_records
 
-            # Check if we got less than per_page, meaning we're done
-            if len(tickets_data) < per_page:
+            # Check if we got less than limit, meaning we're done
+            if len(tickets_data) < limit:
                 break
 
-            page += 1
+            # Increment offset for next page
+            offset += limit
+
+    async def _fetch_ticket_attachments(
+        self,
+        ticket_data: Dict[str, Any],
+        ticket_record: TicketRecord
+    ) -> List[Tuple[Record, List[Permission]]]:
+        """
+        Fetch attachments for a ticket from its articles.
+
+        Args:
+            ticket_data: Raw ticket data
+            ticket_record: Parent TicketRecord
+
+        Returns:
+            List of (FileRecord, permissions) tuples
+        """
+        attachments: List[Tuple[Record, List[Permission]]] = []
+
+        ticket_id = ticket_data.get("id")
+        if not ticket_id:
+            return attachments
+
+        datasource = await self._get_fresh_datasource()
+        response = await datasource.list_ticket_articles(ticket_id=ticket_id)
+
+        if not response.success or not response.data:
+            return attachments
+
+        articles = response.data
+        if not isinstance(articles, list):
+            articles = [articles]
+
+        for article in articles:
+            article_id = article.get("id")
+            article_sender = article.get("sender", "")
+            article_from = article.get("from", "")
+            article_preferences = article.get("preferences", {})
+
+            # Skip attachments from system-generated articles (auto-replies, bounce notifications, etc.)
+            if article_sender == "System":
+                self.logger.debug(f"Skipping attachments from system article {article_id} (sender: System)")
+                continue
+
+            # Skip auto-response emails (bounce notifications, delivery failures, etc.)
+            if article_preferences.get("is-auto-response") or article_preferences.get("send-auto-response") is False:
+                self.logger.debug(f"Skipping attachments from auto-response article {article_id}")
+                continue
+
+            # Skip MAILER-DAEMON bounce notifications
+            if "MAILER-DAEMON" in article_from or "Mail Delivery System" in article_from:
+                self.logger.debug(f"Skipping attachments from bounce notification article {article_id}")
+                continue
+
+            article_attachments = article.get("attachments", [])
+
+            for attachment in article_attachments:
+                try:
+                    file_record = await self._transform_attachment_to_file_record(
+                        attachment,
+                        ticket_id,
+                        article_id,
+                        ticket_record
+                    )
+                    if file_record:
+                        # FileRecords inherit permissions from parent
+                        attachments.append((file_record, []))
+                except Exception as e:
+                    self.logger.warning(f"Failed to process attachment: {e}")
+
+        return attachments
+
+    # ==================== TRANSFORMATIONS ====================
 
     async def _transform_ticket_to_ticket_record(
         self,
-        ticket_data: Dict[str, Any],
-        group_map: Dict[str, RecordGroup]
+        ticket_data: Dict[str, Any]
     ) -> Optional[TicketRecord]:
         """
         Transform Zammad ticket to TicketRecord.
 
         Args:
             ticket_data: Raw ticket data from Zammad API
-            group_map: Map of external_group_id -> RecordGroup
 
         Returns:
             TicketRecord or None if transformation fails
@@ -1094,15 +1066,12 @@ class ZammadConnector(BaseConnector):
             return None
 
         # Get ticket number and title
-        ticket_number = ticket_data.get("number", "")
         title = ticket_data.get("title", "")
-        record_name = f"#{ticket_number} - {title}" if ticket_number else title
+        record_name = title
 
-        # Get group_id (tickets are linked to groups for permissions)
         # Groups control who can access the ticket (agent teams)
         group_id = ticket_data.get("group_id")
 
-        # Determine record_group_type based on external_record_group_id format
         # Groups use "group_{id}" format and are RecordGroupType.PROJECT
         record_group_type = None
         if group_id:
@@ -1111,15 +1080,21 @@ class ZammadConnector(BaseConnector):
         else:
             external_record_group_id = None  # Tickets without group won't be linked to a RecordGroup
 
-        # Map state to Status enum
+        # Map state to Status enum using ValueMapper
         state_id = ticket_data.get("state_id")
         state_name = self._state_map.get(state_id, "")
-        status = self._map_state_to_status(state_name)
+        status = self.value_mapper.map_status(state_name)
+        # Default to OPEN if value_mapper returns string (no match)
+        if status and not isinstance(status, Status):
+            status = Status.OPEN
 
-        # Map priority to Priority enum
+        # Map priority to Priority enum using ValueMapper
         priority_id = ticket_data.get("priority_id")
         priority_name = self._priority_map.get(priority_id, "")
-        priority = self._map_priority_to_priority(priority_name)
+        priority = self.value_mapper.map_priority(priority_name)
+        # Default to MEDIUM if value_mapper returns string (no match)
+        if priority and not isinstance(priority, Priority):
+            priority = Priority.MEDIUM
 
         # Get customer (creator) and owner (assignee) info - fetch on-demand
         customer_id = ticket_data.get("customer_id")
@@ -1191,6 +1166,9 @@ class ZammadConnector(BaseConnector):
         record_id = existing_record.id if existing_record else str(uuid4())
         version = 0 if is_new else (existing_record.version + 1 if existing_record.source_updated_at != updated_at else existing_record.version)
 
+        # Use updated_at as external_revision_id so placeholders (None) will trigger update
+        external_revision_id = str(updated_at) if updated_at else None
+
         # Create TicketRecord
         ticket_record = TicketRecord(
             id=record_id,
@@ -1198,8 +1176,9 @@ class ZammadConnector(BaseConnector):
             record_type=RecordType.TICKET,
             record_name=record_name,
             external_record_id=str(ticket_id),
+            external_revision_id=external_revision_id,
             external_record_group_id=external_record_group_id,
-            record_group_type=record_group_type,  # Set group type for auto-creation if needed
+            record_group_type=record_group_type,
             indexing_status=IndexingStatus.NOT_STARTED,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
@@ -1213,6 +1192,7 @@ class ZammadConnector(BaseConnector):
             source_updated_at=updated_at,
             status=status,
             priority=priority,
+            type=ItemType.ISSUE,
             assignee=assignee_name,
             assignee_email=assignee_email,
             creator_email=creator_email,
@@ -1222,94 +1202,6 @@ class ZammadConnector(BaseConnector):
         )
 
         return ticket_record
-
-    def _map_state_to_status(self, state_name: str) -> Status:
-        """Map Zammad state name to Status enum"""
-        state_lower = state_name.lower()
-        if state_lower in ["new", "open"]:
-            return Status.OPEN
-        elif state_lower in ["pending reminder", "pending close", "pending"]:
-            return Status.PENDING
-        elif state_lower in ["closed", "merged"]:
-            return Status.CLOSED
-        else:
-            return Status.OPEN
-
-    def _map_priority_to_priority(self, priority_name: str) -> Priority:
-        """Map Zammad priority name to Priority enum"""
-        priority_lower = priority_name.lower()
-        if "low" in priority_lower or priority_lower == "1 low":
-            return Priority.LOW
-        elif "normal" in priority_lower or priority_lower == "2 normal":
-            return Priority.MEDIUM
-        elif "high" in priority_lower or priority_lower == "3 high":
-            return Priority.HIGH
-        elif "urgent" in priority_lower or priority_lower == "4 urgent":
-            return Priority.URGENT
-        else:
-            return Priority.MEDIUM
-
-    def _parse_zammad_datetime(self, datetime_str: str) -> int:
-        """Parse Zammad ISO8601 datetime string to epoch milliseconds"""
-        if not datetime_str:
-            return 0
-        try:
-            # Parse ISO 8601 format
-            dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
-            return int(dt.timestamp() * 1000)
-        except (ValueError, TypeError):
-            return 0
-
-    async def _fetch_ticket_attachments(
-        self,
-        ticket_data: Dict[str, Any],
-        ticket_record: TicketRecord
-    ) -> List[Tuple[Record, List[Permission]]]:
-        """
-        Fetch attachments for a ticket from its articles.
-
-        Args:
-            ticket_data: Raw ticket data
-            ticket_record: Parent TicketRecord
-
-        Returns:
-            List of (FileRecord, permissions) tuples
-        """
-        attachments: List[Tuple[Record, List[Permission]]] = []
-
-        ticket_id = ticket_data.get("id")
-        if not ticket_id:
-            return attachments
-
-        datasource = await self._get_fresh_datasource()
-        response = await datasource.list_ticket_articles(ticket_id=ticket_id)
-
-        if not response.success or not response.data:
-            return attachments
-
-        articles = response.data
-        if not isinstance(articles, list):
-            articles = [articles]
-
-        for article in articles:
-            article_id = article.get("id")
-            article_attachments = article.get("attachments", [])
-
-            for attachment in article_attachments:
-                try:
-                    file_record = await self._transform_attachment_to_file_record(
-                        attachment,
-                        ticket_id,
-                        article_id,
-                        ticket_record
-                    )
-                    if file_record:
-                        # FileRecords inherit permissions from parent
-                        attachments.append((file_record, []))
-                except Exception as e:
-                    self.logger.warning(f"Failed to process attachment: {e}")
-
-        return attachments
 
     async def _transform_attachment_to_file_record(
         self,
@@ -1338,9 +1230,6 @@ class ZammadConnector(BaseConnector):
         size = attachment_data.get("size", 0)
         content_type = attachment_data.get("preferences", {}).get("Content-Type", "application/octet-stream")
 
-        # Build download URL
-        weburl = f"{self.base_url}/api/v1/ticket_attachment/{ticket_id}/{article_id}/{attachment_id}" if self.base_url else ""
-
         # Check for existing record
         external_record_id = f"{ticket_id}_{article_id}_{attachment_id}"
         existing_record = None
@@ -1365,14 +1254,21 @@ class ZammadConnector(BaseConnector):
             elif parent_ticket.record_group_type:
                 file_record_group_type = parent_ticket.record_group_type
 
+        # Get file extension from filename
+        extension = filename.split('.')[-1] if '.' in filename else None
+
+        # Use parent ticket's updated_at as external_revision_id (attachments inherit from parent)
+        external_revision_id = str(parent_ticket.source_updated_at) if parent_ticket.source_updated_at else None
+
         file_record = FileRecord(
             id=record_id,
             org_id=self.data_entities_processor.org_id,
             record_type=RecordType.FILE,
             record_name=filename,
             external_record_id=external_record_id,
+            external_revision_id=external_revision_id,
             external_record_group_id=parent_ticket.external_record_group_id,
-            record_group_type=file_record_group_type,  # Set group type for auto-creation if needed
+            record_group_type=file_record_group_type,
             parent_record_id=parent_ticket.id,
             parent_external_record_id=parent_ticket.external_record_id,
             parent_record_type=RecordType.TICKET,
@@ -1382,13 +1278,15 @@ class ZammadConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             mime_type=content_type,
-            weburl=weburl,
+            weburl=parent_ticket.weburl,  # Use parent ticket's weburl
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=parent_ticket.source_created_at,
             source_updated_at=parent_ticket.source_updated_at,
             size_in_bytes=size,
             inherit_permissions=True,
+            is_file=True,
+            extension=extension,
         )
 
         # Set indexing status based on indexing filters
@@ -1396,6 +1294,51 @@ class ZammadConnector(BaseConnector):
             file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
         return file_record
+
+    # ==================== HELPER FUNCTIONS ====================
+
+    def _parse_zammad_datetime(self, datetime_str: str) -> int:
+        """Parse Zammad ISO8601 datetime string to epoch milliseconds"""
+        if not datetime_str:
+            return 0
+        try:
+            # Parse ISO 8601 format
+            dt = datetime.fromisoformat(datetime_str.replace('Z', '+00:00'))
+            return int(dt.timestamp() * 1000)
+        except (ValueError, TypeError):
+            return 0
+
+    # ==================== SYNC CHECKPOINTS ====================
+
+    async def _get_group_sync_checkpoint(self, group_name: str) -> Optional[int]:
+        """
+        Get group-specific sync checkpoint (last_sync_time).
+
+        Args:
+            group_name: Group name (e.g., "Users", "Support Team")
+
+        Returns:
+            Last sync timestamp in epoch ms, or None if not set
+        """
+        data = await self.tickets_sync_point.read_sync_point(group_name)
+        return data.get("last_sync_time") if data else None
+
+    async def _update_group_sync_checkpoint(self, group_name: str, timestamp: Optional[int] = None) -> None:
+        """
+        Update group-specific sync checkpoint.
+
+        Args:
+            group_name: Group name (e.g., "Users", "Support Team")
+            timestamp: Timestamp to set (defaults to current time if None)
+        """
+        sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
+        await self.tickets_sync_point.update_sync_point(
+            group_name,
+            {"last_sync_time": sync_time}
+        )
+        self.logger.debug(f"💾 Updated sync checkpoint for group '{group_name}': {sync_time}")
+
+    # ==================== KNOWLEDGE BASE SYNCING ====================
 
     async def _sync_knowledge_bases(self) -> None:
         """
@@ -1421,17 +1364,144 @@ class ZammadConnector(BaseConnector):
                 return
 
             kb_data = init_response.data
+
+            # Debug: Log the response structure to help diagnose issues
+            self.logger.debug(f"KB init response data type: {type(kb_data)}, keys: {list(kb_data.keys()) if isinstance(kb_data, dict) else 'not a dict'}")
+
         except Exception as e:
             self.logger.warning(f"Knowledge base not available: {e}", exc_info=True)
             return
 
         # Get knowledge bases, categories, and answers from init response
-        knowledge_bases = kb_data.get("knowledge_bases", [])
-        categories = kb_data.get("categories", [])
-        answers = kb_data.get("answers", [])
+        # Handle different possible response structures
+        if isinstance(kb_data, dict):
+            # Try different possible key names (PascalCase, snake_case, camelCase, etc.)
+            # Zammad API uses PascalCase: KnowledgeBase, KnowledgeBaseCategory, KnowledgeBaseAnswer
+            # Check each key in order of preference
+            knowledge_bases = None
+            for key in ["KnowledgeBase", "knowledge_bases", "knowledgeBases", "kb"]:
+                if key in kb_data:
+                    knowledge_bases = kb_data[key]
+                    break
+            knowledge_bases = knowledge_bases if knowledge_bases is not None else []
+
+            categories = None
+            for key in ["KnowledgeBaseCategory", "categories", "category"]:
+                if key in kb_data:
+                    categories = kb_data[key]
+                    break
+            categories = categories if categories is not None else []
+
+            answers = None
+            for key in ["KnowledgeBaseAnswer", "answers", "answer"]:
+                if key in kb_data:
+                    answers = kb_data[key]
+                    break
+            answers = answers if answers is not None else []
+
+            # Extract translations for linking
+            # Zammad stores translations separately with translation_ids reference
+            kb_translations = kb_data.get("KnowledgeBaseTranslation", {})
+            category_translations = kb_data.get("KnowledgeBaseCategoryTranslation", {})
+            answer_translations = kb_data.get("KnowledgeBaseAnswerTranslation", {})
+
+            # Convert translations to lookup dicts if they're dicts with ID keys
+            if isinstance(kb_translations, dict):
+                kb_translations = {int(k): v for k, v in kb_translations.items()}
+            if isinstance(category_translations, dict):
+                category_translations = {int(k): v for k, v in category_translations.items()}
+            if isinstance(answer_translations, dict):
+                answer_translations = {int(k): v for k, v in answer_translations.items()}
+
+            # If still empty, check if the dict itself contains KB data at top level
+            if not knowledge_bases and not categories and not answers:
+                # Check if the dict keys suggest it's a single KB object
+                if "id" in kb_data or "translations" in kb_data:
+                    self.logger.debug("KB init response appears to be a single KB object, wrapping in list")
+                    knowledge_bases = [kb_data]
+        elif isinstance(kb_data, list):
+            # If response is a list directly, treat it as knowledge bases
+            self.logger.debug("KB init response is a list, treating as knowledge bases")
+            knowledge_bases = kb_data
+            categories = []
+            answers = []
+            kb_translations = {}
+            category_translations = {}
+            answer_translations = {}
+        else:
+            self.logger.warning(f"Unexpected KB init response format: {type(kb_data)}")
+            knowledge_bases = []
+            categories = []
+            answers = []
+            kb_translations = {}
+            category_translations = {}
+            answer_translations = {}
+
+        # Ensure knowledge_bases is a list
+        # Zammad API may return a dict with IDs as keys, convert to list
+        if isinstance(knowledge_bases, dict):
+            self.logger.debug(f"knowledge_bases is a dict with {len(knowledge_bases)} entries, converting to list")
+            knowledge_bases = list(knowledge_bases.values())
+        elif not isinstance(knowledge_bases, list):
+            self.logger.warning(f"knowledge_bases is not a list or dict: {type(knowledge_bases)}, converting")
+            knowledge_bases = [knowledge_bases] if knowledge_bases else []
+
+        # Same for categories and answers
+        if isinstance(categories, dict):
+            self.logger.debug(f"categories is a dict with {len(categories)} entries, converting to list")
+            categories = list(categories.values())
+        elif not isinstance(categories, list):
+            categories = [categories] if categories else []
+
+        if isinstance(answers, dict):
+            self.logger.debug(f"answers is a dict with {len(answers)} entries, converting to list")
+            answers = list(answers.values())
+        elif not isinstance(answers, list):
+            answers = [answers] if answers else []
+
+        # Enrich answers with their translations from the separate translations dict
+        # Answers have translation_ids that reference KnowledgeBaseAnswerTranslation
+        for answer in answers:
+            if isinstance(answer, dict):
+                translation_ids = answer.get("translation_ids", [])
+                if translation_ids and answer_translations:
+                    translations_list = []
+                    for trans_id in translation_ids:
+                        trans_data = answer_translations.get(int(trans_id))
+                        if trans_data:
+                            translations_list.append(trans_data)
+                    if translations_list:
+                        answer["translations"] = translations_list
+                        self.logger.debug(f"Enriched answer {answer.get('id')} with {len(translations_list)} translations")
+
+        # Same for categories
+        for category in categories:
+            if isinstance(category, dict):
+                translation_ids = category.get("translation_ids", [])
+                if translation_ids and category_translations:
+                    translations_list = []
+                    for trans_id in translation_ids:
+                        trans_data = category_translations.get(int(trans_id))
+                        if trans_data:
+                            translations_list.append(trans_data)
+                    if translations_list:
+                        category["translations"] = translations_list
+
+        # Same for knowledge bases
+        for kb in knowledge_bases:
+            if isinstance(kb, dict):
+                translation_ids = kb.get("translation_ids", [])
+                if translation_ids and kb_translations:
+                    translations_list = []
+                    for trans_id in translation_ids:
+                        trans_data = kb_translations.get(int(trans_id))
+                        if trans_data:
+                            translations_list.append(trans_data)
+                    if translations_list:
+                        kb["translations"] = translations_list
 
         if not knowledge_bases:
-            self.logger.info("No knowledge bases found")
+            self.logger.info(f"No knowledge bases found in response. Response structure: {type(kb_data)}, keys: {list(kb_data.keys()) if isinstance(kb_data, dict) else 'N/A'}")
             return
 
         # Step 2: Create RecordGroups for KBs
@@ -1551,18 +1621,40 @@ class ZammadConnector(BaseConnector):
                 continue
 
             try:
-                # Fetch full answer content
-                answer_response = await datasource.get_kb_answer(id=answer_id)
+                # Debug: Log answer_meta structure
+                self.logger.debug(f"Processing KB answer {answer_id}, keys: {list(answer_meta.keys()) if isinstance(answer_meta, dict) else 'N/A'}")
 
-                if not answer_response.success:
-                    self.logger.warning(f"Failed to fetch KB answer {answer_id}: {answer_response.message if hasattr(answer_response, 'message') else 'Unknown error'}")
-                    continue
+                # Check if answer_meta already has full content (translations, etc.)
+                # The init response may contain full answer data, so try using it first
+                has_translations = answer_meta.get("translations") is not None
+                has_content = answer_meta.get("content") is not None
 
-                if not answer_response.data:
-                    self.logger.warning(f"KB answer {answer_id} returned empty data")
-                    continue
+                if has_translations or has_content:
+                    # Use the answer data from init response directly
+                    self.logger.debug(f"Using KB answer data from init response for answer {answer_id}")
+                    answer_data = answer_meta
+                else:
+                    # Fetch full answer content if not in init response
+                    # Note: The answer ID from init might need to be used differently
+                    # Try fetching with the ID from answer_meta
+                    answer_response = await datasource.get_kb_answer(id=answer_id)
 
-                answer_data = answer_response.data
+                    if not answer_response.success:
+                        # If fetch fails, try using answer_meta directly anyway
+                        # The init response might have all the data we need
+                        self.logger.debug(
+                            f"Failed to fetch KB answer {answer_id} via API, trying to use init response data. "
+                            f"Answer meta has translations: {has_translations}, content: {has_content}"
+                        )
+                        # Use answer_meta as fallback - it might have enough data
+                        answer_data = answer_meta
+                    else:
+                        if not answer_response.data:
+                            self.logger.warning(f"KB answer {answer_id} returned empty data, using init response data")
+                            answer_data = answer_meta
+                        else:
+                            answer_data = answer_response.data
+
                 answer_record = await self._transform_kb_answer_to_webpage_record(
                     answer_data,
                     category_map
@@ -1627,7 +1719,18 @@ class ZammadConnector(BaseConnector):
 
         for trans in translations:
             trans_title = trans.get("title")
-            trans_content_body = trans.get("content", {}).get("body")
+
+            # Content body can be in different locations depending on response format:
+            # 1. trans["content"]["body"] - nested format from individual answer fetch
+            # 2. trans["content_body"] - flat format from init response translations
+            # 3. trans["body"] - another possible flat format
+            trans_content_body = None
+            if isinstance(trans.get("content"), dict):
+                trans_content_body = trans.get("content", {}).get("body")
+            if not trans_content_body:
+                trans_content_body = trans.get("content_body")
+            if not trans_content_body:
+                trans_content_body = trans.get("body")
 
             # Update title if found
             if trans_title:
@@ -1658,12 +1761,16 @@ class ZammadConnector(BaseConnector):
         record_id = existing_record.id if existing_record else str(uuid4())
         version = 0 if is_new else (existing_record.version + 1 if existing_record.source_updated_at != updated_at else existing_record.version)
 
+        # Use updated_at as external_revision_id so placeholders (None) will trigger update
+        external_revision_id = str(updated_at) if updated_at else None
+
         webpage_record = WebpageRecord(
             id=record_id,
             org_id=self.data_entities_processor.org_id,
             record_type=RecordType.WEBPAGE,
             record_name=title,
             external_record_id=external_record_id,
+            external_revision_id=external_revision_id,
             external_record_group_id=external_record_group_id,
             record_group_type=kb_record_group_type,  # Set group type for auto-creation if needed
             indexing_status=IndexingStatus.NOT_STARTED,
@@ -1682,6 +1789,8 @@ class ZammadConnector(BaseConnector):
         )
 
         return webpage_record
+
+    # ==================== CONTENT STREAMING ====================
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         """
@@ -1762,7 +1871,7 @@ class ZammadConnector(BaseConnector):
         # First article becomes the Description BlockGroup
         if articles:
             first_article = articles[0]
-            description_body = first_article.get("body", "")
+            description_body_html = first_article.get("body", "")
             first_article_id = first_article.get("id", "")
 
             # Get attachments for first article (description) as children_records
@@ -1778,19 +1887,22 @@ class ZammadConnector(BaseConnector):
                         child_name=att_filename
                     ))
 
-            # Convert HTML to markdown-friendly format if needed
-            description_data = f"# {ticket_title}\n\n{description_body}" if description_body else f"# {ticket_title}"
+            self.logger.debug(f"Description body HTML: {description_body_html}")
+            # Convert HTML to Markdown
+            description_body_md = html_to_markdown(description_body_html) if description_body_html else ""
+            self.logger.debug(f"Description body MD: {description_body_md}")
+            description_data = f"# {ticket_title}\n\n{description_body_md}" if description_body_md else f"# {ticket_title}"
 
             description_block_group = BlockGroup(
                 id=str(uuid4()),
                 index=block_group_index,
-                name=f"#{ticket_number} - Description",
+                name=ticket_title if ticket_title else f"#{ticket_number} - Description",
                 type=GroupType.TEXT_SECTION,
                 sub_type=GroupSubType.CONTENT,
                 description=f"Description for ticket #{ticket_number}",
                 source_group_id=f"{ticket_id}_description",
                 data=description_data,
-                format=DataFormat.MARKDOWN,  # Using markdown format since we're using markdown syntax (# heading)
+                format=DataFormat.MARKDOWN,
                 weburl=record.weburl,
                 requires_processing=True,
                 children_records=description_children_records if description_children_records else None,
@@ -1801,13 +1913,34 @@ class ZammadConnector(BaseConnector):
             # Remaining articles become Comment BlockGroups
             for article in articles[1:]:
                 article_id = article.get("id", "")
-                article_body = article.get("body", "")
+                article_body_html = article.get("body", "")
                 article_from = article.get("from", "")
                 article_subject = article.get("subject", "")
+                article_sender = article.get("sender", "")
+                article_preferences = article.get("preferences", {})
 
-                if not article_body:
+                # Skip system-generated articles (auto-replies, triggers, etc.)
+                if article_sender == "System":
+                    self.logger.debug(f"Skipping system-generated article {article_id} for ticket {ticket_id}")
                     continue
 
+                # Skip auto-response emails (bounce notifications, delivery failures, etc.)
+                if article_preferences.get("is-auto-response") or article_preferences.get("send-auto-response") is False:
+                    self.logger.debug(f"Skipping auto-response article {article_id} for ticket {ticket_id}")
+                    continue
+
+                # Skip MAILER-DAEMON bounce notifications
+                if "MAILER-DAEMON" in article_from or "Mail Delivery System" in article_from:
+                    self.logger.debug(f"Skipping bounce notification article {article_id} for ticket {ticket_id}")
+                    continue
+
+                if not article_body_html:
+                    continue
+
+                self.logger.debug(f"Article body HTML: {article_body_html}")
+                # Convert HTML to Markdown
+                article_body_md = html_to_markdown(article_body_html)
+                self.logger.debug(f"Article body MD: {article_body_md}")
                 # Get author name
                 author_name = article_from if article_from else "Unknown"
 
@@ -1839,8 +1972,8 @@ class ZammadConnector(BaseConnector):
                     sub_type=GroupSubType.COMMENT,
                     description=f"Comment by {author_name}",
                     source_group_id=str(article_id),
-                    data=article_body,
-                    format=DataFormat.HTML,
+                    data=article_body_md,
+                    format=DataFormat.MARKDOWN,
                     weburl=record.weburl,
                     requires_processing=True,
                     children_records=comment_children_records if comment_children_records else None,
@@ -1853,13 +1986,13 @@ class ZammadConnector(BaseConnector):
             minimal_block_group = BlockGroup(
                 id=str(uuid4()),
                 index=0,
-                name=f"#{ticket_number} - Description",
+                name=ticket_title if ticket_title else f"#{ticket_number} - Description",
                 type=GroupType.TEXT_SECTION,
                 sub_type=GroupSubType.CONTENT,
                 description=f"Description for ticket #{ticket_number}",
                 source_group_id=f"{ticket_id}_description",
                 data=f"# {ticket_title}",
-                format=DataFormat.MARKDOWN,  # Using markdown format since we're using markdown syntax (# heading)
+                format=DataFormat.MARKDOWN,
                 weburl=record.weburl,
                 requires_processing=True,
             )
@@ -1896,24 +2029,41 @@ class ZammadConnector(BaseConnector):
         answer_id = int(external_id.replace("kb_answer_", ""))
 
         datasource = await self._get_fresh_datasource()
+
+        # Try to fetch KB answer - may fail with 404 for some Zammad configurations
         answer_response = await datasource.get_kb_answer(id=answer_id)
 
-        if not answer_response.success or not answer_response.data:
-            raise Exception(f"Failed to fetch KB answer {answer_id}")
-
-        answer_data = answer_response.data
-
-        # Get title and content from translations
-        translations = answer_data.get("translations", [])
         title = record.record_name
         body = ""
 
-        for trans in translations:
-            if trans.get("content", {}).get("body"):
-                body = trans.get("content", {}).get("body")
-            break
+        if answer_response.success and answer_response.data:
+            answer_data = answer_response.data
+
+            # Get title and content from translations
+            translations = answer_data.get("translations", [])
+
+            for trans in translations:
+                # Try different content body locations
+                trans_body = None
+                if isinstance(trans.get("content"), dict):
+                    trans_body = trans.get("content", {}).get("body")
+                if not trans_body:
+                    trans_body = trans.get("content_body")
+                if not trans_body:
+                    trans_body = trans.get("body")
+
+                if trans_body:
+                    body = trans_body
+                    # Also try to get title from translation
+                    if trans.get("title"):
+                        title = trans.get("title")
+                    break
+        else:
+            # If API fetch fails, we'll just use the record name as title
+            self.logger.debug(f"KB answer {answer_id} fetch failed, using record name as title")
 
         # Build single BlockGroup for answer content
+        # Use HTML tags for title since body is HTML from Zammad KB
         answer_block_group = BlockGroup(
             id=str(uuid4()),
             index=0,
@@ -1922,7 +2072,7 @@ class ZammadConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT,
             description=f"KB Answer: {title}",
             source_group_id=str(answer_id),
-            data=f"# {title}\n\n{body}" if body else f"# {title}",
+            data=f"<h1>{title}</h1>{body}" if body else f"<h1>{title}</h1>",
             format=DataFormat.HTML,
             weburl=record.weburl,
             requires_processing=True,
@@ -1968,6 +2118,8 @@ class ZammadConnector(BaseConnector):
             return content
         else:
             return str(content).encode('utf-8')
+
+    # ==================== FILTER OPTIONS ====================
 
     async def get_filter_options(
         self,
@@ -2041,55 +2193,6 @@ class ZammadConnector(BaseConnector):
                     label=group_name
                 ))
 
-        elif filter_key == SyncFilterKey.ORGANIZATION_IDS.value:
-            datasource = await self._get_fresh_datasource()
-            fetch_page = 1
-            per_page = 100
-            all_organizations = []
-
-            # Fetch all organizations with pagination
-            while True:
-                response = await datasource.list_organizations(
-                    page=fetch_page,
-                    per_page=per_page
-                )
-
-                if not response.success or not response.data:
-                    break
-
-                organizations_data = response.data
-                if not isinstance(organizations_data, list):
-                    organizations_data = [organizations_data]
-
-                if not organizations_data:
-                    break
-
-                all_organizations.extend(organizations_data)
-
-                # Check if there are more pages
-                if len(organizations_data) < per_page:
-                    break
-
-                fetch_page += 1
-
-            # Build filter options from organizations
-            for org in all_organizations:
-                org_id = org.get("id")
-                org_name = org.get("name", "")
-                active = org.get("active", True)
-
-                if not active or not org_id or not org_name:
-                    continue
-
-                # Apply search filter
-                if search and search.lower() not in org_name.lower():
-                    continue
-
-                options.append(FilterOption(
-                    id=str(org_id),
-                    label=org_name
-                ))
-
         # Apply pagination
         start_idx = (page - 1) * limit
         end_idx = start_idx + limit
@@ -2102,6 +2205,8 @@ class ZammadConnector(BaseConnector):
             limit=limit,
             has_more=len(options) > end_idx
         )
+
+    # ==================== ABSTRACT METHODS ====================
 
     async def run_incremental_sync(self) -> None:
         """
@@ -2160,6 +2265,8 @@ class ZammadConnector(BaseConnector):
             self.logger.info("✅ Zammad connector cleanup completed")
         except Exception as e:
             self.logger.warning(f"⚠️ Error during Zammad connector cleanup: {e}")
+
+    # ==================== REINDEXING METHODS ====================
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex a list of Zammad records.
@@ -2299,29 +2406,7 @@ class ZammadConnector(BaseConnector):
             self.logger.info(f"Ticket {ticket_id} has changed at source")
 
             # Re-transform ticket
-            group_map: Dict[str, RecordGroup] = {}
-            async with self.data_store_provider.transaction() as tx_store:
-                # Check if ticket has group_id and add it to map
-                group_id = ticket_data.get("group_id")
-                if group_id:
-                    group_external_id = f"group_{group_id}"
-                    group_rg = await tx_store.get_record_group_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=group_external_id
-                    )
-                    if group_rg:
-                        group_map[group_external_id] = group_rg
-
-                # Also check existing record's external_record_group_id (for backward compatibility)
-                if record.external_record_group_id and record.external_record_group_id not in group_map:
-                    existing_rg = await tx_store.get_record_group_by_external_id(
-                        connector_id=self.connector_id,
-                        external_id=record.external_record_group_id
-                    )
-                    if existing_rg:
-                        group_map[record.external_record_group_id] = existing_rg
-
-            updated_ticket = await self._transform_ticket_to_ticket_record(ticket_data, group_map)
+            updated_ticket = await self._transform_ticket_to_ticket_record(ticket_data)
             if not updated_ticket:
                 return None
 
@@ -2394,7 +2479,6 @@ class ZammadConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error checking KB answer {record.id} at source: {e}")
             return None
-
 
     @classmethod
     async def create_connector(
