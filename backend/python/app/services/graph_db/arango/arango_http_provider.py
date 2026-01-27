@@ -5470,17 +5470,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Dict[str, Any]:
         """Get root level nodes (KBs and Apps) for Knowledge Hub."""
         query = """
-        // Get KBs (record groups with connectorName=KB)
+        LET user_doc = DOCUMENT(CONCAT("users/", @user_key))
+        LET user_id = user_doc != null ? user_doc.userId : null
+
         LET kbs = @include_kbs ? (
             FOR kb IN recordGroups
                 FILTER kb.orgId == @org_id
                 FILTER kb.connectorName == "KB"
-                LET has_permission = LENGTH(
+
+                LET has_direct_user_perm = LENGTH(
                     FOR perm IN permission
                         FILTER perm._from == CONCAT("users/", @user_key)
                         FILTER perm._to == kb._id
+                        FILTER perm.type == "USER"
                         RETURN 1
                 ) > 0
+
+                LET has_team_perm = LENGTH(
+                    FOR user_team_perm IN permission
+                        FILTER user_team_perm._from == CONCAT("users/", @user_key)
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        FOR team_kb_perm IN permission
+                            FILTER team_kb_perm._from == user_team_perm._to
+                            FILTER team_kb_perm._to == kb._id
+                            FILTER team_kb_perm.type == "TEAM"
+                            RETURN 1
+                ) > 0
+
+                LET has_permission = has_direct_user_perm OR has_team_perm
                 FILTER has_permission
                 // Check for children via recordRelations PARENT_CHILD edges or nested recordGroups
                 LET has_record_children = LENGTH(
@@ -5497,6 +5515,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN 1
                 ) > 0
                 LET has_children = has_record_children OR has_nested_rgs
+
+                LET is_creator = kb.createdBy == @user_key OR kb.createdBy == user_id
+                LET user_perms = (
+                    FOR perm IN permission
+                        FILTER perm._to == kb._id
+                        FILTER perm.type == "USER"
+                        RETURN perm
+                )
+                LET team_perms = (
+                    FOR perm IN permission
+                        FILTER perm._to == kb._id
+                        FILTER perm.type == "TEAM"
+                        RETURN perm
+                )
+                LET has_other_users = (
+                    LENGTH(user_perms) > (is_creator ? 1 : 0) OR
+                    LENGTH(team_perms) > 0
+                )
+                LET sharingStatus = is_creator AND NOT has_other_users ? "private" : "shared"
+
                 RETURN {
                     id: kb._key,
                     name: kb.groupName,
@@ -5507,7 +5545,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     createdAt: kb.createdAtTimestamp,
                     updatedAt: kb.updatedAtTimestamp,
                     webUrl: CONCAT("/kb/", kb._key),
-                    hasChildren: has_children
+                    hasChildren: has_children,
+                    sharingStatus: sharingStatus
                 }
         ) : []
 
@@ -5521,6 +5560,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER rg.orgId == @org_id
                         RETURN 1
                 ) > 0
+
+                LET sharingStatus = app.scope != null ? app.scope : "personal"
+
                 RETURN {
                     id: app._key,
                     name: app.name,
@@ -5531,7 +5573,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     createdAt: app.createdAtTimestamp || 0,
                     updatedAt: app.updatedAtTimestamp || 0,
                     webUrl: CONCAT("/app/", app._key),
-                    hasChildren: has_children
+                    hasChildren: has_children,
+                    sharingStatus: sharingStatus
                 }
         ) : []
 

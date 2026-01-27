@@ -133,6 +133,7 @@ class NodeItem(BaseModel):
     hasChildren: bool = Field(..., description="True if node has any children (for sidebar)")
     previewRenderable: Optional[bool] = Field(None, description="Whether preview can be rendered for this record")
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
+    sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
 
     class Config:
         use_enum_values = True
