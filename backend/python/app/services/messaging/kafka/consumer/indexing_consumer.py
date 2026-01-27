@@ -260,8 +260,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         1. Stop accepting new messages (set running = False)
         2. Cancel the consume loop
         3. Wait for active processing tasks to complete
-        4. Stop the Kafka consumer
-        5. Stop the worker thread
+        4. Stop the worker thread
+        5. Stop the Kafka consumer
         """
         self.logger.info("🛑 Stopping Kafka consumer...")
         self.running = False
