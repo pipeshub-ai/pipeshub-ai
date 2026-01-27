@@ -947,7 +947,6 @@ class OneDriveConnector(BaseConnector):
                 self.logger.error(f"❌ Error handling group delete for {group_id}")
                 return False
 
-            self.logger.info(f"Successfully processed group deletion for: {group_id}")
             return True
 
         except Exception as e:
