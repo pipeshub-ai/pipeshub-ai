@@ -758,6 +758,7 @@ export const uploadRecordsToKB =
             : currentTime;
 
         // Create record structure
+        const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
@@ -775,7 +776,7 @@ export const uploadRecordsToKB =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
-          connectorId: kbId,
+          connectorId: connectorId,
           sizeInBytes: size,
         };
 
@@ -925,6 +926,7 @@ export const uploadRecordsToFolder =
             : currentTime;
 
         // Create record structure
+        const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
@@ -942,7 +944,7 @@ export const uploadRecordsToFolder =
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
-          connectorId: kbId,
+          connectorId: connectorId,
         };
 
         const fileRecord: IFileRecordDocument = {

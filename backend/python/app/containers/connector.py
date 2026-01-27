@@ -20,6 +20,9 @@ from app.migrations.drive_to_drive_workspace_migration import (
 )
 from app.migrations.files_to_records_migration import run_files_to_records_migration
 from app.migrations.folder_hierarchy_migration import run_folder_hierarchy_migration
+from app.migrations.knowledgebase_to_connector_migration import (
+    run_kb_to_connector_migration,
+)
 from app.migrations.permission_edge_migration import (
     run_permissions_edge_migration,
     run_permissions_to_kb_migration,
@@ -375,6 +378,22 @@ async def initialize_container(container) -> bool:
         migration_success = await run_knowledge_base_migration(container)
         if not migration_success:
             logger.warning("⚠️ Knowledge Base migration had issues but continuing initialization")
+
+        # Run KB to Connector migration (new migration with ETCD flag)
+        logger.info("🔄 Running Knowledge Base to Connector migration...")
+        kb_connector_migration_result = await run_kb_to_connector_migration(container)
+        if kb_connector_migration_result.get("success"):
+            if kb_connector_migration_result.get("skipped"):
+                logger.info("⏭️ KB to Connector migration already completed, skipped.")
+            else:
+                logger.info(
+                    f"✅ KB to Connector migration completed: "
+                    f"{kb_connector_migration_result.get('orgs_processed', 0)} orgs processed, "
+                    f"{kb_connector_migration_result.get('apps_created', 0)} apps created, "
+                    f"{kb_connector_migration_result.get('records_updated', 0)} records updated"
+                )
+        else:
+            logger.warning("⚠️ KB to Connector migration had issues but continuing initialization")
 
         migration_state = await get_migration_state()
 
