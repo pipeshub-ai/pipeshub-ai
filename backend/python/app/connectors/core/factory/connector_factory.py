@@ -94,8 +94,6 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'notion': NotionConnector,
-        'linear': LinearConnector,
         'airtable': AirtableConnector,
     }
 
