@@ -727,6 +727,8 @@ class TicketRecord(Record):
     reporter_source_timestamp: Optional[int] = None
     labels:List[str] = []
     is_email_hidden:bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
+    assignee_source_id:Optional[List[str]]=[] # this means reporters  source ids in the connector system
+    reporter_source_id:Optional[str]=None
 
     def to_arango_record(self) -> Dict:
         def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
@@ -753,7 +755,10 @@ class TicketRecord(Record):
             "assigneeSourceTimestamp": self.assignee_source_timestamp,
             "creatorSourceTimestamp": self.creator_source_timestamp,
             "reporterSourceTimestamp": self.reporter_source_timestamp,
-            "labels":self.labels
+            "labels":self.labels,
+            "assignee_source_id": self.assignee_source_id,
+            "reporter_source_id": self.reporter_source_id,
+            "is_email_hidden": self.is_email_hidden,
         }
 
     @staticmethod
