@@ -300,7 +300,7 @@ CRITICAL RULE for header detection:
 
 COMMON MISTAKE to avoid:
 - Row where first cell looks like a label but remaining cells are numeric values
-- Example: ["Gross AOV", "$55.89", "$53.33", ...] 
+- Example: ["Gross AOV", "$55.89", "$53.33", ...]
 - This is NOT a header row - it's a DATA row with a row label in the first column
 - The values $55.89, $53.33 are specific measurements, not category descriptors
 

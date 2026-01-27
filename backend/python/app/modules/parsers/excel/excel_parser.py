@@ -3,9 +3,8 @@ import io
 import json
 import os
 import re
-import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -30,11 +29,9 @@ from app.models.blocks import (
 )
 from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
-    RowDescriptions,
     TableHeaders,
-    excel_header_generation_prompt,
     excel_header_detection_prompt,
-    prompt,
+    excel_header_generation_prompt,
     row_text_prompt,
     row_text_prompt_for_csv,
     sheet_summary_prompt,
@@ -86,7 +83,7 @@ COMMON_FORMAT_WHITELIST = {
     "d-mmm": ("%d-%b", "d"),
     "mmmm yyyy": ("%B %Y", ""),
     "mmmm d, yyyy": ("%B %d, %Y", "d"),
-    
+
     # Time-only formats (no ambiguity - mm is always minute with colons)
     "h:mm": ("%H:%M", "h"),
     "hh:mm": ("%H:%M", ""),
@@ -96,7 +93,7 @@ COMMON_FORMAT_WHITELIST = {
     "hh:mm AM/PM": ("%I:%M %p", ""),
     "h:mm:ss AM/PM": ("%I:%M:%S %p", "h"),
     "hh:mm:ss AM/PM": ("%I:%M:%S %p", ""),
-    
+
     # Combined date-time formats (first mm=month, second mm=minute)
     "mm/dd/yyyy h:mm": ("%m/%d/%Y %H:%M", "h"),
     "mm/dd/yyyy hh:mm": ("%m/%d/%Y %H:%M", ""),
@@ -110,8 +107,7 @@ COMMON_FORMAT_WHITELIST = {
     "dd-mmm-yy hh:mm": ("%d-%b-%y %H:%M", ""),
     "mmm dd, yyyy h:mm AM/PM": ("%b %d, %Y %I:%M %p", "dh"),
     "mm/dd/yyyy h:mm AM/PM": ("%m/%d/%Y %I:%M %p", "h"),
-    "h:mm:ss AM/PM": ("%I:%M:%S %p", "h"),
-    
+
     # Edge cases that are uncommon but appear in tests
     "mm:ss": ("%M:%S", ""),  # Minutes:seconds format (no hours)
     "hh : mm : ss": ("%H : %M : %S", ""),  # Spaces around colons
@@ -121,10 +117,10 @@ COMMON_FORMAT_WHITELIST = {
 def _resolve_builtin_format(number_format: str) -> str:
     """
     Convert built-in Excel format codes (14-22) to format strings.
-    
+
     Args:
         number_format: Excel format code or string
-        
+
     Returns:
         Format string (either from BUILTIN_DATE_FORMATS or original)
     """
@@ -137,114 +133,113 @@ def _resolve_builtin_format(number_format: str) -> str:
 def _strip_leading_zeros(formatted: str, strip_pattern: str) -> str:
     """
     Strip leading zeros from formatted datetime string based on pattern.
-    
+
     Args:
         formatted: The formatted datetime string
         strip_pattern: String indicating what to strip ("d"=day, "m"=month, "h"=hour, or combinations)
-        
+
     Returns:
         String with leading zeros stripped as specified
     """
     if not strip_pattern:
         return formatted
-    
+
     # Strip leading zeros from day (e.g., "05" -> "5")
     if 'd' in strip_pattern:
         formatted = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted)
-    
+
     # Strip leading zeros from month (e.g., "03" -> "3")
     if 'm' in strip_pattern:
         # Strip all matching occurrences (consistent with day/hour handling)
         # Note: In practice, when 'm' is in strip_pattern, 'd' is usually also present,
         # and the day pattern above will have already stripped matching patterns
         formatted = re.sub(r'(?<![0-9])0([1-9])', r'\1', formatted)
-    
+
     # Strip leading zeros from hours (e.g., "02:30" -> "2:30")
     if 'h' in strip_pattern:
         formatted = re.sub(r'(?<![0-9])0([1-9])(?=:)', r'\1', formatted)
-    
+
     return formatted
 
 
 def _apply_post_processing(formatted: str, original_format: str, strip_pattern: str = "") -> str:
     """
     Apply Excel-specific formatting nuances.
-    
+
     Args:
         formatted: The formatted datetime string
         original_format: The original Excel format string
         strip_pattern: Pattern for stripping leading zeros
-        
+
     Returns:
         Post-processed formatted string
     """
     # Strip leading zeros if needed
     formatted = _strip_leading_zeros(formatted, strip_pattern)
-    
+
     # Lowercase month abbreviations if original format had lowercase 'mmm'
     if 'mmm' in original_format.lower() and 'mmmm' not in original_format.lower():
-        for month in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+        for month in ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']:
             if month in formatted:
                 formatted = formatted.replace(month, month.lower(), 1)
                 break
-    
+
     return formatted
 
 
 def _resolve_ambiguous_format(format_str: str) -> str:
     """
     Handle formats not in whitelist using simple regex heuristics.
-    
+
     Key insight:
     - 'mm' or 'm' adjacent to ':' (with colon) → minute
     - 'mm' or 'm' in date context (no colons nearby) → month
     - For combined formats, mark time-context 'mm'/'m' before replacing
-    
+
     Args:
         format_str: Excel format string
-        
+
     Returns:
         Python strftime format string
     """
     python_format = format_str
-    
+
     # 1. Handle month/day names first (no ambiguity)
     python_format = python_format.replace("mmmm", "%B")
     python_format = python_format.replace("dddd", "%A")
     python_format = python_format.replace("mmm", "%b")
     python_format = python_format.replace("ddd", "%a")
-    
+
     # 2. Handle years
     python_format = python_format.replace("yyyy", "%Y")
     python_format = python_format.replace("yy", "%y")
-    
+
     # 3. Detect if format has time component
     has_time = bool(re.search(r'(?<![a-z])h+(?![a-z])', format_str, re.IGNORECASE))
     has_am_pm = 'am/pm' in format_str.lower() or 'a/p' in format_str.lower()
-    has_colon = ':' in format_str
-    
+
     # 4. Handle AM/PM
     python_format = re.sub(r'AM/PM', '%p', python_format, flags=re.IGNORECASE)
     python_format = re.sub(r'A/P', '%p', python_format, flags=re.IGNORECASE)
-    
+
     # 5. Handle hours (context-sensitive: 12-hour vs 24-hour based on AM/PM)
     if 'hh' in python_format.lower():
         if has_am_pm:
             python_format = re.sub(r'hh', '%I', python_format, flags=re.IGNORECASE)
         else:
             python_format = re.sub(r'hh', '%H', python_format, flags=re.IGNORECASE)
-    
+
     if re.search(r'(?<!%)h(?![a-zA-Z])', python_format, flags=re.IGNORECASE):
         if has_am_pm:
             python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%I', python_format, flags=re.IGNORECASE)
         else:
             python_format = re.sub(r'(?<!%)h(?![a-zA-Z])', '%H', python_format, flags=re.IGNORECASE)
-    
+
     # 6. Handle seconds
     python_format = python_format.replace("ss", "%S")
     python_format = re.sub(r'(?<!%)s(?![a-zA-Z])', '%S', python_format)
-    
+
     # 7. Handle ambiguous 'mm' using context - IMPORTANT: Mark time-context mm FIRST
     if has_time:
         # Special case: mm:ss format (no hours) - mm is minutes
@@ -255,84 +250,84 @@ def _resolve_ambiguous_format(format_str: str) -> str:
             # Match :mm or mm: (with optional spaces)
             python_format = re.sub(r':\s*mm(?![m:])', ':__MINUTE_MM__', python_format)
             python_format = re.sub(r'(?<![m:])mm\s*:', '__MINUTE_MM__:', python_format)
-            
+
             # Now replace any remaining mm (date context) with month
             python_format = python_format.replace('mm', '%m')
-            
+
             # Replace placeholders with minute format
             python_format = python_format.replace('__MINUTE_MM__', '%M')
     else:
         # Date-only: mm → month
         python_format = python_format.replace('mm', '%m')
-    
+
     # 8. Handle 'dd' - day with leading zero
     python_format = python_format.replace("dd", "%d")
-    
+
     # 9. Handle single 'd' - day (will strip leading zero in post-processing)
     if re.search(r'(?<!%)d(?![a-zA-Z])', python_format):
         python_format = re.sub(r'(?<!%)d(?![a-zA-Z])', '%d', python_format)
-    
+
     # 10. Handle single 'm' - month or minute (context-dependent, will strip leading zero in post-processing)
     if re.search(r'(?<!%)m(?![a-zA-Z])', python_format):
         if has_time:
             # Mark time-context m with placeholders
             python_format = re.sub(r':\s*m(?![ma-zA-Z])', ':__MINUTE_M__', python_format)
             python_format = re.sub(r'(?<![m:])m\s*:', '__MINUTE_M__:', python_format)
-            
+
             # Remaining 'm' is month
             python_format = re.sub(r'(?<!%)m(?![a-zA-Z_])', '%m', python_format)
-            
+
             # Replace placeholders
             python_format = python_format.replace('__MINUTE_M__', '%M')
         else:
             # Date-only: m → month
             python_format = re.sub(r'(?<!%)m(?![a-zA-Z])', '%m', python_format)
-    
+
     return python_format
 
 
-def format_excel_datetime(dt_value: Any, number_format: str) -> Any:
+def format_excel_datetime(dt_value: Union[datetime, str, int, float, None], number_format: str) -> Union[str, int, float, None]:
     """
     Apply Excel number format to datetime value using whitelist-based approach.
-    
+
     Supported formats:
     - Built-in Excel codes: 14-22 (mm/dd/yyyy, h:mm, etc.)
     - Common date formats: mm/dd/yyyy, dd/mm/yyyy, yyyy-mm-dd, m/d/yy, etc.
     - Common time formats: h:mm, hh:mm:ss, h:mm AM/PM, etc.
     - Mixed formats: mm/dd/yyyy h:mm, m/d/yy h:mm
     - Month names: mmm-yyyy, dd-mmm-yy, mmmm yyyy
-    
+
     Unsupported/edge case formats fall back to ISO format.
-    
+
     Args:
         dt_value: The cell value (may or may not be a datetime)
         number_format: The Excel number format code (e.g., "mmm-yyyy", "dd-mmm-yy")
-    
+
     Returns:
         Formatted string if datetime with valid format, otherwise original value
     """
     # Early returns for non-datetime values
     if not isinstance(dt_value, datetime):
         return dt_value
-    
+
     if not number_format or number_format == "General":
         return dt_value.isoformat()
-    
+
     try:
         # Step 1: Resolve built-in format codes (14-22) to format strings
         format_str = _resolve_builtin_format(number_format)
-        
+
         # Step 2: Try whitelist first (covers 80-90% of cases with simple lookup)
         if format_str in COMMON_FORMAT_WHITELIST:
             python_fmt, strip_pattern = COMMON_FORMAT_WHITELIST[format_str]
             formatted = dt_value.strftime(python_fmt)
             return _apply_post_processing(formatted, format_str, strip_pattern)
-        
+
         # Step 3: Try simple regex resolution for non-whitelisted formats
         python_fmt = _resolve_ambiguous_format(format_str)
         formatted = dt_value.strftime(python_fmt)
         return _apply_post_processing(formatted, format_str, "")
-        
+
     except Exception:
         # Fallback to ISO for truly unsupported formats
         return dt_value.isoformat()
@@ -505,7 +500,7 @@ class ExcelParser:
                             break
                     if not has_data and row != start_row+1:
                         break
-                
+
                 # Step 1.5: Expand left to include additional columns
                 for col in range(start_col - 1, 0, -1):  # Go left from start_col to column 1
                     has_data = False
@@ -517,7 +512,7 @@ class ExcelParser:
                             break
                     if not has_data:
                         break  # Found empty column, stop expanding left
-                
+
                 column_count = max_col - start_col + 1
                 self.logger.info(f"Table boundaries: rows [{start_row}-{max_row}], cols [{start_col}-{max_col}], column_count={column_count}")
 
@@ -552,12 +547,12 @@ class ExcelParser:
                     multirow_headers = first_rows[:detection.num_header_rows]
                     data_start_row = start_row + detection.num_header_rows
                     self.logger.info(f"Multi-row headers detected ({detection.num_header_rows} rows), will concatenate into single-row headers")
-                    
+
                     # Mark header cells as visited
                     for row_idx in range(start_row, start_row + detection.num_header_rows):
                         for col in range(start_col, max_col + 1):
                             visited_cells.add((row_idx, col))
-                    
+
                     # Concatenate multi-row headers directly (no LLM)
                     headers = self._concatenate_multirow_headers(multirow_headers, column_count)
                     self.logger.info(f"Concatenated headers: {headers}")
@@ -580,7 +575,7 @@ class ExcelParser:
                     # Select representative sample rows
                     sample_rows = self._select_representative_sample_rows(all_rows, MAX_HEADER_GENERATION_ROWS)
                     self.logger.info(f"Selected {len(sample_rows)} representative sample rows for header generation")
-                    
+
                     # Generate headers with LLM
                     headers = await self.generate_excel_headers_with_llm(sample_rows, column_count, llm)
                     self.logger.info(f"Generated headers: {headers}")
@@ -591,18 +586,18 @@ class ExcelParser:
                     for i in range(len(headers)):
                         if headers[i] is None or (isinstance(headers[i], str) and not headers[i].strip()):
                             headers[i] = f"Column_{i + 1}"
-                            
+
                     # Pad if too short
                     if len(headers) < column_count:
                         self.logger.info(f"Padding headers from {len(headers)} to {column_count}")
                         for i in range(len(headers) + 1, column_count + 1):
                             headers.append(f"Column_{i}")
-                    
+
                     # Truncate if too long (edge case)
                     elif len(headers) > column_count:
                         self.logger.warning(f"Truncating headers from {len(headers)} to {column_count}")
                         headers = headers[:column_count]
-                    
+
                     self.logger.info(f"Normalized headers ({len(headers)} total): {headers}")
 
                 # Handle empty headers case
@@ -696,7 +691,7 @@ class ExcelParser:
             cell_value = cell.value
             if isinstance(cell_value, datetime) and hasattr(cell, 'number_format'):
                 cell_value = format_excel_datetime(cell_value, cell.number_format)
-            
+
             return {
                 "value": cell_value,  # Now contains formatted string for datetime values
                 "header": header,
@@ -820,14 +815,14 @@ class ExcelParser:
                 )
 
             # Build dynamic row text based on actual available rows
-            num_available_rows = len(first_rows)
+            len(first_rows)
             rows_text_lines = []
             for i, row in enumerate(first_rows[:4], start=1):  # Show up to 4 rows
                 row_str = [str(v) if v is not None else "" for v in row]
                 rows_text_lines.append(f"Row {i}: {row_str}")
-            
+
             rows_text = "\n".join(rows_text_lines)
-            
+
             self.logger.info("Calling LLM for header detection")
             messages = excel_header_detection_prompt.format_messages(
                 rows_text=rows_text
@@ -843,15 +838,15 @@ class ExcelParser:
                 # Validate num_header_rows is sensible
                 if parsed_response.num_header_rows < 0:
                     parsed_response.num_header_rows = 0
-                
+
                 # If has_headers is True but num_header_rows is 0, correct it
                 if parsed_response.has_headers and parsed_response.num_header_rows == 0:
                     parsed_response.num_header_rows = 1
-                
+
                 # If has_headers is False, ensure num_header_rows is 0
                 if not parsed_response.has_headers:
                     parsed_response.num_header_rows = 0
-                
+
                 return parsed_response
 
             # Fallback: assume single-row headers exist if LLM fails
@@ -891,7 +886,7 @@ class ExcelParser:
             List of generated header names (always exactly column_count items)
         """
         self.logger.info(f"Generating headers with LLM for {column_count} columns using {len(sample_rows)} sample rows")
-        
+
         try:
             # Format sample data for display
             formatted_samples = []
@@ -934,18 +929,18 @@ class ExcelParser:
                             f"Header count mismatch: generated {len(generated_headers)}, expected {column_count}. "
                             f"Headers: {generated_headers}"
                         )
-                        
+
                         # If we have retries left, add reflection message for count correction
                         if attempt < MAX_HEADER_COUNT_RETRIES:
                             self.logger.info("Adding reflection message to correct header count")
-                            
+
                             # Convert messages to list if not already
                             messages_list = list(messages)
-                            
+
                             # Add the failed response to context
                             failed_response = json.dumps({"headers": generated_headers}, indent=2)
                             messages_list.append(AIMessage(content=failed_response))
-                            
+
                             # Add reflection prompt
                             reflection_prompt = f"""Your previous response contained {len(generated_headers)} headers, but I need EXACTLY {column_count} headers.
 
@@ -963,14 +958,14 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 {{
     "headers": ["Header1", "Header2", ..., "Header{column_count}"]
 }}"""
-                            
+
                             messages_list.append(HumanMessage(content=reflection_prompt))
                             messages = messages_list
                             continue  # Try again
                         else:
                             # Out of retries, try smart fallback
                             self.logger.warning(f"Exhausted {MAX_HEADER_COUNT_RETRIES} retries")
-                            
+
                 else:
                     self.logger.warning("LLM returned no response or empty headers")
                     break  # Exit retry loop
@@ -1000,12 +995,12 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         """
         self.logger.info(f"Using simple concatenation for {len(multirow_headers)} header rows")
         consolidated = []
-        
+
         for col_idx in range(column_count):
             # Collect non-empty values from all header rows for this column
             parts = []
             seen = set()  # Track seen values to avoid duplicates (e.g., from merged cells)
-            
+
             for header_row in multirow_headers:
                 if col_idx < len(header_row):
                     value = header_row[col_idx]
@@ -1015,15 +1010,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         if value_str not in seen:
                             parts.append(value_str)
                             seen.add(value_str)
-            
+
             # Join with underscores or use generic name if no parts
             if parts:
                 header = "_".join(parts)
             else:
                 header = f"Column_{col_idx + 1}"
-            
+
             consolidated.append(header)
-        
+
         return consolidated
 
     @retry(
@@ -1039,7 +1034,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
     async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> List[Dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
-        
+
         Note: Header detection and generation is now handled in find_tables() method,
         so this method simply returns the tables with properly detected/generated headers.
         """
@@ -1087,7 +1082,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             response = await self._call_llm(messages)
             if '</think>' in response.content:
                 response.content = response.content.split('</think>')[-1]
-            self.logger.info(f"Table summary generated")
+            self.logger.info("Table summary generated")
             return response.content
 
         except Exception as e:
@@ -1192,7 +1187,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     batches.append((i, batch))  # Store start index and batch data
 
                 self.logger.info(f"Processing {len(table['data'])} rows in {len(batches)} batches of {batch_size}")
-                
+
                 # Limit parallel processing to at most 10 concurrent batches
                 semaphore = asyncio.Semaphore(10)
 
