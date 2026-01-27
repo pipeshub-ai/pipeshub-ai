@@ -153,10 +153,11 @@ def _strip_leading_zeros(formatted: str, strip_pattern: str) -> str:
         formatted = re.sub(r'(?<![0-9])0([1-9])(?=[^0-9]|$)', r'\1', formatted)
     
     # Strip leading zeros from month (e.g., "03" -> "3")
-    # Be careful not to strip from other numbers
     if 'm' in strip_pattern:
-        # This will strip first occurrence of 0X pattern (month typically comes first)
-        formatted = re.sub(r'(?<![0-9])0([1-9])', r'\1', formatted, count=1)
+        # Strip all matching occurrences (consistent with day/hour handling)
+        # Note: In practice, when 'm' is in strip_pattern, 'd' is usually also present,
+        # and the day pattern above will have already stripped matching patterns
+        formatted = re.sub(r'(?<![0-9])0([1-9])', r'\1', formatted)
     
     # Strip leading zeros from hours (e.g., "02:30" -> "2:30")
     if 'h' in strip_pattern:
@@ -1358,46 +1359,46 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
     def to_markdown(self, headers: List[str], rows: List[Dict[str, Any]]) -> str:
-            """
-            Convert CSV data to markdown table format.
-            Args:
-                data: List of dictionaries from read_stream() method
-            Returns:
-                String containing markdown formatted table
-            """
-            if not headers and not rows:
-                return ""
+        """
+        Convert CSV data to markdown table format.
+        Args:
+            data: List of dictionaries from read_stream() method
+        Returns:
+            String containing markdown formatted table
+        """
+        if not headers and not rows:
+            return ""
 
-            # Get headers from the first row
-            headers = list(headers)
+        # Get headers from the first row
+        headers = list(headers)
 
-            # Start building the markdown table
-            markdown_lines = []
+        # Start building the markdown table
+        markdown_lines = []
 
-            # Add header row
-            header_row = "| " + " | ".join(str(header) for header in headers) + " |"
-            markdown_lines.append(header_row)
+        # Add header row
+        header_row = "| " + " | ".join(str(header) for header in headers) + " |"
+        markdown_lines.append(header_row)
 
-            # Add separator row
-            separator_row = "|" + "|".join(" --- " for _ in headers) + "|"
-            markdown_lines.append(separator_row)
-            data = []
-            for row in rows:
-                data.append(row.get("raw_data", {}))
-            # Add data rows
-            for row in data:
-                # Handle None values and convert to string, escape pipe characters
-                formatted_values = []
-                for header in headers:
-                    value = row.get(header, "")
-                    if value is None:
-                        value = ""
-                    # Escape pipe characters and convert to string
-                    value_str = str(value).replace("|", "\\|")
-                    formatted_values.append(value_str)
+        # Add separator row
+        separator_row = "|" + "|".join(" --- " for _ in headers) + "|"
+        markdown_lines.append(separator_row)
+        data = []
+        for row in rows:
+            data.append(row.get("raw_data", {}))
+        # Add data rows
+        for row in data:
+            # Handle None values and convert to string, escape pipe characters
+            formatted_values = []
+            for header in headers:
+                value = row.get(header, "")
+                if value is None:
+                    value = ""
+                # Escape pipe characters and convert to string
+                value_str = str(value).replace("|", "\\|")
+                formatted_values.append(value_str)
 
-                data_row = "| " + " | ".join(formatted_values) + " |"
-                markdown_lines.append(data_row)
+            data_row = "| " + " | ".join(formatted_values) + " |"
+            markdown_lines.append(data_row)
 
-            return "\n".join(markdown_lines)
+        return "\n".join(markdown_lines)
 
