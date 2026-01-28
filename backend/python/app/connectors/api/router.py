@@ -86,12 +86,11 @@ def get_mime_type_from_record(record: Record) -> str:
     """
     Get the MIME type for a record, using the following priority:
     1. Record's stored mime_type attribute
-    2. Guess from record_name extension using mimetypes module
+    2. Guess from record_name or name extension using mimetypes module
     3. Fallback to application/octet-stream
 
     Args:
         record: The record object
-
     Returns:
         str: The MIME type
     """
@@ -99,9 +98,10 @@ def get_mime_type_from_record(record: Record) -> str:
     if hasattr(record, 'mime_type') and record.mime_type:
         return record.mime_type
 
-    # Try to guess from record_name
-    if hasattr(record, 'record_name') and record.record_name:
-        guessed_type, _ = mimetypes.guess_type(record.record_name)
+    # Try to guess from record_name or name attribute
+    record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None)
+    if record_name:
+        guessed_type, _ = mimetypes.guess_type(record_name)
         if guessed_type:
             return guessed_type
 
