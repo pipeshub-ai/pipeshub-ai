@@ -40,9 +40,7 @@ class BlockType(str, Enum):
     DIVIDER = "divider"
     COMMIT = "commit"
 
-class BlockSubType(str, Enum):
-    CHILD_RECORD = "child_record"
-    COMMENT = "comment"
+
 
 class CommentSubtype(str, Enum):
     CODE_REVIEW = "code_review"
@@ -73,11 +71,6 @@ class DataFormat(str, Enum):
     PATCH = "patch"
     DIFF = "diff"
     CODE = "code"
-
-class CommentAttachment(BaseModel):
-    """Attachment model for comments"""
-    name: str = Field(description="Name of the attachment")
-    id: str = Field(description="ID of the attachment")
 
 class CommentAttachment(BaseModel):
     """Attachment model for comments"""
@@ -236,7 +229,6 @@ class GroupType(str, Enum):
     TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
-    TEXT_SECTION = "text_section"
     COMMITS = "commits"
     PATCH = "patch"
     SHEET = "sheet"
@@ -251,7 +243,7 @@ class GroupType(str, Enum):
     CODE = "code"
     MEDIA = "media"
     FULL_CODE_PATCH = "full_code_patch"
-    
+
 class GroupSubType(str, Enum):
     MILESTONE = "milestone" # Milestone block group
     UPDATE = "update" # Update block group

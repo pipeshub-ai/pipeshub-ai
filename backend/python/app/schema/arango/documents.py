@@ -429,8 +429,8 @@ project_record_schema = {
         },
     },
 }
-        
-            
+
+
 pull_request_record_schema = {
     "rule": {
         "type": "object",
