@@ -49,6 +49,7 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 (async () => {
   try {
+    await app.preInitMigration();
     await app.initialize();
     await app.start();
     await app.runMigration();

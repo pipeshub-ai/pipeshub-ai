@@ -23,7 +23,7 @@ class Health:
         """Health check method that verifies external services health"""
         logger = container.logger()
         logger.info("🔍 Starting system health check...")
-        await Health.health_check_etcd(container)
+        await Health.health_check_kv_store(container)
         await Health.health_check_arango(container)
         await Health.health_check_kafka(container)
         await Health.health_check_redis(container)
@@ -93,39 +93,140 @@ class Health:
         raise Exception(final_msg)
 
     @staticmethod
+    async def health_check_kv_store(container) -> None:
+        """Health check method that verifies KV store health based on KV_STORE_TYPE.
+
+        Checks either etcd or Redis depending on the configured store type.
+        """
+        logger = container.logger()
+        kv_store_type = os.getenv("KV_STORE_TYPE", "etcd").lower()
+        logger.info(f"🔍 Starting KV store health check (type: {kv_store_type})...")
+
+        if kv_store_type == "redis":
+            await Health._health_check_redis_kv_store(container)
+        else:
+            # TODO: Remove health_check_etcd when all deployments migrate to Redis KV store
+            await Health.health_check_etcd(container)
+
+    @staticmethod
+    async def _health_check_redis_kv_store(container) -> None:
+        """Health check method that verifies Redis KV store health with retry logic.
+
+        Uses environment variables directly to avoid circular dependency
+        with config service (which depends on Redis as KV store).
+
+        Retries connection with linear 1 second backoff before failing.
+        """
+        logger = container.logger()
+        logger.info("🔍 Starting Redis KV store health check...")
+
+        redis_host = os.getenv("REDIS_HOST", "localhost")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        redis_password = os.getenv("REDIS_PASSWORD") or None
+        redis_db = int(os.getenv("REDIS_DB", "0"))
+
+        max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
+        last_error_msg = None
+
+        for attempt in range(1, max_retries + 1):
+            redis_client = None
+            try:
+                logger.debug(
+                    f"Checking Redis KV store at: {redis_host}:{redis_port}, db={redis_db} "
+                    f"(attempt {attempt}/{max_retries})"
+                )
+
+                # Create Redis client and attempt to ping
+                redis_client = Redis(
+                    host=redis_host,
+                    port=redis_port,
+                    password=redis_password,
+                    db=redis_db,
+                    socket_timeout=5.0,
+                )
+
+                await redis_client.ping()
+                logger.info("✅ Redis KV store health check passed")
+                return
+
+            except RedisError as re:
+                last_error_msg = f"Failed to connect to Redis KV store: {str(re)}"
+                logger.warning(f"⚠️ {last_error_msg}")
+            except Exception as e:
+                last_error_msg = f"Redis KV store health check failed: {str(e)}"
+                logger.warning(f"⚠️ {last_error_msg}")
+            finally:
+                if redis_client:
+                    try:
+                        await redis_client.close()
+                    except Exception:
+                        pass
+
+            # If not the last attempt, wait before retrying with linear backoff
+            if attempt < max_retries:
+                logger.info("⏳ Retrying Redis KV store health check in 1 second...")
+                await asyncio.sleep(1)
+
+        # All attempts failed
+        final_msg = last_error_msg or "Redis KV store health check failed after retries"
+        logger.error(f"❌ {final_msg}")
+        raise Exception(final_msg)
+
+    @staticmethod
     async def health_check_etcd(container) -> None:
-        """Health check method that verifies etcd service health"""
+        """Health check method that verifies etcd service health with retry logic.
+
+        TODO: Remove this method when all deployments migrate to Redis KV store.
+        """
         logger = container.logger()
         logger.info("🔍 Starting etcd health check...")
-        try:
-            etcd_url = os.getenv("ETCD_URL")
-            if not etcd_url:
-                error_msg = "ETCD_URL environment variable is not set"
-                logger.error(f"❌ {error_msg}")
-                raise Exception(error_msg)
 
-            logger.debug(f"Checking etcd health at endpoint: {etcd_url}/health")
-            # TODO: remove aiohttp dependency and use http client from sources module
-            async with aiohttp.ClientSession() as session:
-                async with session.get(f"{etcd_url}/health") as response:
-                    if response.status == HttpStatusCode.SUCCESS.value:
-                        response_text = await response.text()
-                        logger.info("✅ etcd health check passed")
-                        logger.debug(f"etcd health response: {response_text}")
-                    else:
-                        error_msg = (
-                            f"etcd health check failed with status {response.status}"
-                        )
-                        logger.error(f"❌ {error_msg}")
-                        raise Exception(error_msg)
-        except aiohttp.ClientError as e:
-            error_msg = f"Connection error during etcd health check: {str(e)}"
+        etcd_url = os.getenv("ETCD_URL")
+        if not etcd_url:
+            error_msg = "ETCD_URL environment variable is not set"
             logger.error(f"❌ {error_msg}")
-            raise
-        except Exception as e:
-            error_msg = f"etcd health check failed: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            raise
+            raise Exception(error_msg)
+
+        max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
+        last_error_msg = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                logger.debug(
+                    f"Checking etcd health at endpoint: {etcd_url}/health "
+                    f"(attempt {attempt}/{max_retries})"
+                )
+
+                # TODO: remove aiohttp dependency and use http client from sources module
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(f"{etcd_url}/health", timeout=aiohttp.ClientTimeout(total=5.0)) as response:
+                        if response.status == HttpStatusCode.SUCCESS.value:
+                            response_text = await response.text()
+                            logger.info("✅ etcd health check passed")
+                            logger.debug(f"etcd health response: {response_text}")
+                            return
+                        else:
+                            last_error_msg = (
+                                f"etcd health check failed with status {response.status}"
+                            )
+                            logger.warning(f"⚠️ {last_error_msg}")
+
+            except aiohttp.ClientError as e:
+                last_error_msg = f"Connection error during etcd health check: {str(e)}"
+                logger.warning(f"⚠️ {last_error_msg}")
+            except Exception as e:
+                last_error_msg = f"etcd health check failed: {str(e)}"
+                logger.warning(f"⚠️ {last_error_msg}")
+
+            # If not the last attempt, wait before retrying with linear backoff
+            if attempt < max_retries:
+                logger.info("⏳ Retrying etcd health check in 1 second...")
+                await asyncio.sleep(1)
+
+        # All attempts failed
+        final_msg = last_error_msg or "etcd health check failed after retries"
+        logger.error(f"❌ {final_msg}")
+        raise Exception(final_msg)
 
     @staticmethod
     async def health_check_arango(container) -> None:
@@ -230,33 +331,55 @@ class Health:
 
     @staticmethod
     async def health_check_redis(container) -> None:
-        """Health check method that verifies redis service health"""
+        """Health check method that verifies redis service health with retry logic."""
         logger = container.logger()
         logger.info("🔍 Starting Redis health check...")
-        try:
-            config_service : ConfigurationService = container.config_service()
-            redis_config = await config_service.get_config(
-                config_node_constants.REDIS.value
-            )
-            # Build Redis URL with password if provided
-            redis_url = build_redis_url(redis_config)
-            logger.debug(f"Checking Redis connection at: {redis_url}")
-            # Create Redis client and attempt to ping
-            redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
+
+        max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
+        last_error_msg = None
+
+        for attempt in range(1, max_retries + 1):
+            redis_client = None
             try:
+                config_service: ConfigurationService = container.config_service()
+                redis_config = await config_service.get_config(
+                    config_node_constants.REDIS.value
+                )
+                # Build Redis URL with password if provided
+                redis_url = build_redis_url(redis_config)
+                logger.debug(
+                    f"Checking Redis connection at: {redis_url} "
+                    f"(attempt {attempt}/{max_retries})"
+                )
+
+                # Create Redis client and attempt to ping
+                redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
                 await redis_client.ping()
                 logger.info("✅ Redis health check passed")
-            except RedisError as re:
-                error_msg = f"Failed to connect to Redis: {str(re)}"
-                logger.error(f"❌ {error_msg}")
-                raise Exception(error_msg)
-            finally:
-                await redis_client.close()
+                return
 
-        except Exception as e:
-            error_msg = f"Redis health check failed: {str(e)}"
-            logger.error(f"❌ {error_msg}")
-            raise
+            except RedisError as re:
+                last_error_msg = f"Failed to connect to Redis: {str(re)}"
+                logger.warning(f"⚠️ {last_error_msg}")
+            except Exception as e:
+                last_error_msg = f"Redis health check failed: {str(e)}"
+                logger.warning(f"⚠️ {last_error_msg}")
+            finally:
+                if redis_client:
+                    try:
+                        await redis_client.close()
+                    except Exception:
+                        pass
+
+            # If not the last attempt, wait before retrying with linear backoff
+            if attempt < max_retries:
+                logger.info("⏳ Retrying Redis health check in 1 second...")
+                await asyncio.sleep(1)
+
+        # All attempts failed
+        final_msg = last_error_msg or "Redis health check failed after retries"
+        logger.error(f"❌ {final_msg}")
+        raise Exception(final_msg)
 
     @staticmethod
     async def health_check_vector_db(container) -> None:

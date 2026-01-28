@@ -50,6 +50,8 @@ import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
+import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreMigration.service';
+import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import {
@@ -86,6 +88,7 @@ export class Application {
     this.port = parseInt(process.env.PORT || '3000', 10);
     this.server = http.createServer(this.app);
   }
+
 
   async initialize(): Promise<void> {
     try {
@@ -510,6 +513,55 @@ export class Application {
       this.logger.error('Failed to initialize API documentation', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  /**
+   * Run migration from etcd to Redis BEFORE loading app config.
+   * This ensures secrets exist in Redis before we try to read them.
+   * Must be called before initialize().
+   */
+  async preInitMigration(): Promise<void> {
+    const logger = Logger.getInstance(loggerConfig);
+    const configurationManagerConfig = loadConfigurationManagerConfig();
+
+    if (configurationManagerConfig.storeType !== StoreType.Redis) {
+      logger.debug('KV store is not Redis, skipping pre-init migration check');
+      return;
+    }
+
+    logger.info('Checking KV store migration status before loading config...');
+    const migrationResult = await checkAndMigrateIfNeeded({
+      etcd: {
+        host: configurationManagerConfig.storeConfig.host,
+        port: configurationManagerConfig.storeConfig.port,
+        dialTimeout: configurationManagerConfig.storeConfig.dialTimeout,
+      },
+      redis: {
+        host: configurationManagerConfig.redisConfig.host,
+        port: configurationManagerConfig.redisConfig.port,
+        password: configurationManagerConfig.redisConfig.password,
+        db: configurationManagerConfig.redisConfig.db,
+        keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
+      },
+      secretKey: configurationManagerConfig.secretKey,
+      algorithm: configurationManagerConfig.algorithm,
+    });
+
+    if (migrationResult !== null) {
+      if (migrationResult.success) {
+        logger.info('KV store migration completed successfully', {
+          migratedKeys: migrationResult.migratedKeys.length,
+        });
+      } else {
+        logger.error('KV store migration failed', {
+          error: migrationResult.error,
+          failedKeys: migrationResult.failedKeys,
+        });
+        throw new Error(`KV store migration failed: ${migrationResult.error}`);
+      }
+    } else {
+      logger.info('KV store migration not needed (already completed or etcd not available)');
     }
   }
 }

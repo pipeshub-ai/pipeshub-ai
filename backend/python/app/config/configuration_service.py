@@ -1,9 +1,10 @@
 # src/config/configuration_service.py
+import asyncio
 import hashlib
 import os
 import threading
 import time
-from typing import Union
+from typing import Optional, Union
 
 import dotenv
 from cachetools import LRUCache
@@ -17,7 +18,7 @@ dotenv.load_dotenv()
 
 
 class ConfigurationService:
-    """Service to manage configuration using etcd store"""
+    """Service to manage configuration using etcd or Redis store with caching."""
 
     def __init__(self, logger, key_value_store: KeyValueStore) -> None:
         self.logger = logger
@@ -44,9 +45,15 @@ class ConfigurationService:
 
         self.store = key_value_store
 
-        # Start watch in background
+        # Determine store type from environment
+        self._kv_store_type = os.getenv("KV_STORE_TYPE", "etcd").lower()
+        self.logger.debug("📋 KV store type: %s", self._kv_store_type)
+
+        # Redis Pub/Sub subscription task (for Redis store)
+        self._pubsub_task: Optional[asyncio.Task] = None
+
+        # Start watch in background (etcd) or schedule Pub/Sub setup (Redis)
         self._start_watch()
-        self.logger.debug("👀 Started ETCD watch")
 
         self.logger.debug("✅ ConfigurationService initialized successfully")
 
@@ -136,7 +143,22 @@ class ConfigurationService:
         return None
 
     def _start_watch(self) -> None:
-        """Start watching etcd changes in a background thread"""
+        """Start watching for changes to invalidate cache.
+
+        For etcd: Uses etcd's native watch mechanism with prefix callback.
+        For Redis: Uses Redis Pub/Sub for cross-process cache invalidation.
+        """
+        if self._kv_store_type == "redis":
+            self._start_redis_pubsub()
+        else:
+            # TODO: Remove etcd watch when all deployments migrate to Redis KV store
+            self._start_etcd_watch()
+
+    def _start_etcd_watch(self) -> None:
+        """Start watching etcd changes in a background thread.
+
+        TODO: Remove this method when all deployments migrate to Redis KV store.
+        """
 
         def watch_etcd() -> None:
             # Expect store implementations to expose .client directly
@@ -145,21 +167,129 @@ class ConfigurationService:
                 while getattr(self.store, 'client', None) is None:
                     time.sleep(3)
                 try:
-                    self.store.client.add_watch_prefix_callback("/", self._watch_callback)
-                    self.logger.debug("👀 ETCD prefix watch registered for cache invalidation")
+                    self.store.client.add_watch_prefix_callback("/", self._etcd_watch_callback)
+                    self.logger.debug("👀 etcd prefix watch registered for cache invalidation")
                 except Exception as e:
-                    self.logger.error("❌ Failed to register ETCD watch: %s", str(e))
+                    self.logger.error("❌ Failed to register etcd watch: %s", str(e))
             else:
-                self.logger.debug("📋 Store doesn't expose an ETCD client; skipping watch setup")
+                self.logger.debug("📋 Store doesn't expose an etcd client; skipping watch setup")
 
         self.watch_thread = threading.Thread(target=watch_etcd, daemon=True)
         self.watch_thread.start()
+
+    def _start_redis_pubsub(self) -> None:
+        """Start Redis Pub/Sub subscription for cache invalidation."""
+
+        # Migration flag key (same as in Node.js kvStoreMigration.service.ts)
+        # This key is stored as plain text, so we read it directly from Redis
+        migration_flag_key = "/migrations/etcd_to_redis"
+
+        async def check_migration_flag_direct(redis_client, key_prefix: str) -> bool:
+            """Check migration flag directly from Redis without encryption.
+
+            The migration flag is stored by Node.js as plain 'true' string,
+            so we need to read it directly without going through EncryptedKeyValueStore.
+            """
+            try:
+                full_key = f"{key_prefix}{migration_flag_key}"
+                value = await redis_client.get(full_key)
+                if value is not None:
+                    # Value might be bytes
+                    if isinstance(value, bytes):
+                        value = value.decode("utf-8")
+                    return value == "true"
+                return False
+            except Exception as e:
+                self.logger.debug("Could not check migration flag directly: %s", str(e))
+                return False
+
+        def start_subscription() -> None:
+            # Wait for client to be ready
+            while getattr(self.store, 'client', None) is None:
+                time.sleep(1)
+
+            # Create a new event loop for this thread
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            try:
+                # Check if migration has been completed by reading directly from Redis
+                # This handles the race condition where migration completes before
+                # this service starts and subscribes to the Pub/Sub channel
+                try:
+                    # Get the underlying store's Redis client and key prefix
+                    underlying_store = getattr(self.store, 'store', None)
+                    if underlying_store:
+                        redis_client = getattr(underlying_store, 'client', None)
+                        key_prefix = getattr(underlying_store, 'key_prefix', 'pipeshub:kv:')
+                        if redis_client:
+                            migration_completed = loop.run_until_complete(
+                                check_migration_flag_direct(redis_client, key_prefix)
+                            )
+                            if migration_completed:
+                                self.clear_cache()
+                                self.logger.info(
+                                    "📦 Cache cleared on startup - migration from etcd to Redis was completed"
+                                )
+                except Exception as e:
+                    self.logger.debug("Could not check migration flag: %s", str(e))
+
+                # Subscribe to cache invalidation channel
+                self._pubsub_task = loop.run_until_complete(
+                    self.store.subscribe_cache_invalidation(self._redis_invalidation_callback)
+                )
+                self.logger.debug("👀 Redis Pub/Sub subscription registered for cache invalidation")
+
+                # Clear cache after subscription is active to ensure any values
+                # cached during the startup window are invalidated
+                self.clear_cache()
+                self.logger.debug("📦 Cache cleared after Pub/Sub subscription established")
+
+                # Keep the loop running to process messages
+                loop.run_until_complete(self._pubsub_task)
+            except asyncio.CancelledError:
+                self.logger.debug("Redis Pub/Sub subscription cancelled")
+            except Exception as e:
+                self.logger.error("❌ Failed to setup Redis Pub/Sub: %s", str(e))
+            finally:
+                loop.close()
+
+        self.watch_thread = threading.Thread(target=start_subscription, daemon=True)
+        self.watch_thread.start()
+
+    def _redis_invalidation_callback(self, key: str) -> None:
+        """Handle Redis Pub/Sub cache invalidation messages.
+
+        Special keys:
+        - __CLEAR_ALL__: Clears the entire cache (used after migration)
+        """
+        try:
+            if key == "__CLEAR_ALL__":
+                self.clear_cache()
+                self.logger.info("📦 Entire cache cleared via Pub/Sub message")
+            else:
+                self.cache.pop(key, None)
+                self.logger.debug("📦 Cache invalidated for key: %s", key)
+        except Exception as e:
+            self.logger.error("❌ Error in Redis cache invalidation callback: %s", str(e))
+
+    def clear_cache(self) -> None:
+        """Clear the entire in-memory LRU cache.
+
+        This should be called after migration from etcd to Redis to ensure
+        all services pick up the new configuration values.
+        """
+        try:
+            self.cache.clear()
+            self.logger.info("📦 In-memory configuration cache cleared")
+        except Exception as e:
+            self.logger.error("❌ Failed to clear cache: %s", str(e))
 
     async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
         """Set configuration value with optional encryption"""
         try:
 
-            # Store in etcd
+            # Store in KV store
             try:
                 await self.store.create_key(key, value, overwrite=True)
                 success = True
@@ -171,6 +301,9 @@ class ConfigurationService:
                 # Update cache with value
                 self.cache[key] = value
                 self.logger.debug("✅ Successfully set config for key: %s", key)
+
+                # Publish cache invalidation for other processes (Redis only)
+                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to set config for key: %s", key)
 
@@ -189,7 +322,7 @@ class ConfigurationService:
                 self.logger.warning("⚠️ Key %s does not exist, creating new key", key)
                 return await self.set_config(key, value)
 
-            # Update in etcd
+            # Update in KV store
             try:
                 await self.store.update_value(key, value)
                 success = True
@@ -201,6 +334,9 @@ class ConfigurationService:
                 # Update cache with value
                 self.cache[key] = value
                 self.logger.debug("✅ Successfully updated config for key: %s", key)
+
+                # Publish cache invalidation for other processes (Redis only)
+                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to update config for key: %s", key)
 
@@ -219,6 +355,9 @@ class ConfigurationService:
                 # Remove from cache
                 self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
+
+                # Publish cache invalidation for other processes (Redis only)
+                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to delete config for key: %s", key)
 
@@ -228,12 +367,36 @@ class ConfigurationService:
             self.logger.error("❌ Failed to delete config %s: %s", key, str(e))
             return False
 
-    def _watch_callback(self, event) -> None:
-        """Handle etcd watch events to update cache"""
+    async def _publish_cache_invalidation(self, key: str) -> None:
+        """Publish cache invalidation message for cross-process cache sync.
+
+        Only publishes when using Redis as the KV store.
+        For etcd, the watch mechanism handles cross-process invalidation.
+        """
+        if self._kv_store_type != "redis":
+            return
+
+        try:
+            if hasattr(self.store, 'publish_cache_invalidation'):
+                await self.store.publish_cache_invalidation(key)
+        except Exception as e:
+            # Log but don't fail the operation - cache will eventually be consistent
+            self.logger.warning("⚠️ Failed to publish cache invalidation for key %s: %s", key, str(e))
+
+    def _etcd_watch_callback(self, event) -> None:
+        """Handle etcd watch events to update cache.
+
+        TODO: Remove this method when all deployments migrate to Redis KV store.
+        """
         try:
             # etcd3 WatchResponse contains events
             for evt in event.events:
                 key = evt.key.decode()
-                self.cache.pop(key, None)
+                if key == "__CLEAR_ALL__":
+                    self.clear_cache()
+                    self.logger.info("📦 Entire cache cleared via etcd watch")
+                else:
+                    self.cache.pop(key, None)
+                    self.logger.debug("📦 Cache invalidated for key: %s", key)
         except Exception as e:
-            self.logger.error("❌ Error in watch callback: %s", str(e))
+            self.logger.error("❌ Error in etcd watch callback: %s", str(e))
