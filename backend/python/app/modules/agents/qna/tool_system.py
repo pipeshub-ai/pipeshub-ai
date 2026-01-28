@@ -13,6 +13,7 @@ Key Features:
 
 import logging
 import re
+import time
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain.tools import BaseTool
@@ -23,6 +24,9 @@ from app.agents.tools.registry import _global_tools_registry
 from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
+
+# Module-level timing for tool loading
+_last_tool_load_time_ms: float = 0
 
 # OpenAI's maximum tool limit
 MAX_TOOLS_LIMIT = 128
@@ -436,6 +440,9 @@ class ToolLoader:
         Returns:
             List of tool wrappers ready to use
         """
+        global _last_tool_load_time_ms
+        load_start = time.perf_counter()
+
         state_logger = state.get("logger")
 
         # Check cache and blocked tools
@@ -449,16 +456,17 @@ class ToolLoader:
         # NOTE: We return cached registry tools here, but fetch_full_record_tool
         # is added dynamically in get_agent_tools() since it depends on state
         if cached_tools is not None and blocked_tools == cached_blocked_tools:
+            cache_time_ms = (time.perf_counter() - load_start) * 1000
             if state_logger:
-                state_logger.debug(f"Using cached tools ({len(cached_tools)} tools)")
+                state_logger.debug(f"⚡ Tool cache HIT: {len(cached_tools)} tools in {cache_time_ms:.1f}ms")
             return cached_tools
 
         # Cache miss or blocked tools changed - rebuild
         if state_logger:
             if cached_tools is not None:
-                state_logger.warning("Blocked tools changed - rebuilding tool cache")
+                state_logger.warning("🔄 Tool cache MISS - blocked tools changed - rebuilding")
             else:
-                state_logger.info("First tool load - building cache")
+                state_logger.info("🔄 Tool cache MISS - first load - building cache")
 
         # Get all registry tools
         registry_tools = _global_tools_registry.get_all_tools()
@@ -552,10 +560,12 @@ class ToolLoader:
         state["_cached_blocked_tools"] = blocked_tools.copy()
         state["available_tools"] = [t.name for t in tools]
 
+        _last_tool_load_time_ms = (time.perf_counter() - load_start) * 1000
+
         if state_logger:
-            state_logger.info(f"Cached {len(tools)} tools for future iterations")
+            state_logger.info(f"⏱️ Tool loading: {_last_tool_load_time_ms:.0f}ms ({len(tools)} tools cached)")
             if blocked_tools:
-                state_logger.warning(f"Blocked {len(blocked_tools)} tools due to recent failures: {list(blocked_tools.keys())}")
+                state_logger.warning(f"🚫 Blocked {len(blocked_tools)} tools due to recent failures: {list(blocked_tools.keys())}")
 
         return tools
 

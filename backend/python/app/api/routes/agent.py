@@ -1,4 +1,5 @@
 import json
+import time
 import uuid
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional
@@ -18,12 +19,16 @@ from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 
 # ⚡ OPTIMIZED: Use world-class optimized graph for 70-90% better performance
-from app.modules.agents.qna.graph import agent_graph
+from app.modules.agents.qna.graph import agent_graph, get_graph_compile_time
 
 # ⚡ OPTIMIZED: Memory optimization for constant memory usage
 from app.modules.agents.qna.memory_optimizer import (
     auto_optimize_state,
     check_memory_health,
+)
+from app.modules.agents.qna.timing import (
+    Timer,
+    get_timing_summary,
 )
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -132,17 +137,25 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
     """Process chat query using LangGraph agent with world-class optimizations"""
     try:
         # ⚡ OPTIMIZATION: Start timing for performance monitoring
-        import time
-        start_time = time.time()
+        total_timer = Timer("agent_chat_total", store_globally=True).start()
+        timing_breakdown = {}
 
         # Get all services
-        services = await get_services(request)
+        with Timer("get_services") as t:
+            services = await get_services(request)
+        timing_breakdown["get_services"] = t.duration_ms
+
         logger = services["logger"]
         arango_service = services["arango_service"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
         config_service = services["config_service"]
         llm = services["llm"]
+
+        # Log graph compile time (should be 0 for subsequent requests)
+        compile_time = get_graph_compile_time()
+        if compile_time > 0:
+            logger.debug(f"⏱️ Graph compile time: {compile_time:.1f}ms (one-time)")
 
         # Extract user info from request
         user_info = {
@@ -159,25 +172,29 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         }
         cached_response = cache.get_llm_response(query_info.query, cache_context)
         if cached_response:
-            cache_time = (time.time() - start_time) * 1000
-            logger.info(f"⚡ CACHE HIT! Query resolved in {cache_time:.0f}ms (from cache)")
+            total_timer.stop()
+            logger.info(f"⚡ CACHE HIT! Query resolved in {total_timer.duration_ms:.0f}ms (from cache)")
             return JSONResponse(content=cached_response)
 
         # Fetch user and org info for impersonation
-        org_info = await get_user_org_info(request, user_info, arango_service, logger)
+        with Timer("get_user_org_info") as t:
+            org_info = await get_user_org_info(request, user_info, arango_service, logger)
+        timing_breakdown["get_user_org_info"] = t.duration_ms
 
         # Build initial state
-        initial_state = build_initial_state(
-            query_info.model_dump(),
-            user_info,
-            llm,
-            logger,
-            retrieval_service,
-            arango_service,
-            reranker_service,
-            config_service,
-            org_info,
-        )
+        with Timer("build_initial_state") as t:
+            initial_state = build_initial_state(
+                query_info.model_dump(),
+                user_info,
+                llm,
+                logger,
+                retrieval_service,
+                arango_service,
+                reranker_service,
+                config_service,
+                org_info,
+            )
+        timing_breakdown["build_initial_state"] = t.duration_ms
 
         # Execute the graph with async
         logger.info(f"🚀 Starting optimized LangGraph execution for query: {query_info.query}")
@@ -185,7 +202,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         # ⚡ OPTIMIZATION: Reduced recursion limit for faster termination
         config = {"recursion_limit": 30}  # Reduced from 50 - optimized graph needs less
 
-        final_state = await agent_graph.ainvoke(initial_state, config=config)
+        with Timer("graph_ainvoke", logger) as t:
+            final_state = await agent_graph.ainvoke(initial_state, config=config)
+        timing_breakdown["graph_ainvoke"] = t.duration_ms
 
         # ⚡ OPTIMIZATION: Auto-optimize state to prevent memory bloat
         final_state = auto_optimize_state(final_state, logger)
@@ -226,26 +245,41 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             cache.set_llm_response(query_info.query, response_data, cache_context)
 
         # ⚡ OPTIMIZATION: Log total execution time
-        total_time = (time.time() - start_time) * 1000
-        logger.info(f"✅ Query completed in {total_time:.0f}ms")
+        total_timer.stop()
+        timing_breakdown["total"] = total_timer.duration_ms
+
+        # Get node-level timing from global storage
+        timing_summary = get_timing_summary()
+
+        # Build detailed timing log
+        timing_log_parts = [f"✅ Query completed in {total_timer.duration_ms:.0f}ms"]
+        timing_log_parts.append(f"  ├─ get_services: {timing_breakdown.get('get_services', 0):.0f}ms")
+        timing_log_parts.append(f"  ├─ get_user_org_info: {timing_breakdown.get('get_user_org_info', 0):.0f}ms")
+        timing_log_parts.append(f"  ├─ build_initial_state: {timing_breakdown.get('build_initial_state', 0):.0f}ms")
+        timing_log_parts.append(f"  └─ graph_ainvoke: {timing_breakdown.get('graph_ainvoke', 0):.0f}ms")
+
+        # Add node-level breakdown if available
+        for node_name in ["planner_node_total", "execute_node_total", "reflect_node_total", "respond_node_total"]:
+            if node_name in timing_summary:
+                stats = timing_summary[node_name]
+                timing_log_parts.append(f"      ├─ {node_name.replace('_total', '')}: {stats['avg_ms']:.0f}ms avg")
+
+        logger.info("\n".join(timing_log_parts))
 
         # Log performance metrics
         if memory_health["status"] == "healthy":
-            logger.info(f"📊 Performance: {total_time:.0f}ms | Memory: {memory_health['memory_info']['total_mb']:.2f}MB")
+            logger.info(f"📊 Memory: {memory_health['memory_info']['total_mb']:.2f}MB")
 
         # ⚡ PERFORMANCE: Attach performance summary to response if available
         response_to_return = response_data
 
         # If response is a JSONResponse and we have performance data, enhance it
-        if "_performance_tracker" in final_state:
-            perf_summary = final_state.get("performance_summary", {})
-
-            # Add performance metadata
-            if isinstance(response_to_return, dict):
-                response_to_return["_performance"] = perf_summary
-            elif hasattr(response_to_return, "__dict__"):
-                # For JSONResponse objects, we can add to headers or log separately
-                logger.info(f"⚡ Performance breakdown: {json.dumps(perf_summary.get('step_breakdown', [])[:3], indent=2)}")
+        if isinstance(response_to_return, dict):
+            response_to_return["_timing"] = timing_breakdown
+        elif "_performance_tracker" in final_state:
+            if hasattr(response_to_return, "__dict__"):
+                # For JSONResponse objects, log timing separately
+                logger.debug(f"⚡ Timing breakdown: {json.dumps(timing_breakdown, indent=2)}")
 
         # Return the complete response with citations
         return response_to_return
@@ -270,8 +304,10 @@ async def stream_response(
     org_info: Dict[str, Any] = None,
 ) -> AsyncGenerator[str, None]:
     # ⚡ OPTIMIZATION: Track streaming performance
+    stream_start = time.perf_counter()
 
     # Build initial state
+    state_start = time.perf_counter()
     initial_state = build_initial_state(
         query_info,
         user_info,
@@ -283,9 +319,11 @@ async def stream_response(
         config_service,
         org_info,
     )
+    state_time_ms = (time.perf_counter() - state_start) * 1000
+    logger.debug(f"⏱️ build_initial_state: {state_time_ms:.0f}ms")
 
     # Execute the graph with async
-    logger.info(f"🚀 Starting OPTIMIZED LangGraph execution for query: {query_info.get('query')}")
+    logger.info(f"🚀 Starting OPTIMIZED LangGraph streaming for query: {query_info.get('query')}")
 
     # ⚡ OPTIMIZATION: Reduced recursion limit for faster termination
     config = {"recursion_limit": 30}  # Reduced from 50 - optimized graph needs less
@@ -293,8 +331,13 @@ async def stream_response(
     logger.debug("🔄 Starting graph streaming with stream_mode='custom'")
 
     chunk_count = 0
+    first_chunk_time = None
     async for chunk in agent_graph.astream(initial_state, config=config, stream_mode="custom"):
         chunk_count += 1
+        if chunk_count == 1:
+            first_chunk_time = (time.perf_counter() - stream_start) * 1000
+            logger.info(f"⏱️ Time to first chunk: {first_chunk_time:.0f}ms")
+
         # StreamWriter(dict) with stream_mode="custom" yields dicts with 'event' and 'data'
         if isinstance(chunk, dict) and "event" in chunk:
             event_type = chunk.get('event', 'unknown')
@@ -304,7 +347,8 @@ async def stream_response(
         else:
             logger.warning(f"⚠️ Received unexpected chunk format: {type(chunk)} - {chunk}")
 
-    logger.info(f"🏁 Graph streaming completed. Total chunks: {chunk_count}")
+    total_time_ms = (time.perf_counter() - stream_start) * 1000
+    logger.info(f"🏁 Graph streaming completed in {total_time_ms:.0f}ms. Total chunks: {chunk_count}")
 
 
 @router.post("/agent-chat-stream")

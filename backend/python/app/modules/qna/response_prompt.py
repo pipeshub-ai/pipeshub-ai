@@ -17,7 +17,32 @@ CONTENT_PREVIEW_LENGTH = 250
 CONVERSATION_PREVIEW_LENGTH = 300
 
 # ============================================================================
-# RESPONSE SYNTHESIS SYSTEM PROMPT
+# SIMPLIFIED PROMPT FOR TOOL-ONLY RESPONSES (NO CITATIONS NEEDED)
+# ============================================================================
+
+tool_only_system_prompt = """You are an expert AI assistant. Present tool execution results clearly and professionally.
+
+INSTRUCTIONS:
+1. Answer the user's question directly based on the tool results
+2. Format with clean Markdown (headers, tables, lists as appropriate)
+3. Show user-facing identifiers (ticket keys like PA-123, project keys like PA)
+4. Hide internal IDs (numeric IDs, UUIDs)
+5. Be concise but complete
+
+OUTPUT FORMAT (JSON):
+```json
+{
+  "answer": "Your markdown-formatted answer here",
+  "confidence": "High",
+  "answerMatchType": "Derived From Tool Execution",
+  "referenceData": [{"name": "Display Name", "id": "internal_id", "key": "KEY", "type": "item_type"}]
+}
+```
+
+Use referenceData to store identifiers for follow-up queries (project IDs, user IDs, etc.)."""
+
+# ============================================================================
+# RESPONSE SYNTHESIS SYSTEM PROMPT (FULL - FOR INTERNAL KNOWLEDGE)
 # ============================================================================
 
 response_system_prompt = """You are an expert AI assistant within an enterprise who can answer any query based on the company's knowledge sources, user information, and tool execution results.
@@ -708,7 +733,11 @@ def build_user_context(user_info, org_info) -> str:
 # ============================================================================
 
 def build_response_prompt(state, max_iterations=30) -> str:
-    """Build the response synthesis prompt"""
+    """Build the response synthesis prompt.
+
+    Uses simplified prompt for tool-only responses (faster LLM processing).
+    Uses full prompt with citation rules when internal knowledge is available.
+    """
     current_datetime = datetime.utcnow().isoformat() + "Z"
 
     # Check for internal knowledge
@@ -723,6 +752,16 @@ def build_response_prompt(state, max_iterations=30) -> str:
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
 
+    # OPTIMIZATION: Use simplified prompt for tool-only responses (no internal knowledge)
+    # This reduces prompt size from ~300 lines to ~20 lines, dramatically speeding up LLM response
+    has_internal_knowledge = bool(final_results) or has_knowledge_tool_result
+
+    if not has_internal_knowledge:
+        # FAST PATH: Tool-only response (Jira, Drive, Slack, etc.)
+        # Use simplified prompt without citation rules
+        return tool_only_system_prompt
+
+    # FULL PATH: Internal knowledge available - use comprehensive prompt with citations
     if final_results:
         # Use the comprehensive context builder that includes semantic metadata
         internal_context = build_internal_context_for_response(
@@ -783,9 +822,9 @@ def build_response_prompt(state, max_iterations=30) -> str:
 def create_response_messages(state) -> List[Any]:
     """
     Create messages for response synthesis.
-
     This is called by respond_node to build the messages for the LLM
     that will synthesize the final response from tool results.
+    OPTIMIZATION: Uses minimal messages for tool-only responses (faster LLM processing).
     """
     from langchain_core.messages import (
         AIMessage,
@@ -794,11 +833,42 @@ def create_response_messages(state) -> List[Any]:
         ToolMessage,
     )
 
+    # Check for internal knowledge early
+    has_knowledge = bool(state.get("final_results"))
+    has_knowledge_tool = False
+    if state.get("all_tool_results"):
+        for tool_result in state["all_tool_results"]:
+            if tool_result.get("tool_name") == "internal_knowledge_retrieval":
+                has_knowledge_tool = True
+                break
+
+    has_internal_knowledge = has_knowledge or has_knowledge_tool
+
     messages = []
 
     # 1. System prompt for response synthesis
     system_prompt = build_response_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
+
+    # FAST PATH: For tool-only responses, skip knowledge retrieval messages and complex history
+    if not has_internal_knowledge:
+        # Just add minimal conversation context and the query
+        previous_conversations = state.get("previous_conversations", [])
+        if previous_conversations:
+            # Only last 2 turns for tool-only (enough context, minimal prompt size)
+            for conv in previous_conversations[-2:]:
+                role = conv.get("role")
+                content = conv.get("content", "")
+                if role == "user_query":
+                    messages.append(HumanMessage(content=content[:200]))  # Truncate
+                elif role == "bot_response":
+                    messages.append(AIMessage(content=content[:300]))  # Truncate
+
+        # Add the current query directly
+        messages.append(HumanMessage(content=state["query"]))
+        return messages
+
+    # FULL PATH: Internal knowledge available - use comprehensive message building
 
     # 2. Add knowledge retrieval tool call and result if it exists
     existing_messages = state.get("messages", [])
@@ -852,40 +922,31 @@ def create_response_messages(state) -> List[Any]:
 
     query_with_context = current_query
 
-    # Add format instructions if internal knowledge is available
-    has_knowledge = bool(state.get("final_results"))
-    has_knowledge_tool = False
-    if state.get("all_tool_results"):
-        for tool_result in state["all_tool_results"]:
-            if tool_result.get("tool_name") == "internal_knowledge_retrieval":
-                has_knowledge_tool = True
-                break
-
-    if has_knowledge or has_knowledge_tool:
-        query_with_context += "\n\n**⚠️ CRITICAL: Internal Knowledge is Available - MANDATORY Instructions:**\n"
-        query_with_context += "\n"
-        query_with_context += "1. **ANSWER DIRECTLY**: Provide the answer to the user's question. DO NOT say 'I searched', 'I found', 'The tool returned', etc.\n"
-        query_with_context += "2. **CITE YOUR SOURCES**: Use inline citations [R1-1] IMMEDIATELY after each factual claim (not at end of paragraph).\n"
-        query_with_context += "3. **BE COMPREHENSIVE**: Provide detailed, thorough answers with all relevant information.\n"
-        query_with_context += "4. **USE MARKDOWN**: Format with headers, lists, tables, bold as appropriate.\n"
-        query_with_context += "\n"
-        query_with_context += "**Required JSON Output Format:**\n"
-        query_with_context += "```json\n"
-        query_with_context += "{\n"
-        query_with_context += '  "answer": "Detailed answer with inline citations [R1-1][R2-3] after each claim.",\n'
-        query_with_context += '  "reason": "Brief explanation of how you derived the answer from the blocks",\n'
-        query_with_context += '  "confidence": "Very High | High | Medium | Low",\n'
-        query_with_context += '  "answerMatchType": "Derived From Blocks",\n'
-        query_with_context += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"]\n'
-        query_with_context += "}\n"
-        query_with_context += "```\n"
-        query_with_context += "\n"
-        query_with_context += "⚠️ IMPORTANT:\n"
-        query_with_context += "- Do NOT include 'citations' field (system handles it)\n"
-        query_with_context += "- Include ALL referenced block numbers in blockNumbers array\n"
-        query_with_context += "- Answer the user's question directly without meta-commentary\n"
-        query_with_context += "- Citations format: [R1-1][R2-3] NOT [R1-1, R2-3]\n"
-        query_with_context += "- Put citation IMMEDIATELY after the fact, not at end of sentence\n"
+    # Add format instructions for internal knowledge
+    query_with_context += "\n\n**⚠️ CRITICAL: Internal Knowledge is Available - MANDATORY Instructions:**\n"
+    query_with_context += "\n"
+    query_with_context += "1. **ANSWER DIRECTLY**: Provide the answer to the user's question. DO NOT say 'I searched', 'I found', 'The tool returned', etc.\n"
+    query_with_context += "2. **CITE YOUR SOURCES**: Use inline citations [R1-1] IMMEDIATELY after each factual claim (not at end of paragraph).\n"
+    query_with_context += "3. **BE COMPREHENSIVE**: Provide detailed, thorough answers with all relevant information.\n"
+    query_with_context += "4. **USE MARKDOWN**: Format with headers, lists, tables, bold as appropriate.\n"
+    query_with_context += "\n"
+    query_with_context += "**Required JSON Output Format:**\n"
+    query_with_context += "```json\n"
+    query_with_context += "{\n"
+    query_with_context += '  "answer": "Detailed answer with inline citations [R1-1][R2-3] after each claim.",\n'
+    query_with_context += '  "reason": "Brief explanation of how you derived the answer from the blocks",\n'
+    query_with_context += '  "confidence": "Very High | High | Medium | Low",\n'
+    query_with_context += '  "answerMatchType": "Derived From Blocks",\n'
+    query_with_context += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"]\n'
+    query_with_context += "}\n"
+    query_with_context += "```\n"
+    query_with_context += "\n"
+    query_with_context += "⚠️ IMPORTANT:\n"
+    query_with_context += "- Do NOT include 'citations' field (system handles it)\n"
+    query_with_context += "- Include ALL referenced block numbers in blockNumbers array\n"
+    query_with_context += "- Answer the user's question directly without meta-commentary\n"
+    query_with_context += "- Citations format: [R1-1][R2-3] NOT [R1-1, R2-3]\n"
+    query_with_context += "- Put citation IMMEDIATELY after the fact, not at end of sentence\n"
 
     messages.append(HumanMessage(content=query_with_context))
 
