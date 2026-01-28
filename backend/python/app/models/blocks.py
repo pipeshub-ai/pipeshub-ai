@@ -40,9 +40,7 @@ class BlockType(str, Enum):
     DIVIDER = "divider"
     COMMIT = "commit"
 
-class BlockSubType(str, Enum):
-    CHILD_RECORD = "child_record"
-    COMMENT = "comment"
+
 
 class CommentSubtype(str, Enum):
     CODE_REVIEW = "code_review"
@@ -73,11 +71,6 @@ class DataFormat(str, Enum):
     PATCH = "patch"
     DIFF = "diff"
     CODE = "code"
-
-class CommentAttachment(BaseModel):
-    """Attachment model for comments"""
-    name: str = Field(description="Name of the attachment")
-    id: str = Field(description="ID of the attachment")
 
 class CommentAttachment(BaseModel):
     """Attachment model for comments"""
@@ -235,7 +228,6 @@ class GroupType(str, Enum):
     TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
-    TEXT_SECTION = "text_section"
     COMMITS = "commits"
     PATCH = "patch"
     SHEET = "sheet"
@@ -250,7 +242,7 @@ class GroupType(str, Enum):
     CODE = "code"
     MEDIA = "media"
     FULL_CODE_PATCH = "full_code_patch"
-    
+
 class GroupSubType(str, Enum):
     MILESTONE = "milestone" # Milestone block group
     UPDATE = "update" # Update block group
@@ -332,7 +324,7 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    subtype: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
+    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)

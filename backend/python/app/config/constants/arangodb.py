@@ -130,7 +130,6 @@ class CollectionNames(Enum):
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
     PULLREQUESTS = "prs"
-    TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
 
     # Users and groups
     PEOPLE = "people"
