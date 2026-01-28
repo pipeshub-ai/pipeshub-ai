@@ -9,6 +9,27 @@ import { StoreType } from './constants/KeyValueStoreType';
 import { ConfigurationManagerStoreConfig } from '../../modules/configuration_manager/config/config';
 import { DeserializationFailedError, SerializationFailedError } from '../errors/serialization.error';
 import { BadRequestError } from '../errors/http.errors';
+
+/**
+ * Type guard to check if config is an etcd configuration.
+ * Etcd config has 'dialTimeout' which is not present in Redis config.
+ */
+function isEtcdConfig(
+  config: ConfigurationManagerStoreConfig | RedisStoreConfig,
+): config is ConfigurationManagerStoreConfig {
+  return 'dialTimeout' in config;
+}
+
+/**
+ * Type guard to check if config is a Redis configuration.
+ * Redis config has optional 'db', 'password', or 'keyPrefix' properties.
+ */
+function isRedisConfig(
+  config: ConfigurationManagerStoreConfig | RedisStoreConfig,
+): config is RedisStoreConfig {
+  return 'db' in config || 'password' in config || 'keyPrefix' in config || !('dialTimeout' in config);
+}
+
 export class KeyValueStoreFactory {
   static createStore<T>(
     type: StoreType,
@@ -25,8 +46,11 @@ export class KeyValueStoreFactory {
         if (!deserializer) {
           throw new DeserializationFailedError('Deserializer function must be provided for Etcd3 store.');
         }
+        if (!isEtcdConfig(config)) {
+          throw new BadRequestError('Invalid config for Etcd3 store: expected ConfigurationManagerStoreConfig with dialTimeout');
+        }
         return new Etcd3DistributedKeyValueStore<T>(
-          config as ConfigurationManagerStoreConfig,
+          config,
           serializer,
           deserializer,
         );
@@ -39,8 +63,11 @@ export class KeyValueStoreFactory {
         if (!deserializer) {
           throw new DeserializationFailedError('Deserializer function must be provided for Redis store.');
         }
+        if (!isRedisConfig(config)) {
+          throw new BadRequestError('Invalid config for Redis store: expected RedisStoreConfig');
+        }
         return new RedisDistributedKeyValueStore<T>(
-          config as RedisStoreConfig,
+          config,
           serializer,
           deserializer,
         );

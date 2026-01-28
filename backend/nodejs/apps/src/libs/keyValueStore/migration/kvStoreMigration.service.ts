@@ -15,8 +15,6 @@ export interface MigrationConfig {
     db?: number;
     keyPrefix?: string;
   };
-  secretKey: string;
-  algorithm: string;
 }
 
 export interface MigrationResult {

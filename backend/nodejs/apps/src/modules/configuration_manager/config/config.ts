@@ -38,8 +38,8 @@ export const loadConfigurationManagerConfig =
     return {
       storeType: storeType,
       storeConfig: {
-        host: process.env.ETCD_HOST! || 'http://localhost',
-        port: parseInt(process.env.ETCD_PORT!, 10) || 2379,
+        host: process.env.ETCD_HOST || 'http://localhost',
+        port: parseInt(process.env.ETCD_PORT || '2379', 10),
         dialTimeout: parseInt(process.env.ETCD_DIAL_TIMEOUT || '2000', 10),
       },
       redisConfig: {

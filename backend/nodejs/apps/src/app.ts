@@ -544,8 +544,6 @@ export class Application {
         db: configurationManagerConfig.redisConfig.db,
         keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
       },
-      secretKey: configurationManagerConfig.secretKey,
-      algorithm: configurationManagerConfig.algorithm,
     });
 
     if (migrationResult !== null) {

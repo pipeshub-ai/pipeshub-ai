@@ -165,6 +165,8 @@ class ConfigurationService:
             if hasattr(self.store, 'client'):
                 # Wait for client to be ready
                 while getattr(self.store, 'client', None) is None:
+                    #TODO: The time.sleep(3) call in the watch_etcd function can introduce a significant delay during startup if the etcd client is not immediately available.
+                    # fix it
                     time.sleep(3)
                 try:
                     self.store.client.add_watch_prefix_callback("/", self._etcd_watch_callback)

@@ -31,7 +31,6 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         logger,
     ) -> None:
         self.logger = logger
-        self._client = None
 
         self.logger.debug("Initializing EncryptedKeyValueStore")
 
@@ -62,7 +61,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     @property
     def client(self) -> object:
         """Expose the underlying client for watchers and diagnostics."""
-        return getattr(self.store, "client", None)
+        return self.store.client
 
     def _create_store(self, store_type_str: str) -> KeyValueStore:
         """Create the appropriate key-value store based on configuration."""
@@ -173,7 +172,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             existing_value = await self.store.get_key(key)
             if existing_value is not None and not overwrite:
                 self.logger.debug("Skipping existing key: %s", key)
-                return True
+                return False  # Key was not created (already exists)
 
             # Convert value to JSON string
             value_json = json.dumps(value)
@@ -202,17 +201,13 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 encrypted_stored_value = await self.store.get_key(key)
                 if encrypted_stored_value:
                     if encrypt_value:
-                        processed_value = self.encryption_service.decrypt(
+                        decrypted_value = self.encryption_service.decrypt(
                             encrypted_stored_value
                         )
                     else:
-                        processed_value = encrypted_stored_value
-                    # Parse value if it's not already a dict
-                    stored_value = (
-                        json.loads(processed_value)
-                        if isinstance(processed_value, str)
-                        else processed_value
-                    )
+                        decrypted_value = encrypted_stored_value
+                    # decrypted_value is always a JSON string, parse it
+                    stored_value = json.loads(decrypted_value)
 
                     if stored_value != value:
                         self.logger.warning("Verification failed for key: %s", key)

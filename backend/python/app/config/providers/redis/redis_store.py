@@ -2,6 +2,7 @@ import asyncio
 import json
 import random
 import threading
+import uuid
 from typing import Callable, Dict, Generic, List, Optional, TypeVar
 
 import redis.asyncio as redis  # type: ignore
@@ -75,7 +76,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._pubsub_task: Optional[asyncio.Task] = None
         self._pubsub_callback: Optional[Callable[[str], None]] = None
         self._watch_tasks: dict[str, asyncio.Task] = {}
-        self._watchers: dict[str, List[tuple[Callable[[Optional[T]], None], int]]] = {}
+        self._watchers: dict[str, List[tuple[Callable[[Optional[T]], None], str]]] = {}
         self._is_closing = False
 
         # Store connection parameters for reconnection and lazy client creation
@@ -221,7 +222,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     logger.debug(
                         "Key '%s' already exists, skipping creation as overwrite is False.", key
                     )
-                    return True  # Consistent with original behavior
+                    return False  # Key was not created (already exists)
 
             logger.debug("Key created successfully")
 
@@ -339,7 +340,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         key: str,
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
-    ) -> int:
+        watch_id: Optional[str] = None,
+    ) -> str:
         """
         Watch a key for changes and execute callbacks when changes occur.
 
@@ -347,17 +349,25 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         implementation uses in-memory callbacks that are triggered on
         create/update/delete operations through this store instance.
         For cross-process notifications, consider using Redis Pub/Sub.
+
+        Args:
+            key: The key to watch.
+            callback: Function to call when the value changes.
+            error_callback: Optional function to call when errors occur.
+            watch_id: Optional unique identifier for this watch. If not provided,
+                a UUID is generated. Callers may pass a custom ID for consistency
+                across restarts or when registering the same callback multiple times.
         """
         logger.debug("Setting up watch for key: %s", key)
-        watch_id = id(callback)
+        resolved_watch_id = watch_id if watch_id is not None else uuid.uuid4().hex
 
         if key not in self._watchers:
             self._watchers[key] = []
 
-        self._watchers[key].append((callback, watch_id))
-        logger.debug("Watch setup complete. ID: %s", watch_id)
+        self._watchers[key].append((callback, resolved_watch_id))
+        logger.debug("Watch setup complete. ID: %s", resolved_watch_id)
 
-        return watch_id
+        return resolved_watch_id
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         """Cancel a watch for a key."""

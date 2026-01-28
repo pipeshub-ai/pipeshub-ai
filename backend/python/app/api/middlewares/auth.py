@@ -91,17 +91,14 @@ async def isJwtTokenValid(request: Request) -> dict:
         secret_keys = await config_service.get_config(
             config_node_constants.SECRET_KEYS.value
         )
-        logger.debug(f"🔑 Secret keys: {secret_keys}")
+
         if not secret_keys:
             raise ValueError("Secret keys configuration not found")
 
         # Get both JWT secrets
         regular_jwt_secret = secret_keys.get("jwtSecret")
         scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
-        logger.debug(f"🔑 Regular JWT secret: {regular_jwt_secret}")
-        logger.debug(f"🔑 Scoped JWT secret: {scoped_jwt_secret}")
         algorithm = os.environ.get("JWT_ALGORITHM", "HS256")
-        logger.debug(f"🔑 Algorithm: {algorithm}")
         # Validate required secrets exist
         if not regular_jwt_secret:
             raise ValueError("Missing jwtSecret in configuration")
@@ -113,7 +110,6 @@ async def isJwtTokenValid(request: Request) -> dict:
         # Extract token from Authorization header
         authorization_header = request.headers.get("Authorization")
         token = extract_bearer_token(authorization_header)
-        logger.debug(f"🔑 Token: {token}")
 
         # Try regular JWT first (maintains backward compatibility)
         try:
@@ -122,7 +118,6 @@ async def isJwtTokenValid(request: Request) -> dict:
             # Add metadata for backward compatibility
             payload["user"] = token
             payload["token_type"] = "regular"
-            logger.debug(f"🔑 Payload: {payload}")
             return payload
         except JWTError as regular_jwt_error:
             # If scoped JWT secret is available, try it as fallback
@@ -133,7 +128,6 @@ async def isJwtTokenValid(request: Request) -> dict:
                     # Add metadata
                     payload["user"] = token
                     payload["token_type"] = "scoped"
-                    logger.debug(f"🔑 Payload: {payload}")
                     return payload
                 except JWTError as scoped_jwt_error:
                     # Both failed - log and raise
