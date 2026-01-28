@@ -10,6 +10,7 @@ import linkVariantIcon from '@iconify-icons/mdi/link-variant';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
+import paletteIcon from '@iconify-icons/mdi/palette';
 
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
@@ -26,6 +27,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { Iconify } from 'src/components/iconify';
 
 import { useAuthContext } from 'src/auth/hooks';
+import { useSettingsContext } from 'src/components/settings/context';
 
 const drawerWidth = 240;
 
@@ -35,6 +37,7 @@ export default function Sidebar() {
   const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { user } = useAuthContext();
+  const settingsContext = useSettingsContext();
   const { isAdmin } = useAdmin();
 
   // Determine account type
@@ -349,6 +352,44 @@ export default function Sidebar() {
               primaryTypographyProps={{ 
                 fontSize: '0.9375rem',
                 fontWeight: pathname === (isBusiness ? `${baseUrl}/personal-profile` : `${baseUrl}/profile`) ? 600 : 400,
+              }}
+            />
+          </ListItemButton>
+        </ListItem>
+
+        <ListItem disablePadding>
+          <ListItemButton
+            onClick={settingsContext.onOpenDrawer}
+            selected={settingsContext.openDrawer}
+            sx={{
+              py: 1,
+              borderRadius: '0',
+              '&.Mui-selected': {
+                bgcolor: theme.palette.mode === 'dark'
+                  ? alpha(theme.palette.primary.main, 0.15)
+                  : alpha(theme.palette.primary.main, 0.08),
+                borderRight: `3px solid ${theme.palette.primary.main}`,
+                '&:hover': {
+                  bgcolor: theme.palette.mode === 'dark'
+                    ? alpha(theme.palette.primary.main, 0.2)
+                    : alpha(theme.palette.primary.main, 0.12),
+                },
+              },
+              '&:hover': {
+                bgcolor: theme.palette.mode === 'dark'
+                  ? alpha(theme.palette.action.hover, 0.1)
+                  : alpha(theme.palette.action.hover, 0.05),
+              },
+            }}
+          >
+            <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+              <Iconify icon={paletteIcon} width={22} height={22} />
+            </ListItemIcon>
+            <ListItemText
+              primary="Theme"
+              primaryTypographyProps={{
+                fontSize: '0.9375rem',
+                fontWeight: settingsContext.openDrawer ? 600 : 400,
               }}
             />
           </ListItemButton>

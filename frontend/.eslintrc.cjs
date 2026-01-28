@@ -1,3 +1,5 @@
+const path = require('path');
+
 /**
  *  @type {import('eslint').ESLint.ConfigData}
  */
@@ -10,12 +12,12 @@ module.exports = {
     sourceType: 'module',
     ecmaVersion: 'latest',
     ecmaFeatures: { jsx: true },
-    project: './tsconfig.json',
+    project: path.join(__dirname, 'tsconfig.json'),
   },
   settings: {
     'import/resolver': {
       typescript: {
-        project: './tsconfig.json',
+        project: path.join(__dirname, 'tsconfig.json'),
       },
     },
   },

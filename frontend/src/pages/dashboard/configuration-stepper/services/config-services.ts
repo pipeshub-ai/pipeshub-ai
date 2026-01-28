@@ -143,6 +143,15 @@ export const getUniversalConfig = async (configType: string): Promise<any | null
         }
       }
 
+      case 'branding': {
+        try {
+          const response = await axios.get(`${API_BASE}/platform/branding`);
+          return response.data || {};
+        } catch (error) {
+          return {};
+        }
+      }
+
       default:
         break;
     }
@@ -169,7 +178,6 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         const {
           providerType,
           modelType,
-          _provider,
           isMultimodal,
           isReasoning,
           contextLength,
@@ -196,7 +204,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
       }
 
       case 'storage': {
-        const { providerType, _provider, storageType, ...cleanConfig } = config;
+        const { providerType, ...cleanConfig } = config;
 
         // Prepare config based on storage type
         let storageConfig: any = {
@@ -250,7 +258,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
       }
 
       case 'url': {
-        const { providerType, _provider, frontendUrl, connectorUrl, ...rest } = config;
+        const { frontendUrl, connectorUrl } = config;
         const normalizeUrl = (url?: string) => {
           if (!url) return '';
           const trimmed = String(url).trim();
@@ -277,7 +285,7 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
       }
 
       case 'smtp': {
-        const { providerType, _provider, ...cleanConfig } = config;
+        const { ...cleanConfig } = config;
 
         // Create base config with required fields
         const smtpConfig: any = {};
@@ -315,6 +323,11 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
         return await axios.post(`${API_BASE}/smtpConfig`, smtpConfig);
       }
 
+      case 'branding': {
+        const { ...brandingConfig } = config;
+        return await axios.post(`${API_BASE}/platform/branding`, brandingConfig);
+      }
+
       default:
         throw new Error(`Config type ${configType} not implemented`);
     }
@@ -327,12 +340,12 @@ export const updateUniversalConfig = async (configType: string, config: any): Pr
 export const updateOnboardingAiModelsConfig = async (
   llmConfig?:
     | {
-        provider: string;
-        configuration: Record<string, any>;
-        isMultimodal?: boolean;
-        isReasoning?: boolean;
-        contextLength?: number;
-      }[]
+      provider: string;
+      configuration: Record<string, any>;
+      isMultimodal?: boolean;
+      isReasoning?: boolean;
+      contextLength?: number;
+    }[]
     | null,
   embeddingConfig?:
     | { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[]
@@ -405,14 +418,17 @@ export const updateSmtpConfig = (config: SmtpFormValues) => updateUniversalConfi
 export const updateStepperAiModelsConfig = async (
   llmConfig?:
     | {
-        provider: string;
-        configuration: Record<string, any>;
-        isMultimodal?: boolean;
-        isReasoning?: boolean;
-        contextLength?: number;
-      }[]
+      provider: string;
+      configuration: Record<string, any>;
+      isMultimodal?: boolean;
+      isReasoning?: boolean;
+      contextLength?: number;
+    }[]
     | null,
   embeddingConfig?:
     | { provider: string; configuration: Record<string, any>; isMultimodal?: boolean }[]
     | null
 ): Promise<any> => updateOnboardingAiModelsConfig(llmConfig, embeddingConfig);
+
+export const getBrandingConfig = () => getUniversalConfig('branding');
+export const updateBrandingConfig = (config: any) => updateUniversalConfig('branding', config);

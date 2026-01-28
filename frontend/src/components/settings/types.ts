@@ -23,7 +23,8 @@ export type SettingsState = {
   contrast: 'default' | 'hight';
   navColor: 'integrate' | 'apparent';
   navLayout: 'vertical' | 'horizontal' | 'mini';
-  primaryColor: 'default' | 'cyan' | 'purple' | 'blue' | 'orange' | 'red' | 'green';
+  primaryColor: 'default' | 'cyan' | 'purple' | 'blue' | 'orange' | 'red' | 'green' | 'custom';
+  customPrimaryColor: string;
 };
 
 export type SettingsContextValue = SettingsState & {
@@ -38,6 +39,7 @@ export type SettingsContextValue = SettingsState & {
   openDrawer: boolean;
   onCloseDrawer: () => void;
   onToggleDrawer: () => void;
+  onOpenDrawer: () => void;
 };
 
 export type SettingsProviderProps = {

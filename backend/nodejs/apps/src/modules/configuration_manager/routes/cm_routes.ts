@@ -59,6 +59,8 @@ import {
   getPlatformSettings,
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
+  createBrandingConfig,
+  getBrandingConfig,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -89,6 +91,7 @@ import {
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
   sharepointCredentialsSchema,
+  brandingConfigSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -575,6 +578,31 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     getAvailablePlatformFeatureFlags(),
+  );
+
+  router.get(
+    '/platform/feature-flags/available',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getAvailablePlatformFeatureFlags(),
+  );
+
+  // Branding configuration
+  router.post(
+    '/platform/branding',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(brandingConfigSchema),
+    createBrandingConfig(keyValueStoreService),
+  );
+
+  router.get(
+    '/platform/branding',
+    // Public route - no auth required as requested for login page
+    metricsMiddleware(container),
+    getBrandingConfig(keyValueStoreService),
   );
 
   // message broker config routes

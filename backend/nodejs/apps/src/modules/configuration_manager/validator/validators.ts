@@ -390,7 +390,7 @@ export const metricsCollectionRemoteServerSchema = z.object({
 // Enum definitions
 export const modelType = z.enum([
   'llm',
-  'embedding', 
+  'embedding',
   'ocr',
   'slm',
   'reasoning',
@@ -401,7 +401,7 @@ export const embeddingProvider = z.enum([
   'anthropic',
   'bedrock',
   'azureAI',
-  'azureOpenAI', 
+  'azureOpenAI',
   'cohere',
   'default',
   'fireworks',
@@ -565,5 +565,15 @@ export const deleteProviderSchema = z.object({
       'multiModal',
     ]),
     modelKey: z.string().min(1, { message: 'Model key is required' }),
+  }),
+});
+
+export const brandingConfigSchema = z.object({
+  body: z.object({
+    logoUrl: z.string().url().optional().or(z.literal('')),
+    primaryColor: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/, { message: "Invalid hex color code" }).optional(),
+    secondaryColor: z.string().regex(/^#([A-Fa-f0-9]{6}|[A-Fa-f0-9]{3})$/, { message: "Invalid hex color code" }).optional(),
+    fontFamily: z.string().optional(),
+    companyName: z.string().optional(),
   }),
 });

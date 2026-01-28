@@ -1,5 +1,6 @@
 import type { SettingsState } from 'src/components/settings';
 import type { Theme, Components } from '@mui/material/styles';
+import { darken, getContrastRatio, lighten } from '@mui/material/styles';
 
 import COLORS from '../core/colors.json';
 import PRIMARY_COLOR from './primary-color.json';
@@ -36,9 +37,8 @@ export function updateCoreWithSettings(
   const { colorSchemes, customShadows } = theme;
 
   const updatedPrimary = getPalette(
-    settings.primaryColor,
-    corePrimary,
-    PRIMARY_COLORS[settings.primaryColor]
+    settings,
+    corePrimary
   );
 
   return {
@@ -108,16 +108,45 @@ export function updateComponentsWithSettings(settings: SettingsState) {
 
 // ----------------------------------------------------------------------
 
-function getPalette(
-  name: SettingsState['primaryColor'],
-  initialPalette: typeof corePrimary,
-  updatedPalette: typeof corePrimary
-) {
+function getPalette(settings: SettingsState, initialPalette: typeof corePrimary) {
   /** [1] */
-  return name === 'default' ? initialPalette : createPaletteChannel(updatedPalette);
+  if (settings.primaryColor === 'default') {
+    return initialPalette;
+  }
+
+  if (settings.primaryColor === 'custom') {
+    return getCustomPrimaryPalette(settings.customPrimaryColor);
+  }
+
+  const preset = PRIMARY_COLORS[settings.primaryColor];
+  return createPaletteChannel(preset ?? PRIMARY_COLORS.blue);
 }
 
 function getBackgroundDefault(contrast: SettingsState['contrast']) {
   /** [2] */
   return contrast === 'default' ? '#FFFFFF' : coreGreyPalette[200];
+}
+
+function getCustomPrimaryPalette(color: string) {
+  const fallback = PRIMARY_COLOR.blue;
+
+  if (!/^#([0-9a-fA-F]{6})$/.test(color ?? '')) {
+    return createPaletteChannel(fallback);
+  }
+
+  const main = color;
+  const light = lighten(main, 0.2);
+  const lighter = lighten(main, 0.4);
+  const dark = darken(main, 0.2);
+  const darker = darken(main, 0.4);
+  const contrastText = getContrastRatio(main, '#ffffff') >= 3 ? '#ffffff' : '#1C252E';
+
+  return createPaletteChannel({
+    lighter,
+    light,
+    main,
+    dark,
+    darker,
+    contrastText,
+  });
 }

@@ -1,5 +1,7 @@
-import { DynamicConfigFactory, GeneratedProvider } from "./config-factory";
-import { EMBEDDING_PROVIDERS, LLM_PROVIDERS, SMTP_PROVIDERS, STORAGE_PROVIDERS, URL_PROVIDERS } from "./providers";
+import { DynamicConfigFactory } from "./config-factory";
+import { LLM_PROVIDERS, URL_PROVIDERS, SMTP_PROVIDERS, STORAGE_PROVIDERS, EMBEDDING_PROVIDERS } from "./providers";
+
+import type { GeneratedProvider } from "./config-factory";
 
 // AUTO-GENERATED CONFIGS
 export const LLM_CONFIG = DynamicConfigFactory.generateConfigType(LLM_PROVIDERS);
@@ -9,7 +11,7 @@ export const SMTP_CONFIG = DynamicConfigFactory.generateConfigType(SMTP_PROVIDER
 export const URL_CONFIG = DynamicConfigFactory.generateConfigType(URL_PROVIDERS);
 
 // UNIFIED CONFIG TYPE
-export type ConfigType = 'llm' | 'embedding' | 'storage' | 'url' | 'smtp';
+export type ConfigType = 'llm' | 'embedding' | 'storage' | 'url' | 'smtp' | 'branding';
 
 // HELPER FUNCTIONS
 export const getProvidersForType = (configType: ConfigType): GeneratedProvider[] => {

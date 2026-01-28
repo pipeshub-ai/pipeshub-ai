@@ -27,6 +27,7 @@ dependencies = [
     "beautifulsoup4==4.12.3",
     "box-sdk-gen==1.12.0",
     "CairoSVG==2.8.2",
+    "cachetools>=5.5.0",
     "celery==5.4.0",
     "confluent-kafka==2.8.0",
     "cryptography==44.0.1",

@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useCallback, createContext } from 'react';
+import { useMemo, useState, useCallback, createContext } from 'react';
 
 import { useLocalStorage } from 'src/hooks/use-local-storage';
 
@@ -17,49 +17,32 @@ export const SettingsConsumer = SettingsContext.Consumer;
 export function SettingsProvider({ children, settings }: SettingsProviderProps) {
   const values = useLocalStorage<SettingsState>(STORAGE_KEY, settings);
 
-  // Force blue theme permanently
-  useEffect(() => {
-    if (values.state.primaryColor !== 'blue') {
-      values.setField('primaryColor', 'blue');
-    }
-  }, [values]);
+  const [openDrawer, setOpenDrawer] = useState(false);
 
-  // Override setField to prevent changing primaryColor
-  const setFieldWithBlueTheme = useCallback((
-    name: keyof SettingsState,
-    updateValue: SettingsState[keyof SettingsState]
-  ) => {
-    // Prevent changing primary color from blue
-    if (name === 'primaryColor') {
-      return;
-    }
-    values.setField(name, updateValue);
-  }, [values]);
-
-  // Override setState to prevent changing primaryColor
-  const setStateWithBlueTheme = useCallback((updateValue: Partial<SettingsState>) => {
-    const { primaryColor, ...rest } = updateValue;
-    // Always keep primaryColor as blue
-    values.setState({ ...rest, primaryColor: 'blue' });
-  }, [values]);
+  const onOpenDrawer = useCallback(() => setOpenDrawer(true), []);
+  const onCloseDrawer = useCallback(() => setOpenDrawer(false), []);
+  const onToggleDrawer = useCallback(() => {
+    setOpenDrawer((prev) => !prev);
+  }, []);
 
   const memoizedValue = useMemo(
     () => ({
       ...values.state,
-      primaryColor: 'blue' as const, // Force blue theme
-      canReset: false, // Disable reset since we want to keep blue theme
-      onReset: () => {}, // Disable reset functionality
-      onUpdate: setStateWithBlueTheme,
-      onUpdateField: setFieldWithBlueTheme,
-      // Remove drawer functionality since we're not using the settings drawer
-      openDrawer: false,
-      onCloseDrawer: () => {},
-      onToggleDrawer: () => {},
+      canReset: values.canReset,
+      onReset: values.resetState,
+      onUpdate: values.setState,
+      onUpdateField: values.setField,
+      openDrawer,
+      onCloseDrawer,
+      onToggleDrawer,
+      onOpenDrawer,
     }),
     [
-      values.state,
-      setFieldWithBlueTheme,
-      setStateWithBlueTheme,
+      values,
+      openDrawer,
+      onCloseDrawer,
+      onToggleDrawer,
+      onOpenDrawer,
     ]
   );
 

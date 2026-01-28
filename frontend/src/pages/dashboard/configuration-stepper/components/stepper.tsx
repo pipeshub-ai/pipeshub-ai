@@ -30,6 +30,7 @@ import DynamicForm from 'src/components/dynamic-form/components/dynamic-form';
 
 import { createScrollableContainerStyle } from 'src/sections/qna/chatbot/utils/styles/scrollbar';
 
+import BrandingForm from './branding-form';
 import {
   getLlmConfig,
   getUrlConfig,
@@ -38,10 +39,12 @@ import {
   updateUrlConfig,
   getStorageConfig,
   updateSmtpConfig,
+  getBrandingConfig,
   getEmbeddingConfig,
   updateStorageConfig,
+  updateBrandingConfig,
   updateEmbeddingConfig,
-  updateStepperAiModelsConfig, // NEW: Import the merged update function
+  updateStepperAiModelsConfig,
 } from '../services/config-services';
 
 // Configuration steps definition with ConfigType
@@ -103,6 +106,16 @@ const CONFIGURATION_STEPS = [
     canSkip: true,
     documentationUrl: 'https://docs.pipeshub.com/smtp',
   },
+  {
+    id: 'branding' as ConfigType,
+    label: 'Branding',
+    title: 'Branding Customization',
+    description: 'Customize the look and feel of your application.',
+    infoMessage: 'Set your logo, colors, and fonts.',
+    isRequired: false,
+    canSkip: true,
+    documentationUrl: '',
+  },
 ] as const;
 
 // API endpoints
@@ -150,6 +163,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
   const storageRef = useRef<DynamicFormRef>(null);
   const urlRef = useRef<DynamicFormRef>(null);
   const smtpRef = useRef<DynamicFormRef>(null);
+  const brandingRef = useRef<any>(null);
 
   // Group them into a stable object reference
   const formRefs = useMemo(
@@ -159,6 +173,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       storage: storageRef,
       url: urlRef,
       smtp: smtpRef,
+      branding: brandingRef,
     }),
     []
   );
@@ -226,6 +241,8 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
         return { getConfig: getUrlConfig, updateConfig: updateUrlConfig };
       case 'smtp':
         return { getConfig: getSmtpConfig, updateConfig: updateSmtpConfig };
+      case 'branding':
+        return { getConfig: getBrandingConfig, updateConfig: updateBrandingConfig };
       default:
         return {
           getConfig: async () => null,
@@ -267,7 +284,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
       if (!stepData) return null;
       let isReasoning = false;
 
-      const { providerType, modelType, _provider, isMultimodal, contextLength, ...cleanConfig } = stepData;
+      const { providerType, modelType, isMultimodal, contextLength, ...cleanConfig } = stepData;
       if (configType === 'llm') {
         const llmData = stepData as LlmFormValues;
         isReasoning = Boolean(llmData.isReasoning);
@@ -663,6 +680,7 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
               storage: () => updateStorageConfig(state.formData),
               url: () => updateUrlConfig(state.formData),
               smtp: () => updateSmtpConfig(state.formData),
+              branding: () => updateBrandingConfig(state.formData),
             };
 
             const updateFn = updateFns[stepId as keyof typeof updateFns];
@@ -736,6 +754,23 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
     if (!step) return null;
 
     const { getConfig, updateConfig } = getServiceFunctions(step.id);
+
+    if (step.id === 'branding') {
+      return (
+        <div key={`${step.id}-${stepIndex}`}>
+          <Typography variant="subtitle1" gutterBottom sx={{ fontWeight: 600, mb: 1 }}>
+            {step.title}
+          </Typography>
+          {/* @ts-ignore */}
+          <BrandingForm
+            ref={formRefs.branding}
+            onSubmit={() => {}} // onSubmit is handled by the imperative handle save
+            getConfig={getConfig}
+            initialValues={undefined}
+          />
+        </div>
+      );
+    }
 
     return (
       <div key={`${step.id}-${stepIndex}`}>
@@ -848,10 +883,14 @@ const OnBoardingStepper: React.FC<OnBoardingStepperProps> = ({ open, onClose, on
         },
       }}
       onClose={(event, reason) => {
-        if (isSubmitting || reason === 'backdropClick' || reason === 'escapeKeyDown') {
+        if (isSubmitting) {
           return;
         }
-        onClose();
+        if (reason !== 'backdropClick' && reason !== 'escapeKeyDown') {
+          handleCloseWithStatus();
+        } else {
+          onClose(); // Still call the original onClose for backdrop/escape to ensure dialog closes
+        }
       }}
       maxWidth="md"
       fullWidth

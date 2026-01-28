@@ -49,7 +49,22 @@ export function responsiveFontSizes({ sm, md, lg }: { sm: number; md: number; lg
  * Converts a hex color to RGB channels
  */
 export function hexToRgbChannel(hex: string) {
+  // Handle RGB format: rgb(r, g, b)
+  if (hex.startsWith('rgb')) {
+    const rgbValues = hex.match(/\d+/g);
+    if (rgbValues && rgbValues.length >= 3) {
+      return `${rgbValues[0]} ${rgbValues[1]} ${rgbValues[2]}`;
+    }
+  }
+
   if (!/^#[0-9A-F]{6}$/i.test(hex)) {
+    // If it's a 3-digit hex, expand it
+    if (/^#[0-9A-F]{3}$/i.test(hex)) {
+      const r = parseInt(hex.charAt(1) + hex.charAt(1), 16);
+      const g = parseInt(hex.charAt(2) + hex.charAt(2), 16);
+      const b = parseInt(hex.charAt(3) + hex.charAt(3), 16);
+      return `${r} ${g} ${b}`;
+    }
     throw new Error(`Invalid hex color: ${hex}`);
   }
 

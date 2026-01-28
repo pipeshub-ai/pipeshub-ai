@@ -1,10 +1,10 @@
 import type { Theme } from '@mui/material/styles';
 import type { SettingsState } from 'src/components/settings';
 
-import { experimental_extendTheme as extendTheme } from '@mui/material/styles';
+import { darken, lighten, experimental_extendTheme as extendTheme } from '@mui/material/styles';
 
-import { setFont } from './styles/utils';
 import { overridesTheme } from './overrides-theme';
+import { setFont, createPaletteChannel } from './styles/utils';
 import { shadows, typography, components, colorSchemes, customShadows } from './core';
 import { updateCoreWithSettings, updateComponentsWithSettings } from './with-settings/update-theme';
 
@@ -12,12 +12,61 @@ import type { ThemeLocaleComponents } from './types';
 
 // ----------------------------------------------------------------------
 
+export type BrandingConfig = {
+  primaryColor?: string;
+  secondaryColor?: string;
+  fontFamily?: string;
+  // logoUrl and companyName are handled in components
+};
+
 export function createTheme(
   localeComponents: ThemeLocaleComponents,
-  settings: SettingsState
+  settings: SettingsState,
+  branding?: BrandingConfig
 ): Theme {
+  // Generate palette overrides from branding
+  const brandingPalette: any = {};
+
+  if (branding?.primaryColor) {
+    const main = branding.primaryColor;
+    brandingPalette.primary = createPaletteChannel({
+      lighter: lighten(main, 0.8),
+      light: lighten(main, 0.4),
+      main,
+      dark: darken(main, 0.2),
+      darker: darken(main, 0.5),
+      contrastText: '#ffffff', // Simplified
+    });
+  }
+
+  if (branding?.secondaryColor) {
+    const main = branding.secondaryColor;
+    brandingPalette.secondary = createPaletteChannel({
+      lighter: lighten(main, 0.8),
+      light: lighten(main, 0.4),
+      main,
+      dark: darken(main, 0.2),
+      darker: darken(main, 0.5),
+      contrastText: '#ffffff',
+    });
+  }
+
   const initialTheme = {
-    colorSchemes,
+    colorSchemes: {
+      ...colorSchemes,
+      light: {
+        palette: {
+          ...colorSchemes.light?.palette,
+          ...brandingPalette,
+        },
+      },
+      dark: {
+        palette: {
+          ...colorSchemes.dark?.palette,
+          ...brandingPalette,
+        },
+      },
+    },
     shadows: shadows(settings.colorScheme),
     customShadows: customShadows(settings.colorScheme),
     direction: settings.direction,
@@ -25,7 +74,7 @@ export function createTheme(
     components,
     typography: {
       ...typography,
-      fontFamily: setFont(settings.fontFamily),
+      fontFamily: setFont(branding?.fontFamily || settings.fontFamily),
     },
     cssVarPrefix: '',
     shouldSkipGeneratingVar,

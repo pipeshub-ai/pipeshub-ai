@@ -13,6 +13,7 @@ import IconButton, { iconButtonClasses } from '@mui/material/IconButton';
 import { useBoolean } from 'src/hooks/use-boolean';
 
 import { useAdmin } from 'src/context/AdminContext';
+import { getBrandingConfig } from 'src/pages/dashboard/configuration-stepper/services/config-services';
 
 import { Iconify } from 'src/components/iconify';
 import { useSettingsContext } from 'src/components/settings';
@@ -27,14 +28,15 @@ import { layoutClasses } from '../classes';
 import { NavHorizontal } from './nav-horizontal';
 import { useAccountMenu } from '../config-nav-account'; // Import the hook instead of the static array
 
+import { NavVertical } from './nav-vertical';
 import { MenuButton } from '../components/menu-button';
 import { LayoutSection } from '../core/layout-section';
 import { HeaderSection } from '../core/header-section';
 import { StyledDivider, useNavColorVars } from './styles';
 import { AccountDrawer } from '../components/account-drawer';
 import { getDashboardNavData } from '../config-nav-dashboard';
-import {ThemeToggleButton } from '../components/theme-toggle-button';
-   
+import { ThemeToggleButton } from '../components/theme-toggle-button';
+
 // ----------------------------------------------------------------------
 
 export type DashboardLayoutProps = {
@@ -77,7 +79,22 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
       try {
         const orgId = await getOrgIdFromToken();
         if (isBusiness) {
-          const logoUrl = await getOrgLogo(orgId);
+          // Try fetching Organization-specific logo first
+          let logoUrl = await getOrgLogo(orgId);
+
+          // Fallback to System/Platform Branding (Onboarding) if no Org logo
+          if (!logoUrl) {
+            try {
+              const brandingConfig = await getBrandingConfig();
+              const { logoUrl: systemLogo } = brandingConfig || {};
+              if (systemLogo) {
+                logoUrl = systemLogo;
+              }
+            } catch (e) {
+              console.error('Failed to fetch fallback branding config', e);
+            }
+          }
+
           setCustomLogo(logoUrl);
         }
       } catch (err) {
@@ -87,6 +104,27 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
 
     fetchLogo();
   }, [isBusiness]);
+
+  const renderSidebar = (
+    <NavVertical
+      data={navData}
+      isNavMini={isNavMini}
+      layoutQuery={layoutQuery}
+      onToggleNav={() => settings.onUpdate({ navLayout: isNavMini ? 'vertical' : 'mini' })}
+      slots={{
+        topArea: customLogo ? (
+          <Box sx={{ pl: 3.5, pt: 2.5, pb: 1 }}>
+            <Box
+              component="img"
+              src={customLogo}
+              alt="Logo"
+              sx={{ width: 40, height: 40, objectFit: 'contain' }}
+            />
+          </Box>
+        ) : undefined,
+      }}
+    />
+  );
 
   return (
     <LayoutSection
@@ -108,8 +146,6 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   [theme.breakpoints.up(layoutQuery)]: {
                     height: 'var(--layout-nav-horizontal-height)',
                   },
-                   borderBottom: `1px solid ${theme.palette.divider}`,
-                boxShadow: theme.shadows[1],
                 }),
               },
             },
@@ -141,6 +177,18 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   open={mobileNavOpen.value}
                   onClose={mobileNavOpen.onFalse}
                   cssVars={navColorVars.section}
+                  slots={{
+                    topArea: customLogo ? (
+                      <Box sx={{ pl: 3.5, pt: 2.5, pb: 1 }}>
+                        <Box
+                          component="img"
+                          src={customLogo}
+                          alt="Logo"
+                          sx={{ width: 40, height: 40, objectFit: 'contain' }}
+                        />
+                      </Box>
+                    ) : undefined,
+                  }}
                 />
                 {/* -- Logo -- */}
                 {isNavHorizontal && customLogo ? (
@@ -238,6 +286,10 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
        * Footer
        *************************************** */
       footerSection={null}
+      /** **************************************
+       * Sidebar
+       *************************************** */
+      sidebarSection={isNavHorizontal ? null : renderSidebar}
       /** **************************************
        * Style
        *************************************** */

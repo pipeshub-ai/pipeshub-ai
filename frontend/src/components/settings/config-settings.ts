@@ -15,4 +15,5 @@ export const defaultSettings: SettingsState = {
   navColor: 'integrate',
   compactLayout: true,
   fontFamily: defaultFont,
+  customPrimaryColor: '#0C68E9',
 } as const;

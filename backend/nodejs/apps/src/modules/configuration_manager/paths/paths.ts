@@ -65,5 +65,6 @@ export const configPaths = {
   },
   platform: {
     settings: '/services/platform/settings',
+    branding: '/services/platform/branding',
   },
 };
