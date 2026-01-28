@@ -8,12 +8,8 @@ from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from kiota_abstractions.base_request_configuration import RequestConfiguration
 from msgraph.generated.models.message_collection_response import (
     MessageCollectionResponse,
-)
-from msgraph.generated.users.item.mail_folders.item.messages.messages_request_builder import (
-    MessagesRequestBuilder,
 )
 
 from app.config.configuration_service import ConfigurationService
@@ -3139,7 +3135,7 @@ class OutlookConnector(BaseConnector):
             processed_count = 0
             next_link = None
 
-            self.logger.info(f"Gap Query: {gap_filter}")
+
 
             while True:
                 # Fetch page of historical messages
@@ -3184,31 +3180,36 @@ class OutlookConnector(BaseConnector):
             # If we have a next_link, use it directly
             if next_link:
                 # We use the raw client adapter to follow the next_link
-                # This assumes self.external_client.client exists (standard in this codebase)
-                request_info = self.external_client.client.request_adapter.request_info_factory.create_get_request_information(next_link)
-                response = await self.external_client.client.request_adapter.send_async(
+                # Using external_outlook_client.client to access the underlying Graph client
+                request_info = self.external_outlook_client.client.request_adapter.request_info_factory.create_get_request_information(next_link)
+                response = await self.external_outlook_client.client.request_adapter.send_async(
                     request_info,
                     MessageCollectionResponse,
                     {}
                 )
+
+                # Parse response from Kiota model
+                messages = response.value if response and response.value else []
+                new_next_link = response.odata_next_link if response and response.odata_next_link else None
             else:
-                # Initial request using the Request Builder
-                query_params = MessagesRequestBuilder.MessagesRequestBuilderGetQueryParameters(
+                # Initial request using the Outlook DataSource wrapper
+                response_wrapper = await self.external_outlook_client.users_mail_folders_list_messages(
+                    user_id=user_id,
+                    mailFolder_id=folder_id,
                     filter=filter_str,
                     select=['id', 'subject', 'receivedDateTime', 'from', 'toRecipients', 'ccRecipients', 'bccRecipients', 'body', 'hasAttachments', 'conversationId', 'internetMessageId', 'conversationIndex', 'webLink', 'createdDateTime', 'lastModifiedDateTime', 'eTag'],
                     top=100,
                     orderby=['receivedDateTime DESC']
                 )
 
-                request_config = RequestConfiguration(query_parameters=query_params)
+                if not response_wrapper.success:
+                    self.logger.warning(f"Failed to fetch historical messages: {response_wrapper.error}")
+                    return {'messages': [], 'next_link': None}
 
-                response = await self.external_client.client.users.by_user_id(user_id).mail_folders.by_folder_id(folder_id).messages.get(
-                    request_configuration=request_config
-                )
-
-            # Parse response
-            messages = response.value if response and response.value else []
-            new_next_link = response.odata_next_link if response and response.odata_next_link else None
+                # Parse response from wrapper
+                data = response_wrapper.data or {}
+                messages = data.get('value', [])
+                new_next_link = data.get('odata_next_link')
 
             return {
                 'messages': messages,
