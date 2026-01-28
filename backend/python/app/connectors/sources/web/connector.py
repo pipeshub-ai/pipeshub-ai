@@ -1,8 +1,12 @@
 import asyncio
+import base64
 import hashlib
+import os
 import uuid
+from datetime import datetime
 from io import BytesIO
 from logging import Logger
+from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -429,6 +433,8 @@ class WebConnector(BaseConnector):
                         # Get text content
                         text_content = soup.get_text(separator='\n', strip=True)
 
+                        self.logger.debug(f"text_content: {text_content}")
+
                         # Store cleaned HTML for indexing
                         content_bytes = text_content.encode('utf-8')
                         size_in_bytes = len(content_bytes)
@@ -698,11 +704,140 @@ class WebConnector(BaseConnector):
                 content_bytes = await response.read()
                 mime_type = record.mime_type or "text/html"
 
-                # For PDF and other binary formats, return as-is
-                # For other text formats (JSON, XML, TXT), return as-is
+                # Process HTML content: parse, clean, and convert images to base64
+                cleaned_html_content = None
+                if "html" in mime_type.lower():
+                    try:
+                        # Parse HTML with BeautifulSoup
+                        html_content = content_bytes.decode('utf-8')
+                        soup = BeautifulSoup(html_content, 'html.parser')
+
+                        # Remove unwanted tags (script, style, noscript, iframe)
+                        for tag in soup(["script", "style", "noscript", "iframe"]):
+                            tag.decompose()
+
+                        # Process images: download and convert to base64
+                        images = soup.find_all('img')
+                        for img in images:
+                            src = img.get('src')
+                            if not src:
+                                continue
+
+                            # Skip if already a data URI
+                            if "data:image" in src:
+                                continue
+
+                            try:
+                                # Convert relative URLs to absolute
+                                if not src.startswith(('http:', 'https:')):
+                                    absolute_url = urljoin(record.weburl, src)
+                                else:
+                                    absolute_url = src
+
+                                # Download the image
+                                async with self.session.get(absolute_url, headers=headers) as img_response:
+                                    if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
+                                        self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
+                                        continue
+
+                                    img_bytes = await img_response.read()
+                                    if not img_bytes:
+                                        continue
+
+                                    # Determine content type
+                                    content_type = img_response.headers.get('Content-Type', 'image/jpeg')
+                                    # Fallback to extension-based type if header is missing
+                                    if not content_type or content_type == 'application/octet-stream':
+                                        parsed_img_url = urlparse(absolute_url)
+                                        path_lower = parsed_img_url.path.lower()
+                                        if path_lower.endswith('.png'):
+                                            content_type = 'image/png'
+                                        elif path_lower.endswith('.gif'):
+                                            content_type = 'image/gif'
+                                        elif path_lower.endswith('.webp'):
+                                            content_type = 'image/webp'
+                                        elif path_lower.endswith('.svg'):
+                                            content_type = 'image/svg+xml'
+                                        else:
+                                            content_type = 'image/jpeg'
+
+                                    # Convert to base64
+                                    b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                                    img['src'] = f"data:{content_type};base64,{b64_str}"
+
+                                    self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
+
+                            except Exception as img_error:
+                                self.logger.warning(f"⚠️ Failed to process image {src}: {img_error}")
+                                continue
+
+                        # Get cleaned HTML string
+                        cleaned_html_content = str(soup)
+
+                    except Exception as html_error:
+                        self.logger.warning(f"⚠️ Failed to parse/clean HTML: {html_error}")
+
+                # Save cleaned content to file
+                try:
+                    # Create Documents/web-cleaned-logs directory
+                    log_dir = Path.home() / "Documents" / "web-cleaned-logs"
+                    log_dir.mkdir(parents=True, exist_ok=True)
+
+                    # Generate filename from record ID and timestamp
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    safe_record_id = record.id.replace("-", "_")[:8] if record.id else "unknown"
+                    
+                    # Determine file extension based on mime_type
+                    if "html" in mime_type.lower():
+                        ext = ".html"
+                    elif "json" in mime_type.lower():
+                        ext = ".json"
+                    elif "xml" in mime_type.lower():
+                        ext = ".xml"
+                    elif "text" in mime_type.lower():
+                        ext = ".txt"
+                    elif "pdf" in mime_type.lower():
+                        ext = ".pdf"
+                    else:
+                        ext = ".txt"
+                    
+                    filename = f"{timestamp}_{safe_record_id}{ext}"
+                    file_path = log_dir / filename
+
+                    # Write content
+                    if cleaned_html_content:
+                        # Save cleaned HTML with base64 images
+                        file_path.write_text(cleaned_html_content, encoding='utf-8')
+                        self.logger.info(f"✅ Saved cleaned HTML with base64 images to: {file_path}")
+                    elif mime_type.startswith("text/") or "html" in mime_type.lower() or "json" in mime_type.lower() or "xml" in mime_type.lower():
+                        # Try to decode as UTF-8 for text content
+                        try:
+                            content_text = content_bytes.decode('utf-8')
+                            file_path.write_text(content_text, encoding='utf-8')
+                        except UnicodeDecodeError:
+                            # Fallback: try other encodings or save as binary
+                            try:
+                                content_text = content_bytes.decode('latin-1')
+                                file_path.write_text(content_text, encoding='utf-8')
+                            except Exception:
+                                file_path.write_bytes(content_bytes)
+                    else:
+                        # For binary content, save as-is
+                        file_path.write_bytes(content_bytes)
+
+                    if not cleaned_html_content:
+                        self.logger.info(f"✅ Saved streamed content to: {file_path}")
+                except Exception as save_error:
+                    self.logger.warning(f"⚠️ Failed to save content to file: {save_error}")
+
+                # Use cleaned HTML content if available, otherwise use original content
+                if cleaned_html_content:
+                    response_content = cleaned_html_content.encode('utf-8')
+                else:
+                    response_content = content_bytes
 
                 return StreamingResponse(
-                    BytesIO(content_bytes),
+                    BytesIO(response_content),
                     media_type=mime_type,
                     headers={
                         "Content-Disposition": f"inline; filename={record.record_name}"
