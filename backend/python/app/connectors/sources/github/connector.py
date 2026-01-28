@@ -79,12 +79,6 @@ from app.sources.external.github.github_ import GitHubDataSource
 AUTHORIZE_URL = "https://github.com/login/oauth/authorize"
 TOKEN_URL = "https://github.com/login/oauth/access_token"
 
-type_to_mime={
-    "pdf":MimeTypes.PDF.value,
-    "docx":MimeTypes.DOCX.value,
-    "xlsx":MimeTypes.XLSX.value,
-    "pptx":MimeTypes.PPTX.value,
-}
 
 @dataclass
 class RecordUpdate:
@@ -1072,9 +1066,6 @@ class GithubConnector(BaseConnector):
                 self.logger.warning(f"Skipping attachment due to missing URL or name: {attach}")
                 continue
 
-            if attachment_type.lower() not in type_to_mime:
-                self.logger.warning(f"Skipping attachment due to unsupported type: {attachment_type}")
-                continue
             existing_record = None
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
@@ -1098,8 +1089,8 @@ class GithubConnector(BaseConnector):
                 parent_external_record_id=record.external_record_id,
                 parent_record_type=record.record_type,
                 external_record_group_id=record.external_record_group_id,
-                mime_type=type_to_mime.get(attachment_type,MimeTypes.UNKNOWN.value),
-                extension=attachment_type,
+                mime_type=getattr(MimeTypes, attachment_type.upper(), MimeTypes.UNKNOWN).value,
+                extension=attachment_type.lower(),
                 is_file=True,
                 inherit_permissions=True,
                 preview_renderable=True,
