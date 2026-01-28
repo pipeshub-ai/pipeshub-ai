@@ -221,6 +221,17 @@ class OutlookCredentials:
 class OutlookConnector(BaseConnector):
     """Microsoft Outlook connector for syncing emails and attachments."""
 
+    # Message field constants for API requests
+    MESSAGE_FIELDS = [
+        'id', 'subject', 'receivedDateTime', 'from', 'toRecipients',
+        'ccRecipients', 'bccRecipients', 'body', 'hasAttachments',
+        'conversationId', 'internetMessageId', 'conversationIndex',
+        'webLink', 'createdDateTime', 'lastModifiedDateTime', 'eTag'
+    ]
+
+    # Batch size for processing records
+    BATCH_SIZE = 50
+
     def __init__(
         self,
         logger: Logger,
@@ -1759,33 +1770,14 @@ class OutlookConnector(BaseConnector):
 
             self.logger.info(f"Retrieved {len(messages)} new message changes from folder '{folder_name}'")
 
+
             if messages:
-                # Collect all updates
-                all_updates = []
-                for message in messages:
-                    record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
-                    all_updates.extend(record_updates)
+                # Process and save messages using helper method
+                count = await self._process_and_save_messages(
+                    messages, org_id, user, folder_id, folder_name, mail_records_collector=mail_records
+                )
+                processed_count += count
 
-                # Process records in batches
-                batch_records = []
-                batch_size = 50
-
-                for update in all_updates:
-                    if update and update.record:
-                        permissions = update.new_permissions or []
-                        batch_records.append((update.record, permissions))
-
-                        if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
-                            mail_records.append(update.record)
-
-                    if len(batch_records) >= batch_size:
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        processed_count += len(batch_records)
-                        batch_records = []
-
-                if batch_records:
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    processed_count += len(batch_records)
 
             # 5. Update Sync Point
             # Fix: Handle case where filter might be None
@@ -3116,6 +3108,62 @@ class OutlookConnector(BaseConnector):
         except Exception:
             return ""
 
+    async def _process_and_save_messages(
+        self,
+        messages: List,
+        org_id: str,
+        user: AppUser,
+        folder_id: str,
+        folder_name: str,
+        mail_records_collector: Optional[List[Record]] = None
+    ) -> int:
+        """
+        Process messages and save them in batches.
+
+        Args:
+            messages: List of message objects to process
+            org_id: Organization ID
+            user: User object
+            folder_id: Folder ID
+            folder_name: Folder name
+            mail_records_collector: Optional list to collect mail records
+
+        Returns:
+            Number of records processed
+        """
+        # Collect all updates
+        all_updates = []
+        for message in messages:
+            record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
+            all_updates.extend(record_updates)
+
+        # Process records in batches
+        batch_records = []
+        processed_count = 0
+
+        for update in all_updates:
+            if update and update.record:
+                permissions = update.new_permissions or []
+                batch_records.append((update.record, permissions))
+
+                # If caller wants to collect mail records, add to collector
+                if mail_records_collector is not None:
+                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
+                        mail_records_collector.append(update.record)
+
+            if len(batch_records) >= self.BATCH_SIZE:
+                await self.data_entities_processor.on_new_records(batch_records)
+                processed_count += len(batch_records)
+                batch_records = []
+
+        # Process remaining records
+        if batch_records:
+            await self.data_entities_processor.on_new_records(batch_records)
+            processed_count += len(batch_records)
+
+        return processed_count
+
+
 
     async def _fetch_historical_gap(
         self, user_id: str, folder_id: str, folder_name: str, org_id: str, user: AppUser, start_ts: int, end_ts: int
@@ -3146,23 +3194,11 @@ class OutlookConnector(BaseConnector):
                 if not messages:
                     break
 
-                # Reuse existing processing logic
-                all_updates = []
-                for message in messages:
-                    record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
-                    all_updates.extend(record_updates)
-
-                # Batch save
-                batch_records = []
-                for update in all_updates:
-                    if update and update.record:
-                        batch_records.append((update.record, update.new_permissions or []))
-                        if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
-                            all_gap_records.append(update.record)
-
-                if batch_records:
-                    await self.data_entities_processor.on_new_records(batch_records)
-                    processed_count += len(batch_records)
+                # Process and save messages using helper method
+                count = await self._process_and_save_messages(
+                    messages, org_id, user, folder_id, folder_name, mail_records_collector=all_gap_records
+                )
+                processed_count += count
 
                 if not next_link:
                     break
@@ -3170,7 +3206,7 @@ class OutlookConnector(BaseConnector):
             return processed_count, all_gap_records
         except Exception as e:
             self.logger.error(f"Error in gap fill fetch: {e}", exc_info=True)
-            raise e
+            raise
 
     async def _get_historical_messages_page(self, user_id: str, folder_id: str, filter_str: str, next_link: Optional[str] = None) -> Dict:
         """
@@ -3197,7 +3233,7 @@ class OutlookConnector(BaseConnector):
                     user_id=user_id,
                     mailFolder_id=folder_id,
                     filter=filter_str,
-                    select=['id', 'subject', 'receivedDateTime', 'from', 'toRecipients', 'ccRecipients', 'bccRecipients', 'body', 'hasAttachments', 'conversationId', 'internetMessageId', 'conversationIndex', 'webLink', 'createdDateTime', 'lastModifiedDateTime', 'eTag'],
+                    select=self.MESSAGE_FIELDS,
                     top=100,
                     orderby=['receivedDateTime DESC']
                 )
