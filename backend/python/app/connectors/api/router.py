@@ -774,7 +774,7 @@ async def stream_record(
 
         try:
             logger.info("Stream Record called at router")
-            logger.info(f"Connector: {connector_name} connector_id: {container.connectors_map}")
+            logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
             connector_obj: BaseConnector = container.connectors_map[connector_id]
             if not connector_obj:
                 raise HTTPException(
