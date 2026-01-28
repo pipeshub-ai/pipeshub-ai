@@ -65,6 +65,7 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.models.entities import Record
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
@@ -81,7 +82,7 @@ logger = create_logger("connector_service")
 router = APIRouter()
 
 
-def get_mime_type_from_record(record: Any) -> str:
+def get_mime_type_from_record(record: Record) -> str:
     """
     Get the MIME type for a record, using the following priority:
     1. Record's stored mime_type attribute
