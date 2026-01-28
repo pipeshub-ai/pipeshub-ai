@@ -186,7 +186,10 @@ class ConnectorFactory:
 
         if connector:
             try:
-                await connector.init()
+                success = await connector.init()
+                if not success:
+                    logger.error(f"❌ Failed to initialize {name} {connector_id} connector")
+                    return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:

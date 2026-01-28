@@ -2,7 +2,7 @@ from dependency_injector import containers, providers
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
-from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
@@ -35,7 +35,7 @@ class ConnectorAppContainer(BaseAppContainer):
     # Override logger with service-specific name
     logger = providers.Singleton(create_logger, "connector_service")
     container_utils = ContainerUtils()
-    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    key_value_store = providers.Singleton(EncryptedKeyValueStore, logger=logger)
 
     # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)

@@ -45,16 +45,16 @@ export class InMemoryKeyValueStore<T> implements DistributedKeyValueStore<T> {
 
   async compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
     const currentValue = this.store.get(key) ?? null;
-    
+
     // Compare current value with expected value
     // For null comparison, check if both are null
     if (expectedValue === null && currentValue === null) {
       this.store.set(key, newValue);
       return true;
     }
-    
+
     // For non-null values, perform comparison
-    // Use JSON.stringify for deep equality of objects/arrays, 
+    // Use JSON.stringify for deep equality of objects/arrays,
     // or strict equality for primitives
     let valuesMatch = false;
     if (currentValue === expectedValue) {
@@ -74,13 +74,21 @@ export class InMemoryKeyValueStore<T> implements DistributedKeyValueStore<T> {
         valuesMatch = false;
       }
     }
-    
+
     if (valuesMatch) {
       this.store.set(key, newValue);
       return true;
     }
-    
+
     // Values don't match, CAS failed
     return false;
+  }
+
+  /**
+   * Health check for in-memory store.
+   * Always returns true since the store is in-memory and always available.
+   */
+  async healthCheck(): Promise<boolean> {
+    return true;
   }
 }
