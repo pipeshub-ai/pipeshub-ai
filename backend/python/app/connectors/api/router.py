@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import mimetypes
 import os
 import tempfile
 import time
@@ -64,6 +65,7 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.models.entities import Record
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
@@ -78,6 +80,33 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = create_logger("connector_service")
 
 router = APIRouter()
+
+
+def get_mime_type_from_record(record: Record) -> str:
+    """
+    Get the MIME type for a record, using the following priority:
+    1. Record's stored mime_type attribute
+    2. Guess from record_name or name extension using mimetypes module
+    3. Fallback to application/octet-stream
+
+    Args:
+        record: The record object
+    Returns:
+        str: The MIME type
+    """
+    # Try to get mime_type from record
+    if hasattr(record, 'mime_type') and record.mime_type:
+        return record.mime_type
+
+    # Try to guess from record_name or name attribute
+    record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None)
+    if record_name:
+        guessed_type, _ = mimetypes.guess_type(record_name)
+        if guessed_type:
+            return guessed_type
+
+    # Fallback to octet-stream
+    return "application/octet-stream"
 
 
 async def _stream_google_api_request(request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
@@ -601,7 +630,9 @@ async def stream_record_internal(
             else:
                 buffer = response['data']
 
-            return Response(content=buffer or b'', media_type="application/octet-stream")
+            # Get the correct MIME type from the record
+            mime_type = get_mime_type_from_record(record)
+            return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
         connector = container.connectors_map[connector_id]
@@ -815,7 +846,9 @@ async def stream_record(
             else:
                 buffer = response['data']
 
-            return Response(content=buffer or b'', media_type="application/octet-stream")
+            # Get the correct MIME type from the record
+            mime_type = get_mime_type_from_record(record)
+            return Response(content=buffer or b'', media_type=mime_type)
 
         try:
             connector_obj: BaseConnector = container.connectors_map[connector_id]
