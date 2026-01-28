@@ -1236,7 +1236,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
               color: theme.palette.primary.main,
               onClick: () =>
                 handleDownload(
-                  node.origin === ORIGIN.UPLOAD ? node.externalRecordId! : node.id,
+                  node.origin === ORIGIN.UPLOAD ? node.externalRecordId ?? node.id : node.id,
                   node.name
                 ),
             });

@@ -2,6 +2,7 @@
 import { useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Box } from '@mui/material';
+import { paths } from 'src/routes/paths';
 import AllRecordsView from './components/all-records-view';
 
 export default function AllRecordsPage() {
@@ -30,7 +31,7 @@ export default function AllRecordsPage() {
         newParams.set(key, value);
       }
     });
-    navigate(`/all-records?${newParams.toString()}`, { replace: true });
+    navigate(`${paths.dashboard.allRecords}?${newParams.toString()}`, { replace: true });
   }, [navigate]);
   
   const handleNavigateToRecord = (recordId: string) => {
@@ -53,8 +54,6 @@ export default function AllRecordsPage() {
           connectorIds: connectorIds?.split(',').filter(Boolean) || [],
           kbIds: kbIds?.split(',').filter(Boolean) || [],
           indexingStatus: indexingStatus?.split(',').filter(Boolean) || [],
-          sortBy,
-          sortOrder: sortOrder as 'asc' | 'desc' | undefined,
         }}
         onUpdateUrl={updateUrl}
         onNavigateToRecord={handleNavigateToRecord}
