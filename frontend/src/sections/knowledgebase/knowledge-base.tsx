@@ -28,7 +28,6 @@ import UploadManager from './upload-manager';
 import { useRouter } from './hooks/use-router';
 import { KnowledgeBaseAPI } from './services/api';
 import DashboardComponent from './components/dashboard';
-import AllRecordsView from './components/all-records-view';
 import { EditFolderDialog } from './components/dialogs/edit-dialogs';
 import { CreateFolderDialog, DeleteConfirmDialog } from './components/dialogs';
 import KbPermissionsDialog from './components/dialogs/kb-permissions-dialog';
@@ -424,13 +423,6 @@ export default function KnowledgeBaseComponent() {
 
       if (stableRoute.view === 'dashboard') {
         // Reset to dashboard state
-        currentKBRef.current = null;
-        setCurrentKB(null);
-        setNavigationPath([]);
-        setCurrentUserPermission(null);
-        setPermissions([]);
-      } else if (stableRoute.view === 'all-records') {
-        // Handle all-records view - no specific KB needed
         currentKBRef.current = null;
         setCurrentKB(null);
         setNavigationPath([]);
@@ -965,15 +957,7 @@ export default function KnowledgeBaseComponent() {
       )}
 
       <ContentArea>
-        {stableRoute.view === 'all-records' ? (
-          <AllRecordsView
-            key="all-records"
-            onNavigateBack={navigateToDashboard}
-            onNavigateToRecord={(recordId) => {
-              window.open(`/record/${recordId}`, '_blank', 'noopener,noreferrer');
-            }}
-          />
-        ) : stableRoute.view === 'dashboard' ? (
+        {stableRoute.view === 'dashboard' ? (
           <DashboardComponent
             key="dashboard"
             theme={theme}

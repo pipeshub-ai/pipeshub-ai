@@ -8,6 +8,7 @@ import gridViewIcon from '@iconify-icons/mdi/view-grid-outline';
 import listViewIcon from '@iconify-icons/mdi/format-list-bulleted';
 import teamIcon from '@iconify-icons/mdi/account-group';
 import React, { memo, useRef, useMemo, useState, useEffect, useCallback } from 'react';
+import { useNavigate as useRouterNavigate } from 'react-router-dom';
 
 import {
   Box,
@@ -105,6 +106,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
   isInitialized,
   navigate,
 }) => {
+  const routerNavigate = useRouterNavigate();
   const [viewMode, setViewMode] = useState<ViewMode>('grid');
   const [searchQuery, setSearchQuery] = useState<string>('');
 
@@ -531,7 +533,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
             <Button
               variant="outlined"
               startIcon={<Icon icon={databaseIcon} fontSize={14} />}
-              onClick={() => navigate({ view: 'all-records' })}
+              onClick={() => routerNavigate('/all-records')}
               sx={{
                 height: 32,
                 px: 1.5,

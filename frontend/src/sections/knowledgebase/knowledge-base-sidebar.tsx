@@ -547,6 +547,7 @@ export default function KnowledgeBaseSideBar({
       app: 0,
       permissions: 0,
       kb: 0,
+      nodeTypes: 0,
     };
 
     // Calculate counts from local filters to prevent UI flicker

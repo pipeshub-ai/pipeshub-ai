@@ -2440,7 +2440,7 @@ class BaseArangoService:
                     }
 
                 user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key)
-                if user_role not in ["OWNER", "WRITER", "READER"]:
+                if not user_role:
                     return {
                         "success": False,
                         "code": 403,
@@ -2455,7 +2455,7 @@ class BaseArangoService:
                 permission_result = await self._check_record_permissions(record_id, user_key)
                 user_role = permission_result.get("permission")
 
-                if not user_role or user_role not in ["OWNER", "WRITER","READER"]:
+                if not user_role:
                     return {
                         "success": False,
                         "code": 403,

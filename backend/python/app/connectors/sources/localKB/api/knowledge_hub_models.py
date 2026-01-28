@@ -177,6 +177,8 @@ class FilterOption(BaseModel):
     id: str = Field(..., description="Filter ID value to send in requests")
     label: str = Field(..., description="Display label for the filter")
     type: Optional[str] = Field(None, description="Additional type information (e.g., connector type for apps)")
+    iconPath: Optional[str] = Field(None, description="SVG icon path from assets folder")
+    connectorType: Optional[str] = Field(None, description="Connector type/name (for connectors only)")
 
 
 class AvailableFilters(BaseModel):
