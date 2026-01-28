@@ -246,6 +246,10 @@ class OutlookConnector(BaseConnector):
     RATE_LIMIT_REQUESTS = 50
     RATE_LIMIT_PERIOD = 1
 
+    # User cache limits
+    USER_CACHE_MAX_SIZE = 10000
+    USER_CACHE_EVICTION_RATIO = 0.2
+
     def __init__(
         self,
         logger: Logger,
@@ -271,6 +275,7 @@ class OutlookConnector(BaseConnector):
         # User cache for performance optimization
         self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
         self._user_cache_timestamp: Optional[int] = None
+        self._user_cache_max_size: int = self.USER_CACHE_MAX_SIZE
         self._user_cache_ttl: int = self.USER_CACHE_TTL_SECONDS
 
         self.email_delta_sync_point = SyncPoint(
@@ -423,10 +428,18 @@ class OutlookConnector(BaseConnector):
             user_id = await self._fetch_single_user_by_email(email)
 
             if user_id:
-                # Add to cache
+                # Add to cache with limit check
+                if len(self._user_cache) >= self._user_cache_max_size:
+                    # Simple eviction: Clear a portion of cache to make room
+                    eviction_count = int(self._user_cache_max_size * self.USER_CACHE_EVICTION_RATIO)
+                    keys_to_remove = list(self._user_cache.keys())[:eviction_count]
+                    for k in keys_to_remove:
+                        del self._user_cache[k]
+                    self.logger.info(f"User cache limit reached. Evicted {len(keys_to_remove)} entries.")
+
                 self._user_cache[email_lower] = user_id
                 return user_id
-            
+
             return None
 
         except Exception as e:
@@ -456,7 +469,7 @@ class OutlookConnector(BaseConnector):
                     users = self._safe_get_attr(response.data, 'value', [])
                     if users:
                         return self._safe_get_attr(users[0], 'id')
-            
+
             return None
 
         except Exception as e:
@@ -1849,12 +1862,12 @@ class OutlookConnector(BaseConnector):
             # If filter applied, use the minimum of current and stored (track earliest ever)
             # Important: If gap fill FAILED, we must NOT update the state to the new, earlier timestamp,
             # because we missed the data in between. We should keep the OLD (later) timestamp.
-            
+
             if gap_fill_failed:
                 # If gap fill failed, we pretend we didn't expand the filter yet
                 state_filter_ts = stored_filter_start_ts
                 self.logger.warning(f"Gap fill failed - retaining previous filter timestamp for '{folder_name}' to retry later")
-            
+
             elif current_filter_start_ts is not None:
                 if stored_filter_start_ts is not None:
                     state_filter_ts = min(current_filter_start_ts, stored_filter_start_ts)
@@ -1944,22 +1957,7 @@ class OutlookConnector(BaseConnector):
                     saved_delta_link=delta_link,
                     page_size=self.API_PAGE_SIZE,
                     filter=filter_string,
-                    select = [
-                        'id',
-                        'subject',
-                        'hasAttachments',
-                        'createdDateTime',
-                        'lastModifiedDateTime',
-                        'receivedDateTime',
-                        'webLink',
-                        'from',
-                        'toRecipients',
-                        'ccRecipients',
-                        'bccRecipients',
-                        'conversationId',
-                        'internetMessageId',
-                        'conversationIndex'
-                    ]
+                    select=self.MESSAGE_FIELDS
                 )
 
             # Apply client-side filtering for IS_BEFORE if needed
@@ -2372,7 +2370,7 @@ class OutlookConnector(BaseConnector):
                         status_code=400,
                         detail="Missing thread_id for group post. This may be an old record - please re-sync the connector to update group posts with required metadata."
                     )
-                
+
                 async with self.rate_limiter:
                     response = await self.external_outlook_client.groups_threads_get_post(
                         group_id=group_id,
