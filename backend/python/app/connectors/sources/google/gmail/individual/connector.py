@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import os
+import re
 import tempfile
 import uuid
 from logging import Logger
@@ -611,28 +612,98 @@ class GoogleGmailIndividualConnector(BaseConnector):
         payload = message.get('payload', {})
         parts = payload.get('parts', [])
         message_id = message.get('id')
+        logger = self.logger  # Capture logger for nested functions
+
+        def extract_drive_file_ids_from_content(body_data: str) -> List[str]:
+            """Extract Drive file IDs from base64-encoded body content.
+
+            Matches the pattern used in gmail_user_service.py get_file_ids method.
+            """
+            if not body_data:
+                return []
+            try:
+                decoded_data = base64.urlsafe_b64decode(body_data).decode('UTF-8')
+
+                # Match Drive file URLs: https://drive.google.com/file/d/{file_id}/view?usp=drive_web
+                # This matches the exact pattern used in gmail_user_service.py
+                file_ids = re.findall(
+                    r'https://drive\.google\.com/file/d/([^/]+)/view\?usp=drive_web',
+                    decoded_data
+                )
+
+                return file_ids
+            except Exception as e:
+                logger.warning(f"Failed to decode content for Drive file extraction: {str(e)}")
+                return []
+
+        def process_part_for_drive_files(part: Dict) -> List[str]:
+            """Recursively process parts to extract Drive file IDs from body content.
+
+            Matches the pattern used in gmail_user_service.py get_file_ids method.
+            """
+            if not isinstance(part, dict):
+                return []
+
+            file_ids = []
+
+            # Check for body data
+            body = part.get("body", {})
+            if isinstance(body, dict) and body.get("data"):
+                mime_type = part.get("mimeType", "")
+                if "text/html" in mime_type or "text/plain" in mime_type:
+                    file_ids.extend(extract_drive_file_ids_from_content(body["data"]))
+
+            # Recursively process nested parts
+            parts = part.get("parts", [])
+            if isinstance(parts, list):
+                for nested_part in parts:
+                    file_ids.extend(process_part_for_drive_files(nested_part))
+
+            return file_ids
 
         def extract_attachments(parts_list) -> List[Dict]:
             """Recursively extract attachments from message parts."""
             attachments = []
-            for part in parts_list:
-                # Check if this part is an attachment
-                if part.get('filename'):
-                    body = part.get('body', {})
-                    attachment_id = body.get('attachmentId')
-                    part_id = part.get('partId', 'unknown')
+            seen_drive_file_ids = set()  # Track to avoid duplicates
 
-                    if attachment_id:
+            for part in parts_list:
+                body = part.get('body', {})
+                part_id = part.get('partId', 'unknown')
+                mime_type = part.get('mimeType', '')
+
+                # Check if this part is a regular attachment (has filename)
+                if part.get('filename'):
+                    attachment_id = body.get('attachmentId')
+                    drive_file_id = body.get('driveFileId')  # For attachments >25MB
+
+                    # Handle Drive attachments (>25MB) with driveFileId in body
+                    if drive_file_id:
+                        seen_drive_file_ids.add(drive_file_id)
+                        # For Drive attachments, use driveFileId as external_record_id
+                        attachments.append({
+                            'attachmentId': None,  # Not available for Drive files
+                            'driveFileId': drive_file_id,  # Use Drive file ID
+                            'stableAttachmentId': drive_file_id,  # Use Drive ID as stable ID
+                            'partId': part_id,
+                            'filename': part.get('filename'),
+                            'mimeType': mime_type,
+                            'size': body.get('size', 0),
+                            'isDriveFile': True
+                        })
+                    # Handle regular attachments (≤25MB)
+                    elif attachment_id:
                         # Construct stable ID using message_id + partId
-                        stable_attachment_id = f"{message_id}_{part_id}"
+                        stable_attachment_id = f"{message_id}~{part_id}"
 
                         attachments.append({
                             'attachmentId': attachment_id,  # Volatile - for downloading
+                            'driveFileId': None,  # Not a Drive file
                             'stableAttachmentId': stable_attachment_id,  # Stable - for record ID
                             'partId': part_id,
                             'filename': part.get('filename'),
-                            'mimeType': part.get('mimeType', 'application/octet-stream'),
-                            'size': body.get('size', 0)
+                            'mimeType': mime_type,
+                            'size': body.get('size', 0),
+                            'isDriveFile': False
                         })
 
                 # Recursively check nested parts
@@ -641,7 +712,32 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             return attachments
 
+        # First, extract regular attachments (with filename) and Drive attachments with driveFileId in body
         attachment_infos = extract_attachments(parts)
+        seen_drive_file_ids = {att.get('driveFileId') for att in attachment_infos if att.get('driveFileId')}
+
+        # Then, extract Drive file IDs from message body content (matching gmail_user_service.py pattern)
+        # Start processing from the payload (matching gmail_user_service.py get_file_ids)
+        if isinstance(payload, dict):
+
+            all_drive_file_ids = process_part_for_drive_files(payload)
+            # Remove duplicates while preserving order (matching gmail_user_service.py)
+            unique_drive_file_ids = list(dict.fromkeys(all_drive_file_ids))
+
+            for drive_file_id in unique_drive_file_ids:
+                if drive_file_id and drive_file_id not in seen_drive_file_ids:
+                    seen_drive_file_ids.add(drive_file_id)
+                    attachment_infos.append({
+                        'attachmentId': None,  # Not available for Drive files
+                        'driveFileId': drive_file_id,  # Use Drive file ID
+                        'stableAttachmentId': drive_file_id,  # Use Drive ID as stable ID
+                        'partId': 'unknown',  # Not associated with a specific part
+                        'filename': None,  # Filename not available from link, will be fetched from Drive API
+                        'mimeType': 'application/vnd.google-apps.file',  # Default for Drive files
+                        'size': 0,  # Size not available from link, will be fetched from Drive API
+                        'isDriveFile': True
+                    })
+
         return attachment_infos
 
     async def _process_gmail_attachment(
@@ -657,21 +753,63 @@ class GoogleGmailIndividualConnector(BaseConnector):
         Args:
             user_email: Email of the user who owns the message
             message_id: ID of the parent message
-            attachment_info: Attachment metadata dict with attachmentId, filename, mimeType, size
+            attachment_info: Attachment metadata dict with attachmentId, driveFileId, filename, mimeType, size
             parent_mail_permissions: Permissions from parent mail (attachments inherit these)
 
         Returns:
             RecordUpdate object or None
         """
         try:
+
             attachment_id = attachment_info.get('attachmentId')
-            filename = attachment_info.get('filename', 'unnamed_attachment')
+            drive_file_id = attachment_info.get('driveFileId')
+            filename = attachment_info.get('filename') or 'unnamed_attachment'  # Handle None case
             mime_type = attachment_info.get('mimeType', 'application/octet-stream')
             size = attachment_info.get('size', 0)
             stable_attachment_id = attachment_info.get('stableAttachmentId')
+            is_drive_file = attachment_info.get('isDriveFile', False)
 
-            if not attachment_id or not stable_attachment_id:
+            # Must have either attachmentId (regular) or driveFileId (Drive)
+            if not stable_attachment_id:
                 return None
+
+            if not is_drive_file and not attachment_id:
+                return None
+
+            # For Drive files, always fetch metadata from Drive API
+            if is_drive_file and drive_file_id:
+                try:
+                    # Create Drive client for the user (individual connector)
+                    user_drive_client = await GoogleClient.build_from_services(
+                        service_name="drive",
+                        logger=self.logger,
+                        config_service=self.config_service,
+                        is_individual=True,  # Individual connector
+                        version="v3",
+                        connector_instance_id=self.connector_id
+                    )
+
+
+                    drive_service = user_drive_client.get_client()
+
+                    # Fetch file metadata
+                    file_metadata = drive_service.files().get(
+                        fileId=drive_file_id,
+                        fields="id,name,mimeType,size"
+                    ).execute()
+
+                    if file_metadata:
+                        filename = file_metadata.get("name", "unnamed_attachment")
+                        mime_type = file_metadata.get("mimeType", "application/octet-stream")
+                        size = int(file_metadata.get("size", 0))
+                        self.logger.info(
+                            f"✅ Fetched Drive file metadata for {drive_file_id}: {filename} ({size} bytes, {mime_type})"
+                        )
+                except Exception as e:
+                    self.logger.warning(
+                        f"⚠️ Failed to fetch Drive file metadata for {drive_file_id}: {str(e)}"
+                    )
+                    # Continue with existing values from attachment_info
 
             # Check for existing record
             existing_record = await self._get_existing_record(stable_attachment_id)
@@ -682,19 +820,21 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Extract file extension from filename
             extension = None
-            if '.' in filename:
+            if filename and '.' in filename:
                 extension = filename.rsplit('.', 1)[-1].lower()
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
             # Create FileRecord
+            # For Drive files, use driveFileId as external_record_id
+            # For regular attachments, use stable_attachment_id (message_id_partId)
             file_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=filename,
                 record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.MAILBOX,
-                external_record_id=stable_attachment_id,
+                external_record_id=stable_attachment_id,  # driveFileId for Drive files, stable ID for regular
                 parent_external_record_id=message_id,
                 parent_record_type=RecordType.MAIL,
                 version=0 if is_new else existing_record.version + 1,
@@ -720,8 +860,10 @@ class GoogleGmailIndividualConnector(BaseConnector):
             # Inherit parent mail permissions
             attachment_permissions = parent_mail_permissions
 
+            attachment_identifier = drive_file_id if is_drive_file else attachment_id
             self.logger.debug(
-                f"Processed attachment {attachment_id}: {filename} ({size} bytes)"
+                f"Processed attachment {attachment_identifier} ({'Drive' if is_drive_file else 'Gmail'}): "
+                f"{filename} ({size} bytes)"
             )
 
             return RecordUpdate(
@@ -737,7 +879,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             )
 
         except Exception as e:
-            self.logger.error(f"Error processing Gmail attachment {attachment_info.get('attachmentId', 'unknown')}: {e}")
+            attachment_identifier = attachment_info.get('driveFileId') or attachment_info.get('attachmentId', 'unknown')
+            self.logger.error(f"Error processing Gmail attachment {attachment_identifier}: {e}")
             return None
 
     async def _process_gmail_attachment_generator(
@@ -963,6 +1106,175 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 detail="Error converting file to PDF"
             )
 
+    async def _stream_from_drive(
+        self,
+        drive_file_id: str,
+        record: Record,
+        file_name: str,
+        mime_type: str,
+        convertTo: Optional[str] = None
+    ) -> StreamingResponse:
+        """
+        Stream a file from Google Drive (used for Drive attachments and as fallback).
+
+        Args:
+            drive_file_id: Google Drive file ID
+            record: Record object
+            file_name: Name of the file
+            mime_type: MIME type of the file
+            convertTo: Optional format to convert to (e.g., "application/pdf")
+
+        Returns:
+            StreamingResponse with file content
+        """
+        try:
+            # Create Drive client for the user (individual connector)
+            try:
+                user_drive_client = await GoogleClient.build_from_services(
+                    service_name="drive",
+                    logger=self.logger,
+                    config_service=self.config_service,
+                    is_individual=True,  # Individual connector
+                    version="v3",
+                    connector_instance_id=self.connector_id
+                )
+                drive_service = user_drive_client.get_client()
+                self.logger.info("Using user OAuth credentials for Drive access")
+            except Exception as e:
+                self.logger.warning(f"Failed to create Drive client: {e}, falling back to service account")
+                # Fallback to service account if user OAuth failed
+                if not self.config or "credentials" not in self.config:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="Credentials not available for Drive access"
+                    )
+
+                from google.oauth2 import service_account
+                credentials_json = self.config.get("credentials", {}).get("auth", {})
+                if not credentials_json:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="Service account credentials not found for Drive access"
+                    )
+
+                credentials = service_account.Credentials.from_service_account_info(
+                    credentials_json
+                )
+                drive_service = build("drive", "v3", credentials=credentials)
+                self.logger.info("Using service account credentials for Drive access")
+
+            if convertTo == MimeTypes.PDF.value:
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    temp_file_path = os.path.join(temp_dir, file_name)
+
+                    # Download from Drive to temp file
+                    with open(temp_file_path, "wb") as f:
+                        request = drive_service.files().get_media(
+                            fileId=drive_file_id
+                        )
+                        downloader = MediaIoBaseDownload(f, request)
+
+                        done = False
+                        while not done:
+                            status, done = downloader.next_chunk()
+                            self.logger.info(
+                                f"Download {int(status.progress() * 100)}%."
+                            )
+
+                    # Convert to PDF
+                    pdf_path = await self._convert_to_pdf(
+                        temp_file_path, temp_dir
+                    )
+                    return create_stream_record_response(
+                        open(pdf_path, "rb"),
+                        filename=f"{Path(file_name).stem}",
+                        mime_type="application/pdf",
+                        fallback_filename=f"record_{record.id}"
+                    )
+
+            # Use the same streaming logic as Drive downloads
+            async def file_stream() -> AsyncGenerator[bytes, None]:
+                buffer = io.BytesIO()
+                chunk_count = 0
+                total_bytes = 0
+                try:
+                    request = drive_service.files().get_media(
+                        fileId=drive_file_id
+                    )
+                    downloader = MediaIoBaseDownload(buffer, request)
+                    done = False
+
+                    self.logger.info(f"Starting Drive file stream for {drive_file_id}")
+
+                    while not done:
+                        try:
+                            status, done = downloader.next_chunk()
+                            progress = int(status.progress() * 100)
+                            self.logger.info(
+                                f"Download {progress}%."
+                            )
+
+                            buffer.seek(0)
+                            content = buffer.read()
+
+                            if content:  # Only yield if we have data
+                                chunk_count += 1
+                                total_bytes += len(content)
+                                self.logger.debug(
+                                    f"Yielding chunk {chunk_count}, size: {len(content)} bytes, total: {total_bytes} bytes"
+                                )
+                                yield content
+
+                            # Clear buffer for next chunk
+                            buffer.seek(0)
+                            buffer.truncate(0)
+
+                            # Yield control back to event loop
+                            await asyncio.sleep(0)
+
+                        except HttpError as http_error:
+                            self.logger.error(f"HTTP error during Drive download: {str(http_error)}")
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail=f"Error during Drive download: {str(http_error)}",
+                            )
+                        except Exception as chunk_error:
+                            self.logger.error(f"Error downloading chunk: {str(chunk_error)}")
+                            raise HTTPException(
+                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                detail="Error during Drive download",
+                            )
+
+                    self.logger.info(
+                        f"Drive file stream completed: {chunk_count} chunks, {total_bytes} total bytes"
+                    )
+
+                except Exception as stream_error:
+                    self.logger.error(f"Error in file stream: {str(stream_error)}", exc_info=True)
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="Error streaming file from Drive"
+                    )
+                finally:
+                    self.logger.debug(f"Closing buffer for Drive file {drive_file_id}")
+                    buffer.close()
+
+            return create_stream_record_response(
+                file_stream(),
+                filename=file_name,
+                mime_type=mime_type,
+                fallback_filename=f"record_{record.id}"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as drive_error:
+            self.logger.error(f"Failed to stream Drive file {drive_file_id}: {str(drive_error)}")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Failed to stream file from Drive: {str(drive_error)}"
+            )
+
     async def _stream_mail_record(
         self,
         gmail_service,
@@ -1047,7 +1359,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
         Args:
             gmail_service: Raw Gmail API service client
-            file_id: Attachment ID or combined messageId_partId
+            file_id: Attachment ID, Drive file ID, or combined messageId~partId
             record: Record object
             file_name: Name of the file
             mime_type: MIME type of the file
@@ -1056,6 +1368,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
         Returns:
             StreamingResponse with attachment content
         """
+        # Check if file_id is a Drive file ID (no tilde, typically longer alphanumeric)
+        # Drive file IDs don't contain tildes, while our stable IDs use messageId~partId format
+        print(f"\n\n\n\n\nfile_id: {file_id}")
+        is_drive_file = "~" not in file_id
+
+        if is_drive_file:
+            # This is a Drive file, use Drive API directly
+            self.logger.info(f"Detected Drive file ID: {file_id}, using Drive API")
+            return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
+
         # Get parent message record using parent_external_record_id
         message_id = None
         if record.parent_external_record_id:
@@ -1075,11 +1397,11 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 detail="Parent message not found for attachment"
             )
 
-        # Check if file_id is a combined ID (messageId_partId format)
+        # Check if file_id is a combined ID (messageId~partId format)
         actual_attachment_id = file_id
-        if "_" in file_id:
+        if "~" in file_id:
             try:
-                file_message_id, part_id = file_id.split("_", 1)
+                file_message_id, part_id = file_id.split("~", 1)
 
                 # Use the message_id from parent record, but validate it matches
                 if file_message_id != message_id:
@@ -1121,10 +1443,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error extracting attachment ID: {str(e)}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Invalid attachment ID format: {str(e)}"
-                )
+                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
 
         # Try to get the attachment from Gmail
         try:
@@ -1171,98 +1490,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Try Drive as fallback
             try:
-                # Get credentials from config for Drive service
-                if not self.config or "credentials" not in self.config:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Credentials not available for Drive fallback"
-                    )
-
-                # Build Drive service with same credentials
-                # Note: This assumes the same credentials can access Drive
-                # You may need to adjust this based on your credential structure
-                from google.oauth2 import service_account
-                credentials_json = self.config.get("credentials", {}).get("auth", {})
-                if not credentials_json:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Service account credentials not found for Drive fallback"
-                    )
-
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_json
-                )
-                drive_service = build("drive", "v3", credentials=credentials)
-
-                if convertTo == MimeTypes.PDF.value:
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        temp_file_path = os.path.join(temp_dir, file_name)
-
-                        # Download from Drive to temp file
-                        with open(temp_file_path, "wb") as f:
-                            request = drive_service.files().get_media(
-                                fileId=file_id
-                            )
-                            downloader = MediaIoBaseDownload(f, request)
-
-                            done = False
-                            while not done:
-                                status, done = downloader.next_chunk()
-                                self.logger.info(
-                                    f"Download {int(status.progress() * 100)}%."
-                                )
-
-                        # Convert to PDF
-                        pdf_path = await self._convert_to_pdf(
-                            temp_file_path, temp_dir
-                        )
-                        return create_stream_record_response(
-                            open(pdf_path, "rb"),
-                            filename=f"{Path(file_name).stem}",
-                            mime_type="application/pdf",
-                            fallback_filename=f"record_{record.id}"
-                        )
-
-                # Use the same streaming logic as Drive downloads
-                async def file_stream() -> AsyncGenerator[bytes, None]:
-                    try:
-                        request = drive_service.files().get_media(
-                            fileId=file_id
-                        )
-                        buffer = io.BytesIO()
-                        downloader = MediaIoBaseDownload(buffer, request)
-
-                        done = False
-                        while not done:
-                            try:
-                                status, done = downloader.next_chunk()
-                                self.logger.info(
-                                    f"Download {int(status.progress() * 100)}%."
-                                )
-                            except Exception as chunk_error:
-                                self.logger.error(f"Error downloading chunk: {str(chunk_error)}")
-                                raise
-
-                        buffer.seek(0)
-                        content = buffer.read()
-                        if content:
-                            yield content
-                    except Exception as stream_error:
-                        self.logger.error(f"Error in file stream: {str(stream_error)}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                            detail="Error streaming file from Drive"
-                        )
-                    finally:
-                        buffer.close()
-
-                return create_stream_record_response(
-                    file_stream(),
-                    filename=file_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record.id}"
-                )
-
+                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
             except Exception as drive_error:
                 self.logger.error(
                     f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
@@ -2329,14 +2557,93 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 self.logger.warning(f"Missing stable_attachment_id for record {record.id}")
                 return None
 
-            # Parse stableAttachmentId to get message_id and part_id
-            # Format: message_id_partId
-            if "_" not in stable_attachment_id:
-                self.logger.warning(f"Invalid stable_attachment_id format for record {record.id}: {stable_attachment_id}")
+            # Check if this is a Drive file (no tilde, typically longer alphanumeric)
+            is_drive_file = "~" not in stable_attachment_id
+
+            if is_drive_file:
+                # For Drive files, we need to find the parent message to get permissions
+                # Drive files are stored with driveFileId as external_record_id
+                parent_message_id = record.parent_external_record_id
+                if not parent_message_id:
+                    self.logger.warning(f"Drive file {stable_attachment_id} has no parent message ID")
+                    return None
+
+                # Fetch parent message to get permissions
+                try:
+                    parent_message = await self.gmail_data_source.users_messages_get(
+                        userId="me",
+                        id=parent_message_id,
+                        format="full"
+                    )
+                except HttpError as e:
+                    if e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                        self.logger.warning(f"Parent message {parent_message_id} not found at source")
+                        return None
+                    raise
+
+                if not parent_message:
+                    self.logger.warning(f"Parent message {parent_message_id} not found at source")
+                    return None
+
+                # Extract attachment info from parent message
+                attachment_infos = self._extract_attachment_infos(parent_message)
+
+                # Find matching Drive attachment by driveFileId
+                matching_attachment = None
+                for attach_info in attachment_infos:
+                    if attach_info.get('driveFileId') == stable_attachment_id:
+                        matching_attachment = attach_info
+                        break
+
+                if not matching_attachment:
+                    self.logger.warning(f"Drive attachment {stable_attachment_id} not found in parent message {parent_message_id}")
+                    return None
+
+                # Get parent mail permissions
+                thread_id = parent_message.get('threadId')
+                if not thread_id:
+                    self.logger.warning(f"Parent message {parent_message_id} has no threadId")
+                    return None
+
+                previous_message_id = await self._find_previous_message_in_thread(
+                    thread_id,
+                    parent_message_id,
+                    parent_message.get('internalDate')
+                )
+
+                parent_mail_update = await self._process_gmail_message(
+                    user_email,
+                    parent_message,
+                    thread_id,
+                    previous_message_id
+                )
+
+                parent_mail_permissions = []
+                if parent_mail_update and parent_mail_update.new_permissions:
+                    parent_mail_permissions = parent_mail_update.new_permissions
+
+                # Process Drive attachment
+                record_update = await self._process_gmail_attachment(
+                    user_email,
+                    parent_message_id,
+                    matching_attachment,
+                    parent_mail_permissions
+                )
+
+                if not record_update or record_update.is_deleted:
+                    return None
+
+                if record_update.is_updated:
+                    self.logger.info(f"Drive file record {stable_attachment_id} has changed at source. Updating.")
+                    record_update.record.id = record.id
+                    return (record_update.record, record_update.new_permissions)
+
                 return None
 
+            # Regular attachment: Parse stableAttachmentId to get message_id and part_id
+            # Format: message_id~partId
             try:
-                message_id, part_id = stable_attachment_id.split("_", 1)
+                message_id, part_id = stable_attachment_id.split("~", 1)
             except ValueError:
                 self.logger.warning(f"Could not parse stable_attachment_id for record {record.id}: {stable_attachment_id}")
                 return None
