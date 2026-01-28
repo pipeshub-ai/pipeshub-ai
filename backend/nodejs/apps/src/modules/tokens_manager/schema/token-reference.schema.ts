@@ -3,6 +3,7 @@ export enum ServiceType {
   GOOGLE_DRIVE = 'GOOGLE_DRIVE',
   CONFLUENCE = 'CONFLUENCE',
   JIRA = 'JIRA',
+  NOTION = 'NOTION',
 }
 
 export enum TokenEventType {

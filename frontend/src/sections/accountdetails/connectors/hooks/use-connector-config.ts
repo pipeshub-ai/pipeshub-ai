@@ -1101,7 +1101,9 @@ export const useConnectorConfig = ({
     setSaveError(null);
 
     const isNoAuthType = isNoneAuthType(connector.authType);
-    const hasFilters = (connectorConfig.config.filters?.sync?.schema?.fields?.length ?? 0) > 0;
+    const syncFiltersCount = connectorConfig.config.filters?.sync?.schema?.fields?.length ?? 0;
+    const indexingFiltersCount = connectorConfig.config.filters?.indexing?.schema?.fields?.length ?? 0;
+    const hasFilters = syncFiltersCount > 0 || indexingFiltersCount > 0;
     
     // Determine which step we're on based on mode
     let currentSection = '';

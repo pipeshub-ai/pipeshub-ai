@@ -44,6 +44,8 @@ class RecordType(str, Enum):
     FILE = "FILE"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
+    DATABASE = "DATABASE"
+    DATASOURCE = "DATASOURCE"
     MESSAGE = "MESSAGE"
     MAIL = "MAIL"
     GROUP_MAIL = "GROUP_MAIL"

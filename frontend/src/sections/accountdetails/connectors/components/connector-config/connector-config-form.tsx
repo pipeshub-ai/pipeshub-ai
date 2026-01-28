@@ -131,8 +131,15 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   // Skip auth step if authType is 'NONE'
   const isNoAuthType = useMemo(() => isNoneAuthType(connector.authType), [connector.authType]);
   const hasFilters = useMemo(
-    () => (connectorConfig?.config?.filters?.sync?.schema?.fields?.length ?? 0) > 0,
-    [connectorConfig?.config?.filters?.sync?.schema?.fields?.length]
+    () => {
+      const syncFields = connectorConfig?.config?.filters?.sync?.schema?.fields?.length ?? 0;
+      const indexingFields = connectorConfig?.config?.filters?.indexing?.schema?.fields?.length ?? 0;
+      return syncFields > 0 || indexingFields > 0;
+    },
+    [
+      connectorConfig?.config?.filters?.sync?.schema?.fields?.length,
+      connectorConfig?.config?.filters?.indexing?.schema?.fields?.length
+    ]
   );
   const steps = useMemo(
     () => {

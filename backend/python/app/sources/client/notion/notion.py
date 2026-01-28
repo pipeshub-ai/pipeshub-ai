@@ -3,7 +3,7 @@ import base64
 import json
 import logging
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
 from app.config.configuration_service import ConfigurationService
@@ -37,7 +37,7 @@ class NotionRESTClientViaOAuth(HTTPClient):
         client_secret: The OAuth client secret
         redirect_uri: The redirect URI for OAuth flow
         access_token: Optional existing access token
-        version: Notion API version (default: "2022-06-28")
+        version: Notion API version (default: "2025-09-03")
     """
 
     def __init__(
@@ -46,7 +46,7 @@ class NotionRESTClientViaOAuth(HTTPClient):
         client_secret: str,
         redirect_uri: str,
         access_token: Optional[str] = None,
-        version: str = "2022-06-28"
+        version: str = "2025-09-03"
     ) -> None:
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer")
@@ -198,10 +198,10 @@ class NotionRESTClientViaToken(HTTPClient):
     """Notion REST client via Internal Integration token
     Args:
         token: The internal integration token to use for authentication
-        version: Notion API version (default: "2022-06-28")
+        version: Notion API version (default: "2025-09-03")
     """
 
-    def __init__(self, token: str, version: str = "2022-06-28") -> None:
+    def __init__(self, token: str, version: str = "2025-09-03") -> None:
         super().__init__(token, "Bearer")
         self.base_url = "https://api.notion.com/v1"
         self.version = version
@@ -223,7 +223,7 @@ class NotionTokenConfig:
         ssl: Whether to use SSL (always True for Notion)
     """
     token: str
-    version: str = "2022-06-28"
+    version: str = "2025-09-03"
     ssl: bool = True
 
     def create_client(self) -> NotionRESTClientViaToken:
@@ -237,11 +237,11 @@ class NotionTokenConfig:
 class NotionClient(IClient):
     """Builder class for Notion clients with different authentication methods"""
 
-    def __init__(self, client: NotionRESTClientViaToken) -> None:
-        """Initialize with a Notion client object"""
+    def __init__(self, client: Union[NotionRESTClientViaOAuth, NotionRESTClientViaToken]) -> None:
+        """Initialize with a Notion client object (OAuth or Token-based)"""
         self.client = client
 
-    def get_client(self) -> NotionRESTClientViaToken:
+    def get_client(self) -> Union[NotionRESTClientViaOAuth, NotionRESTClientViaToken]:
         """Return the Notion client object"""
         return self.client
 
@@ -276,18 +276,48 @@ class NotionClient(IClient):
             if not config:
                 raise ValueError("Failed to get Notion connector configuration")
 
-            # Extract configuration values
-            version = config.get("version", "2022-06-28")
-            auth_config = config.get("auth",{})
-            auth_type = auth_config.get("authType", "apiToken")  # token, oauth
+            # Extract configuration values from auth section
+            auth_config = config.get("auth", {}) or {}
+            auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            version = config.get("version", "2025-09-03")
 
             # Create appropriate client based on auth type
-            # to be implemented
             if auth_type == "OAUTH":
+                # Try to get OAuth credentials from connector config first
                 client_id = auth_config.get("clientId", "")
                 client_secret = auth_config.get("clientSecret", "")
                 redirect_uri = auth_config.get("redirectUri", "")
-                access_token = auth_config.get("accessToken", "")
+
+                # If credentials are missing, try fetching from shared OAuth config
+                oauth_config_id = auth_config.get("oauthConfigId")
+                needs_shared_config = oauth_config_id and not (client_id and client_secret)
+
+                if needs_shared_config:
+                    try:
+                        oauth_config_path = "/services/oauth/notion"
+                        oauth_configs = await config_service.get_config(oauth_config_path, default=[])
+
+                        # Find the matching shared config by ID
+                        matching_config = None
+                        if isinstance(oauth_configs, list):
+                            matching_config = next(
+                                (cfg for cfg in oauth_configs if cfg.get("_id") == oauth_config_id),
+                                None
+                            )
+
+                        # Extract credentials from shared config if found
+                        if matching_config:
+                            shared_config = matching_config.get("config", {})
+                            client_id = shared_config.get("clientId") or shared_config.get("client_id") or client_id
+                            client_secret = shared_config.get("clientSecret") or shared_config.get("client_secret") or client_secret
+                            if not redirect_uri:
+                                redirect_uri = shared_config.get("redirectUri") or shared_config.get("redirect_uri") or ""
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch shared OAuth config: {e}, using connector auth config")
+
+                # Get access token from credentials section (where OAuth provider stores it)
+                credentials = config.get("credentials", {}) or {}
+                access_token = credentials.get("access_token", "")
 
                 if not client_id or not client_secret or not redirect_uri:
                     raise ValueError("Client ID, client secret, and redirect URI required for OAuth auth type")

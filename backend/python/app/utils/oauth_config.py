@@ -1,4 +1,5 @@
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
@@ -19,6 +20,26 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         oauth_config.token_access_type = auth_config.get('tokenAccessType')
     if auth_config.get('additionalParams'):
         oauth_config.additional_params = auth_config.get('additionalParams')
+    else:
+        oauth_config.additional_params = {}
+
+    # Check if this is Notion OAuth (by checking token_url)
+    # Notion requires Basic Auth with JSON body
+    token_url = auth_config.get('tokenUrl', '')
+    if token_url:
+        try:
+            parsed_url = urlparse(token_url)
+            hostname = parsed_url.hostname or ''
+            hostname_lower = hostname.lower()
+            # Check if hostname is exactly notion.com or ends with .notion.com (for subdomains)
+            # This prevents matching malicious domains like evilnotion.com or notion.com.evil.com
+            if hostname_lower == 'notion.com' or hostname_lower.endswith('.notion.com'):
+                oauth_config.additional_params["use_basic_auth"] = True
+                oauth_config.additional_params["use_json_body"] = True
+                oauth_config.additional_params["notion_version"] = "2025-09-03"
+        except Exception:
+            # If URL parsing fails, skip the Notion-specific configuration
+            pass
 
     return oauth_config
 
