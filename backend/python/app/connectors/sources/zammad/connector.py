@@ -1579,7 +1579,7 @@ class ZammadConnector(BaseConnector):
                 if not kb_id:
                     continue
 
-                # Get category name and locale from translations
+                # Get category name from translations
                 translation_ids = cat_data.get("translation_ids", [])
                 cat_name = "Category"
                 for trans_id in translation_ids:
@@ -1587,8 +1587,6 @@ class ZammadConnector(BaseConnector):
                     if trans_data:
                         if trans_data.get("title"):
                             cat_name = trans_data.get("title")
-                        if trans_data.get("locale"):
-                            trans_data.get("locale")
                             break
 
                 # Get KB locale for building category URL
