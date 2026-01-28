@@ -218,6 +218,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   // Data state
   const [items, setItems] = useState<HubNode[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false); // For filter/refresh operations
   const [totalCount, setTotalCount] = useState(0);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [counts, setCounts] = useState<any>(null);
@@ -261,11 +262,17 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   }, [q]);
 
   // Load data based on current URL state
-  const loadData = useCallback(async () => {
+  const loadData = useCallback(async (isRefresh: boolean = false) => {
     if (loadingRef.current) return;
 
     loadingRef.current = true;
-    setLoading(true);
+    
+    // Show different loading states based on context
+    if (isRefresh || items.length > 0) {
+      setIsRefreshing(true);
+    } else {
+      setLoading(true);
+    }
 
     try {
       const params: any = {
@@ -309,6 +316,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         data = await KnowledgeBaseAPI.getKnowledgeHubNodeChildren(nodeType, nodeId, params);
       }
 
+      // Update state only after successful fetch to prevent flickering
       setItems(data.items || []);
       setTotalCount(data.pagination?.totalItems || 0);
       setBreadcrumbs(data.breadcrumbs || []);
@@ -317,8 +325,11 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       setPermissions(data.permissions || null);
     } catch (error) {
       console.error('Failed to load data:', error);
-      setItems([]);
-      setTotalCount(0);
+      // Only clear items on initial load failure, not on refresh
+      if (!isRefresh && items.length === 0) {
+        setItems([]);
+        setTotalCount(0);
+      }
       setSnackbar({
         open: true,
         message: 'Failed to load data. Please try again.',
@@ -326,9 +337,10 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       });
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
       loadingRef.current = false;
     }
-  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters]);
+  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, items.length]);
 
   // Load data when dependencies change
   useEffect(() => {
@@ -464,7 +476,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   };
 
   const handleRefresh = () => {
-    loadData();
+    loadData(true);
   };
 
   const handleFilterChange = (newFilters: AppliedFilters) => {
@@ -656,7 +668,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           : response.reason || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      loadData();
+      loadData(true);
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
       setSnackbar({
@@ -677,7 +689,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           : response.reason || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      loadData();
+      loadData(true);
     } catch (err: any) {
       console.error('Failed to reindex folder', err);
       setSnackbar({
@@ -698,7 +710,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           : response.message || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      loadData();
+      loadData(true);
     } catch (err: any) {
       console.error('Failed to reindex record group', err);
       setSnackbar({
@@ -726,7 +738,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         severity: response.success ? 'success' : 'error',
       });
       setForceReindexDialog({ open: false, id: '', name: '', type: 'record' });
-      loadData();
+      loadData(true);
     } catch (err: any) {
       console.error('Failed to force reindex', err);
       setSnackbar({
@@ -757,7 +769,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       message: 'Record deleted successfully',
       severity: 'success',
     });
-    loadData();
+    loadData(true);
   };
 
   const closeActionMenu = () => {
@@ -876,7 +888,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                   height: 18,
                   fontSize: '0.65rem',
                   fontWeight: 500,
-                  backgroundColor: 'transparent',
+                  backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.divider, 0.4) : 'transparent',
                   border: `1px solid ${alpha(theme.palette.divider, 0.4)}`,
                   color: 'text.disabled',
                   '& .MuiChip-label': {
@@ -1326,13 +1338,14 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         onFilterChange={handleFilterChange}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
+        isLoading={isRefreshing}
       />
 
       {/* Main Content */}
       <MainContentContainer theme={theme} sidebarOpen={sidebarOpen}>
         <Fade in timeout={300}>
           <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            {loading && (
+            {(loading || isRefreshing) && (
               <LinearProgress
                 sx={{
                   position: 'absolute',
@@ -1649,7 +1662,32 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                   </Box>
                 ) : (
                   <>
-                    <Box sx={{ flexGrow: 1, height: 'calc(100% - 72px)', minHeight: 0, overflow: 'hidden' }}>
+                    <Box sx={{ flexGrow: 1, height: 'calc(100% - 64px)', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+                      {/* Loading overlay during refresh */}
+                      {isRefreshing && (
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            backgroundColor: alpha(theme.palette.background.paper, 0.7),
+                            backdropFilter: 'blur(2px)',
+                            zIndex: 10,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexDirection: 'column',
+                            gap: 2,
+                          }}
+                        >
+                          <CircularProgress size={32} thickness={4} />
+                          <Typography variant="body2" color="text.secondary">
+                            Loading...
+                          </Typography>
+                        </Box>
+                      )}
                       <DataGrid<HubNode>
                         rows={items}
                         columns={columns}
@@ -1667,7 +1705,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                           }
                         }}
                         getRowId={(row) => row.id}
-                        rowHeight={52}
+                        rowHeight={56}
                         getRowClassName={(params) =>
                           !params.row.hasChildren && params.row.nodeType !== 'record'
                             ? 'row-non-clickable'
@@ -1677,26 +1715,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                           noRowsLabel: 'No records found',
                         }}
                         sx={{
-                          border: 'none !important',
+                          border: 'none',
                           height: '100%',
-                          minWidth: 0,
-                          overflow: 'hidden',
-                          '& .MuiDataGrid-main': {
-                            minWidth: 0,
-                            overflow: 'hidden',
-                          },
-                          '& .MuiDataGrid-virtualScroller': {
-                            overflowX: 'auto',
-                            overflowY: 'auto',
-                          },
-                          '& .MuiDataGrid-virtualScrollerContent': {
-                            height: 'auto !important',
-                            minHeight: 'auto !important',
-                          },
-                          '& .MuiDataGrid-virtualScrollerRenderZone': {
-                            height: 'auto !important',
-                            minHeight: 'auto !important',
-                          },
                           '& .MuiDataGrid-columnHeaders': {
                             backgroundColor: alpha('#000', 0.02),
                             borderBottom: '1px solid',

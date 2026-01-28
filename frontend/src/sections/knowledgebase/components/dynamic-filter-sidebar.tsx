@@ -152,6 +152,7 @@ interface DynamicFilterSidebarProps {
   onFilterChange: (filters: AppliedFilters) => void;
   open?: boolean;
   onToggle?: () => void;
+  isLoading?: boolean;
 }
 
 // Styled Components
@@ -437,6 +438,7 @@ export default function DynamicFilterSidebar({
   onFilterChange,
   open = true,
   onToggle,
+  isLoading: isLoadingProp = false,
 }: DynamicFilterSidebarProps) {
   const theme = useTheme();
   const [isOpen, setIsOpen] = useState(open);
@@ -445,8 +447,11 @@ export default function DynamicFilterSidebar({
   });
   const [showCollapsedContent, setShowCollapsedContent] = useState(!open);
   const [showExpandedContent, setShowExpandedContent] = useState(open);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingLocal, setIsLoadingLocal] = useState(false);
   const isFilterChanging = useRef(false);
+  
+  // Combine local and prop loading states
+  const isLoading = isLoadingProp || isLoadingLocal;
 
   useEffect(() => {
     setIsOpen(open);
@@ -477,7 +482,7 @@ export default function DynamicFilterSidebar({
       if (isFilterChanging.current) return;
       
       isFilterChanging.current = true;
-      setIsLoading(true);
+      setIsLoadingLocal(true);
 
       const mappedKey = filterKeyMap[filterKey];
       
@@ -507,8 +512,8 @@ export default function DynamicFilterSidebar({
         onFilterChange(updatedFilters);
         setTimeout(() => {
           isFilterChanging.current = false;
-          setIsLoading(false);
-        }, 300);
+          setIsLoadingLocal(false);
+        }, 500);
       });
     },
     [appliedFilters, onFilterChange]
@@ -519,7 +524,7 @@ export default function DynamicFilterSidebar({
       if (isFilterChanging.current) return;
       
       isFilterChanging.current = true;
-      setIsLoading(true);
+      setIsLoadingLocal(true);
 
       const currentValue = appliedFilters[filterKey];
       let updatedFilters;
@@ -542,8 +547,8 @@ export default function DynamicFilterSidebar({
         onFilterChange(updatedFilters);
         setTimeout(() => {
           isFilterChanging.current = false;
-          setIsLoading(false);
-        }, 300);
+          setIsLoadingLocal(false);
+        }, 500);
       });
     },
     [appliedFilters, onFilterChange]
@@ -553,7 +558,7 @@ export default function DynamicFilterSidebar({
     if (isFilterChanging.current) return;
     
     isFilterChanging.current = true;
-    setIsLoading(true);
+    setIsLoadingLocal(true);
 
     const emptyFilters: AppliedFilters = {
       recordTypes: [],
@@ -567,8 +572,8 @@ export default function DynamicFilterSidebar({
       onFilterChange(emptyFilters);
       setTimeout(() => {
         isFilterChanging.current = false;
-        setIsLoading(false);
-      }, 300);
+        setIsLoadingLocal(false);
+      }, 500);
     });
   }, [onFilterChange]);
 
