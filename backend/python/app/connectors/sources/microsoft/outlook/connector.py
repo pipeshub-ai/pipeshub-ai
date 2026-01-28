@@ -3329,7 +3329,8 @@ class OutlookConnector(BaseConnector):
 
                 if not response_wrapper.success:
                     self.logger.warning(f"Failed to fetch historical messages: {response_wrapper.error}")
-                    return {'messages': [], 'next_link': None}
+                    # Raise exception so the caller knows the gap fill failed
+                    raise Exception(f"Failed to fetch historical messages: {response_wrapper.error}")
 
                 # Parse response from wrapper
                 data = response_wrapper.data or {}
@@ -3341,9 +3342,9 @@ class OutlookConnector(BaseConnector):
                 'next_link': new_next_link
             }
 
-        except Exception as e:
-            self.logger.error(f"Error fetching historical page: {e}", exc_info=True)
-            return {'messages': [], 'next_link': None}
+        except Exception:
+            # Propagate the exception to trigger the safety mechanism in _process_single_folder_messages
+            raise
 
     @classmethod
     async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
