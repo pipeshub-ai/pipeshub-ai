@@ -361,7 +361,10 @@ class ZammadConnector(BaseConnector):
         self.logger.info(f"🔄 Starting Zammad sync for connector {self.connector_id}")
 
         try:
-            # Ensure initialized (will be done lazily in _get_fresh_datasource if needed)
+            # Ensure connector is initialized before proceeding
+            if not self.external_client:
+                await self.init()
+
             await self._get_fresh_datasource()
 
             # Load filters
@@ -795,7 +798,8 @@ class ZammadConnector(BaseConnector):
 
         self.logger.info(f"📋 Will sync tickets for {len(groups_to_process)} groups")
 
-        total_records_all_groups = 0
+        total_tickets_all_groups = 0
+        total_attachments_all_groups = 0
 
         # Sync each group independently
         for group_record_group, group_perms in groups_to_process:
@@ -820,7 +824,8 @@ class ZammadConnector(BaseConnector):
                     self.logger.info(f"🔄 Full sync for group {group_name} (first time)")
 
                 # Fetch and process tickets for this group only
-                total_records = 0
+                total_tickets = 0
+                total_attachments = 0
                 max_ticket_updated_at: Optional[int] = None
 
                 async for batch_records in self._fetch_tickets_for_group_batch(
@@ -831,39 +836,58 @@ class ZammadConnector(BaseConnector):
                     if not batch_records:
                         continue
 
-                    # Track max updated_at from tickets for sync point
+                    # Count tickets vs attachments separately
+                    batch_tickets = 0
+                    batch_attachments = 0
                     for record, _ in batch_records:
-                        if isinstance(record, TicketRecord) and record.source_updated_at:
-                            if max_ticket_updated_at is None or record.source_updated_at > max_ticket_updated_at:
-                                max_ticket_updated_at = record.source_updated_at
+                        if isinstance(record, TicketRecord):
+                            batch_tickets += 1
+                            # Track max updated_at from tickets for sync point
+                            if record.source_updated_at:
+                                if max_ticket_updated_at is None or record.source_updated_at > max_ticket_updated_at:
+                                    max_ticket_updated_at = record.source_updated_at
+                        else:
+                            # Assume it's an attachment (FileRecord)
+                            batch_attachments += 1
 
                     # Process batch
-                    total_records += len(batch_records)
+                    total_tickets += batch_tickets
+                    total_attachments += batch_attachments
                     await self.data_entities_processor.on_new_records(batch_records)
-                    self.logger.debug(f"📝 Synced batch of {len(batch_records)} records for group {group_name}")
+                    if batch_attachments > 0:
+                        self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets, {batch_attachments} attachments for group {group_name}")
+                    else:
+                        self.logger.debug(f"📝 Synced batch: {batch_tickets} tickets for group {group_name}")
 
                     # Update sync point after each batch (fault tolerance)
                     if max_ticket_updated_at:
                         await self._update_group_sync_checkpoint(group_name, max_ticket_updated_at + 1000)
 
                 # Final sync point update: Only update to current time if we processed tickets
-                if total_records > 0:
+                if total_tickets > 0:
                     # If max_ticket_updated_at wasn't set (edge case), use current time as fallback
                     if not max_ticket_updated_at:
-                        self.logger.warning(f"Processed {total_records} records but max_ticket_updated_at not set, using current time")
+                        self.logger.warning(f"Processed {total_tickets} tickets but max_ticket_updated_at not set, using current time")
                         await self._update_group_sync_checkpoint(group_name)
                     # else: max_ticket_updated_at was already set above, no need to update again
                 else:
                     self.logger.debug(f"No tickets found for group {group_name}, keeping existing checkpoint to avoid skipping older tickets")
 
-                total_records_all_groups += total_records
-                self.logger.info(f"✅ Synced {total_records} records for group {group_name}")
+                total_tickets_all_groups += total_tickets
+                total_attachments_all_groups += total_attachments
+                if total_attachments > 0:
+                    self.logger.info(f"✅ Synced {total_tickets} tickets, {total_attachments} attachments for group {group_name}")
+                else:
+                    self.logger.info(f"✅ Synced {total_tickets} tickets for group {group_name}")
 
             except Exception as e:
                 self.logger.error(f"❌ Error syncing tickets for group {group_record_group.name}: {e}", exc_info=True)
                 continue  # Continue with next group even if one fails
 
-        self.logger.info(f"✅ Total: Synced {total_records_all_groups} records across {len(groups_to_process)} groups")
+        if total_attachments_all_groups > 0:
+            self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets, {total_attachments_all_groups} attachments across {len(groups_to_process)} groups")
+        else:
+            self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets across {len(groups_to_process)} groups")
 
     async def _fetch_tickets_for_group_batch(
         self,
@@ -1634,8 +1658,17 @@ class ZammadConnector(BaseConnector):
                             cat_id=cat_id
                         )
                         if perm_response.success and perm_response.data:
-                            editor_role_ids = [r["id"] for r in perm_response.data.get("roles_editor", [])]
-                            reader_role_ids = [r["id"] for r in perm_response.data.get("roles_reader", [])]
+                            # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
+                            # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
+                            permissions_list = perm_response.data.get("permissions", [])
+                            editor_role_ids = [
+                                p["role_id"] for p in permissions_list
+                                if p.get("access") == "editor"
+                            ]
+                            reader_role_ids = [
+                                p["role_id"] for p in permissions_list
+                                if p.get("access") == "reader"
+                            ]
                     except Exception as e:
                         self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
 
@@ -1800,13 +1833,23 @@ class ZammadConnector(BaseConnector):
                             translations.append(trans_data)
                     answer_data["translations"] = translations
 
+                    # Check for existing record before creating/updating
+                    external_record_id = f"kb_answer_{answer_id}"
+                    existing_record = None
+                    async with self.data_store_provider.transaction() as tx_store:
+                        existing_record = await tx_store.get_record_by_external_id(
+                            connector_id=self.connector_id,
+                            external_id=external_record_id
+                        )
+
                     # Create record with visibility-based permissions
                     answer_record, permissions = self._create_answer_with_permissions(
                         answer_data=answer_data,
                         category_id=category_id,
                         visibility=visibility,
                         editor_role_ids=editor_role_ids,
-                        category_map=category_map
+                        category_map=category_map,
+                        existing_record=existing_record
                     )
 
                     if answer_record:
@@ -1831,8 +1874,14 @@ class ZammadConnector(BaseConnector):
 
             # Save batch
             if batch_records:
+                # Count answers vs attachments separately
+                batch_answers = sum(1 for record, _ in batch_records if isinstance(record, WebpageRecord))
+                batch_attachments = len(batch_records) - batch_answers
                 await self.data_entities_processor.on_new_records(batch_records)
-                self.logger.debug(f"Processed batch of {len(batch_records)} KB answers")
+                if batch_attachments > 0:
+                    self.logger.debug(f"Processed batch: {batch_answers} KB answers, {batch_attachments} attachments")
+                else:
+                    self.logger.debug(f"Processed batch: {batch_answers} KB answers")
 
             # Check pagination using result count (not answer count)
             if result_count < limit:
@@ -1867,7 +1916,8 @@ class ZammadConnector(BaseConnector):
         category_id: Optional[int],
         visibility: str,
         editor_role_ids: List[int],
-        category_map: Dict[int, RecordGroup]
+        category_map: Dict[int, RecordGroup],
+        existing_record: Optional[Record] = None
     ) -> Tuple[Optional[WebpageRecord], List[Permission]]:
         """
         Create answer record with visibility-based permissions.
@@ -1878,6 +1928,7 @@ class ZammadConnector(BaseConnector):
             visibility: Visibility state (PUBLIC, INTERNAL, ARCHIVED, DRAFT)
             editor_role_ids: List of editor role IDs for ARCHIVED/DRAFT visibility
             category_map: Map of category_id -> RecordGroup
+            existing_record: Optional existing record for version handling (for updates)
 
         Returns:
             Tuple of (WebpageRecord, List[Permission])
@@ -1944,8 +1995,13 @@ class ZammadConnector(BaseConnector):
         # Only INTERNAL inherits from category (reader + editor roles)
         inherit_permissions = visibility == "INTERNAL"
 
+        # Handle versioning
+        is_new = existing_record is None
+        record_id = existing_record.id if existing_record else str(uuid4())
+        version = 0 if is_new else (existing_record.version + 1 if existing_record.source_updated_at != updated_at else existing_record.version)
+
         webpage_record = WebpageRecord(
-            id=str(uuid4()),
+            id=record_id,
             org_id=self.data_entities_processor.org_id,
             record_type=RecordType.WEBPAGE,
             record_name=title,
@@ -1954,7 +2010,7 @@ class ZammadConnector(BaseConnector):
             external_record_group_id=external_record_group_id,
             record_group_type=kb_record_group_type,
             indexing_status=IndexingStatus.NOT_STARTED,
-            version=0,
+            version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
@@ -2130,16 +2186,18 @@ class ZammadConnector(BaseConnector):
         if articles:
             first_article = articles[0]
             description_body_html = first_article.get("body", "")
-            first_article_id = first_article.get("id", "")
+            first_article_id = first_article.get("id")
 
             # Get attachments for first article (description) as children_records
             first_article_attachments = first_article.get("attachments", [])
-            description_children_records = await self._build_ticket_attachment_child_records(
-                ticket_id=ticket_id,
-                article_id=first_article_id,
-                attachments=first_article_attachments,
-                parent_record=record
-            )
+            description_children_records: List[ChildRecord] = []
+            if first_article_id and first_article_attachments:
+                description_children_records = await self._build_ticket_attachment_child_records(
+                    ticket_id=ticket_id,
+                    article_id=str(first_article_id),
+                    attachments=first_article_attachments,
+                    parent_record=record
+                )
 
             # Convert HTML to Markdown
             description_body_md = html_to_markdown(description_body_html) if description_body_html else ""
@@ -2164,12 +2222,16 @@ class ZammadConnector(BaseConnector):
 
             # Remaining articles become Comment BlockGroups
             for article in articles[1:]:
-                article_id = article.get("id", "")
+                article_id = article.get("id")
                 article_body_html = article.get("body", "")
                 article_from = article.get("from", "")
                 article_subject = article.get("subject", "")
                 article_sender = article.get("sender", "")
                 article_preferences = article.get("preferences", {})
+
+                # Skip articles without ID
+                if not article_id:
+                    continue
 
                 # Skip system-generated articles (auto-replies, triggers, etc.)
                 if article_sender == "System":
@@ -2201,12 +2263,14 @@ class ZammadConnector(BaseConnector):
 
                 # Get attachments for this article as children_records
                 article_attachments = article.get("attachments", [])
-                comment_children_records = await self._build_ticket_attachment_child_records(
-                    ticket_id=ticket_id,
-                    article_id=article_id,
-                    attachments=article_attachments,
-                    parent_record=record
-                )
+                comment_children_records: List[ChildRecord] = []
+                if article_attachments:
+                    comment_children_records = await self._build_ticket_attachment_child_records(
+                        ticket_id=ticket_id,
+                        article_id=str(article_id),
+                        attachments=article_attachments,
+                        parent_record=record
+                    )
 
                 comment_block_group = BlockGroup(
                     id=str(uuid4()),
@@ -2299,12 +2363,14 @@ class ZammadConnector(BaseConnector):
                     datasource = await self._get_fresh_datasource()
                     perm_response = await datasource.get_kb_category_permissions(
                         kb_id=kb_id,
-                        category_id=category_id
+                        cat_id=category_id
                     )
                     if perm_response.success and perm_response.data:
-                        permissions_effective = perm_response.data.get("permissions_effective", [])
+                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
+                        # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
+                        permissions_list = perm_response.data.get("permissions", [])
                         editor_role_ids = [
-                            p["role_id"] for p in permissions_effective
+                            p["role_id"] for p in permissions_list
                             if p.get("access") == "editor"
                         ]
                 except Exception as e:
@@ -2402,7 +2468,8 @@ class ZammadConnector(BaseConnector):
 
         title = record.record_name
         body = ""
-        answer_attachments = []
+        answer_attachments: List[Dict[str, Any]] = []
+        answer_data: Dict[str, Any] = {}  # Initialize to empty dict to avoid undefined variable
 
         if answer_response.success and answer_response.data:
             response_data = answer_response.data
@@ -2420,7 +2487,7 @@ class ZammadConnector(BaseConnector):
                 content_assets = assets.get("KnowledgeBaseAnswerTranslationContent", {})
             else:
                 # Fallback: assume direct answer data structure
-                answer_data = response_data
+                answer_data = response_data if isinstance(response_data, dict) else {}
                 answer_translations = {}
                 content_assets = {}
 
@@ -2485,7 +2552,7 @@ class ZammadConnector(BaseConnector):
 
         # Convert HTML body to Markdown (same as ticket streaming)
         body_md = html_to_markdown(body) if body else ""
-        answer_data = f"# {title}\n\n{body_md}" if body_md else f"# {title}"
+        block_content = f"# {title}\n\n{body_md}" if body_md else f"# {title}"
 
         # Build single BlockGroup for answer content
         answer_block_group = BlockGroup(
@@ -2496,7 +2563,7 @@ class ZammadConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT,
             description=f"KB Answer: {title}",
             source_group_id=str(answer_id),
-            data=answer_data,
+            data=block_content,
             format=DataFormat.MARKDOWN,
             weburl=record.weburl,
             requires_processing=True,
@@ -2555,7 +2622,7 @@ class ZammadConnector(BaseConnector):
                     id=attachment_id
                 )
 
-                if not response.success or not response.data:
+                if not response.success or response.data is None:
                     self.logger.debug(f"⚠️ Failed to download attachment {attachment_id}: {response.message}")
                     continue  # Skip on error
 
@@ -2995,7 +3062,7 @@ class ZammadConnector(BaseConnector):
             datasource = await self._get_fresh_datasource()
 
             # Get KB ID from init response or use default (Zammad has single KB per instance)
-            kb_id = 1  # Default KB ID
+            kb_id = 1
             try:
                 init_response = await datasource.init_knowledge_base()
                 if init_response.success and init_response.data:
@@ -3086,7 +3153,12 @@ class ZammadConnector(BaseConnector):
                         cat_id=category_id
                     )
                     if perm_response.success and perm_response.data:
-                        editor_role_ids = [r["id"] for r in perm_response.data.get("roles_editor", [])]
+                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
+                        permissions_list = perm_response.data.get("permissions", [])
+                        editor_role_ids = [
+                            p["role_id"] for p in permissions_list
+                            if p.get("access") == "editor"
+                        ]
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch category permissions for reindexing: {e}")
 
@@ -3099,7 +3171,8 @@ class ZammadConnector(BaseConnector):
                 category_id=category_id,
                 visibility=visibility,
                 editor_role_ids=editor_role_ids,
-                category_map=category_map
+                category_map=category_map,
+                existing_record=record
             )
 
             if not updated_answer:
