@@ -42,6 +42,7 @@ from app.connectors.sources.google.gmail.individual.connector import (
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.linear.connector import LinearConnector
+from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -80,6 +81,7 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
+        "kb": KnowledgeBaseConnector,
         "azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,

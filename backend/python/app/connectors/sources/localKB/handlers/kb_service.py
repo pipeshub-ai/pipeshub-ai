@@ -49,7 +49,6 @@ class KnowledgeBaseService :
             user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
             self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
 
-            # Step 2: Generate data
             timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid.uuid4())
 
@@ -77,7 +76,7 @@ class KnowledgeBaseService :
                     "reason": f"Transaction creation failed: {str(tx_error)}"
                 }
 
-
+            kb_connector_id = f"knowledgeBase_{org_id}"
             kb_data = {
                 "_key": kb_key,
                 "createdBy": user_key,
@@ -85,6 +84,7 @@ class KnowledgeBaseService :
                 "groupName": name,
                 "groupType": Connectors.KNOWLEDGE_BASE.value,
                 "connectorName": Connectors.KNOWLEDGE_BASE.value,
+                "connectorId": kb_connector_id,  # Link KB to the app
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
@@ -100,14 +100,21 @@ class KnowledgeBaseService :
                 "lastUpdatedTimestampAtSource": timestamp,
             }
 
+            # Create belongs_to edge from record group to app
+            belongs_to_edge = {
+                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "_to": f"{CollectionNames.APPS.value}/{kb_connector_id}",
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }
 
             # Step 5: Execute database operations
             self.logger.info("💾 Executing database operations...")
             result = await self.arango_service.create_knowledge_base(
                 kb_data=kb_data,
-                # root_folder_data=root_folder_data,
                 permission_edge=permission_edge,
-                # folder_edge=folder_edge,
+                belongs_to_edge=belongs_to_edge,
                 transaction=transaction
             )
 

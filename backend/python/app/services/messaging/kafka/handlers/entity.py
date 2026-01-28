@@ -1,3 +1,4 @@
+from typing import Optional
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -130,6 +131,9 @@ class EntityEventService(BaseEventService):
                     f"✅ Successfully created organization: {payload['orgId']}"
                 )
 
+            # Automatically create Knowledge Base connector instance for the new org
+            await self.__create_kb_connector_app_instance(payload['orgId'], payload.get('userId'))
+
             return True
 
         except Exception as e:
@@ -249,6 +253,9 @@ class EntityEventService(BaseEventService):
 
             # Get or create knowledge base for the user
             await self.__get_or_create_knowledge_base(user_key,payload["userId"], payload["orgId"])
+
+            # Create user-app relation edge for KB app
+            await self.__create_user_kb_app_relation(user_key, payload["orgId"])
 
             # Only proceed with app connections if syncAction is 'immediate'
             if payload["syncAction"] == "immediate":
@@ -480,10 +487,13 @@ class EntityEventService(BaseEventService):
                 self.logger.info(f"Found existing knowledge base for user {userId} in organization {orgId}")
                 return existing_kbs[0]
 
-            # Create a new knowledge base with root folder and permissions in a transaction
+            kb_app = await self.__get_or_create_kb_app_for_org(orgId, userId)
+            if not kb_app:
+                self.logger.error(f"Failed to get or create KB app for org {orgId}")
+                return {}
+            kb_app_id = kb_app.get('_key')
             current_timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid4())
-            folder_id = str(uuid4())
 
             kb_data = {
                 "_key": kb_key,
@@ -492,19 +502,9 @@ class EntityEventService(BaseEventService):
                 "groupName": name,
                 "groupType": Connectors.KNOWLEDGE_BASE.value,
                 "connectorName": Connectors.KNOWLEDGE_BASE.value,
+                "connectorId": kb_app_id,  # Link KB to the app
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
-            }
-            root_folder_data = {
-                "_key": folder_id,
-                "orgId": orgId,
-                "name": name,
-                "isFile": False,
-                "extension": None,
-                "mimeType": "application/vnd.folder",
-                "sizeInBytes": 0,
-                "webUrl": f"/kb/{kb_key}/folder/{folder_id}",
-                "path": f"/{name}"
             }
             permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
@@ -516,30 +516,225 @@ class EntityEventService(BaseEventService):
                 "updatedAtTimestamp": current_timestamp,
                 "lastUpdatedTimestampAtSource": current_timestamp,
             }
-            folder_edge = {
-                "_from": f"{CollectionNames.FILES.value}/{folder_id}",
-                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+
+            # Create belongs_to edge from record group to app
+            belongs_to_edge = {
+                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
                 "entityType": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
             }
+
             # Insert all in transaction
             # TODO: Use transaction instead of batch upsert
             await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
-            await self.arango_service.batch_upsert_nodes([root_folder_data], CollectionNames.FILES.value)
             await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-            await self.arango_service.batch_create_edges([folder_edge], CollectionNames.BELONGS_TO.value)
+            await self.arango_service.batch_create_edges([belongs_to_edge], CollectionNames.BELONGS_TO.value)
 
-            self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId}")
+            self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId} with app connection")
             return {
                 "kb_id": kb_key,
                 "name": name,
-                "root_folder_id": folder_id,
                 "created_at": current_timestamp,
                 "updated_at": current_timestamp,
+                "app_id": kb_app_id,
                 "success": True
             }
 
         except Exception as e:
             self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
             return {}
+
+    async def __create_kb_connector_app_instance(self, org_id: str, created_by_user_id: Optional[str] = None) -> Optional[dict]:
+        """
+        Automatically create a Knowledge Base connector instance when an org is created.
+
+        Args:
+            org_id: Organization ID
+            created_by_user_id: User ID who created the org (optional, can be None for system-created)
+
+        Returns:
+            App document if successful, None otherwise
+        """
+        try:
+            self.logger.info(f"📦 Creating Knowledge Base connector instance for org: {org_id}")
+
+            # Get KB connector metadata from the connector class
+            from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
+
+            # Check if KB connector metadata exists
+            if not hasattr(KnowledgeBaseConnector, '_connector_metadata'):
+                self.logger.warning("Knowledge Base connector metadata not found, skipping auto-creation")
+                return None
+
+            metadata = KnowledgeBaseConnector._connector_metadata
+            connector_type = metadata.get('name', Connectors.KNOWLEDGE_BASE.value)
+            app_group = metadata.get('appGroup', 'Local Storage')
+
+            # Check if KB connector instance already exists for this org
+            org_apps = await self.arango_service.get_org_apps(org_id)
+            existing_kb_app = next(
+                (app for app in org_apps if app.get('type') == connector_type),
+                None
+            )
+
+            if existing_kb_app:
+                self.logger.info(
+                    f"Knowledge Base connector instance already exists for org {org_id} "
+                    f"(id: {existing_kb_app.get('_key')}), skipping creation"
+                )
+                return existing_kb_app
+
+            # KB connector uses "NONE" auth type
+            selected_auth_type = 'NONE'
+            # KB connector is team-scoped
+            scope = ConnectorScopes.TEAM.value
+
+            # Use system user if no created_by_user_id provided
+            created_by = created_by_user_id if created_by_user_id else "system"
+
+            # Create connector instance document
+            instance_key = f"knowledgeBase_{org_id}"
+            current_timestamp = get_epoch_timestamp_in_ms()
+
+            instance_document = {
+                '_key': instance_key,
+                'name': connector_type,  # Use connector type as instance name
+                'type': connector_type,
+                'appGroup': app_group,
+                'authType': selected_auth_type,
+                'scope': scope,
+                'isActive': True,  # KB is always active (local storage)
+                'isAgentActive': True,  # KB supports agents
+                'isConfigured': True,  # KB doesn't need configuration
+                'isAuthenticated': True,  # KB doesn't need authentication (local storage)
+                'createdBy': created_by,
+                'updatedBy': created_by,
+                'createdAtTimestamp': current_timestamp,
+                'updatedAtTimestamp': current_timestamp
+            }
+
+            # Create instance in database
+            await self.arango_service.batch_upsert_nodes(
+                [instance_document],
+                CollectionNames.APPS.value
+            )
+
+            # Create relationship edge between organization and instance
+            edge_document = {
+                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
+                "_to": f"{CollectionNames.APPS.value}/{instance_key}",
+                "createdAtTimestamp": current_timestamp,
+            }
+
+            await self.arango_service.batch_create_edges(
+                [edge_document],
+                CollectionNames.ORG_APP_RELATION.value,
+            )
+
+            self.logger.info(
+                f"✅ Successfully created Knowledge Base connector instance '{connector_type}' "
+                f"(id: {instance_key}) for org: {org_id}"
+            )
+            return instance_document
+
+        except Exception as e:
+            self.logger.error(f"❌ Error creating KB connector instance for org {org_id}: {str(e)}")
+            # Don't fail org creation if KB connector creation fails
+            return None
+
+    async def __get_or_create_kb_app_for_org(self, org_id: str, created_by_user_id: Optional[str] = None) -> Optional[dict]:
+        """
+        Get or create a Knowledge Base connector instance for an org.
+
+        Args:
+            org_id: Organization ID
+            created_by_user_id: User ID (optional, defaults to "system")
+
+        Returns:
+            KB app document or None if failed
+        """
+        try:
+            # Check if KB connector instance already exists for this org
+            org_apps = await self.arango_service.get_org_apps(org_id)
+            existing_kb_app = next(
+                (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
+                None
+            )
+
+            if existing_kb_app:
+                self.logger.debug(f"Found existing KB app for org {org_id}: {existing_kb_app.get('_key')}")
+                return existing_kb_app
+
+            # Create KB app if it doesn't exist
+            self.logger.info(f"KB app not found for org {org_id}, creating one...")
+            new_kb_app = await self.__create_kb_connector_app_instance(org_id, created_by_user_id)
+            return new_kb_app
+
+        except Exception as e:
+            self.logger.error(f"❌ Error getting or creating KB app for org {org_id}: {str(e)}")
+            return None
+
+    async def __create_user_kb_app_relation(self, user_key: str, org_id: str) -> bool:
+        """
+        Create user-app relation edge between user and KB app for the organization.
+
+        Args:
+            user_key: User key
+            org_id: Organization ID
+
+        Returns:
+            True if edge was created or already exists, False on error
+        """
+        try:
+            # Get or create KB app for the org
+            kb_app = await self.__get_or_create_kb_app_for_org(org_id)
+            if not kb_app:
+                self.logger.warning(f"KB app not found for org {org_id}, skipping user-app relation creation")
+                return False
+
+            kb_app_id = kb_app.get('_key')
+
+            # Check if user-app relation already exists
+            query = f"""
+            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER edge._from == CONCAT(@user_collection, '/', @user_key)
+                    AND edge._to == CONCAT(@app_collection, '/', @kb_app_id)
+                LIMIT 1
+                RETURN 1
+            """
+            bind_vars = {
+                "user_key": user_key,
+                "kb_app_id": kb_app_id,
+                "user_collection": CollectionNames.USERS.value,
+                "app_collection": CollectionNames.APPS.value,
+            }
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
+            if list(cursor):
+                # Edge already exists
+                self.logger.debug(f"User-app relation already exists for user {user_key} and KB app {kb_app_id}")
+                return True
+
+            # Create user-app relation edge
+            current_timestamp = get_epoch_timestamp_in_ms()
+            user_app_edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                "syncState": "NOT_STARTED",  # Required by schema - KB doesn't sync
+                "lastSyncUpdate": current_timestamp,  # Required by schema
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+
+            await self.arango_service.batch_create_edges(
+                [user_app_edge],
+                CollectionNames.USER_APP_RELATION.value
+            )
+
+            self.logger.info(f"✅ Created user-app relation for user {user_key} and KB app {kb_app_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Error creating user-app relation for user {user_key}: {str(e)}")
+            return False

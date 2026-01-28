@@ -83,6 +83,7 @@ class AppGroups(Enum):
     AZURE = "Azure"
     LINEAR = "Linear"
     ZAMMAD = "Zammad"
+    LOCAL_STORAGE = "Local Storage"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
