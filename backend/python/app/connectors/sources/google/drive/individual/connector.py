@@ -953,7 +953,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
     async def _stream_google_api_request(self, request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
         """
         Helper function to stream data from a Google API request.
-        StreamingResponse will handle chunking automatically.
 
         Args:
             request: Google API request object (from files().get_media() or files().export_media())
@@ -982,11 +981,17 @@ class GoogleDriveIndividualConnector(BaseConnector):
                         detail=f"Error during {error_context}",
                     )
 
-            # Yield the entire file content - StreamingResponse will handle chunking
-            buffer.seek(0)
-            content = buffer.read()
-            if content:
-                yield content
+                buffer.seek(0)
+                content = buffer.read()
+                if content:
+                    yield content
+
+                # Clear buffer for next chunk
+                buffer.seek(0)
+                buffer.truncate(0)
+
+                # Yield control back to event loop
+                await asyncio.sleep(0)
         except Exception as stream_error:
             self.logger.error(f"Error in {error_context} stream: {str(stream_error)}")
             raise HTTPException(
