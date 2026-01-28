@@ -811,6 +811,52 @@ class ZammadDataSource:
                 message="get_kb_category failed: " + str(e)
             )
 
+    async def get_kb_category_permissions(
+        self,
+        kb_id: int,
+        cat_id: int
+    ) -> ZammadResponse:
+        """Get KB category permissions
+
+        Args:
+            kb_id: int (required) - Knowledge base ID
+            cat_id: int (required) - Category ID
+
+        Returns:
+            ZammadResponse with structure:
+            {
+                "roles_reader": [{"id": 2, "name": "Agent"}],
+                "roles_editor": [{"id": 1, "name": "Admin"}],
+                "permissions": [...],
+                "inherited": []
+            }
+        """
+        url = f"{self.base_url}/api/v1/knowledge_bases/{kb_id}/categories/{cat_id}/permissions"
+        request_body = None
+
+        try:
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers={"Content-Type": "application/json"},
+                body=request_body
+            )
+            response = await self.http_client.execute(request)
+
+            response_text = response.text()
+            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+            return ZammadResponse(
+                success=status_ok,
+                data=response.json() if response_text else None,
+                message="get_kb_category_permissions succeeded" if status_ok else "get_kb_category_permissions failed"
+            )
+        except Exception as e:
+            return ZammadResponse(
+                success=False,
+                error=str(e),
+                message="get_kb_category_permissions failed: " + str(e)
+            )
+
     async def create_kb_category(
         self,
         kb_id: int,
@@ -1045,17 +1091,35 @@ class ZammadDataSource:
 
     async def get_kb_answer(
         self,
-        id: int
+        id: int,
+        kb_id: Optional[int] = None,
+        content_id: Optional[int] = None
     ) -> ZammadResponse:
         """Get KB answer
 
         Args:
-            id: int (required)
+            id: int (required) - Answer ID
+            kb_id: Optional[int] - Knowledge base ID (defaults to 1 if not provided)
+            content_id: Optional[int] - Content ID to include in response (for include_contents parameter)
 
         Returns:
             ZammadResponse
         """
-        url = f"{self.base_url}/api/v1/knowledge_bases/answers/{id}"
+        # Use default KB ID if not provided (Zammad typically has one KB per instance)
+        if kb_id is None:
+            kb_id = 1
+
+        # Build URL without query parameters
+        url = f"{self.base_url}/api/v1/knowledge_bases/{kb_id}/answers/{id}"
+
+        # Build query parameters (like search_kb_answers does)
+        query_params = {
+            "full": "1"
+        }
+        # If content_id is provided, use it; otherwise use answer_id
+        include_contents_id = content_id if content_id is not None else id
+        query_params["include_contents"] = str(include_contents_id)
+
         request_body = None
 
         try:
@@ -1063,7 +1127,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
@@ -1079,6 +1144,58 @@ class ZammadDataSource:
                 success=False,
                 error=str(e),
                 message="get_kb_answer failed: " + str(e)
+            )
+
+    async def get_kb_answer_attachment(
+        self,
+        answer_id: int,
+        id: int
+    ) -> ZammadResponse:
+        """Get KB answer attachment
+
+        Args:
+            answer_id: int (required) - KB answer ID (not used in URL, kept for compatibility)
+            id: int (required) - attachment ID
+
+        Returns:
+            ZammadResponse with attachment content (bytes or str)
+        """
+        # Use the general attachments endpoint: /api/v1/attachments/{attachment_id}
+        url = f"{self.base_url}/api/v1/attachments/{id}"
+        request_body = None
+
+        try:
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers={"Content-Type": "application/json"},
+                body=request_body
+            )
+            response = await self.http_client.execute(request)
+
+            response_text = response.text()
+            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+
+            # For binary attachments, return bytes
+            if status_ok:
+                # Get raw bytes for attachment content
+                content_bytes = response.bytes()
+                return ZammadResponse(
+                    success=True,
+                    data=content_bytes,
+                    message="get_kb_answer_attachment succeeded"
+                )
+            else:
+                return ZammadResponse(
+                    success=False,
+                    data=response.json() if response_text else None,
+                    message="get_kb_answer_attachment failed"
+                )
+        except Exception as e:
+            return ZammadResponse(
+                success=False,
+                error=str(e),
+                message="get_kb_answer_attachment failed: " + str(e)
             )
 
     async def create_kb_answer(
@@ -2257,6 +2374,91 @@ class ZammadDataSource:
                 success=False,
                 error=str(e),
                 message="search_tickets failed: " + str(e)
+            )
+
+    async def search_kb_answers(
+        self,
+        query: str,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None
+    ) -> ZammadResponse:
+        """Search KB answers using global search API with objects=KnowledgeBaseAnswerTranslation
+
+        Args:
+            query: str (required) - Search query (use "*" for all, or "updated_at:[timestamp TO *]" for incremental)
+            limit: Optional[int] - Number of results to return
+            offset: Optional[int] - Number of results to skip for pagination
+
+        Returns:
+            ZammadResponse with full assets dict containing:
+            - KnowledgeBase
+            - KnowledgeBaseCategory (with permissions_effective)
+            - KnowledgeBaseAnswer (with visibility fields and attachments)
+            - KnowledgeBaseAnswerTranslation
+            - KnowledgeBaseCategoryTranslation
+            - KnowledgeBaseTranslation
+        """
+        url = f"{self.base_url}/api/v1/search"
+        query_params = {"objects": "KnowledgeBaseAnswerTranslation"}
+
+        if query is not None:
+            query_params["query"] = query
+        if limit is not None:
+            query_params["limit"] = str(limit)
+        if offset is not None:
+            query_params["offset"] = str(offset)
+
+        request_body = None
+
+        try:
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers={"Content-Type": "application/json"},
+                body=request_body,
+                query=query_params
+            )
+            response = await self.http_client.execute(request)
+
+            response_text = response.text()
+            status_ok = response.status < SUCCESS_CODE_IS_LESS_THAN
+
+            # Return full assets dict with result count for proper pagination
+            data = None
+            if response_text:
+                json_data = response.json()
+                if isinstance(json_data, dict):
+                    # Response structure:
+                    # {
+                    #   "assets": {
+                    #     "KnowledgeBase": {...},
+                    #     "KnowledgeBaseCategory": {...},
+                    #     "KnowledgeBaseAnswer": {...},
+                    #     "KnowledgeBaseAnswerTranslation": {...},
+                    #     ...
+                    #   },
+                    #   "result": [{"type": "KnowledgeBaseAnswerTranslation", "id": 1}, ...]
+                    # }
+                    assets = json_data.get("assets", {})
+                    result = json_data.get("result", [])
+                    # Include result_count for pagination
+                    data = {
+                        **assets,
+                        "_result_count": len(result)
+                    }
+                else:
+                    data = {}
+
+            return ZammadResponse(
+                success=status_ok,
+                data=data,
+                message="search_kb_answers succeeded" if status_ok else "search_kb_answers failed"
+            )
+        except Exception as e:
+            return ZammadResponse(
+                success=False,
+                error=str(e),
+                message="search_kb_answers failed: " + str(e)
             )
 
     async def get_ticket_history(

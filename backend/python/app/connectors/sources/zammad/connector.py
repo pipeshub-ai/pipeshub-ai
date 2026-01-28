@@ -1,4 +1,6 @@
 """Zammad Connector Implementation"""
+import base64
+import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from logging import Logger
@@ -12,6 +14,7 @@ from typing import (
 )
 from uuid import uuid4
 
+from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
 from fastapi.responses import StreamingResponse
 from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
 
@@ -230,36 +233,8 @@ class ZammadConnector(BaseConnector):
     async def init(self) -> bool:
         """
         Initialize Zammad client using proper Client + DataSource architecture.
-        Note: Actual initialization happens lazily in _get_fresh_datasource().
-        This method satisfies the abstract method requirement.
         """
         try:
-            # Initialize client lazily - actual work done in _get_fresh_datasource()
-            await self._get_fresh_datasource()
-            self.logger.info(f"✅ Zammad connector {self.connector_id} initialized successfully")
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Failed to initialize Zammad connector: {e}", exc_info=True)
-            return False
-
-    async def _get_fresh_datasource(self) -> ZammadDataSource:
-        """
-        Get ZammadDataSource with ALWAYS-FRESH access token.
-
-        This method:
-        1. Initializes client if not already initialized
-        2. Fetches current token from config (API_TOKEN)
-        3. Compares with existing client's token
-        4. Updates client ONLY if token changed (mutation)
-        5. Returns datasource with current token
-
-        Returns:
-            ZammadDataSource with current valid token
-        """
-        # Initialize client if not already done
-        if not self.external_client:
-            self.logger.info(f"🔧 Initializing Zammad client for connector {self.connector_id}")
-
             # Use ZammadClient.build_from_services() to create client with proper auth
             client = await ZammadClient.build_from_services(
                 logger=self.logger,
@@ -276,11 +251,30 @@ class ZammadConnector(BaseConnector):
             # Get base URL from client
             self.base_url = client.get_base_url()
 
-            # Load state and priority mappings (only once on first initialization)
+            # Load state and priority mappings (only once on initialization)
             await self._load_lookup_tables()
 
-            self.logger.info("✅ Zammad client initialized successfully")
-            return self.data_source
+            self.logger.info(f"✅ Zammad connector {self.connector_id} initialized successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Failed to initialize Zammad connector: {e}", exc_info=True)
+            return False
+
+    async def _get_fresh_datasource(self) -> ZammadDataSource:
+        """
+        Get ZammadDataSource with ALWAYS-FRESH access token.
+
+        This method:
+        1. Fetches current token from config (API_TOKEN)
+        2. Compares with existing client's token
+        3. Updates client ONLY if token changed (mutation)
+        4. Returns datasource with current token
+
+        Returns:
+            ZammadDataSource with current valid token
+        """
+        if not self.external_client:
+            raise Exception("Zammad client not initialized. Call init() first.")
 
         # Fetch current config from etcd (async I/O)
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
@@ -293,7 +287,6 @@ class ZammadConnector(BaseConnector):
         auth_type = auth_config.get("authType", "API_TOKEN")
 
         # Only support API_TOKEN authentication
-        # Check against AuthType enum for type safety, but also allow "TOKEN" for backward compatibility
         if auth_type != AuthType.API_TOKEN and auth_type != "TOKEN":
             raise ValueError(f"Unsupported auth type: {auth_type}. Only API_TOKEN is supported.")
 
@@ -411,8 +404,8 @@ class ZammadConnector(BaseConnector):
             await self._sync_tickets_for_groups(group_record_groups)
 
             # Step 6: Sync knowledge base (always fetch, indexing filters control indexing_status)
-            # self.logger.info("📚 Step 7: Syncing knowledge base...")
-            # await self._sync_knowledge_bases()
+            self.logger.info("📚 Step 6: Syncing knowledge base...")
+            await self._sync_knowledge_bases()
 
             self.logger.info(f"✅ Zammad sync completed for connector {self.connector_id}")
 
@@ -976,6 +969,8 @@ class ZammadConnector(BaseConnector):
             # Increment offset for next page
             offset += limit
 
+    # ==================== ATTACHMENT HANDLING AND TRANSFORMATIONS ====================
+
     async def _fetch_ticket_attachments(
         self,
         ticket_data: Dict[str, Any],
@@ -1032,11 +1027,17 @@ class ZammadConnector(BaseConnector):
 
             for attachment in article_attachments:
                 try:
+                    attachment_id = attachment.get("id")
+                    if not attachment_id:
+                        continue
+                    # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
+                    external_record_id = f"{ticket_id}_{article_id}_{attachment_id}"
                     file_record = await self._transform_attachment_to_file_record(
-                        attachment,
-                        ticket_id,
-                        article_id,
-                        ticket_record
+                        attachment_data=attachment,
+                        external_record_id=external_record_id,
+                        parent_record=ticket_record,
+                        parent_record_type=RecordType.TICKET,
+                        indexing_filter_key=IndexingFilterKey.ISSUE_ATTACHMENTS
                     )
                     if file_record:
                         # FileRecords inherit permissions from parent
@@ -1046,7 +1047,72 @@ class ZammadConnector(BaseConnector):
 
         return attachments
 
-    # ==================== TRANSFORMATIONS ====================
+    async def _fetch_kb_answer_attachments(
+        self,
+        answer_data: Dict[str, Any],
+        answer_record: WebpageRecord,
+        answer_permissions: List[Permission]
+    ) -> List[Tuple[Record, List[Permission]]]:
+        """
+        Fetch attachments for a KB answer.
+
+        Args:
+            answer_data: Raw answer data from Zammad
+            answer_record: Parent WebpageRecord
+            answer_permissions: Permissions from the parent answer (PUBLIC/ARCHIVED/DRAFT have explicit permissions, INTERNAL inherits)
+
+        Returns:
+            List of (FileRecord, permissions) tuples
+        """
+        attachments: List[Tuple[Record, List[Permission]]] = []
+
+        answer_id = answer_data.get("id")
+        if not answer_id:
+            return attachments
+
+        # Check if answer has attachments in the data
+        # Attachments might be in answer_data.get("attachments") or in translations
+        answer_attachments = answer_data.get("attachments", [])
+
+        # Also check translations for attachments
+        translations = answer_data.get("translations", [])
+        for trans in translations:
+            trans_attachments = trans.get("attachments", [])
+            if trans_attachments:
+                answer_attachments.extend(trans_attachments)
+
+        if not answer_attachments:
+            return attachments
+
+        for attachment in answer_attachments:
+            try:
+                attachment_id = attachment.get("id")
+                if not attachment_id:
+                    continue
+                # KB answer attachment external_record_id format: kb_answer_{answer_id}_attachment_{attachment_id}
+                external_record_id = f"kb_answer_{answer_id}_attachment_{attachment_id}"
+                # Use the same inherit_permissions value as the parent answer
+                # PUBLIC/ARCHIVED/DRAFT: inherit_permissions=False (explicit permissions)
+                # INTERNAL: inherit_permissions=True (inherits from category)
+                answer_inherit_permissions = answer_record.inherit_permissions if hasattr(answer_record, 'inherit_permissions') else False
+                file_record = await self._transform_attachment_to_file_record(
+                    attachment_data=attachment,
+                    external_record_id=external_record_id,
+                    parent_record=answer_record,
+                    parent_record_type=RecordType.WEBPAGE,
+                    indexing_filter_key=IndexingFilterKey.KNOWLEDGE_BASE,
+                    inherit_permissions=answer_inherit_permissions
+                )
+                if file_record:
+                    # Pass the same permissions as the parent answer
+                    # For PUBLIC: ORG permission, inherit_permissions=False
+                    # For ARCHIVED/DRAFT: Editor role permissions, inherit_permissions=False
+                    # For INTERNAL: Empty list, inherit_permissions=True will handle category inheritance
+                    attachments.append((file_record, answer_permissions))
+            except Exception as e:
+                self.logger.warning(f"Failed to process KB answer attachment: {e}")
+
+        return attachments
 
     async def _transform_ticket_to_ticket_record(
         self,
@@ -1206,18 +1272,22 @@ class ZammadConnector(BaseConnector):
     async def _transform_attachment_to_file_record(
         self,
         attachment_data: Dict[str, Any],
-        ticket_id: int,
-        article_id: int,
-        parent_ticket: TicketRecord
+        external_record_id: str,
+        parent_record: Record,
+        parent_record_type: RecordType,
+        indexing_filter_key: IndexingFilterKey,
+        inherit_permissions: bool = True
     ) -> Optional[FileRecord]:
         """
         Transform Zammad attachment to FileRecord.
 
         Args:
-            attachment_data: Attachment data from article
-            ticket_id: Parent ticket ID
-            article_id: Parent article ID
-            parent_ticket: Parent TicketRecord
+            attachment_data: Attachment data from article/answer
+            external_record_id: Unique external ID for this attachment
+            parent_record: Parent record (TicketRecord or WebpageRecord)
+            parent_record_type: Type of parent record (TICKET or WEBPAGE)
+            indexing_filter_key: Indexing filter key to check for auto-index
+            inherit_permissions: Whether to inherit permissions from parent (default True for tickets, should match parent for answers)
 
         Returns:
             FileRecord or None
@@ -1231,7 +1301,6 @@ class ZammadConnector(BaseConnector):
         content_type = attachment_data.get("preferences", {}).get("Content-Type", "application/octet-stream")
 
         # Check for existing record
-        external_record_id = f"{ticket_id}_{article_id}_{attachment_id}"
         existing_record = None
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(
@@ -1243,22 +1312,24 @@ class ZammadConnector(BaseConnector):
         record_id = existing_record.id if existing_record else str(uuid4())
         version = 0 if is_new else existing_record.version
 
-        # Determine record_group_type from parent ticket
-        # Attachments inherit the same group type as their parent ticket
+        # Determine record_group_type from parent
         file_record_group_type = None
-        if parent_ticket.external_record_group_id:
-            # If parent has group_{id} format, it's PROJECT type
-            if parent_ticket.external_record_group_id.startswith("group_"):
+        if parent_record.external_record_group_id:
+            # If parent has group_{id} format, it's PROJECT type (tickets)
+            if parent_record.external_record_group_id.startswith("group_"):
                 file_record_group_type = RecordGroupType.PROJECT
+            # If parent has cat_{id} format, it's KB type (answers)
+            elif parent_record.external_record_group_id.startswith("cat_"):
+                file_record_group_type = RecordGroupType.KB
             # If parent has record_group_type set, use it
-            elif parent_ticket.record_group_type:
-                file_record_group_type = parent_ticket.record_group_type
+            elif parent_record.record_group_type:
+                file_record_group_type = parent_record.record_group_type
 
         # Get file extension from filename
         extension = filename.split('.')[-1] if '.' in filename else None
 
-        # Use parent ticket's updated_at as external_revision_id (attachments inherit from parent)
-        external_revision_id = str(parent_ticket.source_updated_at) if parent_ticket.source_updated_at else None
+        # Use parent's updated_at as external_revision_id (attachments inherit from parent)
+        external_revision_id = str(parent_record.source_updated_at) if parent_record.source_updated_at else None
 
         file_record = FileRecord(
             id=record_id,
@@ -1267,30 +1338,30 @@ class ZammadConnector(BaseConnector):
             record_name=filename,
             external_record_id=external_record_id,
             external_revision_id=external_revision_id,
-            external_record_group_id=parent_ticket.external_record_group_id,
+            external_record_group_id=parent_record.external_record_group_id,
             record_group_type=file_record_group_type,
-            parent_record_id=parent_ticket.id,
-            parent_external_record_id=parent_ticket.external_record_id,
-            parent_record_type=RecordType.TICKET,
+            parent_record_id=parent_record.id,
+            parent_external_record_id=parent_record.external_record_id,
+            parent_record_type=parent_record_type,
             indexing_status=IndexingStatus.NOT_STARTED,
             version=version,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             mime_type=content_type,
-            weburl=parent_ticket.weburl,  # Use parent ticket's weburl
+            weburl=parent_record.weburl,
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
-            source_created_at=parent_ticket.source_created_at,
-            source_updated_at=parent_ticket.source_updated_at,
+            source_created_at=parent_record.source_created_at,
+            source_updated_at=parent_record.source_updated_at,
             size_in_bytes=size,
-            inherit_permissions=True,
+            inherit_permissions=inherit_permissions,
             is_file=True,
             extension=extension,
         )
 
         # Set indexing status based on indexing filters
-        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.ISSUE_ATTACHMENTS):
+        if self.indexing_filters and not self.indexing_filters.is_enabled(indexing_filter_key):
             file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
         return file_record
@@ -1338,392 +1409,501 @@ class ZammadConnector(BaseConnector):
         )
         self.logger.debug(f"💾 Updated sync checkpoint for group '{group_name}': {sync_time}")
 
+    async def _get_kb_sync_checkpoint(self) -> Optional[int]:
+        """
+        Get KB sync checkpoint (last_sync_time).
+
+        Returns:
+            Last sync timestamp in epoch ms, or None if not set
+        """
+        data = await self.kb_sync_point.read_sync_point("kb_sync")
+        return data.get("last_sync_time") if data else None
+
+    async def _update_kb_sync_checkpoint(self, timestamp: Optional[int] = None) -> None:
+        """
+        Update KB sync checkpoint.
+
+        Args:
+            timestamp: Timestamp to set (defaults to current time if None)
+        """
+        sync_time = timestamp if timestamp is not None else get_epoch_timestamp_in_ms()
+        await self.kb_sync_point.update_sync_point(
+            "kb_sync",
+            {"last_sync_time": sync_time}
+        )
+        self.logger.debug(f"💾 Updated KB sync checkpoint: {sync_time}")
+
     # ==================== KNOWLEDGE BASE SYNCING ====================
 
     async def _sync_knowledge_bases(self) -> None:
         """
-        Sync knowledge bases, categories, and answers from Zammad.
+        Sync knowledge bases, categories, and answers from Zammad with incremental support.
+        Uses search API for pagination and incremental sync based on updated_at timestamp.
+        """
+        # Step 1: Get checkpoint for incremental sync
+        last_sync_time = await self._get_kb_sync_checkpoint()
+
+        # Step 2: Build query
+        if last_sync_time:
+            # Incremental: only answers updated since last sync
+            dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
+            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            query = f"updated_at:[{iso_format} TO *]"
+            self.logger.info(f"🔄 Incremental KB sync from {iso_format}")
+        else:
+            # Full sync: all answers
+            query = "*"
+            self.logger.info("🔄 Full KB sync")
+
+        # Step 3: Track entities for processing
+        kb_map: Dict[int, RecordGroup] = {}
+        category_map: Dict[int, RecordGroup] = {}
+        category_permissions_map: Dict[int, Dict[str, List[int]]] = {}
+
+        # Step 4: Process first page to get KB and categories, and initial answers
+        limit = 50
+        datasource = await self._get_fresh_datasource()
+        first_response = await datasource.search_kb_answers(query=query, limit=limit, offset=0)
+        if not first_response.success or not first_response.data:
+            self.logger.info("No KB answers found")
+            return
+
+        first_assets = first_response.data.copy()
+        first_result_count = first_assets.pop("_result_count", 0)
+
+        await self._process_kb_entities_from_first_page(
+            assets=first_assets,
+            kb_map=kb_map,
+            category_map=category_map,
+            category_permissions_map=category_permissions_map
+        )
+
+        # Step 5: Process answers from first page and continue pagination
+        total_synced, max_updated_at = await self._sync_kb_answers_paginated(
+            query=query,
+            limit=limit,
+            start_offset=0,
+            first_page_assets=first_assets,
+            first_result_count=first_result_count,
+            category_map=category_map,
+            category_permissions_map=category_permissions_map
+        )
+
+        # Step 6: Update checkpoint
+        if max_updated_at > 0:
+            await self._update_kb_sync_checkpoint(max_updated_at + 1000)
+        elif total_synced > 0:
+            await self._update_kb_sync_checkpoint()
+
+        self.logger.info(f"✅ KB sync completed: {total_synced} answers processed")
+
+    async def _process_kb_entities_from_first_page(
+        self,
+        assets: Dict[str, Any],
+        kb_map: Dict[int, RecordGroup],
+        category_map: Dict[int, RecordGroup],
+        category_permissions_map: Dict[int, Dict[str, List[int]]]
+    ) -> None:
+        """
+        Process KB and categories from the first page response.
 
         Args:
-            filters: Filter configuration
+            assets: Assets dictionary from search response
+            kb_map: Output dict to store kb_id -> RecordGroup mapping
+            category_map: Output dict to store cat_id -> RecordGroup mapping
+            category_permissions_map: Output dict to store category permissions
         """
         datasource = await self._get_fresh_datasource()
+        # Process KB (single)
+        kb_assets = assets.get("KnowledgeBase", {})
+        kb_translations = assets.get("KnowledgeBaseTranslation", {})
 
-        # Step 1: Initialize KB to get all metadata
-        try:
-            init_response = await datasource.init_knowledge_base()
+        if kb_assets:
+            kb_record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
 
-            if not init_response.success:
-                error_msg = getattr(init_response, 'message', 'Unknown error')
-                error_detail = getattr(init_response, 'error', None)
-                self.logger.warning(f"Failed to initialize knowledge base: {error_msg}" + (f" - {error_detail}" if error_detail else ""))
-                return
+            for kb_id_str, kb_data in kb_assets.items():
+                kb_id = int(kb_id_str)
 
-            if not init_response.data:
-                self.logger.warning("Knowledge base initialization returned empty data - KB may not be configured in Zammad")
-                return
+                # Get KB name and locale from translations
+                translation_ids = kb_data.get("translation_ids", [])
+                kb_name = "Knowledge Base"
+                kb_locale = "en-us"  # Default locale
+                for trans_id in translation_ids:
+                    trans_data = kb_translations.get(str(trans_id))
+                    if trans_data:
+                        if trans_data.get("title"):
+                            kb_name = trans_data.get("title")
+                        if trans_data.get("locale"):
+                            kb_locale = trans_data.get("locale")
+                            break
 
-            kb_data = init_response.data
+                # Build KB web URL: /#knowledge_base/{kb_id}/locale/{locale}
+                kb_web_url = f"{self.base_url}/#knowledge_base/{kb_id}/locale/{kb_locale}" if self.base_url else None
 
-            # Debug: Log the response structure to help diagnose issues
-            self.logger.debug(f"KB init response data type: {type(kb_data)}, keys: {list(kb_data.keys()) if isinstance(kb_data, dict) else 'not a dict'}")
-
-        except Exception as e:
-            self.logger.warning(f"Knowledge base not available: {e}", exc_info=True)
-            return
-
-        # Get knowledge bases, categories, and answers from init response
-        # Handle different possible response structures
-        if isinstance(kb_data, dict):
-            # Try different possible key names (PascalCase, snake_case, camelCase, etc.)
-            # Zammad API uses PascalCase: KnowledgeBase, KnowledgeBaseCategory, KnowledgeBaseAnswer
-            # Check each key in order of preference
-            knowledge_bases = None
-            for key in ["KnowledgeBase", "knowledge_bases", "knowledgeBases", "kb"]:
-                if key in kb_data:
-                    knowledge_bases = kb_data[key]
-                    break
-            knowledge_bases = knowledge_bases if knowledge_bases is not None else []
-
-            categories = None
-            for key in ["KnowledgeBaseCategory", "categories", "category"]:
-                if key in kb_data:
-                    categories = kb_data[key]
-                    break
-            categories = categories if categories is not None else []
-
-            answers = None
-            for key in ["KnowledgeBaseAnswer", "answers", "answer"]:
-                if key in kb_data:
-                    answers = kb_data[key]
-                    break
-            answers = answers if answers is not None else []
-
-            # Extract translations for linking
-            # Zammad stores translations separately with translation_ids reference
-            kb_translations = kb_data.get("KnowledgeBaseTranslation", {})
-            category_translations = kb_data.get("KnowledgeBaseCategoryTranslation", {})
-            answer_translations = kb_data.get("KnowledgeBaseAnswerTranslation", {})
-
-            # Convert translations to lookup dicts if they're dicts with ID keys
-            if isinstance(kb_translations, dict):
-                kb_translations = {int(k): v for k, v in kb_translations.items()}
-            if isinstance(category_translations, dict):
-                category_translations = {int(k): v for k, v in category_translations.items()}
-            if isinstance(answer_translations, dict):
-                answer_translations = {int(k): v for k, v in answer_translations.items()}
-
-            # If still empty, check if the dict itself contains KB data at top level
-            if not knowledge_bases and not categories and not answers:
-                # Check if the dict keys suggest it's a single KB object
-                if "id" in kb_data or "translations" in kb_data:
-                    self.logger.debug("KB init response appears to be a single KB object, wrapping in list")
-                    knowledge_bases = [kb_data]
-        elif isinstance(kb_data, list):
-            # If response is a list directly, treat it as knowledge bases
-            self.logger.debug("KB init response is a list, treating as knowledge bases")
-            knowledge_bases = kb_data
-            categories = []
-            answers = []
-            kb_translations = {}
-            category_translations = {}
-            answer_translations = {}
-        else:
-            self.logger.warning(f"Unexpected KB init response format: {type(kb_data)}")
-            knowledge_bases = []
-            categories = []
-            answers = []
-            kb_translations = {}
-            category_translations = {}
-            answer_translations = {}
-
-        # Ensure knowledge_bases is a list
-        # Zammad API may return a dict with IDs as keys, convert to list
-        if isinstance(knowledge_bases, dict):
-            self.logger.debug(f"knowledge_bases is a dict with {len(knowledge_bases)} entries, converting to list")
-            knowledge_bases = list(knowledge_bases.values())
-        elif not isinstance(knowledge_bases, list):
-            self.logger.warning(f"knowledge_bases is not a list or dict: {type(knowledge_bases)}, converting")
-            knowledge_bases = [knowledge_bases] if knowledge_bases else []
-
-        # Same for categories and answers
-        if isinstance(categories, dict):
-            self.logger.debug(f"categories is a dict with {len(categories)} entries, converting to list")
-            categories = list(categories.values())
-        elif not isinstance(categories, list):
-            categories = [categories] if categories else []
-
-        if isinstance(answers, dict):
-            self.logger.debug(f"answers is a dict with {len(answers)} entries, converting to list")
-            answers = list(answers.values())
-        elif not isinstance(answers, list):
-            answers = [answers] if answers else []
-
-        # Enrich answers with their translations from the separate translations dict
-        # Answers have translation_ids that reference KnowledgeBaseAnswerTranslation
-        for answer in answers:
-            if isinstance(answer, dict):
-                translation_ids = answer.get("translation_ids", [])
-                if translation_ids and answer_translations:
-                    translations_list = []
-                    for trans_id in translation_ids:
-                        trans_data = answer_translations.get(int(trans_id))
-                        if trans_data:
-                            translations_list.append(trans_data)
-                    if translations_list:
-                        answer["translations"] = translations_list
-                        self.logger.debug(f"Enriched answer {answer.get('id')} with {len(translations_list)} translations")
-
-        # Same for categories
-        for category in categories:
-            if isinstance(category, dict):
-                translation_ids = category.get("translation_ids", [])
-                if translation_ids and category_translations:
-                    translations_list = []
-                    for trans_id in translation_ids:
-                        trans_data = category_translations.get(int(trans_id))
-                        if trans_data:
-                            translations_list.append(trans_data)
-                    if translations_list:
-                        category["translations"] = translations_list
-
-        # Same for knowledge bases
-        for kb in knowledge_bases:
-            if isinstance(kb, dict):
-                translation_ids = kb.get("translation_ids", [])
-                if translation_ids and kb_translations:
-                    translations_list = []
-                    for trans_id in translation_ids:
-                        trans_data = kb_translations.get(int(trans_id))
-                        if trans_data:
-                            translations_list.append(trans_data)
-                    if translations_list:
-                        kb["translations"] = translations_list
-
-        if not knowledge_bases:
-            self.logger.info(f"No knowledge bases found in response. Response structure: {type(kb_data)}, keys: {list(kb_data.keys()) if isinstance(kb_data, dict) else 'N/A'}")
-            return
-
-        # Step 2: Create RecordGroups for KBs
-        kb_record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
-        kb_map: Dict[int, RecordGroup] = {}
-
-        for kb in knowledge_bases:
-            kb_id = kb.get("id")
-            if not kb_id:
-                continue
-
-            # Get KB name from translations
-            translations = kb.get("translations", [])
-            kb_name = "Knowledge Base"
-            for trans in translations:
-                if trans.get("title"):
-                    kb_name = trans.get("title")
-                    break
-
-            kb_record_group = RecordGroup(
-                id=str(uuid4()),
-                org_id=self.data_entities_processor.org_id,
-                external_group_id=f"kb_{kb_id}",
-                connector_id=self.connector_id,
-                connector_name=self.connector_name,
-                name=kb_name,
-                short_name=f"KB-{kb_id}",
-                group_type=RecordGroupType.KB,
-                web_url=f"{self.base_url}/help/{kb.get('custom_address', '')}" if self.base_url else None,
-                inherit_permissions=True,
-            )
-
-            permissions = [
-                Permission(
-                    entity_type=EntityType.ORG,
-                    type=PermissionType.READ,
-                    external_id=None
+                kb_record_group = RecordGroup(
+                    id=str(uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=f"kb_{kb_id}",
+                    connector_id=self.connector_id,
+                    connector_name=self.connector_name,
+                    name=kb_name,
+                    short_name=f"KB-{kb_id}",
+                    group_type=RecordGroupType.KB,
+                    web_url=kb_web_url,
+                    inherit_permissions=True,
                 )
-            ]
 
-            kb_record_groups.append((kb_record_group, permissions))
-            kb_map[kb_id] = kb_record_group
+                kb_permissions = [
+                    Permission(entity_type=EntityType.ORG, type=PermissionType.READ, external_id=None)
+                ]
 
-        if kb_record_groups:
-            await self.data_entities_processor.on_new_record_groups(kb_record_groups)
-            self.logger.info(f"✅ Synced {len(kb_record_groups)} knowledge bases")
+                kb_record_groups.append((kb_record_group, kb_permissions))
+                kb_map[kb_id] = kb_record_group
 
-        # Step 3: Create RecordGroups for categories
-        category_record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
-        category_map: Dict[int, RecordGroup] = {}
+            if kb_record_groups:
+                await self.data_entities_processor.on_new_record_groups(kb_record_groups)
+                self.logger.info(f"✅ Synced {len(kb_record_groups)} knowledge base(s)")
 
-        for category in categories:
-            cat_id = category.get("id")
-            kb_id = category.get("knowledge_base_id")
+        # Process categories with permissions
+        category_assets = assets.get("KnowledgeBaseCategory", {})
+        category_translations = assets.get("KnowledgeBaseCategoryTranslation", {})
 
-            if not cat_id or not kb_id:
-                continue
+        if category_assets:
+            category_record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
 
-            # Get category name from translations
-            translations = category.get("translations", [])
-            cat_name = "Category"
-            for trans in translations:
-                if trans.get("title"):
-                    cat_name = trans.get("title")
-                    break
+            for cat_id_str, cat_data in category_assets.items():
+                cat_id = int(cat_id_str)
+                kb_id = cat_data.get("knowledge_base_id")
 
-            # Determine parent
-            parent_cat_id = category.get("parent_id")
-            if parent_cat_id and parent_cat_id in category_map:
-                parent_external_group_id = f"cat_{parent_cat_id}"
-            elif kb_id in kb_map:
-                parent_external_group_id = f"kb_{kb_id}"
-            else:
-                parent_external_group_id = None
+                if not kb_id:
+                    continue
 
-            cat_record_group = RecordGroup(
-                id=str(uuid4()),
-                org_id=self.data_entities_processor.org_id,
-                external_group_id=f"cat_{cat_id}",
-                connector_id=self.connector_id,
-                connector_name=self.connector_name,
-                name=cat_name,
-                short_name=f"CAT-{cat_id}",
-                group_type=RecordGroupType.KB,
-                parent_external_group_id=parent_external_group_id,
-                inherit_permissions=True,
-            )
+                # Get category name and locale from translations
+                translation_ids = cat_data.get("translation_ids", [])
+                cat_name = "Category"
+                for trans_id in translation_ids:
+                    trans_data = category_translations.get(str(trans_id))
+                    if trans_data:
+                        if trans_data.get("title"):
+                            cat_name = trans_data.get("title")
+                        if trans_data.get("locale"):
+                            trans_data.get("locale")
+                            break
 
-            permissions = [
-                Permission(
-                    entity_type=EntityType.ORG,
-                    type=PermissionType.READ,
-                    external_id=None
-                )
-            ]
+                # Get KB locale for building category URL
+                kb_locale = "en-us"  # Default
+                if kb_id:
+                    kb_data_for_locale = kb_assets.get(str(kb_id), {})
+                    kb_trans_ids = kb_data_for_locale.get("translation_ids", [])
+                    for trans_id in kb_trans_ids:
+                        trans_data = kb_translations.get(str(trans_id))
+                        if trans_data and trans_data.get("locale"):
+                            kb_locale = trans_data.get("locale")
+                            break
 
-            category_record_groups.append((cat_record_group, permissions))
-            category_map[cat_id] = cat_record_group
+                # Build category web URL: /#knowledge_base/{kb_id}/locale/{locale}/category/{cat_id}
+                cat_web_url = f"{self.base_url}/#knowledge_base/{kb_id}/locale/{kb_locale}/category/{cat_id}" if self.base_url and kb_id else None
 
-        if category_record_groups:
-            await self.data_entities_processor.on_new_record_groups(category_record_groups)
-            self.logger.info(f"✅ Synced {len(category_record_groups)} KB categories")
-
-        # Step 4: Fetch and sync KB answers one by one
-        total_answers = 0
-        batch_records: List[Tuple[Record, List[Permission]]] = []
-
-        if not answers:
-            self.logger.info("No KB answers found in init response")
-        else:
-            self.logger.info(f"Processing {len(answers)} KB answers...")
-
-        for answer_meta in answers:
-            answer_id = answer_meta.get("id")
-            if not answer_id:
-                self.logger.debug(f"Skipping KB answer with missing ID: {answer_meta}")
-                continue
-
-            try:
-                # Debug: Log answer_meta structure
-                self.logger.debug(f"Processing KB answer {answer_id}, keys: {list(answer_meta.keys()) if isinstance(answer_meta, dict) else 'N/A'}")
-
-                # Check if answer_meta already has full content (translations, etc.)
-                # The init response may contain full answer data, so try using it first
-                has_translations = answer_meta.get("translations") is not None
-                has_content = answer_meta.get("content") is not None
-
-                if has_translations or has_content:
-                    # Use the answer data from init response directly
-                    self.logger.debug(f"Using KB answer data from init response for answer {answer_id}")
-                    answer_data = answer_meta
+                # Determine parent
+                parent_cat_id = cat_data.get("parent_id")
+                if parent_cat_id and parent_cat_id in category_map:
+                    parent_external_group_id = f"cat_{parent_cat_id}"
+                elif kb_id in kb_map:
+                    parent_external_group_id = f"kb_{kb_id}"
                 else:
-                    # Fetch full answer content if not in init response
-                    # Note: The answer ID from init might need to be used differently
-                    # Try fetching with the ID from answer_meta
-                    answer_response = await datasource.get_kb_answer(id=answer_id)
+                    parent_external_group_id = None
 
-                    if not answer_response.success:
-                        # If fetch fails, try using answer_meta directly anyway
-                        # The init response might have all the data we need
-                        self.logger.debug(
-                            f"Failed to fetch KB answer {answer_id} via API, trying to use init response data. "
-                            f"Answer meta has translations: {has_translations}, content: {has_content}"
+                # Extract permissions from permissions_effective if present
+                permissions_effective = cat_data.get("permissions_effective", [])
+                editor_role_ids: List[int] = []
+                reader_role_ids: List[int] = []
+
+                if permissions_effective:
+                    editor_role_ids = [
+                        p["role_id"] for p in permissions_effective
+                        if p.get("access") == "editor"
+                    ]
+                    reader_role_ids = [
+                        p["role_id"] for p in permissions_effective
+                        if p.get("access") == "reader"
+                    ]
+                else:
+                    # Fetch from API if not in response
+                    try:
+                        perm_response = await datasource.get_kb_category_permissions(
+                            kb_id=kb_id,
+                            cat_id=cat_id
                         )
-                        # Use answer_meta as fallback - it might have enough data
-                        answer_data = answer_meta
-                    else:
-                        if not answer_response.data:
-                            self.logger.warning(f"KB answer {answer_id} returned empty data, using init response data")
-                            answer_data = answer_meta
-                        else:
-                            answer_data = answer_response.data
+                        if perm_response.success and perm_response.data:
+                            editor_role_ids = [r["id"] for r in perm_response.data.get("roles_editor", [])]
+                            reader_role_ids = [r["id"] for r in perm_response.data.get("roles_reader", [])]
+                    except Exception as e:
+                        self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
 
-                answer_record = await self._transform_kb_answer_to_webpage_record(
-                    answer_data,
-                    category_map
+                # Store permissions and KB ID for answer processing
+                category_permissions_map[cat_id] = {
+                    "kb_id": kb_id,
+                    "editor_role_ids": editor_role_ids,
+                    "reader_role_ids": reader_role_ids
+                }
+
+                # Create category permissions (all roles: editor + reader)
+                cat_permissions: List[Permission] = []
+                for role_id in editor_role_ids:
+                    cat_permissions.append(Permission(
+                        entity_type=EntityType.ROLE,
+                        type=PermissionType.WRITE,
+                        external_id=str(role_id)
+                    ))
+                for role_id in reader_role_ids:
+                    cat_permissions.append(Permission(
+                        entity_type=EntityType.ROLE,
+                        type=PermissionType.READ,
+                        external_id=str(role_id)
+                    ))
+
+                # If no role permissions, default to ORG permission
+                if not cat_permissions:
+                    cat_permissions.append(Permission(
+                        entity_type=EntityType.ORG,
+                        type=PermissionType.READ,
+                        external_id=None
+                    ))
+
+                # Determine inherit_permissions: Only inherit from KB if category has no role permissions
+                # Categories with strict role permissions should NOT inherit ORG permission from KB
+                has_role_permissions = bool(editor_role_ids) or bool(reader_role_ids)
+                cat_inherit_permissions = not has_role_permissions
+
+                cat_record_group = RecordGroup(
+                    id=str(uuid4()),
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=f"cat_{cat_id}",
+                    connector_id=self.connector_id,
+                    connector_name=self.connector_name,
+                    name=cat_name,
+                    short_name=f"CAT-{cat_id}",
+                    group_type=RecordGroupType.KB,
+                    parent_external_group_id=parent_external_group_id,
+                    inherit_permissions=cat_inherit_permissions,
+                    web_url=cat_web_url,
                 )
 
-                if answer_record:
-                    # Set indexing status based on indexing filters
-                    if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.KNOWLEDGE_BASE):
-                        answer_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+                category_record_groups.append((cat_record_group, cat_permissions))
+                category_map[cat_id] = cat_record_group
 
-                    batch_records.append((answer_record, []))
-                    total_answers += 1
+            if category_record_groups:
+                await self.data_entities_processor.on_new_record_groups(category_record_groups)
+                self.logger.info(f"✅ Synced {len(category_record_groups)} KB categories")
 
-                    # Batch processing
-                    if len(batch_records) >= BATCH_SIZE_KB_ANSWERS:
-                        await self.data_entities_processor.on_new_records(batch_records)
-                        self.logger.debug(f"Processed batch of {len(batch_records)} KB answers")
-                        batch_records = []
-
-            except Exception as e:
-                self.logger.warning(f"Failed to process KB answer {answer_id}: {e}", exc_info=True)
-
-        # Process remaining batch
-        if batch_records:
-            await self.data_entities_processor.on_new_records(batch_records)
-
-        self.logger.info(f"✅ Synced {total_answers} KB answers as WebpageRecords")
-
-    async def _transform_kb_answer_to_webpage_record(
+    async def _sync_kb_answers_paginated(
         self,
-        answer_data: Dict[str, Any],
-        category_map: Dict[int, RecordGroup]
-    ) -> Optional[WebpageRecord]:
+        query: str,
+        limit: int,
+        start_offset: int,
+        first_page_assets: Dict[str, Any],
+        first_result_count: int,
+        category_map: Dict[int, RecordGroup],
+        category_permissions_map: Dict[int, Dict[str, List[int]]]
+    ) -> Tuple[int, int]:
         """
-        Transform KB answer to WebpageRecord.
+        Sync KB answers with pagination.
+
+        Args:
+            query: Search query string
+            limit: Page size for pagination
+            start_offset: Starting offset (usually 0)
+            first_page_assets: Assets from first page (already fetched)
+            first_result_count: Result count from first page
+            category_map: Map of category_id -> RecordGroup
+            category_permissions_map: Map of category_id -> permissions dict
+
+        Returns:
+            Tuple of (total_synced_count, max_updated_at_timestamp)
+        """
+        datasource = await self._get_fresh_datasource()
+        offset = start_offset
+        total_synced = 0
+        max_updated_at = 0
+        is_first_page = True
+
+        while True:
+            # Use first page data if available, otherwise fetch
+            if is_first_page:
+                is_first_page = False
+                assets = first_page_assets
+                result_count = first_result_count
+            else:
+                response = await datasource.search_kb_answers(
+                    query=query,
+                    limit=limit,
+                    offset=offset
+                )
+
+                if not response.success:
+                    self.logger.warning(f"Failed to search KB answers: {response.message}")
+                    break
+
+                if not response.data:
+                    break
+
+                assets = response.data.copy()
+
+                # Get result count for proper pagination
+                result_count = assets.pop("_result_count", 0)
+
+            # Process Answers
+            answer_assets = assets.get("KnowledgeBaseAnswer", {})
+            answer_translations = assets.get("KnowledgeBaseAnswerTranslation", {})
+
+            if not answer_assets:
+                break
+
+            batch_records: List[Tuple[Record, List[Permission]]] = []
+
+            for answer_id_str, answer_data in answer_assets.items():
+                answer_id = int(answer_id_str)
+
+                try:
+                    # Track max updated_at for checkpoint
+                    answer_updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
+                    if answer_updated_at and answer_updated_at > max_updated_at:
+                        max_updated_at = answer_updated_at
+
+                    # Get category permissions
+                    category_id = answer_data.get("category_id")
+                    cat_perms = category_permissions_map.get(category_id, {})
+                    editor_role_ids = cat_perms.get("editor_role_ids", [])
+
+                    # Determine visibility
+                    visibility = self._determine_visibility(answer_data)
+
+                    # Enrich answer with translations
+                    translation_ids = answer_data.get("translation_ids", [])
+                    translations = []
+                    # Get content assets if available
+                    content_assets = assets.get("KnowledgeBaseAnswerTranslationContent", {})
+                    for tid in translation_ids:
+                        trans_data = answer_translations.get(str(tid))
+                        if trans_data:
+                            # Extract content from KnowledgeBaseAnswerTranslationContent using content_id
+                            content_id = trans_data.get("content_id")
+                            if content_id:
+                                content_data = content_assets.get(str(content_id))
+                                if content_data:
+                                    # Add content body and attachments to translation
+                                    trans_data["body"] = content_data.get("body", "")
+                                    trans_data["content"] = {"body": content_data.get("body", "")}
+                                    # Merge attachments from content (if any)
+                                    content_attachments = content_data.get("attachments", [])
+                                    if content_attachments:
+                                        trans_data["attachments"] = content_attachments
+                            translations.append(trans_data)
+                    answer_data["translations"] = translations
+
+                    # Create record with visibility-based permissions
+                    answer_record, permissions = self._create_answer_with_permissions(
+                        answer_data=answer_data,
+                        category_id=category_id,
+                        visibility=visibility,
+                        editor_role_ids=editor_role_ids,
+                        category_map=category_map
+                    )
+
+                    if answer_record:
+                        # Set indexing status based on indexing filters
+                        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.KNOWLEDGE_BASE):
+                            answer_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+                        batch_records.append((answer_record, permissions))
+                        total_synced += 1
+
+                        # Fetch attachments for the answer
+                        attachment_records = await self._fetch_kb_answer_attachments(
+                            answer_data=answer_data,
+                            answer_record=answer_record,
+                            answer_permissions=permissions
+                        )
+                        if attachment_records:
+                            batch_records.extend(attachment_records)
+
+                except Exception as e:
+                    self.logger.warning(f"Failed to process KB answer {answer_id}: {e}", exc_info=True)
+
+            # Save batch
+            if batch_records:
+                await self.data_entities_processor.on_new_records(batch_records)
+                self.logger.debug(f"Processed batch of {len(batch_records)} KB answers")
+
+            # Check pagination using result count (not answer count)
+            if result_count < limit:
+                break
+
+            offset += limit
+
+        return total_synced, max_updated_at
+
+    def _determine_visibility(self, answer_data: Dict[str, Any]) -> str:
+        """
+        Determine answer visibility based on timestamps.
 
         Args:
             answer_data: Answer data from Zammad
+
+        Returns:
+            Visibility state: "PUBLIC", "INTERNAL", "ARCHIVED", or "DRAFT"
+        """
+        if answer_data.get("published_at"):
+            return "PUBLIC"
+        elif answer_data.get("internal_at"):
+            return "INTERNAL"
+        elif answer_data.get("archived_at"):
+            return "ARCHIVED"
+        else:
+            return "DRAFT"
+
+    def _create_answer_with_permissions(
+        self,
+        answer_data: Dict[str, Any],
+        category_id: Optional[int],
+        visibility: str,
+        editor_role_ids: List[int],
+        category_map: Dict[int, RecordGroup]
+    ) -> Tuple[Optional[WebpageRecord], List[Permission]]:
+        """
+        Create answer record with visibility-based permissions.
+
+        Args:
+            answer_data: Answer data from Zammad
+            category_id: Category ID for the answer
+            visibility: Visibility state (PUBLIC, INTERNAL, ARCHIVED, DRAFT)
+            editor_role_ids: List of editor role IDs for ARCHIVED/DRAFT visibility
             category_map: Map of category_id -> RecordGroup
 
         Returns:
-            WebpageRecord or None
+            Tuple of (WebpageRecord, List[Permission])
         """
         answer_id = answer_data.get("id")
         if not answer_id:
-            return None
+            return None, []
 
-        # Get category
-        category_id = answer_data.get("category_id")
         external_record_group_id = f"cat_{category_id}" if category_id else None
 
         # Determine record_group_type based on external_record_group_id format
-        # KB categories use "cat_{id}" format and are RecordGroupType.KB
         kb_record_group_type = None
         if external_record_group_id and external_record_group_id.startswith("cat_"):
-            kb_record_group_type = RecordGroupType.KB  # KB categories are KB type
+            kb_record_group_type = RecordGroupType.KB
 
-        # Get title and content from translations
+        # Get title, content, and locale from translations
         translations = answer_data.get("translations", [])
         title = "KB Answer"
         content_body = None
+        answer_locale = "en-us"  # Default locale
 
         for trans in translations:
             trans_title = trans.get("title")
 
-            # Content body can be in different locations depending on response format:
-            # 1. trans["content"]["body"] - nested format from individual answer fetch
-            # 2. trans["content_body"] - flat format from init response translations
-            # 3. trans["body"] - another possible flat format
+            # Content body can be in different locations depending on response format
             trans_content_body = None
             if isinstance(trans.get("content"), dict):
                 trans_content_body = trans.get("content", {}).get("body")
@@ -1732,63 +1912,75 @@ class ZammadConnector(BaseConnector):
             if not trans_content_body:
                 trans_content_body = trans.get("body")
 
-            # Update title if found
             if trans_title:
                 title = trans_title
-
-            # Update content_body if found
             if trans_content_body:
                 content_body = trans_content_body
+            if trans.get("locale"):
+                answer_locale = trans.get("locale")
 
-            # Break early if we found both title and content_body
             if title and title != "KB Answer" and content_body:
                 break
+
+        # Get KB ID from category's parent (simple extraction)
+        kb_id = 1  # Default (Zammad typically has one KB per instance)
+        if category_id:
+            cat_rg = category_map.get(category_id)
+            if cat_rg and cat_rg.parent_external_group_id and cat_rg.parent_external_group_id.startswith("kb_"):
+                try:
+                    kb_id = int(cat_rg.parent_external_group_id.replace("kb_", ""))
+                except (ValueError, AttributeError):
+                    pass
+
+        # Build answer web URL: /#knowledge_base/{kb_id}/locale/{locale}/answer/{answer_id}
+        answer_weburl = f"{self.base_url}/#knowledge_base/{kb_id}/locale/{answer_locale}/answer/{answer_id}" if self.base_url else ""
 
         # Parse timestamps
         created_at = self._parse_zammad_datetime(answer_data.get("created_at", ""))
         updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
 
-        # Check for existing record
         external_record_id = f"kb_answer_{answer_id}"
-        existing_record = None
-        async with self.data_store_provider.transaction() as tx_store:
-            existing_record = await tx_store.get_record_by_external_id(
-                connector_id=self.connector_id,
-                external_id=external_record_id
-            )
-
-        is_new = existing_record is None
-        record_id = existing_record.id if existing_record else str(uuid4())
-        version = 0 if is_new else (existing_record.version + 1 if existing_record.source_updated_at != updated_at else existing_record.version)
-
-        # Use updated_at as external_revision_id so placeholders (None) will trigger update
         external_revision_id = str(updated_at) if updated_at else None
 
+        # Only INTERNAL inherits from category (reader + editor roles)
+        inherit_permissions = visibility == "INTERNAL"
+
         webpage_record = WebpageRecord(
-            id=record_id,
+            id=str(uuid4()),
             org_id=self.data_entities_processor.org_id,
             record_type=RecordType.WEBPAGE,
             record_name=title,
             external_record_id=external_record_id,
             external_revision_id=external_revision_id,
             external_record_group_id=external_record_group_id,
-            record_group_type=kb_record_group_type,  # Set group type for auto-creation if needed
+            record_group_type=kb_record_group_type,
             indexing_status=IndexingStatus.NOT_STARTED,
-            version=version,
+            version=0,
             origin=OriginTypes.CONNECTOR.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             mime_type=MimeTypes.BLOCKS.value,
-            weburl=f"{self.base_url}/help/kb_answers/{answer_id}" if self.base_url else "",
+            weburl=answer_weburl,
             created_at=get_epoch_timestamp_in_ms(),
             updated_at=get_epoch_timestamp_in_ms(),
             source_created_at=created_at,
             source_updated_at=updated_at,
-            inherit_permissions=True,
+            inherit_permissions=inherit_permissions,
             preview_renderable=False,
         )
 
-        return webpage_record
+        # Create permissions based on visibility
+        permissions: List[Permission] = []
+        if visibility == "PUBLIC":
+            # Everyone can access via direct ORG permission
+            permissions.append(Permission(entity_type=EntityType.ORG, type=PermissionType.READ))
+        elif visibility in ["ARCHIVED", "DRAFT"]:
+            # Only editors can access - they should have WRITE permission since they are editors
+            for role_id in editor_role_ids:
+                permissions.append(Permission(entity_type=EntityType.ROLE, type=PermissionType.WRITE, external_id=str(role_id)))
+        # INTERNAL: no direct permissions, inherits from category
+
+        return webpage_record, permissions
 
     # ==================== CONTENT STREAMING ====================
 
@@ -1823,6 +2015,73 @@ class ZammadConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}", exc_info=True)
             raise
+
+    async def _build_ticket_attachment_child_records(
+        self,
+        ticket_id: str,
+        article_id: str,
+        attachments: List[Dict[str, Any]],
+        parent_record: Record
+    ) -> List[ChildRecord]:
+        """
+        Build child records for ticket article attachments.
+        Looks up existing records or creates them if they don't exist.
+
+        Args:
+            ticket_id: Ticket ID
+            article_id: Article ID
+            attachments: List of attachment data from article
+            parent_record: Parent TicketRecord
+
+        Returns:
+            List of ChildRecord objects for attachments
+        """
+        child_records = []
+        async with self.data_store_provider.transaction() as tx_store:
+            for att in attachments:
+                att_id = att.get("id")
+                att_filename = att.get("filename", "")
+                if not att_id:
+                    continue
+
+                # Ticket attachment external_record_id format: {ticket_id}_{article_id}_{attachment_id}
+                external_record_id = f"{ticket_id}_{article_id}_{att_id}"
+
+                # Look up existing record to get the actual record ID
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=external_record_id
+                )
+
+                if existing_record:
+                    child_records.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_record.id,
+                        child_name=existing_record.record_name or att_filename
+                    ))
+                else:
+                    # Create the record if it doesn't exist
+                    try:
+                        file_record = await self._transform_attachment_to_file_record(
+                            attachment_data=att,
+                            external_record_id=external_record_id,
+                            parent_record=parent_record,
+                            parent_record_type=RecordType.TICKET,
+                            indexing_filter_key=IndexingFilterKey.ISSUE_ATTACHMENTS
+                        )
+                        if file_record:
+                            # Save the record - FileRecords inherit permissions from group (inherit_permissions=True by default)
+                            await self.data_entities_processor.on_new_records([(file_record, [])])
+                            child_records.append(ChildRecord(
+                                child_type=ChildType.RECORD,
+                                child_id=file_record.id,
+                                child_name=file_record.record_name or att_filename
+                            ))
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create attachment record {external_record_id}: {e}")
+                        continue
+
+        return child_records
 
     async def _process_ticket_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
@@ -1876,21 +2135,15 @@ class ZammadConnector(BaseConnector):
 
             # Get attachments for first article (description) as children_records
             first_article_attachments = first_article.get("attachments", [])
-            description_children_records = []
-            for att in first_article_attachments:
-                att_id = att.get("id")
-                att_filename = att.get("filename", "")
-                if att_id:
-                    description_children_records.append(ChildRecord(
-                        child_type=ChildType.RECORD,
-                        child_id=f"{ticket_id}_{first_article_id}_{att_id}",
-                        child_name=att_filename
-                    ))
+            description_children_records = await self._build_ticket_attachment_child_records(
+                ticket_id=ticket_id,
+                article_id=first_article_id,
+                attachments=first_article_attachments,
+                parent_record=record
+            )
 
-            self.logger.debug(f"Description body HTML: {description_body_html}")
             # Convert HTML to Markdown
             description_body_md = html_to_markdown(description_body_html) if description_body_html else ""
-            self.logger.debug(f"Description body MD: {description_body_md}")
             description_data = f"# {ticket_title}\n\n{description_body_md}" if description_body_md else f"# {ticket_title}"
 
             description_block_group = BlockGroup(
@@ -1937,10 +2190,8 @@ class ZammadConnector(BaseConnector):
                 if not article_body_html:
                     continue
 
-                self.logger.debug(f"Article body HTML: {article_body_html}")
                 # Convert HTML to Markdown
                 article_body_md = html_to_markdown(article_body_html)
-                self.logger.debug(f"Article body MD: {article_body_md}")
                 # Get author name
                 author_name = article_from if article_from else "Unknown"
 
@@ -1951,22 +2202,17 @@ class ZammadConnector(BaseConnector):
 
                 # Get attachments for this article as children_records
                 article_attachments = article.get("attachments", [])
-                comment_children_records = []
-
-                for att in article_attachments:
-                    att_id = att.get("id")
-                    att_filename = att.get("filename", "")
-                    if att_id:
-                        comment_children_records.append(ChildRecord(
-                            child_type=ChildType.RECORD,
-                            child_id=f"{ticket_id}_{article_id}_{att_id}",
-                            child_name=att_filename
-                        ))
+                comment_children_records = await self._build_ticket_attachment_child_records(
+                    ticket_id=ticket_id,
+                    article_id=article_id,
+                    attachments=article_attachments,
+                    parent_record=record
+                )
 
                 comment_block_group = BlockGroup(
                     id=str(uuid4()),
                     index=block_group_index,
-                    parent_index=0,  # Points to Description BlockGroup
+                    parent_index=0,
                     name=comment_name,
                     type=GroupType.TEXT_SECTION,
                     sub_type=GroupSubType.COMMENT,
@@ -2014,6 +2260,117 @@ class ZammadConnector(BaseConnector):
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         return blocks_container.model_dump_json(indent=2).encode('utf-8')
 
+    async def _build_kb_answer_child_records(
+        self,
+        answer_id: int,
+        answer_data: Dict[str, Any],
+        answer_attachments: List[Dict[str, Any]],
+        record: Record,
+        kb_id: int
+    ) -> List[ChildRecord]:
+        """
+        Build child records for KB answer attachments.
+        Looks up existing records or creates them if they don't exist, with proper permissions.
+
+        Args:
+            answer_id: KB answer ID
+            answer_data: Answer data from Zammad API
+            answer_attachments: List of attachment data from answer
+            record: Parent WebpageRecord
+            kb_id: Knowledge base ID
+
+        Returns:
+            List of ChildRecord objects for attachments
+        """
+        # Calculate answer permissions based on visibility (same as during sync)
+        answer_permissions: List[Permission] = []
+        visibility = self._determine_visibility(answer_data) if answer_data else "DRAFT"
+
+        if visibility == "PUBLIC":
+            # Everyone can access via direct ORG permission
+            answer_permissions.append(Permission(entity_type=EntityType.ORG, type=PermissionType.READ))
+        elif visibility in ["ARCHIVED", "DRAFT"]:
+            # Only editors can access - need to get editor_role_ids from category
+            category_id = answer_data.get("category_id") if answer_data else None
+            editor_role_ids: List[int] = []
+
+            if category_id:
+                try:
+                    # Fetch category permissions to get editor role IDs
+                    datasource = await self._get_fresh_datasource()
+                    perm_response = await datasource.get_kb_category_permissions(
+                        kb_id=kb_id,
+                        category_id=category_id
+                    )
+                    if perm_response.success and perm_response.data:
+                        permissions_effective = perm_response.data.get("permissions_effective", [])
+                        editor_role_ids = [
+                            p["role_id"] for p in permissions_effective
+                            if p.get("access") == "editor"
+                        ]
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch category permissions for category {category_id}: {e}")
+
+            # Add editor role permissions
+            for role_id in editor_role_ids:
+                answer_permissions.append(Permission(entity_type=EntityType.ROLE, type=PermissionType.WRITE, external_id=str(role_id)))
+        # INTERNAL: no direct permissions, inherits from category (empty list)
+
+        # Use the same inherit_permissions value as the parent answer
+        answer_inherit_permissions = record.inherit_permissions if hasattr(record, 'inherit_permissions') else (visibility == "INTERNAL")
+
+        # Build children_records for attachments
+        answer_children_records = []
+        async with self.data_store_provider.transaction() as tx_store:
+            for att in answer_attachments:
+                att_id = att.get("id")
+                att_filename = att.get("filename", "")
+                if not att_id:
+                    continue
+
+                # KB answer attachment external_record_id format: kb_answer_{answer_id}_attachment_{attachment_id}
+                external_record_id = f"kb_answer_{answer_id}_attachment_{att_id}"
+
+                # Look up existing record to get the actual record ID
+                existing_record = await tx_store.get_record_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=external_record_id
+                )
+
+                if existing_record:
+                    answer_children_records.append(ChildRecord(
+                        child_type=ChildType.RECORD,
+                        child_id=existing_record.id,
+                        child_name=existing_record.record_name or att_filename
+                    ))
+                else:
+                    # Create the record if it doesn't exist
+                    try:
+                        file_record = await self._transform_attachment_to_file_record(
+                            attachment_data=att,
+                            external_record_id=external_record_id,
+                            parent_record=record,
+                            parent_record_type=RecordType.WEBPAGE,
+                            indexing_filter_key=IndexingFilterKey.KNOWLEDGE_BASE,
+                            inherit_permissions=answer_inherit_permissions
+                        )
+                        if file_record:
+                            # Save the record with the same permissions as the parent answer
+                            # For PUBLIC: ORG permission, inherit_permissions=False
+                            # For ARCHIVED/DRAFT: Editor role permissions, inherit_permissions=False
+                            # For INTERNAL: Empty list, inherit_permissions=True will handle category inheritance
+                            await self.data_entities_processor.on_new_records([(file_record, answer_permissions)])
+                            answer_children_records.append(ChildRecord(
+                                child_type=ChildType.RECORD,
+                                child_id=file_record.id,
+                                child_name=file_record.record_name or att_filename
+                            ))
+                    except Exception as e:
+                        self.logger.warning(f"Failed to create attachment record {external_record_id}: {e}")
+                        continue
+
+        return answer_children_records
+
     async def _process_kb_answer_blockgroups_for_streaming(self, record: Record) -> bytes:
         """
         Process KB answer into BlocksContainer for streaming.
@@ -2030,17 +2387,66 @@ class ZammadConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
 
-        # Try to fetch KB answer - may fail with 404 for some Zammad configurations
-        answer_response = await datasource.get_kb_answer(id=answer_id)
+        # Get KB ID from init response or use default (Zammad has single KB per instance)
+        kb_id = 1  # Default KB ID
+        try:
+            init_response = await datasource.init_knowledge_base()
+            if init_response.success and init_response.data:
+                kb_assets = init_response.data.get("KnowledgeBase", {})
+                if kb_assets:
+                    kb_id = int(list(kb_assets.keys())[0])
+        except Exception:
+            pass
+
+        # Try to fetch KB answer using correct endpoint format
+        answer_response = await datasource.get_kb_answer(id=answer_id, kb_id=kb_id)
 
         title = record.record_name
         body = ""
+        answer_attachments = []
 
         if answer_response.success and answer_response.data:
-            answer_data = answer_response.data
+            response_data = answer_response.data
+
+            # Handle assets structure (Zammad API returns data in assets object)
+            if isinstance(response_data, dict) and "assets" in response_data:
+                assets = response_data.get("assets", {})
+                # Extract answer from assets.KnowledgeBaseAnswer
+                answer_assets = assets.get("KnowledgeBaseAnswer", {})
+                answer_data = answer_assets.get(str(answer_id), {})
+
+                # Extract translations from assets.KnowledgeBaseAnswerTranslation
+                answer_translations = assets.get("KnowledgeBaseAnswerTranslation", {})
+                # Extract content from assets.KnowledgeBaseAnswerTranslationContent
+                content_assets = assets.get("KnowledgeBaseAnswerTranslationContent", {})
+            else:
+                # Fallback: assume direct answer data structure
+                answer_data = response_data
+                answer_translations = {}
+                content_assets = {}
+
+            # Get attachments from answer data
+            answer_attachments = answer_data.get("attachments", [])
 
             # Get title and content from translations
-            translations = answer_data.get("translations", [])
+            translation_ids = answer_data.get("translation_ids", [])
+            translations = []
+            for tid in translation_ids:
+                trans_data = answer_translations.get(str(tid))
+                if trans_data:
+                    # Extract content from KnowledgeBaseAnswerTranslationContent using content_id
+                    content_id = trans_data.get("content_id")
+                    if content_id:
+                        content_data = content_assets.get(str(content_id))
+                        if content_data:
+                            # Add content body and attachments to translation
+                            trans_data["body"] = content_data.get("body", "")
+                            trans_data["content"] = {"body": content_data.get("body", "")}
+                            # Merge attachments from content (if any)
+                            content_attachments = content_data.get("attachments", [])
+                            if content_attachments:
+                                trans_data["attachments"] = content_attachments
+                    translations.append(trans_data)
 
             for trans in translations:
                 # Try different content body locations
@@ -2057,13 +2463,32 @@ class ZammadConnector(BaseConnector):
                     # Also try to get title from translation
                     if trans.get("title"):
                         title = trans.get("title")
+
+                    # Also check for attachments in translations
+                    trans_attachments = trans.get("attachments", [])
+                    if trans_attachments:
+                        answer_attachments.extend(trans_attachments)
+
                     break
-        else:
-            # If API fetch fails, we'll just use the record name as title
-            self.logger.debug(f"KB answer {answer_id} fetch failed, using record name as title")
+
+        # Build children_records for attachments using helper function
+        answer_children_records = await self._build_kb_answer_child_records(
+            answer_id=answer_id,
+            answer_data=answer_data,
+            answer_attachments=answer_attachments,
+            record=record,
+            kb_id=kb_id
+        )
+
+        # Convert embedded images to base64 before converting HTML to Markdown
+        if body:
+            body = await self._convert_html_images_to_base64(body)
+
+        # Convert HTML body to Markdown (same as ticket streaming)
+        body_md = html_to_markdown(body) if body else ""
+        answer_data = f"# {title}\n\n{body_md}" if body_md else f"# {title}"
 
         # Build single BlockGroup for answer content
-        # Use HTML tags for title since body is HTML from Zammad KB
         answer_block_group = BlockGroup(
             id=str(uuid4()),
             index=0,
@@ -2072,52 +2497,187 @@ class ZammadConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT,
             description=f"KB Answer: {title}",
             source_group_id=str(answer_id),
-            data=f"<h1>{title}</h1>{body}" if body else f"<h1>{title}</h1>",
-            format=DataFormat.HTML,
+            data=answer_data,
+            format=DataFormat.MARKDOWN,
             weburl=record.weburl,
             requires_processing=True,
+            children_records=answer_children_records if answer_children_records else None,
         )
 
         blocks_container = BlocksContainer(blocks=[], block_groups=[answer_block_group])
         return blocks_container.model_dump_json(indent=2).encode('utf-8')
 
+    async def _convert_html_images_to_base64(self, html_content: str) -> str:
+        """
+        Convert embedded images in HTML content to base64 data URIs.
+
+        Finds all <img> tags with src pointing to Zammad attachments (e.g., /api/v1/attachments/9)
+        and replaces them with base64-encoded data URIs in markdown format.
+
+        Args:
+            html_content: HTML content that may contain embedded images
+
+        Returns:
+            HTML content with images converted to base64 data URIs (ready for markdown conversion)
+        """
+        if not html_content:
+            return html_content
+
+        # Parse HTML with BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+        img_tags = soup.find_all('img')
+
+        if not img_tags:
+            return html_content
+
+        # Initialize datasource if needed
+        if not self.data_source:
+            await self.init()
+
+        datasource = await self._get_fresh_datasource()
+
+        # Process each image tag
+        for img_tag in img_tags:
+            src = img_tag.get('src', '')
+            if not src:
+                continue
+
+            # Check if this is a Zammad attachment URL
+            attachment_match = re.search(r'/api/v1/attachments/(\d+)', src)
+            if not attachment_match:
+                continue
+
+            attachment_id = int(attachment_match.group(1))
+
+            try:
+                # Download attachment using datasource
+                response = await datasource.get_kb_answer_attachment(
+                    answer_id=0,
+                    id=attachment_id
+                )
+
+                if not response.success or not response.data:
+                    self.logger.debug(f"⚠️ Failed to download attachment {attachment_id}: {response.message}")
+                    continue  # Skip on error
+
+                image_bytes = response.data
+                if isinstance(image_bytes, str):
+                    image_bytes = image_bytes.encode('utf-8')
+
+                if not image_bytes:
+                    self.logger.debug(f"⚠️ Empty image content from attachment {attachment_id}")
+                    continue
+
+                # Determine image type from Content-Type header or URL
+                # Try to infer from URL first
+                image_type = "png"  # default
+                url_lower = src.lower()
+                if ".jpg" in url_lower or ".jpeg" in url_lower:
+                    image_type = "jpeg"
+                elif ".gif" in url_lower:
+                    image_type = "gif"
+                elif ".webp" in url_lower:
+                    image_type = "webp"
+                elif ".svg" in url_lower:
+                    image_type = "svg"
+                elif ".png" in url_lower:
+                    image_type = "png"
+                else:
+                    # Try to detect from content (basic check)
+                    if image_bytes.startswith(b'\x89PNG'):
+                        image_type = "png"
+                    elif image_bytes.startswith(b'\xff\xd8\xff'):
+                        image_type = "jpeg"
+                    elif image_bytes.startswith(b'GIF'):
+                        image_type = "gif"
+                    elif image_bytes.startswith(b'<svg') or image_bytes.startswith(b'<?xml'):
+                        image_type = "svg"
+
+                # Convert to base64
+                base64_encoded = base64.b64encode(image_bytes).decode('utf-8')
+
+                # Create data URI
+                if image_type == "svg":
+                    data_uri = f"data:image/svg+xml;base64,{base64_encoded}"
+                else:
+                    data_uri = f"data:image/{image_type};base64,{base64_encoded}"
+
+                # Replace the src attribute with the data URI
+                img_tag['src'] = data_uri
+
+            except Exception as e:
+                self.logger.debug(f"⚠️ Failed to convert image {src} to base64: {e}")
+                continue  # Skip on error
+
+        return str(soup)
+
     async def _process_file_for_streaming(self, record: Record) -> bytes:
         """
         Process file/attachment for streaming.
+        Handles both ticket attachments and KB answer attachments.
 
         Args:
-            record: FileRecord to process
+            record: FileRecord to process (can be ticket attachment or KB answer attachment)
 
         Returns:
             File content as bytes
         """
-        # Parse external_record_id (format: {ticket_id}_{article_id}_{attachment_id})
-        parts = record.external_record_id.split("_")
-        if len(parts) != ATTACHMENT_ID_PARTS_COUNT:
-            raise ValueError(f"Invalid attachment ID format: {record.external_record_id}")
-
-        ticket_id, article_id, attachment_id = parts
-
+        external_id = record.external_record_id
         datasource = await self._get_fresh_datasource()
 
-        # Download attachment
-        response = await datasource.get_ticket_attachment(
-            ticket_id=int(ticket_id),
-            article_id=int(article_id),
-            id=int(attachment_id)
-        )
+        # Check if this is a KB answer attachment (format: kb_answer_{answer_id}_attachment_{attachment_id})
+        if external_id.startswith("kb_answer_") and "_attachment_" in external_id:
+            # Parse KB answer attachment ID
+            # Format: kb_answer_{answer_id}_attachment_{attachment_id}
+            parts = external_id.replace("kb_answer_", "").split("_attachment_")
+            if len(parts) != 2:
+                raise ValueError(f"Invalid KB answer attachment ID format: {external_id}")
 
-        if not response.success:
-            raise Exception(f"Failed to download attachment: {response.message}")
+            answer_id, attachment_id = parts
 
-        # Return raw content bytes
-        content = response.data
-        if isinstance(content, str):
-            return content.encode('utf-8')
-        elif isinstance(content, bytes):
-            return content
+            # Download KB answer attachment
+            response = await datasource.get_kb_answer_attachment(
+                answer_id=int(answer_id),
+                id=int(attachment_id)
+            )
+
+            if not response.success:
+                raise Exception(f"Failed to download KB answer attachment: {response.message}")
+
+            # Return raw content bytes
+            content = response.data
+            if isinstance(content, str):
+                return content.encode('utf-8')
+            elif isinstance(content, bytes):
+                return content
+            else:
+                return str(content).encode('utf-8')
         else:
-            return str(content).encode('utf-8')
+            # Parse ticket attachment ID (format: {ticket_id}_{article_id}_{attachment_id})
+            parts = external_id.split("_")
+            if len(parts) != ATTACHMENT_ID_PARTS_COUNT:
+                raise ValueError(f"Invalid attachment ID format: {external_id}")
+
+            ticket_id, article_id, attachment_id = parts
+
+            # Download ticket attachment
+            response = await datasource.get_ticket_attachment(
+                ticket_id=int(ticket_id),
+                article_id=int(article_id),
+                id=int(attachment_id)
+            )
+
+            if not response.success:
+                raise Exception(f"Failed to download attachment: {response.message}")
+
+            # Return raw content bytes
+            content = response.data
+            if isinstance(content, str):
+                return content.encode('utf-8')
+            elif isinstance(content, bytes):
+                return content
+            else:
+                return str(content).encode('utf-8')
 
     # ==================== FILTER OPTIONS ====================
 
@@ -2422,7 +2982,7 @@ class ZammadConnector(BaseConnector):
     async def _check_and_fetch_updated_kb_answer(
         self, record: Record
     ) -> Optional[Tuple[Record, List[Permission]]]:
-        """Fetch KB answer from source for reindexing."""
+        """Fetch KB answer from source for reindexing with visibility-based permissions."""
         try:
             # Extract answer ID from external_record_id (format: kb_answer_{id})
             external_id = record.external_record_id
@@ -2434,7 +2994,19 @@ class ZammadConnector(BaseConnector):
 
             # Fetch KB answer from source
             datasource = await self._get_fresh_datasource()
-            response = await datasource.get_kb_answer(id=answer_id)
+
+            # Get KB ID from init response or use default (Zammad has single KB per instance)
+            kb_id = 1  # Default KB ID
+            try:
+                init_response = await datasource.init_knowledge_base()
+                if init_response.success and init_response.data:
+                    kb_assets = init_response.data.get("KnowledgeBase", {})
+                    if kb_assets:
+                        kb_id = int(list(kb_assets.keys())[0])
+            except Exception as e:
+                self.logger.debug(f"Failed to get KB ID for reindexing, using default: {e}")
+
+            response = await datasource.get_kb_answer(id=answer_id, kb_id=kb_id)
 
             if not response.success:
                 self.logger.warning(f"KB answer {answer_id} not found at source: {response.message if hasattr(response, 'message') else 'Unknown error'}")
@@ -2444,7 +3016,44 @@ class ZammadConnector(BaseConnector):
                 self.logger.warning(f"No KB answer data found for {answer_id}")
                 return None
 
-            answer_data = response.data
+            response_data = response.data
+
+            # Handle assets structure (Zammad API returns data in assets object)
+            if isinstance(response_data, dict) and "assets" in response_data:
+                assets = response_data.get("assets", {})
+                # Extract answer from assets.KnowledgeBaseAnswer
+                answer_assets = assets.get("KnowledgeBaseAnswer", {})
+                answer_data = answer_assets.get(str(answer_id), {})
+
+                # Extract translations from assets.KnowledgeBaseAnswerTranslation
+                answer_translations = assets.get("KnowledgeBaseAnswerTranslation", {})
+                # Extract content from assets.KnowledgeBaseAnswerTranslationContent
+                content_assets = assets.get("KnowledgeBaseAnswerTranslationContent", {})
+
+                # Enrich answer with translations (same as sync method)
+                translation_ids = answer_data.get("translation_ids", [])
+                translations = []
+                for tid in translation_ids:
+                    trans_data = answer_translations.get(str(tid))
+                    if trans_data:
+                        # Extract content from KnowledgeBaseAnswerTranslationContent using content_id
+                        content_id = trans_data.get("content_id")
+                        if content_id:
+                            content_data = content_assets.get(str(content_id))
+                            if content_data:
+                                # Add content body and attachments to translation
+                                trans_data["body"] = content_data.get("body", "")
+                                trans_data["content"] = {"body": content_data.get("body", "")}
+                                # Merge attachments from content (if any)
+                                content_attachments = content_data.get("attachments", [])
+                                if content_attachments:
+                                    trans_data["attachments"] = content_attachments
+                        translations.append(trans_data)
+                answer_data["translations"] = translations
+            else:
+                # Fallback: assume direct answer data structure
+                answer_data = response_data
+
             current_updated_at = self._parse_zammad_datetime(answer_data.get("updated_at", ""))
 
             # Compare with stored timestamp
@@ -2455,8 +3064,11 @@ class ZammadConnector(BaseConnector):
 
             self.logger.info(f"KB answer {answer_id} has changed at source")
 
-            # Re-transform KB answer
+            # Get category info and permissions
+            category_id = answer_data.get("category_id")
             category_map: Dict[int, RecordGroup] = {}
+            editor_role_ids: List[int] = []
+
             async with self.data_store_provider.transaction() as tx_store:
                 if record.external_record_group_id:
                     cat_rg = await tx_store.get_record_group_by_external_id(
@@ -2467,12 +3079,32 @@ class ZammadConnector(BaseConnector):
                         category_id = int(record.external_record_group_id.replace("cat_", ""))
                         category_map[category_id] = cat_rg
 
-            updated_answer = await self._transform_kb_answer_to_webpage_record(answer_data, category_map)
+            # Fetch category permissions for visibility-based permission handling
+            if category_id:
+                try:
+                    perm_response = await datasource.get_kb_category_permissions(
+                        kb_id=kb_id,
+                        cat_id=category_id
+                    )
+                    if perm_response.success and perm_response.data:
+                        editor_role_ids = [r["id"] for r in perm_response.data.get("roles_editor", [])]
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch category permissions for reindexing: {e}")
+
+            # Determine visibility
+            visibility = self._determine_visibility(answer_data)
+
+            # Create answer with visibility-based permissions
+            updated_answer, permissions = self._create_answer_with_permissions(
+                answer_data=answer_data,
+                category_id=category_id,
+                visibility=visibility,
+                editor_role_ids=editor_role_ids,
+                category_map=category_map
+            )
+
             if not updated_answer:
                 return None
-
-            # Extract permissions (empty list, records inherit permissions from RecordGroup)
-            permissions = []
 
             return (updated_answer, permissions)
 
