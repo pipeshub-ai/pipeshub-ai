@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from msgraph.generated.models.message_collection_response import (
     MessageCollectionResponse,
 )
+from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -232,6 +233,19 @@ class OutlookConnector(BaseConnector):
     # Batch size for processing records
     BATCH_SIZE = 50
 
+    # Group processing batch size
+    GROUP_BATCH_SIZE = 10
+
+    # API page size for paginated requests
+    API_PAGE_SIZE = 100
+
+    # User cache configuration
+    USER_CACHE_TTL_SECONDS = 3600
+
+    # Rate limiting configuration
+    RATE_LIMIT_REQUESTS = 50
+    RATE_LIMIT_PERIOD = 1
+
     def __init__(
         self,
         logger: Logger,
@@ -248,7 +262,7 @@ class OutlookConnector(BaseConnector):
             config_service,
             connector_id
         )
-        self.rate_limiter = AsyncLimiter(50, 1)
+        self.rate_limiter = AsyncLimiter(self.RATE_LIMIT_REQUESTS, self.RATE_LIMIT_PERIOD)
         self.external_outlook_client: Optional[OutlookCalendarContactsDataSource] = None
         self.external_users_client: Optional[UsersGroupsDataSource] = None
         self.credentials: Optional[OutlookCredentials] = None
@@ -257,7 +271,7 @@ class OutlookConnector(BaseConnector):
         # User cache for performance optimization
         self._user_cache: Dict[str, str] = {}  # email -> source_user_id mapping
         self._user_cache_timestamp: Optional[int] = None
-        self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
+        self._user_cache_ttl: int = self.USER_CACHE_TTL_SECONDS
 
         self.email_delta_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -396,14 +410,55 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Failed to populate user cache: {e}")
 
     async def _get_user_id_from_email(self, email: str) -> Optional[str]:
-        """Get user ID from email using cache."""
+        """Get user ID from email using cache or fetch on demand (LRU-style)."""
         try:
-            # Ensure cache is populated
-            await self._populate_user_cache()
+            email_lower = email.lower()
 
-            return self._user_cache.get(email.lower())
+            # 1. Check cache first
+            if email_lower in self._user_cache:
+                return self._user_cache[email_lower]
+
+            # 2. Fetch on demand if not in cache
+            # This avoids fetching all 50k+ users if we only need one
+            user_id = await self._fetch_single_user_by_email(email)
+
+            if user_id:
+                # Add to cache
+                self._user_cache[email_lower] = user_id
+                return user_id
+            
+            return None
+
         except Exception as e:
             self.logger.error(f"Error getting user ID from cache for {email}: {e}")
+            return None
+
+    async def _fetch_single_user_by_email(self, email: str) -> Optional[str]:
+        """Fetch a single user from API by email (on-demand)."""
+        try:
+            if not self.external_users_client:
+                return None
+
+            async with self.rate_limiter:
+                # Search by mail or userPrincipalName
+                # Note: This relies on the API supporting $filter
+                filter_str = f"mail eq '{email}' or userPrincipalName eq '{email}'"
+                response = await self.external_users_client.users_user_list_user(
+                    filter=filter_str,
+                    top=1,
+                    select=['id']
+                )
+
+                if response.success and response.data:
+                    users = self._safe_get_attr(response.data, 'value', [])
+                    if users:
+                        return self._safe_get_attr(users[0], 'id')
+            
+            return None
+
+        except Exception as e:
+            # Don't log full stack for "not found", just warning
+            self.logger.warning(f"Could not fetch user {email} on-demand: {e}")
             return None
 
 
@@ -486,9 +541,10 @@ class OutlookConnector(BaseConnector):
             page_num = 1
 
             while True:
-                response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
-                    next_url=next_url
-                )
+                async with self.rate_limiter:
+                    response: UsersGroupsResponse = await self.external_users_client.users_user_list_user(
+                        next_url=next_url
+                    )
 
                 if not response.success or not response.data:
                     self.logger.error(f"Failed to get users page {page_num}: {response.error}")
@@ -549,7 +605,7 @@ class OutlookConnector(BaseConnector):
             user_groups_batch: List[Tuple[AppUserGroup, List[AppUser]]] = []
             group_record_groups_batch: List[Tuple[RecordGroup, List]] = []
             all_synced_user_groups: List[AppUserGroup] = []
-            batch_size = 10
+            batch_size = self.GROUP_BATCH_SIZE
 
             for group in groups:
                 try:
@@ -661,10 +717,11 @@ class OutlookConnector(BaseConnector):
             page_num = 1
 
             while True:
-                response = await self.external_users_client.groups_list_groups(
-                    next_url=next_url,
-                    select=['id', 'displayName', 'description', 'mail', 'groupTypes', 'createdDateTime']
-                )
+                async with self.rate_limiter:
+                    response = await self.external_users_client.groups_list_groups(
+                        next_url=next_url,
+                        select=['id', 'displayName', 'description', 'mail', 'groupTypes', 'createdDateTime']
+                    )
 
                 if not response.success:
                     self.logger.error(f"Failed to get groups page {page_num}: {response.error}")
@@ -704,11 +761,12 @@ class OutlookConnector(BaseConnector):
             page_num = 1
 
             while True:
-                response = await self.external_users_client.groups_list_transitive_members(
-                    group_id=group_id,
-                    next_url=next_url,
-                    select=['id', 'displayName', 'mail', 'userPrincipalName']
-                )
+                async with self.rate_limiter:
+                    response = await self.external_users_client.groups_list_transitive_members(
+                        group_id=group_id,
+                        next_url=next_url,
+                        select=['id', 'displayName', 'mail', 'userPrincipalName']
+                    )
 
                 if not response.success:
                     self.logger.error(f"Failed to get members page {page_num} for group {group_id}: {response.error}")
@@ -914,11 +972,12 @@ class OutlookConnector(BaseConnector):
             if last_sync_timestamp:
                 filter_str = f"lastDeliveredDateTime ge {last_sync_timestamp}"
 
-            response = await self.external_outlook_client.groups_list_threads(
-                group_id=group_id,
-                select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
-                filter=filter_str
-            )
+            async with self.rate_limiter:
+                response = await self.external_outlook_client.groups_list_threads(
+                    group_id=group_id,
+                    select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
+                    filter=filter_str
+                )
 
             if not response.success:
                 self.logger.error(f"Failed to get threads for group {group_id}: {response.error}")
@@ -1027,11 +1086,12 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response = await self.external_outlook_client.groups_threads_list_posts(
-                group_id=group_id,
-                thread_id=thread_id,
-                select=['id', 'body', 'from', 'receivedDateTime', 'hasAttachments', 'conversationId', 'conversationThreadId']
-            )
+            async with self.rate_limiter:
+                response = await self.external_outlook_client.groups_threads_list_posts(
+                    group_id=group_id,
+                    thread_id=thread_id,
+                    select=['id', 'body', 'from', 'receivedDateTime', 'hasAttachments', 'conversationId', 'conversationThreadId']
+                )
 
             if not response.success:
                 self.logger.error(f"Failed to get posts for thread {thread_id}: {response.error}")
@@ -1225,11 +1285,12 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response = await self.external_outlook_client.groups_threads_posts_list_attachments(
-                group_id=group_id,
-                conversationThread_id=thread_id,
-                post_id=post_id
-            )
+            async with self.rate_limiter:
+                response = await self.external_outlook_client.groups_threads_posts_list_attachments(
+                    group_id=group_id,
+                    conversationThread_id=thread_id,
+                    post_id=post_id
+                )
 
             if not response.success:
                 self.logger.error(f"Failed to get attachments for post {post_id}: {response.error}")
@@ -1249,12 +1310,13 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response = await self.external_outlook_client.groups_threads_posts_get_attachments(
-                group_id=group_id,
-                conversationThread_id=thread_id,
-                post_id=post_id,
-                attachment_id=attachment_id
-            )
+            async with self.rate_limiter:
+                response = await self.external_outlook_client.groups_threads_posts_get_attachments(
+                    group_id=group_id,
+                    conversationThread_id=thread_id,
+                    post_id=post_id,
+                    attachment_id=attachment_id
+                )
 
             if not response.success or not response.data:
                 return b''
@@ -1509,10 +1571,11 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookMailFoldersResponse = await self.external_outlook_client.users_mail_folders_list_child_folders(
-                user_id=user_id,
-                mailFolder_id=parent_folder_id
-            )
+            async with self.rate_limiter:
+                response: OutlookMailFoldersResponse = await self.external_outlook_client.users_mail_folders_list_child_folders(
+                    user_id=user_id,
+                    mailFolder_id=parent_folder_id
+                )
 
             if not response.success:
                 self.logger.warning(
@@ -1566,11 +1629,12 @@ class OutlookConnector(BaseConnector):
                 raise Exception("External Outlook client not initialized")
 
             # Get top-level folders with API-level filtering
-            response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
-                user_id=user_id,
-                folder_names=folder_names,
-                folder_filter_mode=folder_filter_mode,
-            )
+            async with self.rate_limiter:
+                response: OutlookMailFoldersResponse = await self.external_outlook_client.users_list_mail_folders(
+                    user_id=user_id,
+                    folder_names=folder_names,
+                    folder_filter_mode=folder_filter_mode,
+                )
 
             if not response.success:
                 self.logger.error(f"Failed to get folders: {response.error}")
@@ -1726,14 +1790,14 @@ class OutlookConnector(BaseConnector):
                     except ValueError:
                         self.logger.warning(f"Could not parse filter date: {current_filter_iso}")
 
-            # 2. Retrieve Stored Filter
+            # 2. Retrieve Stored Filter (earliest timestamp ever used)
             stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
 
             processed_count = 0
             mail_records = []
 
             # 3. Detect Gap: Only run if we have explicit filters for both current and stored state
-            # Fix: Check for None to prevent unintended full history fetch
+            # Check for None to prevent unintended full history fetch
             should_fill_gap = (
                 delta_link and
                 stored_filter_start_ts is not None and
@@ -1741,11 +1805,13 @@ class OutlookConnector(BaseConnector):
                 current_filter_start_ts < (stored_filter_start_ts - FILTER_TIMESTAMP_BUFFER_SECONDS)
             )
 
+            gap_fill_failed = False
+
             if should_fill_gap:
                 self.logger.info(
                     f"Filter expanded for '{folder_name}'. "
                     f"Filling gap: {datetime.fromtimestamp(current_filter_start_ts, timezone.utc)} to "
-                    f"{datetime.fromtimestamp(stored_filter_start_ts, timezone.utc)}"
+                    f" {datetime.fromtimestamp(stored_filter_start_ts, timezone.utc)}"
                 )
 
                 try:
@@ -1759,8 +1825,9 @@ class OutlookConnector(BaseConnector):
                     processed_count += gap_count
                     mail_records.extend(gap_records)
                 except Exception as e:
-                    # Fix: Use exc_info=True for better debugging
+                    # Log error but mark as failed so we don't corrupt state
                     self.logger.error(f"Gap fill failed for '{folder_name}' (continuing with delta): {e}", exc_info=True)
+                    gap_fill_failed = True
 
             # --- END OPTIMIZATION ---
 
@@ -1780,16 +1847,36 @@ class OutlookConnector(BaseConnector):
 
 
             # 5. Update Sync Point
-            # Fix: Handle case where filter might be None
-            state_filter_ts = current_filter_start_ts if current_filter_start_ts is not None else 0
+            # Persist the earliest start timestamp ever used
+            # If no filter currently applied, retain the stored value (don't reset to 0)
+            # If filter applied, use the minimum of current and stored (track earliest ever)
+            # CRITICAL: If gap fill FAILED, we must NOT update the state to the new, earlier timestamp,
+            # because we missed the data in between. We should keep the OLD (later) timestamp.
+            
+            if gap_fill_failed:
+                # If gap fill failed, we pretend we didn't expand the filter yet
+                state_filter_ts = stored_filter_start_ts
+                self.logger.warning(f"Gap fill failed - retaining previous filter timestamp for '{folder_name}' to retry later")
+            
+            elif current_filter_start_ts is not None:
+                if stored_filter_start_ts is not None:
+                    state_filter_ts = min(current_filter_start_ts, stored_filter_start_ts)
+                else:
+                    state_filter_ts = current_filter_start_ts
+            else:
+                # No current filter - retain stored value if it exists
+                state_filter_ts = stored_filter_start_ts if stored_filter_start_ts is not None else None
 
             sync_point_data = {
                 'delta_link': result.get('delta_link'),
                 'last_sync_timestamp': int(datetime.now(timezone.utc).timestamp() * 1000),
                 'folder_id': folder_id,
                 'folder_name': folder_name,
-                'filter_start_ts': state_filter_ts
             }
+
+            # Only persist filter_start_ts if we have a value
+            if state_filter_ts is not None:
+                sync_point_data['filter_start_ts'] = state_filter_ts
 
             await self.email_delta_sync_point.update_sync_point(
                 sync_point_key,
@@ -1853,29 +1940,30 @@ class OutlookConnector(BaseConnector):
                     self.logger.info(f"Will apply received date filter (client-side): receivedDateTime before {received_before_iso}")
 
             # Use the new fetch_all_messages_delta method that handles pagination automatically
-            messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta(
-                user_id=user_id,
-                mailFolder_id=folder_id,
-                saved_delta_link=delta_link,
-                page_size=100,
-                filter=filter_string,
-                select = [
-                    'id',
-                    'subject',
-                    'hasAttachments',
-                    'createdDateTime',
-                    'lastModifiedDateTime',
-                    'receivedDateTime',
-                    'webLink',
-                    'from',
-                    'toRecipients',
-                    'ccRecipients',
-                    'bccRecipients',
-                    'conversationId',
-                    'internetMessageId',
-                    'conversationIndex'
-                ]
-            )
+            async with self.rate_limiter:
+                messages, new_delta_link = await self.external_outlook_client.fetch_all_messages_delta(
+                    user_id=user_id,
+                    mailFolder_id=folder_id,
+                    saved_delta_link=delta_link,
+                    page_size=self.API_PAGE_SIZE,
+                    filter=filter_string,
+                    select = [
+                        'id',
+                        'subject',
+                        'hasAttachments',
+                        'createdDateTime',
+                        'lastModifiedDateTime',
+                        'receivedDateTime',
+                        'webLink',
+                        'from',
+                        'toRecipients',
+                        'ccRecipients',
+                        'bccRecipients',
+                        'conversationId',
+                        'internetMessageId',
+                        'conversationIndex'
+                    ]
+                )
 
             # Apply client-side filtering for IS_BEFORE if needed
             if received_before_dt is not None and messages:
@@ -2238,10 +2326,11 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_list_attachments(
-                user_id=user_id,
-                message_id=message_id
-            )
+            async with self.rate_limiter:
+                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_list_attachments(
+                    user_id=user_id,
+                    message_id=message_id
+                )
 
 
             if not response.success:
@@ -2288,12 +2377,13 @@ class OutlookConnector(BaseConnector):
                         status_code=400,
                         detail="Missing thread_id for group post. This may be an old record - please re-sync the connector to update group posts with required metadata."
                     )
-
-                response = await self.external_outlook_client.groups_threads_get_post(
-                    group_id=group_id,
-                    thread_id=thread_id,
-                    post_id=post_id
-                )
+                
+                async with self.rate_limiter:
+                    response = await self.external_outlook_client.groups_threads_get_post(
+                        group_id=group_id,
+                        thread_id=thread_id,
+                        post_id=post_id
+                    )
 
                 if not response.success:
                     raise HTTPException(status_code=404, detail=f"Post not found: {response.error}")
@@ -2395,10 +2485,11 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
-                user_id=user_id,
-                message_id=message_id
-            )
+            async with self.rate_limiter:
+                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
+                    user_id=user_id,
+                    message_id=message_id
+                )
 
             if not response.success:
                 self.logger.error(f"Failed to get message {message_id}: {response.error}")
@@ -2416,11 +2507,12 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
-                user_id=user_id,
-                message_id=message_id,
-                attachment_id=attachment_id
-            )
+            async with self.rate_limiter:
+                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
+                    user_id=user_id,
+                    message_id=message_id,
+                    attachment_id=attachment_id
+                )
 
             if not response.success or not response.data:
                 return b''
@@ -2507,8 +2599,9 @@ class OutlookConnector(BaseConnector):
                 self.logger.error("External API clients not initialized. Call init() first.")
                 raise Exception("External API clients not initialized. Call init() first.")
 
-            # Populate user cache for better performance
-            await self._populate_user_cache()
+            # Do NOT fully populate user cache here to avoid massive API calls
+            # Instead, rely on on-demand fetching in _get_user_id_from_email
+            # await self._populate_user_cache()
 
             # Separate GROUP_MAIL records from user mailbox records
             user_mailbox_records = []
@@ -2744,11 +2837,12 @@ class OutlookConnector(BaseConnector):
                 return None
 
             # Fetch post from API (same as stream_record)
-            response = await self.external_outlook_client.groups_threads_get_post(
-                group_id=group_id,
-                thread_id=thread_id,
-                post_id=post_id
-            )
+            async with self.rate_limiter:
+                response = await self.external_outlook_client.groups_threads_get_post(
+                    group_id=group_id,
+                    thread_id=thread_id,
+                    post_id=post_id
+                )
 
             if not response.success or not response.data:
                 self.logger.warning(f"GROUP_MAIL post {post_id} not found at source")
@@ -3218,25 +3312,31 @@ class OutlookConnector(BaseConnector):
                 # We use the raw client adapter to follow the next_link
                 # Using external_outlook_client.client to access the underlying Graph client
                 request_info = self.external_outlook_client.client.request_adapter.request_info_factory.create_get_request_information(next_link)
-                response = await self.external_outlook_client.client.request_adapter.send_async(
-                    request_info,
-                    MessageCollectionResponse,
-                    {}
-                )
+                error_map = {
+                    "4XX": ODataError,
+                    "5XX": ODataError,
+                }
+                async with self.rate_limiter:
+                    response = await self.external_outlook_client.client.request_adapter.send_async(
+                        request_info,
+                        MessageCollectionResponse,
+                        error_map
+                    )
 
                 # Parse response from Kiota model
                 messages = response.value if response and response.value else []
                 new_next_link = response.odata_next_link if response and response.odata_next_link else None
             else:
                 # Initial request using the Outlook DataSource wrapper
-                response_wrapper = await self.external_outlook_client.users_mail_folders_list_messages(
-                    user_id=user_id,
-                    mailFolder_id=folder_id,
-                    filter=filter_str,
-                    select=self.MESSAGE_FIELDS,
-                    top=100,
-                    orderby=['receivedDateTime DESC']
-                )
+                async with self.rate_limiter:
+                    response_wrapper = await self.external_outlook_client.users_mail_folders_list_messages(
+                        user_id=user_id,
+                        mailFolder_id=folder_id,
+                        filter=filter_str,
+                        select=self.MESSAGE_FIELDS,
+                        top=self.API_PAGE_SIZE,
+                        orderby=['receivedDateTime DESC']
+                    )
 
                 if not response_wrapper.success:
                     self.logger.warning(f"Failed to fetch historical messages: {response_wrapper.error}")
