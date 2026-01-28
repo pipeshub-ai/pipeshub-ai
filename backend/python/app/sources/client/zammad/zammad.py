@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Union
@@ -22,7 +23,6 @@ class ZammadResponse(BaseModel):
         result = self.model_dump()
         # Handle bytes data - convert to base64 for serialization
         if isinstance(result.get("data"), bytes):
-            import base64
             result["data"] = base64.b64encode(result["data"]).decode("utf-8")
         return result
 
@@ -30,8 +30,6 @@ class ZammadResponse(BaseModel):
         """Convert to JSON string"""
         # Handle bytes data - convert to base64 for JSON serialization
         if isinstance(self.data, bytes):
-            import base64
-            import json
             result = self.model_dump()
             result["data"] = base64.b64encode(self.data).decode("utf-8")
             return json.dumps(result)

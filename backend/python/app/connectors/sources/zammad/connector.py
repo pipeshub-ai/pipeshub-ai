@@ -98,6 +98,7 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 # Constants for batch processing and parsing
 BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
+KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
 
 @ConnectorBuilder("Zammad")\
     .in_group(AppGroups.ZAMMAD.value)\
@@ -2630,7 +2631,7 @@ class ZammadConnector(BaseConnector):
             # Parse KB answer attachment ID
             # Format: kb_answer_{answer_id}_attachment_{attachment_id}
             parts = external_id.replace("kb_answer_", "").split("_attachment_")
-            if len(parts) != 2:
+            if len(parts) != KB_ANSWER_ATTACHMENT_PARTS_COUNT:
                 raise ValueError(f"Invalid KB answer attachment ID format: {external_id}")
 
             answer_id, attachment_id = parts
