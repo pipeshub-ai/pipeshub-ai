@@ -34,6 +34,7 @@ from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
+from app.modules.transformers.email_metadata_injector import EmailMetadataInjector
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.aimodels import is_multimodal_llm
@@ -88,20 +89,20 @@ class Processor:
         self,
         logger,
         config_service,
-        indexing_pipeline,
         arango_service,
         parsers,
         document_extractor,
         sink_orchestrator,
+        email_metadata_injector,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
-        self.indexing_pipeline = indexing_pipeline
         self.arango_service = arango_service
         self.parsers = parsers
         self.config_service = config_service
         self.document_extraction = document_extractor
         self.sink_orchestrator = sink_orchestrator
+        self.email_metadata_injector = email_metadata_injector
 
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
@@ -178,7 +179,11 @@ class Processor:
             yield {"event": "parsing_complete", "data": {"record_id": record_id}}
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -256,7 +261,11 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -446,7 +455,8 @@ class Processor:
                 ctx = TransformContext(record=record)
                 pipeline = IndexingPipeline(
                     document_extraction=self.document_extraction,
-                    sink_orchestrator=self.sink_orchestrator
+                    sink_orchestrator=self.sink_orchestrator,
+                    email_metadata_injector=self.email_metadata_injector
                 )
                 await pipeline.apply(ctx)
 
@@ -515,7 +525,11 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -591,7 +605,11 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -667,7 +685,8 @@ class Processor:
             ctx = TransformContext(record=record)
             pipeline = IndexingPipeline(
                 document_extraction=self.document_extraction,
-                sink_orchestrator=self.sink_orchestrator
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
             )
             await pipeline.apply(ctx)
 
@@ -1134,7 +1153,11 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1268,7 +1291,11 @@ class Processor:
             record.block_containers = block_containers
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1490,7 +1517,11 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1587,7 +1618,11 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction, 
+                sink_orchestrator=self.sink_orchestrator,
+                email_metadata_injector=self.email_metadata_injector
+            )
             await pipeline.apply(ctx)
 
             # Signal indexing complete

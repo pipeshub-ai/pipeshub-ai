@@ -8,7 +8,6 @@ from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
-from app.modules.indexing.run import IndexingPipeline
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.docx.docx_parser import DocxParser
@@ -24,6 +23,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.arango import Arango
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.email_metadata_injector import EmailMetadataInjector
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.featureflag.featureflag import FeatureFlagService
@@ -42,6 +42,7 @@ from app.utils.redis_util import build_redis_url
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
 class ContainerUtils:
     """Utility class for container operations"""
+
     def __init__(self) -> None:
         self.logger = create_logger("container_utils")
 
@@ -73,27 +74,13 @@ class ContainerUtils:
         await service.connect()
         return service
 
-    async def create_indexing_pipeline(
-        self,
-        logger: Logger,
-        config_service: ConfigurationService,
-        arango_service: BaseArangoService,
-        vector_db_service: IVectorDBService,
-    ) -> IndexingPipeline:
-        """Async factory for IndexingPipeline"""
-        pipeline = IndexingPipeline(
-            logger=logger,
-            config_service=config_service,
-            arango_service=arango_service,
-            collection_name=VECTOR_DB_COLLECTION_NAME,
-            vector_db_service=vector_db_service,
-        )
-        return pipeline
-
-
-    async def create_vector_store(self, logger, arango_service, config_service, vector_db_service, collection_name) -> VectorStore:
+    async def create_vector_store(
+        self, logger, arango_service, config_service, vector_db_service, collection_name
+    ) -> VectorStore:
         """Async factory for VectorStore"""
-        vector_store = VectorStore(logger, config_service, arango_service, collection_name, vector_db_service)
+        vector_store = VectorStore(
+            logger, config_service, arango_service, collection_name, vector_db_service
+        )
         return vector_store
 
     async def create_arango(self, arango_service, logger) -> Arango:
@@ -101,17 +88,33 @@ class ContainerUtils:
         arango = Arango(arango_service, logger)
         return arango
 
-    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store, arango_service) -> SinkOrchestrator:
+    async def create_sink_orchestrator(
+        self, logger, arango, blob_storage, vector_store, arango_service
+    ) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store, arango_service=arango_service)
+        orchestrator = SinkOrchestrator(
+            arango=arango,
+            blob_storage=blob_storage,
+            vector_store=vector_store,
+            arango_service=arango_service,
+        )
         return orchestrator
 
-    async def create_document_extractor(self, logger, arango_service, config_service) -> DocumentExtraction:
+    async def create_document_extractor(
+        self, logger, arango_service, config_service
+    ) -> DocumentExtraction:
         """Async factory for DocumentExtraction"""
         extractor = DocumentExtraction(logger, arango_service, config_service)
         return extractor
 
-    async def create_blob_storage(self, logger, config_service, arango_service) -> BlobStorage:
+    async def create_email_metadata_injector(self) -> EmailMetadataInjector:
+        """Async factory for EmailMetadataInjector"""
+        injector = EmailMetadataInjector()
+        return injector
+
+    async def create_blob_storage(
+        self, logger, config_service, arango_service
+    ) -> BlobStorage:
         """Async factory for BlobStorage"""
         blob_storage = BlobStorage(logger, config_service, arango_service)
         return blob_storage
@@ -146,21 +149,21 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        indexing_pipeline: IndexingPipeline,
         arango_service: BaseArangoService,
         parsers: dict,
         document_extractor: DocumentExtraction,
         sink_orchestrator: SinkOrchestrator,
+        email_metadata_injector: EmailMetadataInjector,
     ) -> Processor:
         """Async factory for Processor"""
         processor = Processor(
             logger=logger,
             config_service=config_service,
-            indexing_pipeline=indexing_pipeline,
             arango_service=arango_service,
             parsers=parsers,
             document_extractor=document_extractor,
-            sink_orchestrator=sink_orchestrator
+            sink_orchestrator=sink_orchestrator,
+            email_metadata_injector=email_metadata_injector,
         )
         # Add any necessary async initialization
         return processor
@@ -174,7 +177,10 @@ class ContainerUtils:
     ) -> EventProcessor:
         """Async factory for EventProcessor"""
         event_processor = EventProcessor(
-            logger=logger, processor=processor, arango_service=arango_service, config_service=config_service
+            logger=logger,
+            processor=processor,
+            arango_service=arango_service,
+            config_service=config_service,
         )
         # Add any necessary async initialization
         return event_processor
@@ -195,7 +201,7 @@ class ContainerUtils:
             redis_url=redis_url,
             logger=logger,
             config_service=config_service,
-            delay_hours=1
+            delay_hours=1,
         )
         return redis_scheduler
 
@@ -235,7 +241,9 @@ class ContainerUtils:
                 await provider.refresh()
             except Exception as e:
                 self.logger.debug(f"Feature flag provider refresh failed: {e}")
-            return await FeatureFlagService.init_with_etcd_provider(provider, self.logger)
+            return await FeatureFlagService.init_with_etcd_provider(
+                provider, self.logger
+            )
         else:
             print("Creating EnvFileProvider")
             return FeatureFlagService.get_service()

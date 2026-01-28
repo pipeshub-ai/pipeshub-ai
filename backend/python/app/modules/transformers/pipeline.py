@@ -1,23 +1,37 @@
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.modules.transformers.document_extraction import DocumentExtraction
+from app.modules.transformers.email_metadata_injector import EmailMetadataInjector
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import TransformContext
 
 
 class IndexingPipeline:
-    def __init__(self, document_extraction: DocumentExtraction, sink_orchestrator: SinkOrchestrator) -> None:
+    def __init__(
+        self,
+        document_extraction: DocumentExtraction,
+        sink_orchestrator: SinkOrchestrator,
+        email_metadata_injector: EmailMetadataInjector,
+    ) -> None:
         self.document_extraction = document_extraction
         self.sink_orchestrator = sink_orchestrator
+        self.email_metadata_injector = email_metadata_injector
 
     async def apply(self, ctx: TransformContext) -> None:
         try:
+            await self.email_metadata_injector.apply(ctx)
+
             record = ctx.record
             block_containers = record.block_containers
             blocks = block_containers.blocks
             block_groups = block_containers.block_groups
 
-            if blocks is not None and len(blocks) == 0 and block_groups is not None and len(block_groups) == 0:
+            if (
+                blocks is not None
+                and len(blocks) == 0
+                and block_groups is not None
+                and len(block_groups) == 0
+            ):
                 record_id = record.id
                 record_dict = await self.document_extraction.arango_service.get_document(
                     record_id, CollectionNames.RECORDS.value
