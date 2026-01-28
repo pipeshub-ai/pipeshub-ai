@@ -14,6 +14,10 @@ const baseNavData = [
         title: 'Knowledge Search',
         path: paths.dashboard.knowledgebase.search,
       },
+      {
+        title: 'All Records',
+        path: paths.dashboard.allRecords,
+      },
     ],
   },
 ];

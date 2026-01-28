@@ -607,7 +607,6 @@ class KnowledgeHubService:
             "FILE": "File",
             "WEBPAGE": "Webpage",
             "MESSAGE": "Message",
-            "EMAIL": "Email",
             "TICKET": "Ticket",
             "COMMENT": "Comment",
             "MAIL": "Mail",
@@ -636,30 +635,55 @@ class KnowledgeHubService:
             options = await self.graph_provider.get_knowledge_hub_filter_options(user_key, org_id)
             kbs_data = options.get('kbs', [])
             apps_data = options.get('apps', [])
+            # KB options with icon
+            kb_options = [
+                FilterOption(
+                    id=k['id'],
+                    label=k['name'],
+                    iconPath='/assets/icons/connectors/default.svg'
+                )
+                for k in kbs_data
+            ]
 
-            kb_options = [FilterOption(id=k['id'], label=k['name']) for k in kbs_data]
-            app_options = [FilterOption(id=a['id'], label=a['name'], type=a.get('type')) for a in apps_data]
+            # App/Connector options with iconPath and connectorType
+            app_options = [
+                FilterOption(
+                    id=a['id'],
+                    label=a['name'],
+                    iconPath=a.get('iconPath', '/assets/icons/connectors/default.svg'),
+                    connectorType=a.get('type', a.get('name'))
+                )
+                for a in apps_data
+            ]
 
             return AvailableFilters(
                 nodeTypes=[
-                    FilterOption(id="folder", label="Folder"),
-                    FilterOption(id="record", label="File"),
-                    FilterOption(id="recordGroup", label="Drive/Root"),
-                    FilterOption(id="app", label="Connector"),
-                    FilterOption(id="kb", label="Knowledge Base"),
+                    FilterOption(id="folder", label="Folder", iconPath='/assets/icons/files/folder.svg'),
+                    FilterOption(id="record", label="File", iconPath='/assets/icons/files/file.svg'),
+                    FilterOption(id="recordGroup", label="Drive/Root", iconPath='/assets/icons/files/folder-open.svg'),
+                    FilterOption(id="app", label="Connector", iconPath='/assets/icons/connectors/default.svg'),
+                    FilterOption(id="kb", label="Knowledge Base", iconPath='/assets/icons/kb/knowledge-base.svg'),
                 ],
                 recordTypes=[
-                    FilterOption(id=rt.value, label=self._get_record_type_label(rt.value))
+                    FilterOption(
+                        id=rt.value,
+                        label=self._get_record_type_label(rt.value),
+                        iconPath=self._get_record_type_icon_path(rt.value)
+                    )
                     for rt in RecordTypeFilter
                 ],
                 origins=[
-                    FilterOption(id="KB", label="Knowledge Base"),
-                    FilterOption(id="CONNECTOR", label="External Connector"),
+                    FilterOption(id="KB", label="Knowledge Base", iconPath='/assets/icons/connectors/default.svg'),
+                    FilterOption(id="CONNECTOR", label="External Connector", iconPath='/assets/icons/connectors/default.svg'),
                 ],
                 connectors=app_options,
                 kbs=kb_options,
                 indexingStatus=[
-                    FilterOption(id=status.value, label=self._get_indexing_status_label(status.value))
+                    FilterOption(
+                        id=status.value,
+                        label=self._get_indexing_status_label(status.value),
+                        iconPath=self._get_indexing_status_icon_path(status.value)
+                    )
                     for status in IndexingStatusFilter
                 ],
                 sortBy=[
@@ -678,6 +702,33 @@ class KnowledgeHubService:
             self.logger.error(f"Failed to get available filters: {e}")
             return AvailableFilters()
 
+    def _get_record_type_icon_path(self, record_type: str) -> str:
+        """Get icon path for record type"""
+        icon_map = {
+            "FILE": '/assets/icons/files/file.svg',
+            "WEBPAGE": '/assets/icons/files/webpage.svg',
+            "MESSAGE": '/assets/icons/files/message.svg',
+            "TICKET": '/assets/icons/files/ticket.svg',
+            "COMMENT": '/assets/icons/files/comment.svg',
+            "MAIL": '/assets/icons/files/mail.svg',
+            "OTHERS": '/assets/icons/files/file.svg',
+        }
+        return icon_map.get(record_type, '/assets/icons/files/file.svg')
+
+    def _get_indexing_status_icon_path(self, status: str) -> str:
+        """Get icon path for indexing status"""
+        icon_map = {
+            "NOT_STARTED": '/assets/icons/status/not-started.svg',
+            "IN_PROGRESS": '/assets/icons/status/in-progress.svg',
+            "COMPLETED": '/assets/icons/status/completed.svg',
+            "FAILED": '/assets/icons/status/failed.svg',
+            "QUEUED": '/assets/icons/status/queued.svg',
+            "PAUSED": '/assets/icons/status/paused.svg',
+            "FILE_TYPE_NOT_SUPPORTED": '/assets/icons/status/not-supported.svg',
+            "AUTO_INDEX_OFF": '/assets/icons/status/manual.svg',
+            "EMPTY": '/assets/icons/status/empty.svg',
+        }
+        return icon_map.get(status, '/assets/icons/status/default.svg')
 
     async def _get_recursive_search_nodes(
         self,

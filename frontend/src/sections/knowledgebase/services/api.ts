@@ -269,9 +269,15 @@ export class KnowledgeBaseAPI {
   }
 
   // Reindexing operations
-  static async reindexRecord(recordId: string): Promise<any> {
-    const response = await axios.post(`${API_BASE}/reindex/record/${recordId}`);
+  static async reindexRecord(recordId: string, force: boolean = false, depth: number = 0): Promise<any> {
+    const response = await axios.post(`${API_BASE}/reindex/record/${recordId}`, { force, depth });
     if (response.status !== 200) throw new Error('Failed to reindex record');
+    return response.data;
+  }
+
+  static async reindexRecordGroup(recordGroupId: string, force: boolean = false, depth: number = 0): Promise<any> {
+    const response = await axios.post(`${API_BASE}/reindex/record-group/${recordGroupId}`, { force, depth });
+    if (response.status !== 200) throw new Error('Failed to reindex record group');
     return response.data;
   }
 
@@ -400,5 +406,40 @@ export class KnowledgeBaseAPI {
     } catch (error) {
       throw new Error('Error searching knowledge base ');
     }
+  }
+
+  // Knowledge Hub API - Hierarchical navigation for all records
+  // Get top-level nodes (KBs and Connectors)
+  static async getKnowledgeHubNodes(params?: {
+    page?: number;
+    limit?: number;
+    include?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+    q?: string;
+    nodeTypes?: string;
+    recordTypes?: string;
+    origins?: string;
+    connectors?: string;
+    kbs?: string;
+    indexingStatus?: string;
+  }): Promise<any> {
+    const response = await axios.get(`${API_BASE}/knowledge-hub/nodes`, { params });
+    if (!response.data) throw new Error('Failed to fetch knowledge hub nodes');
+    return response.data;
+  }
+
+  // Get children of a specific node
+  static async getKnowledgeHubNodeChildren(
+    nodeType: string,
+    nodeId: string,
+    params?: any
+  ): Promise<any> {
+    const response = await axios.get(
+      `${API_BASE}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
+      { params }
+    );
+    if (!response.data) throw new Error('Failed to fetch node children');
+    return response.data;
   }
 }
