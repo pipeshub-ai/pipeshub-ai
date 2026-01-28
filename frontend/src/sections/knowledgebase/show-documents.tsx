@@ -53,6 +53,7 @@ import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
 import { getExtensionFromMimeType } from './utils/utils';
 
 const MAX_FILE_SIZE_MB = 10; // 10MB
+const FETCH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes timeout for large files
 
 // Simplified state management for viewport mode
 interface DocumentViewerState {
@@ -362,9 +363,17 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   // Single cleanup timeout
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
 
+  // AbortController for fetch cancellation
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Cleanup on unmount
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      // Cancel any ongoing fetch requests
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     },
     []
   );
@@ -401,6 +410,12 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   }, []);
 
   const handleCloseViewer = useCallback(() => {
+    // Cancel any ongoing fetch requests
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
     // Exit fullscreen if we're in it
     if (document.fullscreenElement) {
       document.exitFullscreen().catch(console.error);
@@ -437,17 +452,28 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
   const showErrorAndRedirect = useCallback(
     (errorMessage: string) => {
-      setSnackbar({
-        open: true,
-        message: 'Failed to load preview. Redirecting to the original document shortly...',
-        severity: 'info',
-      });
-
-      let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+      // Try to get webUrl from multiple sources
+      let webUrl = record.fileRecord?.webUrl || record.mailRecord?.webUrl || record.webUrl;
 
       if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
         const baseUrl = `${window.location.protocol}//${window.location.host}`;
         webUrl = baseUrl + webUrl;
+      }
+
+      // Only show redirect message if we have a webUrl
+      if (webUrl) {
+        setSnackbar({
+          open: true,
+          message: `${errorMessage} Redirecting to the original document shortly...`,
+          severity: 'info',
+        });
+      } else {
+        // If no webUrl, show the error immediately
+        setSnackbar({
+          open: true,
+          message: `${errorMessage} Cannot redirect (document URL not found).`,
+          severity: 'error',
+        });
       }
 
       setTimeout(() => {
@@ -556,12 +582,186 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }
   };
 
+  /**
+   * Get auth token from axios instance or localStorage
+   * This ensures we use the same token management as the rest of the app
+   */
+  const getAuthToken = (): string | null => {
+    // Try to get token from axios defaults first (if stored there)
+    const authHeader = axios.defaults.headers.common.Authorization;
+    if (authHeader && typeof authHeader === 'string') {
+      return authHeader.replace('Bearer ', '');
+    }
+    // Fallback to localStorage (same source axios interceptor likely uses)
+    return localStorage.getItem('jwt_access_token');
+  };
+
+  /**
+   * Refresh auth token using axios interceptors
+   * Makes a lightweight request to trigger the refresh logic
+   */
+  const refreshAuthToken = async (): Promise<string | null> => {
+    try {
+      // Make any authenticated request through axios to trigger interceptors
+      // The interceptors will handle token refresh automatically
+      await axios.get(`${CONFIG.backendUrl}/api/v1/auth/me`, {
+        // Accept any status < 500 to avoid throwing on 401/403
+        // We just want to trigger the refresh interceptor
+        validateStatus: (status) => status < 500,
+      });
+    } catch {
+      // Ignore errors - the interceptor may have already refreshed the token
+    }
+
+    // Return the (potentially refreshed) token
+    return getAuthToken();
+  };
+
+  /**
+   * Stream a document using Fetch API with proper chunk handling
+   * Uses axios for token refresh on 401, Fetch API for streaming
+   * Uses a while loop instead of recursion to avoid stack overflow on large files
+   */
+  const streamDocumentWithFetch = async (
+    url: string,
+    signal: AbortSignal
+  ): Promise<ArrayBuffer> => {
+    // Get current token
+    const token = getAuthToken();
+
+    if (!token) {
+      throw new Error('No authentication token available');
+    }
+
+    setViewerState((prev) => ({ ...prev, loadingStep: 'Starting download...' }));
+
+    // Make the fetch request
+    let fetchResponse = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      signal,
+    });
+
+    // Handle 401 - try to refresh token using axios and retry once
+    if (fetchResponse.status === 401) {
+      setViewerState((prev) => ({ ...prev, loadingStep: 'Refreshing authentication...' }));
+
+      // Use axios to trigger token refresh interceptor
+      const refreshedToken = await refreshAuthToken();
+
+      if (!refreshedToken) {
+        throw new Error('HTTP error! status: 401 Unauthorized - Session expired');
+      }
+
+      // Retry the fetch with the new token
+      fetchResponse = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${refreshedToken}`,
+        },
+        signal,
+      });
+    }
+
+    if (!fetchResponse.ok) {
+      throw new Error(`HTTP error! status: ${fetchResponse.status} ${fetchResponse.statusText}`);
+    }
+
+    // Get content length if available for progress tracking
+    const contentLengthHeader = fetchResponse.headers.get('content-length');
+    const totalBytes = contentLengthHeader ? parseInt(contentLengthHeader, 10) : 0;
+
+    setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
+
+    // Check if response body exists
+    if (!fetchResponse.body) {
+      throw new Error('Response body is null - cannot read stream');
+    }
+
+    const reader = fetchResponse.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let receivedBytes = 0;
+
+    try {
+      // Use while loop instead of recursion to avoid stack overflow on large files
+      while (true) {
+        // eslint-disable-next-line no-await-in-loop
+        const { done, value } = await reader.read();
+
+        if (done) {
+          break;
+        }
+
+        if (value) {
+          chunks.push(value);
+          receivedBytes += value.length;
+
+          // Update progress
+          if (totalBytes > 0) {
+            const percentCompleted = Math.round((receivedBytes * 100) / totalBytes);
+            setViewerState((prev) => ({
+              ...prev,
+              loadingStep: `Downloading document... ${percentCompleted}%`,
+            }));
+          } else {
+            // Format bytes for display
+            const formattedBytes =
+              receivedBytes >= 1048576
+                ? `${(receivedBytes / 1048576).toFixed(1)} MB`
+                : `${Math.round(receivedBytes / 1024)} KB`;
+            setViewerState((prev) => ({
+              ...prev,
+              loadingStep: `Downloading document... ${formattedBytes} received`,
+            }));
+          }
+        }
+      }
+
+      if (chunks.length === 0) {
+        throw new Error('Received empty file from server (0 bytes)');
+      }
+
+      // Combine all chunks into a single Uint8Array
+      const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+      const combinedArray = new Uint8Array(totalLength);
+      let offset = 0;
+      chunks.forEach((chunk) => {
+        combinedArray.set(chunk, offset);
+        offset += chunk.length;
+      });
+
+      // Convert Uint8Array to ArrayBuffer
+      return combinedArray.buffer.slice(
+        combinedArray.byteOffset,
+        combinedArray.byteOffset + combinedArray.byteLength
+      );
+    } finally {
+      reader.releaseLock();
+    }
+  };
+
   const viewDocument = async (): Promise<void> => {
     // Check if previewRenderable is false - if so, open webUrl instead of viewer
     if (record.previewRenderable === false) {
       handleOpenWebUrl();
       return;
     }
+
+    // Cancel any previous ongoing request
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    // Create new AbortController for this request
+    abortControllerRef.current = new AbortController();
+    const { signal } = abortControllerRef.current;
+
+    // Set up timeout
+    const timeoutId = setTimeout(() => {
+      abortControllerRef.current?.abort();
+    }, FETCH_TIMEOUT_MS);
 
     // Start with loading phase
     setViewerState((prev) => ({
@@ -586,53 +786,94 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
       }
 
       let fileDataLoaded = false;
-
       let loadedFileBuffer: ArrayBuffer | null = null;
 
       // Unified streaming - use stream/record API for both KB and connector records
       try {
         setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
 
-        let params: { convertTo?: string } = {};
+        // Build URL with params
+        const url = new URL(`${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`);
 
         // Handle PowerPoint files - request PDF conversion
         if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
-          params = { convertTo: 'application/pdf' };
+          url.searchParams.append('convertTo', 'application/pdf');
           if (record.fileRecord.sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
             throw new Error('Large file size, redirecting to web page');
           }
         }
 
-        const streamResponse = await axios.get(
-            `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-            { responseType: 'blob', params }
-          );
-        
-        if (!streamResponse) return;
+        // Use the streaming fetch helper
+        loadedFileBuffer = await streamDocumentWithFetch(url.toString(), signal);
+        fileDataLoaded = true;
 
         setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
+      } catch (err: any) {
+        // Clear timeout on error
+        clearTimeout(timeoutId);
 
-        const bufferReader = new FileReader();
-        const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
-          bufferReader.onload = () => {
-            const originalBuffer = bufferReader.result as ArrayBuffer;
-            const bufferCopy = originalBuffer.slice(0);
-            resolve(bufferCopy);
-          };
-          bufferReader.onerror = () => {
-            reject(new Error('Failed to read blob as array buffer'));
-          };
-          bufferReader.readAsArrayBuffer(streamResponse.data);
+        // Handle abort/cancellation - don't show error if user cancelled
+        if (err.name === 'AbortError') {
+          // Check if it was a timeout or user cancellation
+          if (viewerState.phase === 'closing') {
+            // User closed the viewer, just return silently
+            return;
+          }
+          // It was a timeout
+          const errorMessage =
+            'Request timed out. The file may be too large or the connection is slow.';
+          setSnackbar({
+            open: true,
+            message: errorMessage,
+            severity: 'error',
+          });
+          showErrorAndRedirect(errorMessage);
+          return;
+        }
+
+        // Handle fetch API errors
+        let errorMessage = 'Failed to load document';
+
+        if (err.name === 'TypeError' && err.message?.includes('fetch')) {
+          errorMessage =
+            'Network error: Unable to connect to server. Please check your internet connection.';
+        } else if (err.message?.includes('HTTP error')) {
+          // Extract status code from error message
+          const statusMatch = err.message.match(/status: (\d+)/);
+          if (statusMatch) {
+            const status = parseInt(statusMatch[1], 10);
+            if (status === 404) {
+              errorMessage = 'Document not found (404).';
+            } else if (status === 403 || status === 401) {
+              errorMessage = 'Access denied. You may not have permission to view this document.';
+            } else if (status >= 500) {
+              errorMessage = 'Server error. Please try again later.';
+            } else {
+              errorMessage = `Server returned error ${status}. Please try again.`;
+            }
+          } else {
+            errorMessage = err.message;
+          }
+        } else if (err.message?.includes('empty')) {
+          errorMessage = err.message;
+        } else if (err.message?.includes('Large file size')) {
+          errorMessage = 'File is too large for preview.';
+        } else if (err.message) {
+          errorMessage = err.message;
+        }
+
+        setSnackbar({
+          open: true,
+          message: errorMessage,
+          severity: 'error',
         });
 
-        loadedFileBuffer = await arrayBufferPromise;
-        fileDataLoaded = true;
-      } catch (err) {
-        console.error('Error downloading document:', err);
-        showErrorAndRedirect('Failed to load document');
+        showErrorAndRedirect(errorMessage);
         return;
+      } finally {
+        // Always clear the timeout
+        clearTimeout(timeoutId);
       }
-
 
       if (fileDataLoaded) {
         // Use recordType to determine document type for mail records
