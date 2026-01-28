@@ -439,10 +439,13 @@ class OutlookConnector(BaseConnector):
             if not self.external_users_client:
                 return None
 
+            # Sanitize email to escape single quotes for OData
+            sanitized_email = email.replace("'", "''")
+
             async with self.rate_limiter:
-                # Search by mail or userPrincipalName
+                # Search by mail or userPrincipalName using sanitized email
                 # Note: This relies on the API supporting $filter
-                filter_str = f"mail eq '{email}' or userPrincipalName eq '{email}'"
+                filter_str = f"mail eq '{sanitized_email}' or userPrincipalName eq '{sanitized_email}'"
                 response = await self.external_users_client.users_user_list_user(
                     filter=filter_str,
                     top=1,
@@ -628,8 +631,6 @@ class OutlookConnector(BaseConnector):
 
                     if not group_id:
                         continue
-
-                    self.logger.debug(f"Processing group: {group_name} ({group_id})")
 
                     # Create AppUserGroup
                     user_group = AppUserGroup(
@@ -926,7 +927,6 @@ class OutlookConnector(BaseConnector):
             threads = await self._get_group_threads(group_id, last_sync_timestamp)
 
             if not threads:
-                self.logger.debug(f"No updated threads found for group {group_name}")
                 return 0
 
             self.logger.info(f"Found {len(threads)} updated threads for group {group_name}")
@@ -1045,8 +1045,6 @@ class OutlookConnector(BaseConnector):
 
             if not posts_to_process:
                 return 0
-
-            self.logger.debug(f"Processing {len(posts_to_process)} new posts out of {len(all_posts)} total")
 
             # Process each new post as a MailRecord
             batch_records = []
@@ -1774,9 +1772,7 @@ class OutlookConnector(BaseConnector):
             sync_point = await self.email_delta_sync_point.read_sync_point(sync_point_key)
             delta_link = sync_point.get('delta_link') if sync_point else None
 
-            # --- OPTIMIZATION: Gap Fill Logic ---
-
-            # 1. Determine Current Filter (Fix: Initialize to None)
+            # Gap Fill Optimization: Determine Current Filter
             current_filter_start_ts = None
             received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
             current_filter_iso = None
@@ -1785,18 +1781,21 @@ class OutlookConnector(BaseConnector):
                 current_filter_iso, _ = received_date_filter.get_datetime_iso()
                 if current_filter_iso:
                     try:
+                        # Handle naive datetimes by assuming UTC
                         dt = datetime.fromisoformat(current_filter_iso.replace('Z', '+00:00'))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
                         current_filter_start_ts = int(dt.timestamp())
                     except ValueError:
                         self.logger.warning(f"Could not parse filter date: {current_filter_iso}")
 
-            # 2. Retrieve Stored Filter (earliest timestamp ever used)
+            # Retrieve Stored Filter (earliest timestamp ever used)
             stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
 
             processed_count = 0
             mail_records = []
 
-            # 3. Detect Gap: Only run if we have explicit filters for both current and stored state
+            # Detect Gap: Only run if we have explicit filters for both current and stored state
             # Check for None to prevent unintended full history fetch
             should_fill_gap = (
                 delta_link and
@@ -1829,9 +1828,7 @@ class OutlookConnector(BaseConnector):
                     self.logger.error(f"Gap fill failed for '{folder_name}' (continuing with delta): {e}", exc_info=True)
                     gap_fill_failed = True
 
-            # --- END OPTIMIZATION ---
-
-            # 4. Standard Delta Sync (Fetch new emails since last run)
+            # Standard Delta Sync (Fetch new emails since last run)
             result = await self._get_all_messages_delta_external(user_id, folder_id, delta_link)
             messages = result['messages']
 
@@ -1846,11 +1843,11 @@ class OutlookConnector(BaseConnector):
                 processed_count += count
 
 
-            # 5. Update Sync Point
+            # Update Sync Point
             # Persist the earliest start timestamp ever used
             # If no filter currently applied, retain the stored value (don't reset to 0)
             # If filter applied, use the minimum of current and stored (track earliest ever)
-            # CRITICAL: If gap fill FAILED, we must NOT update the state to the new, earlier timestamp,
+            # Important: If gap fill FAILED, we must NOT update the state to the new, earlier timestamp,
             # because we missed the data in between. We should keep the OLD (later) timestamp.
             
             if gap_fill_failed:
@@ -2039,8 +2036,6 @@ class OutlookConnector(BaseConnector):
                     )
                     if attachment_updates:
                         updates.extend(attachment_updates)
-            else:
-                self.logger.debug(f"Skipping attachment processing for unchanged email {message_id}")
 
         except Exception as e:
             self.logger.error(f"Error processing message {self._safe_get_attr(message, 'id', 'unknown')}: {e}")
@@ -2891,7 +2886,6 @@ class OutlookConnector(BaseConnector):
 
             # Check if updated (GROUP_MAIL uses receivedDateTime, no etag)
             if not record_update.is_new and not record_update.is_updated:
-                self.logger.debug(f"GROUP_MAIL post {post_id} has not changed at source")
                 return None
 
             return (record_update.record, record_update.new_permissions or [])
@@ -2954,7 +2948,6 @@ class OutlookConnector(BaseConnector):
                     self.logger.info(f"GROUP_MAIL attachment {attachment_id} has changed at source")
 
             if not is_updated:
-                self.logger.debug(f"GROUP_MAIL attachment {attachment_id} has not changed at source")
                 return None
 
             # Get group info for permissions
@@ -3069,7 +3062,6 @@ class OutlookConnector(BaseConnector):
                 return None
 
             if not email_update.is_new and not email_update.is_updated:
-                self.logger.debug(f"Email {message_id} has not changed at source, skipping update")
                 return None
 
             return (email_update.record, email_update.new_permissions or [])
@@ -3116,7 +3108,6 @@ class OutlookConnector(BaseConnector):
                 self.logger.info(f"Attachment {attachment_id} has changed at source (e_tag changed)")
 
             if not is_updated:
-                self.logger.debug(f"Attachment {attachment_id} has not changed at source, skipping update")
                 return None
 
             email_permissions = await self._extract_email_permissions(message, None, user_email)
