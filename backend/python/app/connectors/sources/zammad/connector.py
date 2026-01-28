@@ -22,6 +22,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    RecordRelations,
 )
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -81,6 +82,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    RelatedExternalRecord,
     Status,
     TicketRecord,
     WebpageRecord,
@@ -99,6 +101,21 @@ ZAMMAD_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 BATCH_SIZE_KB_ANSWERS = 50
 ATTACHMENT_ID_PARTS_COUNT = 3
 KB_ANSWER_ATTACHMENT_PARTS_COUNT = 2
+
+# Zammad link type to RecordRelations mapping
+# Zammad supports: normal, parent, child
+ZAMMAD_LINK_TYPE_MAP: Dict[str, RecordRelations] = {
+    "normal": RecordRelations.RELATED,
+    "parent": RecordRelations.DEPENDS_ON,  # Current ticket depends on parent
+    "child": RecordRelations.LINKED_TO,    # Child depends on current ticket
+}
+
+# Zammad link object type to RecordType mapping
+# Note: KB answers come as "KnowledgeBase::Answer::Translation" in links
+ZAMMAD_LINK_OBJECT_MAP: Dict[str, RecordType] = {
+    "Ticket": RecordType.TICKET,
+    "KnowledgeBase::Answer::Translation": RecordType.WEBPAGE,  # KB answer translations
+}
 
 @ConnectorBuilder("Zammad")\
     .in_group(AppGroups.ZAMMAD.value)\
@@ -417,30 +434,27 @@ class ZammadConnector(BaseConnector):
             self.logger.error(f"❌ Zammad sync failed: {e}", exc_info=True)
             raise
 
-    def _filter_groups_by_sync_filter(
-        self,
-        all_groups: List[Tuple[RecordGroup, List[Permission]]]
-    ) -> List[Tuple[RecordGroup, List[Permission]]]:
+    def _is_group_allowed_by_filter(self, group_id: str) -> bool:
         """
-        Apply group_ids sync filter to determine which groups to process.
+        Check if a group_id is allowed by the group_ids sync filter.
 
         Args:
-            all_groups: List of all (RecordGroup, permissions) tuples
+            group_id: The group ID to check
 
         Returns:
-            Filtered list of groups to process
+            True if the group should be processed, False if it should be skipped
         """
         # Check if filter is set
         if not self.sync_filters:
-            return all_groups  # No filter, process all
+            return True  # No filter, allow all
 
         group_ids_filter = self.sync_filters.get(SyncFilterKey.GROUP_IDS)
         if not group_ids_filter:
-            return all_groups  # No group filter, process all
+            return True  # No group filter, allow all
 
         selected_group_ids = group_ids_filter.get_value(default=[])
         if not selected_group_ids:
-            return all_groups  # Empty filter, process all
+            return True  # Empty filter, allow all
 
         # Convert to set of strings for easy lookup
         filter_set = set(str(gid) for gid in selected_group_ids)
@@ -453,22 +467,12 @@ class ZammadConnector(BaseConnector):
 
         is_exclude = operator_value == "not_in"
 
-        filtered_groups = []
-        for group_record_group, group_perms in all_groups:
-            # Extract group_id from external_group_id (e.g., "group_1" -> "1")
-            group_id = group_record_group.short_name or group_record_group.external_group_id.replace("group_", "")
-
-            if is_exclude:
-                # NOT_IN: include if NOT in filter list
-                if group_id not in filter_set:
-                    filtered_groups.append((group_record_group, group_perms))
-            else:
-                # IN: include if IN filter list
-                if group_id in filter_set:
-                    filtered_groups.append((group_record_group, group_perms))
-
-        self.logger.debug(f"📋 Filtered groups: {len(filtered_groups)}/{len(all_groups)} (filter: {operator_value} {list(filter_set)})")
-        return filtered_groups
+        if is_exclude:
+            # NOT_IN: allow if NOT in filter list
+            return group_id not in filter_set
+        else:
+            # IN: allow if IN filter list
+            return group_id in filter_set
 
     # ==================== ENTITY FETCHING & SYNCING ====================
 
@@ -506,9 +510,23 @@ class ZammadConnector(BaseConnector):
                 user_id = user_data.get("id")
                 email = user_data.get("email", "")
                 active = user_data.get("active", True)
+                firstname = user_data.get("firstname", "") or ""
+                lastname = user_data.get("lastname", "") or ""
+                full_name = f"{firstname} {lastname}".strip()
 
                 # Skip inactive users, users without email, or users without ID
                 if not active or not email or not user_id:
+                    continue
+
+                # Skip system/bot users (mailer-daemon, noreply, etc.)
+                email_lower = email.lower()
+                if (
+                    "mailer-daemon" in email_lower
+                    or "noreply" in email_lower
+                    or "no-reply" in email_lower
+                    or "Mail Delivery System" in full_name
+                ):
+                    self.logger.debug(f"Skipping system user: {email} ({full_name})")
                     continue
 
                 # Store lightweight mapping: user_id -> {email, role_ids} (instead of full user data)
@@ -527,10 +545,8 @@ class ZammadConnector(BaseConnector):
                     "role_ids": role_ids_int
                 }
 
-                # Build full name
-                firstname = user_data.get("firstname", "") or ""
-                lastname = user_data.get("lastname", "") or ""
-                full_name = f"{firstname} {lastname}".strip() or email
+                # Use full_name (already computed above) or fallback to email
+                display_name = full_name or email
 
                 # Create AppUser
                 app_user = AppUser(
@@ -540,7 +556,7 @@ class ZammadConnector(BaseConnector):
                     connector_id=self.connector_id,
                     app_name=Connectors.ZAMMAD,
                     email=email,
-                    full_name=full_name,
+                    full_name=display_name,
                     is_active=active,
                 )
 
@@ -600,6 +616,11 @@ class ZammadConnector(BaseConnector):
                 active = group_data.get("active", True)
 
                 if not active or not group_id or not group_name:
+                    continue
+
+                # Apply group_ids filter early - skip groups that don't match the filter
+                if not self._is_group_allowed_by_filter(str(group_id)):
+                    self.logger.debug(f"⏭️ Skipping group {group_id} ({group_name}) - excluded by filter")
                     continue
 
                 # Parse timestamps
@@ -784,25 +805,19 @@ class ZammadConnector(BaseConnector):
 
         Args:
             group_record_groups: List of (RecordGroup, permissions) tuples from Step 2
+            (already filtered by group_ids sync filter in _fetch_groups)
         """
         if not group_record_groups:
             self.logger.info("ℹ️ No groups to sync tickets for")
             return
 
-        # Apply filter to get groups to process
-        groups_to_process = self._filter_groups_by_sync_filter(group_record_groups)
-
-        if not groups_to_process:
-            self.logger.info("ℹ️ No groups match the filter criteria")
-            return
-
-        self.logger.info(f"📋 Will sync tickets for {len(groups_to_process)} groups")
+        self.logger.info(f"📋 Will sync tickets for {len(group_record_groups)} groups")
 
         total_tickets_all_groups = 0
         total_attachments_all_groups = 0
 
         # Sync each group independently
-        for group_record_group, group_perms in groups_to_process:
+        for group_record_group, group_perms in group_record_groups:
             try:
                 # Extract group info
                 external_group_id = group_record_group.external_group_id
@@ -885,9 +900,9 @@ class ZammadConnector(BaseConnector):
                 continue  # Continue with next group even if one fails
 
         if total_attachments_all_groups > 0:
-            self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets, {total_attachments_all_groups} attachments across {len(groups_to_process)} groups")
+            self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets, {total_attachments_all_groups} attachments across {len(group_record_groups)} groups")
         else:
-            self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets across {len(groups_to_process)} groups")
+            self.logger.info(f"✅ Total: Synced {total_tickets_all_groups} tickets across {len(group_record_groups)} groups")
 
     async def _fetch_tickets_for_group_batch(
         self,
@@ -914,12 +929,51 @@ class ZammadConnector(BaseConnector):
         # Build query: always filter by group_id
         query_parts = [f"group_id:{group_id}"]
 
-        # Add timestamp filter if incremental sync
+        # Get modified date filter from sync_filters
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
+        modified_after: Optional[int] = None
+        modified_before: Optional[int] = None
+
+        if modified_filter:
+            modified_after, modified_before = modified_filter.get_value(default=(None, None))
+
+        # Get created date filter from sync_filters
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
+        created_after: Optional[int] = None
+        created_before: Optional[int] = None
+
+        if created_filter:
+            created_after, created_before = created_filter.get_value(default=(None, None))
+
+        # Determine modified_after from filter and/or incremental sync checkpoint
         if last_sync_time:
-            # Convert timestamp to ISO format with UTC timezone
-            dt = datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
+            # Use the greater of last_sync_time and modified_after filter
+            if modified_after:
+                modified_after = max(modified_after, last_sync_time)
+            else:
+                modified_after = last_sync_time
+
+        # Add modified date range filter (updated_at)
+        if modified_after:
+            dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
             iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
             query_parts.append(f"updated_at:[{iso_format} TO *]")
+
+        if modified_before:
+            dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
+            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            query_parts.append(f"updated_at:[* TO {iso_format}]")
+
+        # Add created date range filter (created_at)
+        if created_after:
+            dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
+            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            query_parts.append(f"created_at:[{iso_format} TO *]")
+
+        if created_before:
+            dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
+            iso_format = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+            query_parts.append(f"created_at:[* TO {iso_format}]")
 
         # Build final query
         query = " AND ".join(query_parts)
@@ -1292,6 +1346,17 @@ class ZammadConnector(BaseConnector):
             preview_renderable=False,
         )
 
+        # Fetch linked tickets and KB answers for this ticket
+        try:
+            related_external_records = await self._fetch_ticket_links(ticket_id=int(ticket_id))
+            if related_external_records:
+                ticket_record.related_external_records = related_external_records
+                self.logger.debug(
+                    f"🔗 Ticket {ticket_id} has {len(related_external_records)} linked records"
+                )
+        except Exception as e:
+            self.logger.debug(f"Failed to fetch links for ticket {ticket_id}: {e}")
+
         return ticket_record
 
     async def _transform_attachment_to_file_record(
@@ -1383,6 +1448,8 @@ class ZammadConnector(BaseConnector):
             inherit_permissions=inherit_permissions,
             is_file=True,
             extension=extension,
+            is_dependent_node=True,
+            parent_node_id=parent_record.id,
         )
 
         # Set indexing status based on indexing filters
@@ -1403,6 +1470,126 @@ class ZammadConnector(BaseConnector):
             return int(dt.timestamp() * 1000)
         except (ValueError, TypeError):
             return 0
+
+    async def _fetch_ticket_links(self, ticket_id: int) -> List[RelatedExternalRecord]:
+        """
+        Fetch linked tickets and KB answers for a ticket.
+
+        Uses Zammad's Links API to get all objects linked to this ticket,
+        including other tickets and KB answers.
+
+        Only creates edges in one direction to avoid duplicates:
+        - "parent" links: create edge (child -> parent)
+        - "child" links: skip (parent ticket will create the edge)
+        - "normal" links: only create if current_ticket_id < linked_ticket_id
+
+        Args:
+            ticket_id: Zammad ticket ID
+
+        Returns:
+            List of RelatedExternalRecord objects for creating LINKED_TO edges
+        """
+        related_records: List[RelatedExternalRecord] = []
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.list_links(
+                link_object="Ticket",
+                link_object_value=ticket_id
+            )
+
+            if not response.success or not response.data:
+                return related_records
+
+            links = response.data.get("links", [])
+            assets = response.data.get("assets", {})
+
+            for link in links:
+                link_type = link.get("link_type", "normal")
+                link_object = link.get("link_object", "")
+                link_object_value = link.get("link_object_value")
+
+                if not link_object_value:
+                    continue
+
+                # Skip "child" links - the parent ticket will create the edge
+                # when it processes its "child" links (which will be "parent" from child's perspective)
+                if link_type.lower() == "child":
+                    continue
+
+                # For "normal" links between tickets, only create edge in one direction (deterministic by ticket ID)
+                if link_type.lower() == "normal" and link_object == "Ticket":
+                    try:
+                        linked_ticket_id = int(link_object_value)
+                        # Only create edge if current ticket ID is less than linked ticket ID
+                        # This ensures only one direction is created (A->B, not B->A)
+                        if ticket_id >= linked_ticket_id:
+                            continue
+                    except (ValueError, TypeError):
+                        # If link_object_value is not a valid integer, skip this check
+                        pass
+
+                # Map Zammad object type to RecordType (inline mapping)
+                record_type = ZAMMAD_LINK_OBJECT_MAP.get(link_object)
+                if not record_type:
+                    # Case-insensitive fallback for KB translations
+                    normalized = link_object.lower().strip()
+                    if "knowledgebase" in normalized and "answer" in normalized and "translation" in normalized:
+                        record_type = RecordType.WEBPAGE
+                    else:
+                        self.logger.debug(f"Unknown link object type: {link_object}")
+                        continue
+
+                # Map Zammad link type to RecordRelations (inline mapping)
+                normalized_type = link_type.lower().strip()
+                relation_type = ZAMMAD_LINK_TYPE_MAP.get(normalized_type, RecordRelations.LINKED_TO)
+
+                # Build external_record_id based on object type
+                if record_type == RecordType.TICKET:
+                    # Tickets use ticket ID directly
+                    external_record_id = str(link_object_value)
+                elif record_type == RecordType.WEBPAGE:
+                    # KB answers: link_object_value is translation ID, need to get answer_id from assets
+                    # Format in assets: assets["KnowledgeBaseAnswerTranslation"][translation_id]["answer_id"]
+                    answer_id = None
+
+                    # Try to get answer_id from KnowledgeBaseAnswerTranslation assets
+                    kb_translations = assets.get("KnowledgeBaseAnswerTranslation", {})
+                    translation_data = kb_translations.get(str(link_object_value))
+
+                    if translation_data and isinstance(translation_data, dict):
+                        answer_id = translation_data.get("answer_id")
+
+                    if answer_id:
+                        # KB answers use format: "kb_answer_{answer_id}"
+                        external_record_id = f"kb_answer_{answer_id}"
+                    else:
+                        # Fallback: use translation ID if answer_id not found
+                        self.logger.warning(
+                            f"Could not find answer_id for KB translation {link_object_value}, "
+                            f"using translation ID as fallback"
+                        )
+                        external_record_id = f"kb_answer_{link_object_value}"
+                else:
+                    external_record_id = str(link_object_value)
+
+                related_records.append(
+                    RelatedExternalRecord(
+                        external_record_id=external_record_id,
+                        record_type=record_type,
+                        relation_type=relation_type
+                    )
+                )
+
+                self.logger.debug(
+                    f"Found link: Ticket {ticket_id} -> {link_object} {link_object_value} "
+                    f"(type: {link_type} -> {relation_type.value})"
+                )
+
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch links for ticket {ticket_id}: {e}")
+
+        return related_records
 
     # ==================== SYNC CHECKPOINTS ====================
 

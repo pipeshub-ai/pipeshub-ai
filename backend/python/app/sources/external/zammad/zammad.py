@@ -7413,14 +7413,14 @@ class ZammadDataSource:
             ZammadResponse
         """
         url = f"{self.base_url}/api/v1/links"
-        params = {}
+
+        # Build query parameters (like get_kb_answer does)
+        query_params = {}
         if link_object is not None:
-            params["link_object"] = link_object
+            query_params["link_object"] = link_object
         if link_object_value is not None:
-            params["link_object_value"] = link_object_value
-        if params:
-            from urllib.parse import urlencode
-            url += "?" + urlencode(params)
+            query_params["link_object_value"] = str(link_object_value)
+
         request_body = None
 
         try:
@@ -7428,7 +7428,8 @@ class ZammadDataSource:
                 url=url,
                 method="GET",
                 headers={"Content-Type": "application/json"},
-                body=request_body
+                body=request_body,
+                query=query_params
             )
             response = await self.http_client.execute(request)
 
