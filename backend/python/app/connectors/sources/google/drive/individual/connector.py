@@ -953,7 +953,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
     async def _stream_google_api_request(self, request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
         """
         Helper function to stream data from a Google API request.
-        StreamingResponse will handle chunking automatically.
 
         Args:
             request: Google API request object (from files().get_media() or files().export_media())
