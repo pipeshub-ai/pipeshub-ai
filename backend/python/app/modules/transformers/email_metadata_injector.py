@@ -1,3 +1,5 @@
+from logging import Logger
+
 from app.models.blocks import Block, BlockType, DataFormat
 from app.models.entities import RecordType
 from app.modules.transformers.transformer import TransformContext, Transformer
@@ -9,14 +11,16 @@ class EmailMetadataInjector(Transformer):
     into the content block text so it gets indexed by the embedding model.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, logger: Logger) -> None:
         super().__init__()
+        self.logger = logger
 
     async def apply(self, ctx: TransformContext) -> None:
         try:
             record = ctx.record
 
-            if record.record_type not in ["MAIL", "GROUP_MAIL", RecordType.MAIL, RecordType.GROUP_MAIL]:
+            # Optimization: Use Enum checks
+            if record.record_type not in (RecordType.MAIL, RecordType.GROUP_MAIL):
                 return
 
             subject = str(getattr(record, "subject", "") or "No Subject")
@@ -51,7 +55,9 @@ class EmailMetadataInjector(Transformer):
             if cc_addrs:
                 header_lines.append(f"CC: {', '.join(cc_addrs)}")
 
-            metadata_header = "\n".join(header_lines) + "\n\n--- Content ---\n\n"
+            # Separator used for idempotency check
+            separator = "\n\n--- Content ---\n\n"
+            metadata_header = "\n".join(header_lines) + separator
 
             if not hasattr(record, "block_containers") or not record.block_containers:
                 return
@@ -76,8 +82,8 @@ class EmailMetadataInjector(Transformer):
                 target_block = blocks[target_block_index]
                 original_text = str(target_block.data or "")
 
-                # Idempotency: If header exists, stop.
-                if original_text.startswith(f"Subject: {subject}"):
+                # Improved Idempotency Check
+                if original_text.startswith("Subject: ") and separator in original_text:
                     return
 
                 target_block.data = metadata_header + original_text
@@ -97,9 +103,13 @@ class EmailMetadataInjector(Transformer):
                             b.index = i
 
                 except Exception as e:
-                    # Robustness: Do not crash if block creation fails
-                    pass
+                    self.logger.error(
+                        f"Failed to create new metadata block for record {ctx.record.id}: {e}",
+                        exc_info=True,
+                    )
 
         except Exception as e:
-            # Global safety catch: Do not crash pipeline
-            pass
+            self.logger.error(
+                f"Failed to inject email metadata for record {ctx.record.id}: {e}",
+                exc_info=True,
+            )

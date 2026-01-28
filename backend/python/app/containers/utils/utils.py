@@ -107,9 +107,9 @@ class ContainerUtils:
         extractor = DocumentExtraction(logger, arango_service, config_service)
         return extractor
 
-    async def create_email_metadata_injector(self) -> EmailMetadataInjector:
+    async def create_email_metadata_injector(self, logger: Logger) -> EmailMetadataInjector:
         """Async factory for EmailMetadataInjector"""
-        injector = EmailMetadataInjector()
+        injector = EmailMetadataInjector(logger)
         return injector
 
     async def create_blob_storage(

@@ -89,6 +89,7 @@ class IndexingAppContainer(BaseAppContainer):
     # Email Metadata Injector
     email_metadata_injector = providers.Resource(
         container_utils.create_email_metadata_injector,
+        logger=logger,
     )
 
     # Processor - depends on arango_service
