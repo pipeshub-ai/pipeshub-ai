@@ -254,6 +254,9 @@ class EntityEventService(BaseEventService):
             # Get or create knowledge base for the user
             await self.__get_or_create_knowledge_base(user_key,payload["userId"], payload["orgId"])
 
+            # Create user-app relation edge for KB app
+            await self.__create_user_kb_app_relation(user_key, payload["orgId"])
+
             # Only proceed with app connections if syncAction is 'immediate'
             if payload["syncAction"] == "immediate":
                 # Get all apps associated with the org
@@ -672,3 +675,66 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             self.logger.error(f"❌ Error getting or creating KB app for org {org_id}: {str(e)}")
             return None
+
+    async def __create_user_kb_app_relation(self, user_key: str, org_id: str) -> bool:
+        """
+        Create user-app relation edge between user and KB app for the organization.
+
+        Args:
+            user_key: User key
+            org_id: Organization ID
+
+        Returns:
+            True if edge was created or already exists, False on error
+        """
+        try:
+            # Get or create KB app for the org
+            kb_app = await self.__get_or_create_kb_app_for_org(org_id)
+            if not kb_app:
+                self.logger.warning(f"KB app not found for org {org_id}, skipping user-app relation creation")
+                return False
+
+            kb_app_id = kb_app.get('_key')
+
+            # Check if user-app relation already exists
+            query = f"""
+            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER edge._from == CONCAT(@user_collection, '/', @user_key)
+                    AND edge._to == CONCAT(@app_collection, '/', @kb_app_id)
+                LIMIT 1
+                RETURN 1
+            """
+            bind_vars = {
+                "user_key": user_key,
+                "kb_app_id": kb_app_id,
+                "user_collection": CollectionNames.USERS.value,
+                "app_collection": CollectionNames.APPS.value,
+            }
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
+            if list(cursor):
+                # Edge already exists
+                self.logger.debug(f"User-app relation already exists for user {user_key} and KB app {kb_app_id}")
+                return True
+
+            # Create user-app relation edge
+            current_timestamp = get_epoch_timestamp_in_ms()
+            user_app_edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                "syncState": "NOT_STARTED",  # Required by schema - KB doesn't sync
+                "lastSyncUpdate": current_timestamp,  # Required by schema
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+
+            await self.arango_service.batch_create_edges(
+                [user_app_edge],
+                CollectionNames.USER_APP_RELATION.value
+            )
+
+            self.logger.info(f"✅ Created user-app relation for user {user_key} and KB app {kb_app_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Error creating user-app relation for user {user_key}: {str(e)}")
+            return False

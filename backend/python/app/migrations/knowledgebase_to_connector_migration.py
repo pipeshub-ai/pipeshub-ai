@@ -139,6 +139,7 @@ class KnowledgeBaseToConnectorMigrationService:
             # Step 3: Process each organization
             total_apps_created = 0
             total_org_app_edges = 0
+            total_user_app_relations = 0
             total_kb_app_edges = 0
             total_record_relations_deleted = 0
             total_records_updated = 0
@@ -151,6 +152,7 @@ class KnowledgeBaseToConnectorMigrationService:
                     if result["success"]:
                         total_apps_created += result.get("apps_created", 0)
                         total_org_app_edges += result.get("org_app_edges_created", 0)
+                        total_user_app_relations += result.get("user_app_relations_created", 0)
                         total_kb_app_edges += result.get("kb_app_edges_created", 0)
                         total_record_relations_deleted += result.get("record_relations_deleted", 0)
                         total_records_updated += result.get("records_updated", 0)
@@ -158,6 +160,7 @@ class KnowledgeBaseToConnectorMigrationService:
                             f"✅ Successfully migrated KBs for org {org_id}: "
                             f"{result.get('apps_created', 0)} apps created, "
                             f"{result.get('org_app_edges_created', 0)} org-app edges, "
+                            f"{result.get('user_app_relations_created', 0)} user-app relations, "
                             f"{result.get('kb_app_edges_created', 0)} kb-app edges, "
                             f"{result.get('record_relations_deleted', 0)} record_relations deleted, "
                             f"{result.get('records_updated', 0)} records updated"
@@ -181,6 +184,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 "orgs_processed": len(orgs),
                 "apps_created": total_apps_created,
                 "org_app_edges_created": total_org_app_edges,
+                "user_app_relations_created": total_user_app_relations,
                 "kb_app_edges_created": total_kb_app_edges,
                 "record_relations_deleted": total_record_relations_deleted,
                 "records_updated": total_records_updated,
@@ -196,6 +200,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 f"✅ Migration completed: {summary['orgs_processed']} orgs processed, "
                 f"{summary['apps_created']} apps created, "
                 f"{summary['org_app_edges_created']} org-app edges, "
+                f"{summary['user_app_relations_created']} user-app relations, "
                 f"{summary['kb_app_edges_created']} kb-app edges, "
                 f"{summary['record_relations_deleted']} record_relations deleted, "
                 f"{summary['records_updated']} records updated, "
@@ -285,6 +290,7 @@ class KnowledgeBaseToConnectorMigrationService:
         total_record_relations_to_delete = 0
         total_kb_app_edges_to_create = 0
         total_records_to_update = 0
+        total_user_app_relations_to_create = 0
 
         for org in orgs:
             org_id = org.get('_key')
@@ -298,6 +304,32 @@ class KnowledgeBaseToConnectorMigrationService:
 
             if not kb_app:
                 orgs_needing_apps.append(org_id)
+
+            # Count users that need user-app relations
+            # Get KB app ID (either existing or will be created)
+            kb_app_id = kb_app.get('_key') if kb_app else f"knowledgeBase_{org_id}"
+
+            # Count users without user-app relation
+            users = await self.arango.get_users(org_id, active=True)
+            for user in users:
+                user_key = user.get('_key')
+                # Check if user-app relation exists
+                query = f"""
+                FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                    FILTER edge._from == CONCAT(@user_collection, '/', @user_key)
+                        AND edge._to == CONCAT(@app_collection, '/', @kb_app_id)
+                    LIMIT 1
+                    RETURN 1
+                """
+                bind_vars = {
+                    "user_key": user_key,
+                    "kb_app_id": kb_app_id,
+                    "user_collection": CollectionNames.USERS.value,
+                    "app_collection": CollectionNames.APPS.value,
+                }
+                cursor = self.arango.db.aql.execute(query, bind_vars=bind_vars)
+                if not list(cursor):
+                    total_user_app_relations_to_create += 1
 
             # Count KBs and edges for this org
             kbs = await self._get_kb_record_groups_for_org(org_id)
@@ -322,6 +354,7 @@ class KnowledgeBaseToConnectorMigrationService:
             "orgs_analyzed": len(orgs),
             "total_kbs": total_kbs,
             "orgs_needing_apps": len(orgs_needing_apps),
+            "user_app_relations_to_create": total_user_app_relations_to_create,
             "record_relations_to_delete": total_record_relations_to_delete,
             "kb_app_edges_to_create": total_kb_app_edges_to_create,
             "records_to_update": total_records_to_update,
@@ -355,6 +388,7 @@ class KnowledgeBaseToConnectorMigrationService:
                     CollectionNames.BELONGS_TO.value,
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.RECORDS.value,
+                    CollectionNames.USER_APP_RELATION.value,
                 ]
             )
 
@@ -368,6 +402,7 @@ class KnowledgeBaseToConnectorMigrationService:
                         "error": f"Failed to get or create KB app for org {org_id}",
                         "apps_created": 0,
                         "org_app_edges_created": 0,
+                        "user_app_relations_created": 0,
                         "kb_app_edges_created": 0,
                         "record_relations_deleted": 0,
                         "records_updated": 0
@@ -375,7 +410,10 @@ class KnowledgeBaseToConnectorMigrationService:
 
                 kb_app_id = kb_app.get('_key')
 
-                # Step 2: Get all KB record groups for this org
+                # Step 2: Create user-app relations for all users in the org
+                user_app_relations_created = await self._create_user_app_relations_for_org(org_id, kb_app_id, transaction)
+
+                # Step 3: Get all KB record groups for this org
                 kbs = await self._get_kb_record_groups_for_org(org_id)
 
                 if not kbs:
@@ -384,12 +422,13 @@ class KnowledgeBaseToConnectorMigrationService:
                         "success": True,
                         "apps_created": 1 if app_created else 0,
                         "org_app_edges_created": 1 if org_app_edge_created else 0,
+                        "user_app_relations_created": user_app_relations_created,
                         "kb_app_edges_created": 0,
                         "record_relations_deleted": 0,
                         "records_updated": 0
                     }
 
-                # Step 3: For each KB, process migration
+                # Step 4: For each KB, process migration
                 kb_app_edges_created = 0
                 record_relations_deleted = 0
                 records_updated = 0
@@ -415,6 +454,7 @@ class KnowledgeBaseToConnectorMigrationService:
                     "success": True,
                     "apps_created": 1 if app_created else 0,
                     "org_app_edges_created": 1 if org_app_edge_created else 0,
+                    "user_app_relations_created": user_app_relations_created,
                     "kb_app_edges_created": kb_app_edges_created,
                     "record_relations_deleted": record_relations_deleted,
                     "records_updated": records_updated
@@ -735,6 +775,83 @@ class KnowledgeBaseToConnectorMigrationService:
             self.logger.error(f"Failed to create KB-to-app edge: {str(e)}")
             raise
 
+    async def _create_user_app_relations_for_org(self, org_id: str, kb_app_id: str, transaction) -> int:
+        """
+        Create user-app relation edges for all users in an organization.
+
+        Args:
+            org_id: Organization ID
+            kb_app_id: Knowledge Base app ID
+            transaction: Database transaction
+
+        Returns:
+            Number of user-app relations created
+        """
+        try:
+            # Get all users for the org
+            users = await self.arango.get_users(org_id, active=True)
+
+            if not users:
+                return 0
+
+            # Find users that don't already have a user-app relation to the KB app
+            query = f"""
+            FOR user IN {CollectionNames.USERS.value}
+                FILTER user.orgId == @org_id
+                    AND (user.isActive == true OR user.isActive == null)
+                    AND user.isDeleted != true
+                // Check if user-app relation already exists
+                LET has_relation = LENGTH(
+                    FOR edge IN {CollectionNames.USER_APP_RELATION.value}
+                        FILTER edge._from == user._id
+                            AND edge._to == CONCAT(@app_collection, '/', @kb_app_id)
+                        RETURN 1
+                ) > 0
+                // Only include users without existing relation
+                FILTER has_relation == false
+                RETURN user
+            """
+            bind_vars = {
+                "org_id": org_id,
+                "kb_app_id": kb_app_id,
+                "app_collection": CollectionNames.APPS.value,
+            }
+            cursor = transaction.aql.execute(query, bind_vars=bind_vars)
+            users_to_process = list(cursor)
+
+            if not users_to_process:
+                return 0
+
+            # Create user-app relation edges
+            current_timestamp = get_epoch_timestamp_in_ms()
+            edges_to_create = []
+
+            for user in users_to_process:
+                user_key = user.get('_key')
+                edge = {
+                    "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                    "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                    "syncState": "NOT_STARTED",
+                    "lastSyncUpdate": current_timestamp,
+                    "createdAtTimestamp": current_timestamp,
+                    "updatedAtTimestamp": current_timestamp,
+                }
+                edges_to_create.append(edge)
+
+            if edges_to_create:
+                await self.arango.batch_create_edges(
+                    edges_to_create,
+                    CollectionNames.USER_APP_RELATION.value,
+                    transaction=transaction
+                )
+                self.logger.debug(f"Created {len(edges_to_create)} user-app relations for org {org_id}")
+
+            return len(edges_to_create)
+
+        except Exception as e:
+            self.logger.error(f"Failed to create user-app relations for org {org_id}: {str(e)}")
+            raise
+
     async def _update_records_connector_id(self, kb_id: str, kb_app_id: str, transaction) -> int:
         """
         Update connectorId on all records that belong to a KB to point to KB app.
@@ -823,6 +940,7 @@ async def run_kb_to_connector_migration(container) -> Dict:
             "orgs_processed": 0,
             "apps_created": 0,
             "org_app_edges_created": 0,
+            "user_app_relations_created": 0,
             "kb_app_edges_created": 0,
             "record_relations_deleted": 0,
             "records_updated": 0,
