@@ -55,6 +55,20 @@ import { getExtensionFromMimeType } from './utils/utils';
 const MAX_FILE_SIZE_MB = 10; // 10MB
 const FETCH_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes timeout for large files
 
+// Custom error class for HTTP errors to avoid fragile string parsing
+class HttpError extends Error {
+  status: number;
+
+  statusText: string;
+
+  constructor(status: number, statusText: string) {
+    super(`HTTP error! status: ${status} ${statusText}`);
+    this.name = 'HttpError';
+    this.status = status;
+    this.statusText = statusText;
+  }
+}
+
 // Simplified state management for viewport mode
 interface DocumentViewerState {
   phase: 'idle' | 'loading' | 'ready' | 'error' | 'closing';
@@ -370,9 +384,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
-      // Cancel any ongoing fetch requests
+      // Cancel any ongoing fetch requests with explicit reason
       if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
+        abortControllerRef.current.abort('unmount');
       }
     },
     []
@@ -410,9 +424,9 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   }, []);
 
   const handleCloseViewer = useCallback(() => {
-    // Cancel any ongoing fetch requests
+    // Cancel any ongoing fetch requests with explicit reason
     if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+      abortControllerRef.current.abort('user-cancellation');
       abortControllerRef.current = null;
     }
 
@@ -666,7 +680,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }
 
     if (!fetchResponse.ok) {
-      throw new Error(`HTTP error! status: ${fetchResponse.status} ${fetchResponse.statusText}`);
+      throw new HttpError(fetchResponse.status, fetchResponse.statusText);
     }
 
     // Get content length if available for progress tracking
@@ -751,16 +765,16 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
     // Cancel any previous ongoing request
     if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
+      abortControllerRef.current.abort('new-request');
     }
 
     // Create new AbortController for this request
     abortControllerRef.current = new AbortController();
     const { signal } = abortControllerRef.current;
 
-    // Set up timeout
+    // Set up timeout with explicit reason
     const timeoutId = setTimeout(() => {
-      abortControllerRef.current?.abort();
+      abortControllerRef.current?.abort('timeout');
     }, FETCH_TIMEOUT_MS);
 
     // Start with loading phase
@@ -809,14 +823,14 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
 
         setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
       } catch (err: any) {
-        // Clear timeout on error
-        clearTimeout(timeoutId);
-
-        // Handle abort/cancellation - don't show error if user cancelled
+        // Handle abort/cancellation - check signal.reason to avoid race condition with React state updates
         if (err.name === 'AbortError') {
-          // Check if it was a timeout or user cancellation
-          if (viewerState.phase === 'closing') {
-            // User closed the viewer, just return silently
+          // User cancellation, unmount, or new request starting - exit silently
+          if (
+            signal.reason === 'user-cancellation' ||
+            signal.reason === 'unmount' ||
+            signal.reason === 'new-request'
+          ) {
             return;
           }
           // It was a timeout
@@ -837,22 +851,17 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
         if (err.name === 'TypeError' && err.message?.includes('fetch')) {
           errorMessage =
             'Network error: Unable to connect to server. Please check your internet connection.';
-        } else if (err.message?.includes('HTTP error')) {
-          // Extract status code from error message
-          const statusMatch = err.message.match(/status: (\d+)/);
-          if (statusMatch) {
-            const status = parseInt(statusMatch[1], 10);
-            if (status === 404) {
-              errorMessage = 'Document not found (404).';
-            } else if (status === 403 || status === 401) {
-              errorMessage = 'Access denied. You may not have permission to view this document.';
-            } else if (status >= 500) {
-              errorMessage = 'Server error. Please try again later.';
-            } else {
-              errorMessage = `Server returned error ${status}. Please try again.`;
-            }
+        } else if (err instanceof HttpError) {
+          // Type-safe HTTP error handling
+          const { status } = err;
+          if (status === 404) {
+            errorMessage = 'Document not found (404).';
+          } else if (status === 403 || status === 401) {
+            errorMessage = 'Access denied. You may not have permission to view this document.';
+          } else if (status >= 500) {
+            errorMessage = 'Server error. Please try again later.';
           } else {
-            errorMessage = err.message;
+            errorMessage = `Server returned error ${status}. Please try again.`;
           }
         } else if (err.message?.includes('empty')) {
           errorMessage = err.message;
