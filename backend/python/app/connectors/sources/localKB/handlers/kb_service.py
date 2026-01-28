@@ -638,18 +638,27 @@ class KnowledgeBaseService :
                 # "updatedAtTimestamp": timestamp
             }
 
-            # Check for name conflicts in KB root
+            # Get the folder's parent to check for name conflicts in the correct location
+            parent_info = self.arango_service.get_record_parent_info(folder_id)
+            parent_folder_id = None
+            if parent_info and parent_info.get("parentType") == "record":
+                parent_folder_id = parent_info.get("parentId")
+            # If parentType is "recordGroup" or None, folder is in KB root (parent_folder_id stays None)
+
+            # Check for name conflicts in the folder's actual parent (excluding current folder)
             existing_folder = await self.arango_service.find_folder_by_name_in_parent(
                 kb_id=kb_id,
                 folder_name=name,
-                parent_folder_id=None,  # KB root
+                parent_folder_id=parent_folder_id,  # Use actual parent, not always KB root
+                exclude_folder_id=folder_id,  # Exclude current folder from conflict check
             )
 
             if existing_folder:
+                location = "KB root" if not parent_folder_id else "parent folder"
                 return {
                     "success": False,
                     "code": 409,
-                    "reason": f"Folder '{name}' already exists in KB root"
+                    "reason": f"Folder '{name}' already exists in {location}"
                 }
 
 
