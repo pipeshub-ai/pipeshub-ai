@@ -33,8 +33,8 @@ from app.models.entities import Record, RecordType
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
-from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.email_metadata_injector import EmailMetadataInjector
+from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.utils.aimodels import is_multimodal_llm
@@ -84,6 +84,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     )
     return record
 
+
 class Processor:
     def __init__(
         self,
@@ -93,7 +94,7 @@ class Processor:
         parsers,
         document_extractor,
         sink_orchestrator,
-        email_metadata_injector,
+        email_metadata_injector: EmailMetadataInjector,
     ) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
@@ -107,7 +108,17 @@ class Processor:
         # Initialize Docling client for external service
         self.docling_client = DoclingClient()
 
-    async def process_image(self, record_id, content, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    def _create_indexing_pipeline(self) -> IndexingPipeline:
+        """Helper to create a configured IndexingPipeline"""
+        return IndexingPipeline(
+            document_extraction=self.document_extraction,
+            sink_orchestrator=self.sink_orchestrator,
+            email_metadata_injector=self.email_metadata_injector,
+        )
+
+    async def process_image(
+        self, record_id, content, virtual_record_id
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process image content, yielding phase completion events."""
         try:
             # Initialize image parser
@@ -125,18 +136,21 @@ class Processor:
                 yield {"event": "indexing_complete", "data": {"record_id": record_id}}
                 return
 
-            _ , config = await get_llm(self.config_service)
+            _, config = await get_llm(self.config_service)
             is_multimodal_llm = config.get("isMultimodal")
 
             embedding_config = await get_embedding_model_config(self.config_service)
-            is_multimodal_embedding = embedding_config.get("isMultimodal") if embedding_config else False
+            is_multimodal_embedding = (
+                embedding_config.get("isMultimodal") if embedding_config else False
+            )
             if not is_multimodal_embedding and not is_multimodal_llm:
                 try:
                     record.update(
                         {
                             "indexingStatus": ProgressStatus.ENABLE_MULTIMODAL_MODELS.value,
                             "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        })
+                        }
+                    )
 
                     docs = [record]
                     success = await self.arango_service.batch_upsert_nodes(
@@ -148,8 +162,14 @@ class Processor:
                         )
 
                     # Yield both events since we're skipping processing
-                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
+                    yield {
+                        "event": "parsing_complete",
+                        "data": {"record_id": record_id},
+                    }
+                    yield {
+                        "event": "indexing_complete",
+                        "data": {"record_id": record_id},
+                    }
                     return
 
                 except DocumentProcessingError:
@@ -179,11 +199,7 @@ class Processor:
             yield {"event": "parsing_complete", "data": {"record_id": record_id}}
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -195,10 +211,15 @@ class Processor:
             self.logger.error(f"❌ Error processing image: {str(e)}")
             raise
 
-
-
     async def process_gmail_message(
-        self, recordName, recordId, version, source, orgId, html_content, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        html_content,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Gmail message, yielding phase completion events."""
         self.logger.info("🚀 Processing Gmail Message")
@@ -211,41 +232,56 @@ class Processor:
                 source=source,
                 orgId=orgId,
                 html_binary=html_content,
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             ):
                 yield event
 
-            self.logger.info("✅ Gmail Message processing completed successfully using markdown conversion.")
+            self.logger.info(
+                "✅ Gmail Message processing completed successfully using markdown conversion."
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error processing Gmail Message document: {str(e)}")
             raise
 
-    async def process_pdf_with_docling(self, recordName, recordId, pdf_binary, virtual_record_id) -> AsyncGenerator[Dict[str, Any], None]:
+    async def process_pdf_with_docling(
+        self, recordName, recordId, pdf_binary, virtual_record_id
+    ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF with Docling, yielding phase completion events."""
-        self.logger.info(f"🚀 Starting PDF document processing for record: {recordName}")
+        self.logger.info(
+            f"🚀 Starting PDF document processing for record: {recordName}"
+        )
         try:
-            self.logger.debug("📄 Processing PDF binary content using external Docling service")
+            self.logger.debug(
+                "📄 Processing PDF binary content using external Docling service"
+            )
 
             # Use external Docling service
-            record_name = recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
+            record_name = (
+                recordName if recordName.endswith(".pdf") else f"{recordName}.pdf"
+            )
 
             # Phase 1: Parse PDF (no LLM calls)
             parse_result = await self.docling_client.parse_pdf(record_name, pdf_binary)
             if parse_result is None:
-                self.logger.error(f"❌ External Docling service failed to parse {recordName}")
+                self.logger.error(
+                    f"❌ External Docling service failed to parse {recordName}"
+                )
                 yield {"event": "docling_failed", "data": {"record_id": recordId}}
                 return
 
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
 
-
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await self.docling_client.create_blocks(parse_result)
             if block_containers is None:
-                self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
-                raise Exception(f"External Docling service failed to create blocks for {recordName}")
+                self.logger.error(
+                    f"❌ External Docling service failed to create blocks for {recordName}"
+                )
+                raise Exception(
+                    f"External Docling service failed to create blocks for {recordName}"
+                )
 
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
@@ -261,24 +297,31 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
-            self.logger.info(f"✅ PDF processing completed for record: {recordName}, using external Docling service")
+            self.logger.info(
+                f"✅ PDF processing completed for record: {recordName}, using external Docling service"
+            )
             return
         except Exception as e:
-            self.logger.error(f"❌ Error processing PDF document with external Docling service: {str(e)}")
+            self.logger.error(
+                f"❌ Error processing PDF document with external Docling service: {str(e)}"
+            )
             raise
 
     async def process_pdf_document_with_ocr(
-        self, recordName, recordId, version, source, orgId, pdf_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        pdf_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PDF document with OCR, yielding phase completion events."""
         self.logger.info(
@@ -307,7 +350,7 @@ class Processor:
                     handler = OCRHandler(
                         self.logger,
                         OCRProvider.VLM_OCR.value,
-                        config=self.config_service
+                        config=self.config_service,
                     )
                     break
 
@@ -324,7 +367,9 @@ class Processor:
                 elif provider == OCRProvider.OCRMYPDF.value:
                     self.logger.debug("📚 Setting up PyMuPDF OCR handler")
                     handler = OCRHandler(
-                        self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service
+                        self.logger,
+                        OCRProvider.OCRMYPDF.value,
+                        config=self.config_service,
                     )
                     break
 
@@ -338,18 +383,34 @@ class Processor:
                     for llm_config in llm_configs:
                         if is_multimodal_llm(llm_config):
                             has_multimodal_llm = True
-                            self.logger.info(f"✅ Found multimodal LLM: {llm_config.get('provider')}")
+                            self.logger.info(
+                                f"✅ Found multimodal LLM: {llm_config.get('provider')}"
+                            )
                             break
                 except Exception as e:
-                    self.logger.warning(f"⚠️ Error checking for multimodal LLM: {str(e)}")
+                    self.logger.warning(
+                        f"⚠️ Error checking for multimodal LLM: {str(e)}"
+                    )
 
                 if has_multimodal_llm:
-                    self.logger.debug("🤖 Setting up VLM OCR handler (multimodal LLM detected)")
-                    handler = OCRHandler(self.logger, OCRProvider.VLM_OCR.value, config=self.config_service)
+                    self.logger.debug(
+                        "🤖 Setting up VLM OCR handler (multimodal LLM detected)"
+                    )
+                    handler = OCRHandler(
+                        self.logger,
+                        OCRProvider.VLM_OCR.value,
+                        config=self.config_service,
+                    )
                     provider = OCRProvider.VLM_OCR.value
                 else:
-                    self.logger.debug("📚 Setting up OCRmyPDF handler (no multimodal LLM available)")
-                    handler = OCRHandler(self.logger, OCRProvider.OCRMYPDF.value, config=self.config_service)
+                    self.logger.debug(
+                        "📚 Setting up OCRmyPDF handler (no multimodal LLM available)"
+                    )
+                    handler = OCRHandler(
+                        self.logger,
+                        OCRProvider.OCRMYPDF.value,
+                        config=self.config_service,
+                    )
                     provider = OCRProvider.OCRMYPDF.value
 
             # Process document
@@ -357,17 +418,22 @@ class Processor:
             try:
                 ocr_result = await handler.process_document(pdf_binary)
             except Exception:
-                if provider == OCRProvider.AZURE_DI.value or provider == OCRProvider.VLM_OCR.value:
-                    self.logger.info(f"🔄 Switching to OCRmyPDF handler as {provider} failed")
+                if (
+                    provider == OCRProvider.AZURE_DI.value
+                    or provider == OCRProvider.VLM_OCR.value
+                ):
+                    self.logger.info(
+                        f"🔄 Switching to OCRmyPDF handler as {provider} failed"
+                    )
                     provider = OCRProvider.OCRMYPDF.value
-                    handler = OCRHandler(self.logger, provider, config=self.config_service)
+                    handler = OCRHandler(
+                        self.logger, provider, config=self.config_service
+                    )
                     ocr_result = await handler.process_document(pdf_binary)
                 else:
                     raise
 
             self.logger.debug("✅ OCR processing completed")
-
-
 
             if provider == OCRProvider.VLM_OCR.value:
                 pages = ocr_result.get("pages", [])
@@ -375,7 +441,9 @@ class Processor:
 
                 # Phase 1: Parse all pages with Docling (no LLM calls yet)
                 all_conv_results = []
-                processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+                processor = DoclingProcessor(
+                    logger=self.logger, config=self.config_service
+                )
 
                 for page in pages:
                     page_number = page.get("page_number")
@@ -387,13 +455,17 @@ class Processor:
 
                     # Parse each page through DoclingProcessor (no LLM calls)
                     page_filename = f"{Path(recordName).stem}_page_{page_number}.md"
-                    md_bytes = page_markdown.encode('utf-8')
+                    md_bytes = page_markdown.encode("utf-8")
 
                     try:
-                        conv_res = await processor.parse_document(page_filename, md_bytes)
+                        conv_res = await processor.parse_document(
+                            page_filename, md_bytes
+                        )
                         all_conv_results.append((page_number, conv_res))
                     except Exception as e:
-                        self.logger.error(f"❌ Failed to parse page {page_number}: {str(e)}")
+                        self.logger.error(
+                            f"❌ Failed to parse page {page_number}: {str(e)}"
+                        )
                         raise
 
                 # Signal parsing complete after all pages are parsed
@@ -407,9 +479,13 @@ class Processor:
 
                 for page_number, conv_res in all_conv_results:
                     try:
-                        page_block_containers = await processor.create_blocks(conv_res, page_number=page_number)
+                        page_block_containers = await processor.create_blocks(
+                            conv_res, page_number=page_number
+                        )
                     except Exception as e:
-                        self.logger.error(f"❌ Failed to create blocks for page {page_number}: {str(e)}")
+                        self.logger.error(
+                            f"❌ Failed to create blocks for page {page_number}: {str(e)}"
+                        )
                         raise
 
                     if page_block_containers:
@@ -417,34 +493,54 @@ class Processor:
                         for block in page_block_containers.blocks:
                             block.index = block.index + block_index_offset
                             if block.parent_index is not None:
-                                block.parent_index = block.parent_index + block_group_index_offset
+                                block.parent_index = (
+                                    block.parent_index + block_group_index_offset
+                                )
                             all_blocks.append(block)
 
                         for block_group in page_block_containers.block_groups:
-                            block_group.index = block_group.index + block_group_index_offset
+                            block_group.index = (
+                                block_group.index + block_group_index_offset
+                            )
                             if block_group.parent_index is not None:
-                                block_group.parent_index = block_group.parent_index + block_group_index_offset
+                                block_group.parent_index = (
+                                    block_group.parent_index + block_group_index_offset
+                                )
                             # Adjust children indices
                             if block_group.children:
                                 for child in block_group.children:
                                     if child.block_index is not None:
-                                        child.block_index = child.block_index + block_index_offset
+                                        child.block_index = (
+                                            child.block_index + block_index_offset
+                                        )
                                     if child.block_group_index is not None:
-                                        child.block_group_index = child.block_group_index + block_group_index_offset
+                                        child.block_group_index = (
+                                            child.block_group_index
+                                            + block_group_index_offset
+                                        )
                             all_block_groups.append(block_group)
 
                         block_index_offset = len(all_blocks)
                         block_group_index_offset = len(all_block_groups)
 
                 # Create combined BlocksContainer
-                combined_block_containers = BlocksContainer(blocks=all_blocks, block_groups=all_block_groups)
-                self.logger.info(f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages")
+                combined_block_containers = BlocksContainer(
+                    blocks=all_blocks, block_groups=all_block_groups
+                )
+                self.logger.info(
+                    f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages"
+                )
 
                 # Get record and run indexing pipeline
-                record = await self.arango_service.get_document(recordId, CollectionNames.RECORDS.value)
+                record = await self.arango_service.get_document(
+                    recordId, CollectionNames.RECORDS.value
+                )
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                    yield {
+                        "event": "indexing_complete",
+                        "data": {"record_id": recordId},
+                    }
                     return
 
                 record = convert_record_dict_to_record(record)
@@ -453,17 +549,15 @@ class Processor:
                 record.is_vlm_ocr_processed = True
 
                 ctx = TransformContext(record=record)
-                pipeline = IndexingPipeline(
-                    document_extraction=self.document_extraction,
-                    sink_orchestrator=self.sink_orchestrator,
-                    email_metadata_injector=self.email_metadata_injector
-                )
+                pipeline = self._create_indexing_pipeline()
                 await pipeline.apply(ctx)
 
                 # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
-                self.logger.info("✅ PDF processing completed successfully using VLM OCR")
+                self.logger.info(
+                    "✅ PDF processing completed successfully using VLM OCR"
+                )
                 return
             else:
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
@@ -481,7 +575,9 @@ class Processor:
                         if block_type == BlockType.TABLE_ROW:
                             if block.parent_index not in table_rows:
                                 table_rows[block.parent_index] = []
-                            table_rows[block.parent_index].append(BlockContainerIndex(block_index=index))
+                            table_rows[block.parent_index].append(
+                                BlockContainerIndex(block_index=index)
+                            )
                         index += 1
 
                     else:
@@ -490,9 +586,14 @@ class Processor:
                             bounding_boxes = None
                             if paragraph.get("bounding_box"):
                                 try:
-                                    bounding_boxes = [Point(x=p["x"], y=p["y"]) for p in paragraph["bounding_box"]]
+                                    bounding_boxes = [
+                                        Point(x=p["x"], y=p["y"])
+                                        for p in paragraph["bounding_box"]
+                                    ]
                                 except (TypeError, KeyError) as e:
-                                    self.logger.warning(f"Failed to process bounding boxes: {e}")
+                                    self.logger.warning(
+                                        f"Failed to process bounding boxes: {e}"
+                                    )
                                     bounding_boxes = None
 
                             blocks.append(
@@ -521,15 +622,13 @@ class Processor:
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
                 return
             record = convert_record_dict_to_record(record)
-            record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
+            record.block_containers = BlocksContainer(
+                blocks=blocks, block_groups=block_groups
+            )
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -543,7 +642,14 @@ class Processor:
             raise
 
     async def process_doc_document(
-        self, recordName, recordId, version, source, orgId, doc_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        doc_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process DOC document, yielding phase completion events."""
         self.logger.info(
@@ -558,7 +664,14 @@ class Processor:
             yield event
 
     async def process_docx_document(
-        self, recordName, recordId, version, source, orgId, docx_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        docx_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process DOCX document, yielding phase completion events.
 
@@ -590,7 +703,6 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-
             record = await self.arango_service.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
@@ -605,24 +717,29 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
             yield {"event": "indexing_complete", "data": {"record_id": recordId}}
 
-            self.logger.info("✅ Docx/Doc processing completed successfully using docling")
+            self.logger.info(
+                "✅ Docx/Doc processing completed successfully using docling"
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
             raise
 
     async def process_blocks(
-        self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        blocks_data,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process BlocksContainer and attach to record for indexing, yielding phase completion events.
 
@@ -645,7 +762,7 @@ class Processor:
         try:
             # Deserialize blocks_data to BlocksContainer
             if isinstance(blocks_data, bytes):
-                blocks_data = blocks_data.decode('utf-8')
+                blocks_data = blocks_data.decode("utf-8")
 
             if isinstance(blocks_data, str):
                 blocks_dict = json.loads(blocks_data)
@@ -683,11 +800,7 @@ class Processor:
 
             # Apply indexing pipeline
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction,
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -742,7 +855,9 @@ class Processor:
         image_parser = self.parsers.get(ExtensionTypes.PNG.value)
 
         if md_parser and image_parser:
-            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+            modified_markdown, images = md_parser.extract_and_replace_images(
+                markdown_data
+            )
 
             if images:
                 # Collect all image URLs
@@ -800,7 +915,7 @@ class Processor:
         block_group: BlockGroup,
         record_name: str,
         processor: DoclingProcessor,
-        md_parser: Optional[MarkdownParser]
+        md_parser: Optional[MarkdownParser],
     ) -> Tuple[List[BlockGroup], List[Block]]:
         """
         Process a single block group through docling.
@@ -833,11 +948,14 @@ class Processor:
         if md_parser:
             md_bytes = md_parser.parse_string(modified_markdown)
         else:
-            md_bytes = modified_markdown.encode('utf-8')
+            md_bytes = modified_markdown.encode("utf-8")
 
         # Create filename from BlockGroup name or use default
-        filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
-        if not filename.endswith('.md'):
+        filename = (
+            block_group.name
+            or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
+        )
+        if not filename.endswith(".md"):
             filename = f"{filename}.md"
 
         # Process through docling
@@ -862,12 +980,15 @@ class Processor:
             f"{len(processed_blocks_container.block_groups)} block_groups"
         )
 
-        return processed_blocks_container.block_groups, processed_blocks_container.blocks
+        return (
+            processed_blocks_container.block_groups,
+            processed_blocks_container.blocks,
+        )
 
     def _calculate_index_shift_map(
         self,
         block_groups_with_index: List[BlockGroup],
-        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]]
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]],
     ) -> Dict[int, int]:
         """
         Calculate index shift mappings for block groups.
@@ -903,7 +1024,7 @@ class Processor:
         block_groups_without_index: List[BlockGroup],
         processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]],
         index_shift_map: Dict[int, int],
-        initial_block_count: int
+        initial_block_count: int,
     ) -> BlocksContainer:
         """
         Build the final BlocksContainer with updated indices.
@@ -942,8 +1063,13 @@ class Processor:
             # Update children references
             if bg.children:
                 for child in bg.children:
-                    if child.block_group_index is not None and child.block_group_index in index_shift_map:
-                        child.block_group_index += index_shift_map[child.block_group_index]
+                    if (
+                        child.block_group_index is not None
+                        and child.block_group_index in index_shift_map
+                    ):
+                        child.block_group_index += index_shift_map[
+                            child.block_group_index
+                        ]
 
             # Add the block_group to the result
             new_block_groups.append(bg)
@@ -953,7 +1079,9 @@ class Processor:
                 bg.requires_processing = False
 
                 # Get processing results
-                new_block_groups_list, new_blocks_list = processing_results[original_index]
+                new_block_groups_list, new_blocks_list = processing_results[
+                    original_index
+                ]
                 insertion_index = final_index + 1
 
                 # Initialize children array if needed
@@ -982,7 +1110,9 @@ class Processor:
                     new_block_groups.append(new_bg)
 
                     # Add to parent's children
-                    bg.children.append(BlockContainerIndex(block_group_index=new_bg.index))
+                    bg.children.append(
+                        BlockContainerIndex(block_group_index=new_bg.index)
+                    )
 
                 # Process new blocks with sequential indices
                 for block_i, new_block in enumerate(new_blocks_list):
@@ -994,13 +1124,17 @@ class Processor:
                         new_block.parent_index = final_index
                     else:
                         # If parent_index exists, it's a relative index from docling
-                        new_block.parent_index = new_block.parent_index + insertion_index
+                        new_block.parent_index = (
+                            new_block.parent_index + insertion_index
+                        )
 
                     new_blocks.append(new_block)
 
                     # Add blocks that directly belong to the parent BlockGroup
                     if new_block.parent_index == final_index:
-                        bg.children.append(BlockContainerIndex(block_index=new_block.index))
+                        bg.children.append(
+                            BlockContainerIndex(block_index=new_block.index)
+                        )
 
                 # Update block offset for next iteration
                 block_index_offset += len(new_blocks_list)
@@ -1016,7 +1150,7 @@ class Processor:
         # Build final BlocksContainer
         return BlocksContainer(
             block_groups=new_block_groups,
-            blocks=list(block_containers.blocks) + new_blocks
+            blocks=list(block_containers.blocks) + new_blocks,
         )
 
     async def _process_blockgroups_through_docling(
@@ -1041,14 +1175,13 @@ class Processor:
             return block_containers
 
         # Separate block_groups with valid index from those with None index
-        block_groups_with_index, block_groups_without_index = self._separate_block_groups_by_index(
-            block_containers.block_groups
+        block_groups_with_index, block_groups_without_index = (
+            self._separate_block_groups_by_index(block_containers.block_groups)
         )
 
         # Filter BlockGroups that need processing (already in sequence from connector)
         block_groups_to_process = [
-            bg for bg in block_groups_with_index
-            if bg.requires_processing and bg.data
+            bg for bg in block_groups_with_index if bg.requires_processing and bg.data
         ]
 
         if not block_groups_to_process:
@@ -1070,7 +1203,10 @@ class Processor:
 
         for block_group in block_groups_to_process:
             try:
-                new_block_groups, new_blocks = await self._process_single_blockgroup_through_docling(
+                (
+                    new_block_groups,
+                    new_blocks,
+                ) = await self._process_single_blockgroup_through_docling(
                     block_group, record_name, processor, md_parser
                 )
 
@@ -1080,7 +1216,7 @@ class Processor:
             except Exception as e:
                 self.logger.error(
                     f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
-                    exc_info=True
+                    exc_info=True,
                 )
                 # Stop processing if any BlockGroup fails
                 raise
@@ -1101,7 +1237,7 @@ class Processor:
             block_groups_without_index,
             processing_results,
             index_shift_map,
-            initial_block_count
+            initial_block_count,
         )
 
         self.logger.info(
@@ -1113,7 +1249,14 @@ class Processor:
         return result
 
     async def process_excel_document(
-        self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        excel_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process Excel document, yielding phase completion events."""
         self.logger.info(
@@ -1153,11 +1296,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1169,7 +1308,14 @@ class Processor:
             raise
 
     async def process_xls_document(
-        self, recordName, recordId, version, source, orgId, xls_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        xls_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process XLS document, yielding phase completion events."""
         self.logger.info(
@@ -1183,7 +1329,13 @@ class Processor:
 
             # Process the converted XLSX using the Excel parser
             async for event in self.process_excel_document(
-                recordName, recordId, version, source, orgId, xlsx_binary, virtual_record_id
+                recordName,
+                recordId,
+                version,
+                source,
+                orgId,
+                xlsx_binary,
+                virtual_record_id,
             ):
                 yield event
             self.logger.debug("📑 XLS document processed successfully")
@@ -1193,7 +1345,7 @@ class Processor:
             raise
 
     async def process_delimited_document(
-        self, recordName, recordId, file_binary, virtual_record_id, extension = None
+        self, recordName, recordId, file_binary, virtual_record_id, extension=None
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process delimited document (CSV/TSV), yielding phase completion events.
 
@@ -1235,7 +1387,6 @@ class Processor:
                     # Read raw rows for table detection
                     all_rows = parser.read_raw_rows(csv_stream)
 
-
                     self.logger.info(
                         f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(all_rows)}"
                     )
@@ -1244,12 +1395,15 @@ class Processor:
                     self.logger.debug(f"Failed to decode with {encoding} encoding")
                     continue
                 except Exception as e:
-                    self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
+                    self.logger.debug(
+                        f"Failed to process delimited file with {encoding} encoding: {str(e)}"
+                    )
                     continue
 
-
             if all_rows is None or not all_rows:
-                self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
+                self.logger.info(
+                    f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY."
+                )
 
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
@@ -1280,22 +1434,26 @@ class Processor:
             # Route to appropriate processing method based on number of tables
             if len(tables) == 1:
                 # Single table - use existing logic for backward compatibility
-                self.logger.info("📊 Processing as single table (backward compatibility mode)")
+                self.logger.info(
+                    "📊 Processing as single table (backward compatibility mode)"
+                )
                 csv_result, line_numbers = parser.convert_table_to_dict(tables[0])
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, line_numbers, llm)
+                block_containers = await parser.get_blocks_from_csv_result(
+                    csv_result, line_numbers, llm
+                )
             else:
                 # Multiple tables - use new multi-table processing
-                self.logger.info(f"📊 Processing {len(tables)} tables with multi-table logic")
-                block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
+                self.logger.info(
+                    f"📊 Processing {len(tables)} tables with multi-table logic"
+                )
+                block_containers = (
+                    await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
+                )
 
             record.block_containers = block_containers
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1307,12 +1465,10 @@ class Processor:
             self.logger.error(f"❌ Error processing delimited document: {str(e)}")
             raise
 
-
-
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
         record = await self.arango_service.get_document(
-                        record_id, CollectionNames.RECORDS.value
-                    )
+            record_id, CollectionNames.RECORDS.value
+        )
         if not record:
             raise DocumentProcessingError(
                 "Record not found in database",
@@ -1342,7 +1498,14 @@ class Processor:
         return
 
     async def process_html_document(
-        self, recordName, recordId, version, source, orgId, html_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        html_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process HTML document, yielding phase completion events."""
         self.logger.info(
@@ -1352,10 +1515,12 @@ class Processor:
         try:
             html_content = None
             try:
-                soup = BeautifulSoup(html_binary, 'html.parser')
+                soup = BeautifulSoup(html_binary, "html.parser")
 
                 # Remove script, style, and other non-content elements
-                for element in soup(["script", "style", "noscript", "iframe", "nav", "footer", "header"]):
+                for element in soup(
+                    ["script", "style", "noscript", "iframe", "nav", "footer", "header"]
+                ):
                     element.decompose()
 
                 html_content = str(soup)
@@ -1378,18 +1543,27 @@ class Processor:
                 recordName=recordName,
                 recordId=recordId,
                 md_binary=md_binary,
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             ):
                 yield event
 
-            self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+            self.logger.info(
+                "✅ HTML processing completed successfully using markdown conversion."
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Error processing HTML document: {str(e)}")
             raise
 
     async def process_mdx_document(
-        self, recordName: str, recordId: str, version: str, source: str, orgId: str, mdx_content: str, virtual_record_id
+        self,
+        recordName: str,
+        recordId: str,
+        version: str,
+        source: str,
+        orgId: str,
+        mdx_content: str,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process MDX document, yielding phase completion events.
 
@@ -1435,9 +1609,14 @@ class Processor:
             if markdown is None or markdown == "":
                 try:
                     await self._mark_record(recordId, ProgressStatus.EMPTY)
-                    self.logger.info("✅ HTML processing completed successfully using markdown conversion.")
+                    self.logger.info(
+                        "✅ HTML processing completed successfully using markdown conversion."
+                    )
                     yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                    yield {
+                        "event": "indexing_complete",
+                        "data": {"record_id": recordId},
+                    }
                     return
                 except DocumentProcessingError:
                     raise
@@ -1472,11 +1651,13 @@ class Processor:
 
             md_bytes = parser.parse_string(modified_markdown)
 
-            processor = DoclingProcessor(logger=self.logger,config=self.config_service)
+            processor = DoclingProcessor(logger=self.logger, config=self.config_service)
             filename_without_ext = Path(recordName).stem
 
             # Phase 1: Parse document with Docling (no LLM calls)
-            conv_res = await processor.parse_document(f"{filename_without_ext}.md", md_bytes)
+            conv_res = await processor.parse_document(
+                f"{filename_without_ext}.md", md_bytes
+            )
 
             # Signal parsing complete after Docling parsing
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
@@ -1509,7 +1690,9 @@ class Processor:
                                 # If data is not a dict, create a new dict with the uri
                                 block.data = {"uri": caption_map[caption]}
                         else:
-                            self.logger.warning(f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available")
+                            self.logger.warning(
+                                f"⚠️ Skipping image with caption '{caption}' - no valid base64 data available"
+                            )
 
             block_containers.blocks = blocks
 
@@ -1517,11 +1700,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1534,7 +1713,17 @@ class Processor:
             raise
 
     async def process_txt_document(
-        self, recordName, recordId, version, source, orgId, txt_binary, virtual_record_id, recordType, connectorName, origin
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        txt_binary,
+        virtual_record_id,
+        recordType,
+        connectorName,
+        origin,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process TXT document, yielding phase completion events."""
         self.logger.info(
@@ -1565,7 +1754,7 @@ class Processor:
                 recordName=recordName,
                 recordId=recordId,
                 md_binary=text_content,
-                virtual_record_id=virtual_record_id
+                virtual_record_id=virtual_record_id,
             ):
                 yield event
             self.logger.info("✅ TXT processing completed successfully")
@@ -1575,7 +1764,14 @@ class Processor:
             raise
 
     async def process_pptx_document(
-        self, recordName, recordId, version, source, orgId, pptx_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        pptx_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PPTX document, yielding phase completion events.
 
@@ -1618,11 +1814,7 @@ class Processor:
             record.virtual_record_id = virtual_record_id
 
             ctx = TransformContext(record=record)
-            pipeline = IndexingPipeline(
-                document_extraction=self.document_extraction, 
-                sink_orchestrator=self.sink_orchestrator,
-                email_metadata_injector=self.email_metadata_injector
-            )
+            pipeline = self._create_indexing_pipeline()
             await pipeline.apply(ctx)
 
             # Signal indexing complete
@@ -1635,7 +1827,14 @@ class Processor:
             raise
 
     async def process_ppt_document(
-        self, recordName, recordId, version, source, orgId, ppt_binary, virtual_record_id
+        self,
+        recordName,
+        recordId,
+        version,
+        source,
+        orgId,
+        ppt_binary,
+        virtual_record_id,
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Process PPT document, yielding phase completion events.
 
@@ -1656,4 +1855,3 @@ class Processor:
             recordName, recordId, version, source, orgId, ppt_result, virtual_record_id
         ):
             yield event
-

@@ -16,12 +16,7 @@ class EmailMetadataInjector(Transformer):
         try:
             record = ctx.record
 
-            if record.record_type not in [
-                "MAIL",
-                "GROUP_MAIL",
-                RecordType.MAIL,
-                RecordType.GROUP_MAIL,
-            ]:
+            if record.record_type not in ["MAIL", "GROUP_MAIL", RecordType.MAIL, RecordType.GROUP_MAIL]:
                 return
 
             subject = str(getattr(record, "subject", "") or "No Subject")
@@ -72,7 +67,7 @@ class EmailMetadataInjector(Transformer):
                     continue
 
                 if hasattr(block, "type") and (
-                    block.type == BlockType.TEXT or str(block.type) == "text"
+                    block.type in [BlockType.TEXT, "text"]
                 ):
                     target_block_index = i
                     break
@@ -101,10 +96,10 @@ class EmailMetadataInjector(Transformer):
                         if b:
                             b.index = i
 
-                except Exception:
+                except Exception as e:
                     # Robustness: Do not crash if block creation fails
                     pass
 
-        except Exception:
+        except Exception as e:
             # Global safety catch: Do not crash pipeline
             pass
