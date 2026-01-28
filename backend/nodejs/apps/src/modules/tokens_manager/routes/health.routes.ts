@@ -104,7 +104,9 @@ export function createHealthRouter(
       }
 
       try {
-        const isKVServiceHealthy = keyValueStoreService.isConnected();
+        // Health check for KV store (Redis or etcd based on KV_STORE_TYPE)
+        // TODO: Remove etcd health check support when all deployments migrate to Redis KV store
+        const isKVServiceHealthy = await keyValueStoreService.healthCheck();
         health.services.KVStoreservice = isKVServiceHealthy ? 'healthy' : 'unhealthy';
         if (!isKVServiceHealthy) {
           health.status = 'unhealthy';

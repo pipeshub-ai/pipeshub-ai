@@ -70,19 +70,24 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             cert_key=cert_key,
             cert_cert=cert_cert,
         )
-        self.client = None
+        self._client: Optional[etcd3.client] = None
         self.connection_manager = Etcd3ConnectionManager(config)
         self.serializer = serializer
         self.deserializer = deserializer
         self._active_watchers: List[Any] = []
         logger.debug("✅ ETCD3 store initialized")
 
+    @property
+    def client(self) -> Optional[etcd3.client]:
+        """Expose the underlying etcd client for watchers and diagnostics."""
+        return self._client
+
     async def _get_client(self) -> etcd3.client:
         """Get the ETCD client, ensuring connection is available."""
         logger.debug("🔄 Getting ETCD client")
         client = await self.connection_manager.get_client()
         logger.debug("✅ Got ETCD client: %s", client)
-        self.client = client
+        self._client = client
         return client
 
     async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
@@ -103,7 +108,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             if existing_value[0] is not None and not overwrite:
                 logger.debug("📋 Key exists, skipping creation")
-                return True
+                return False  # Key was not created (already exists)
             elif existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(

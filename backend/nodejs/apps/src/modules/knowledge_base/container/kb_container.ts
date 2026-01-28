@@ -21,7 +21,7 @@ export class KnowledgeBaseContainer {
     appConfig: AppConfig,
   ): Promise<Container> {
     const container = new Container();
-    this.logger.info(' In the init  kb conatiner');
+
     // Bind configuration
     // Bind logger
     container.bind<Logger>('Logger').toConstantValue(this.logger);
