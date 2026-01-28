@@ -2,7 +2,7 @@
   "name": "pipeshub-ai",
   "scripts": {
     "up": "cd deployment/docker-compose && docker compose -f docker-compose.dev.yml -p pipeshub-ai up --build -d",
-    "down": "cd deployment/docker-compose && docker compose -f docker-compose.dev.yml down",
+    "down": "cd deployment/docker-compose && docker compose down",
     "build": ""
   }
 }

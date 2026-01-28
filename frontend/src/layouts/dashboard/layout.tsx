@@ -191,56 +191,57 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
                   }}
                 />
                 {/* -- Logo -- */}
-                {isNavHorizontal && customLogo ? (
-                  <Box
-                    onClick={() => navigate('/')}
-                    sx={{
-                      display: 'none',
-                      [theme.breakpoints.up(layoutQuery)]: {
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                      },
-                      width: 60,
-                      height: 30,
-                      cursor: 'pointer',
-                      position: 'relative',
-                    }}
-                  >
+                {isNavHorizontal &&
+                  (customLogo ? (
+                    <Box
+                      onClick={() => navigate('/')}
+                      sx={{
+                        display: 'none',
+                        [theme.breakpoints.up(layoutQuery)]: {
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        },
+                        width: 60,
+                        height: 30,
+                        cursor: 'pointer',
+                        position: 'relative',
+                      }}
+                    >
+                      <Box
+                        component="img"
+                        src={customLogo}
+                        alt="Logo"
+                        sx={{
+                          maxWidth: '100%',
+                          maxHeight: '100%',
+                          width: 'auto',
+                          height: 'auto',
+                          objectFit: 'contain',
+                          position: 'absolute',
+                          top: '50%',
+                          left: '50%',
+                          transform: 'translate(-50%, -50%)',
+                        }}
+                      />
+                    </Box>
+                  ) : (
                     <Box
                       component="img"
-                      src={customLogo}
+                      onClick={() => navigate('/')}
+                      src="/logo/logo.svg"
                       alt="Logo"
                       sx={{
-                        maxWidth: '100%',
-                        maxHeight: '100%',
-                        width: 'auto',
-                        height: 'auto',
-                        objectFit: 'contain',
-                        position: 'absolute',
-                        top: '50%',
-                        left: '50%',
-                        transform: 'translate(-50%, -50%)',
+                        display: 'none',
+                        [theme.breakpoints.up(layoutQuery)]: {
+                          display: 'inline-flex',
+                        },
+                        width: 40,
+                        height: 40,
+                        cursor: 'pointer',
                       }}
                     />
-                  </Box>
-                ) : (
-                  <Box
-                    component="img"
-                    onClick={() => navigate('/')}
-                    src="/logo/logo.svg"
-                    alt="Logo"
-                    sx={{
-                      display: 'none',
-                      [theme.breakpoints.up(layoutQuery)]: {
-                        display: 'inline-flex',
-                      },
-                      width: 40,
-                      height: 40,
-                      cursor: 'pointer',
-                    }}
-                  />
-                )}
+                  ))}
                 {/* -- Divider -- */}
                 {isNavHorizontal && (
                   <StyledDivider
