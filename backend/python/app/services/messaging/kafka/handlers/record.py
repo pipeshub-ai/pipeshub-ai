@@ -94,14 +94,33 @@ class RecordEventHandler(BaseEventService):
         error_msg = None
         record = None
         try:
+            if not event_type:
+                self.logger.error(f"Missing event_type in message {payload}")
+                return
+
+            # Handle bulk delete event FIRST - for connector instance deletion (doesn't have record_id)
+            if event_type == EventTypes.BULK_DELETE_RECORDS.value:
+                virtual_record_ids = payload.get("virtualRecordIds", [])
+                self.logger.info(f"🗑️ Bulk deleting embeddings for {len(virtual_record_ids)} records")
+
+                result = await self.event_processor.processor.indexing_pipeline.bulk_delete_embeddings(
+                    virtual_record_ids
+                )
+
+                self.logger.info(
+                    f"✅ Bulk deletion complete: {result.get('deleted_count', 0)} embeddings deleted "
+                    f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
+                )
+                yield {"event": "parsing_complete", "data": {"record_id": "bulk_delete", "count": len(virtual_record_ids)}}
+                yield {"event": "indexing_complete", "data": {"record_id": "bulk_delete", "count": len(virtual_record_ids)}}
+                return
+
+            # For all other event types, require record_id
             record_id = payload.get("recordId")
             extension = payload.get("extension", "unknown")
             mime_type = payload.get("mimeType", "unknown")
             virtual_record_id = payload.get("virtualRecordId")
             message_id = f"{event_type}-{record_id}"
-            if not event_type:
-                self.logger.error(f"Missing event_type in message {payload}")
-                return
 
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
@@ -110,8 +129,6 @@ class RecordEventHandler(BaseEventService):
             record = await self.event_processor.arango_service.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-
-
 
             self.logger.info(
                 f"Processing record {record_id} with event type: {event_type}. "
