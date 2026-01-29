@@ -20,6 +20,9 @@ from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_
 from app.utils.llm import get_llm
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
+# Maximum number of table rows to include in summary prompts
+MAX_TABLE_ROWS_FOR_SUMMARY = 20
+
 
 class TableSummary(BaseModel):
     summary: str = Field(description="Summary of the table")
@@ -53,7 +56,7 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
         table_data: Can be:
             - list[list[str]]: Grid representation of table (list of rows, each row is list of cell values)
             - list[dict]: List of dictionaries with column headers as keys (CSV/Excel format)
-    
+
     Returns:
         TableSummary Pydantic model with summary and headers, or None if parsing fails.
     """
@@ -68,22 +71,22 @@ async def get_table_summary_n_headers(config, table_data) -> Optional[TableSumma
                     # Grid format: list of lists
                     # Format as simple text table
                     table_text_lines = []
-                    for row in table_data[:20]:  # Limit to first 20 rows for prompt
+                    for row in table_data[:MAX_TABLE_ROWS_FOR_SUMMARY]:
                         row_text = " | ".join(str(cell) if cell else "" for cell in row)
                         table_text_lines.append(row_text)
                     table_data_str = "\n".join(table_text_lines)
-                    if len(table_data) > 20:
-                        table_data_str += f"\n... ({len(table_data) - 20} more rows)"
+                    if len(table_data) > MAX_TABLE_ROWS_FOR_SUMMARY:
+                        table_data_str += f"\n... ({len(table_data) - MAX_TABLE_ROWS_FOR_SUMMARY} more rows)"
                 elif isinstance(table_data[0], dict):
                     # Structured format: list of dicts
                     # Format as column: value pairs
                     headers = list(table_data[0].keys())
                     table_data_str = f"Headers: {', '.join(headers)}\n\n"
-                    for i, row in enumerate(table_data[:20]):  # Limit to first 20 rows
+                    for i, row in enumerate(table_data[:MAX_TABLE_ROWS_FOR_SUMMARY]):
                         row_str = ", ".join(f"{k}: {v}" for k, v in row.items())
                         table_data_str += f"Row {i+1}: {row_str}\n"
-                    if len(table_data) > 20:
-                        table_data_str += f"\n... ({len(table_data) - 20} more rows)"
+                    if len(table_data) > MAX_TABLE_ROWS_FOR_SUMMARY:
+                        table_data_str += f"\n... ({len(table_data) - MAX_TABLE_ROWS_FOR_SUMMARY} more rows)"
                 else:
                     table_data_str = str(table_data)
             else:
@@ -218,11 +221,11 @@ async def process_table_pymupdf(
         table_rows_text,table_rows = await get_rows_text(config, {"grid": table_data}, table_summary, column_headers)
         bbox = _normalize_bbox(table.bbox, page_width, page_height)
         bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
-        
+
         num_of_rows = len(table_data)
         num_of_cols = table.col_count if table.col_count else (len(table_data[0]) if table_data and len(table_data) > 0 else None)
         num_of_cells = num_of_rows * num_of_cols if num_of_cols else None
-        
+
         block_group = BlockGroup(
             index=len(result["tables"]),
             type=GroupType.TABLE,

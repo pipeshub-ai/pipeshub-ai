@@ -65,7 +65,6 @@ from app.connectors.sources.atlassian.core.oauth import (
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
-    BlockContainerIndex,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,

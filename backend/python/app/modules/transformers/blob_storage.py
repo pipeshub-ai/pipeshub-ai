@@ -43,23 +43,23 @@ class BlobStorage(Transformer):
         """
         # Clean top-level record fields
         cleaned = self._clean_top_level_empty_values(data)
-        
+
         # Clean each block's top-level fields
         if "block_containers" in cleaned and isinstance(cleaned["block_containers"], dict):
             block_containers = cleaned["block_containers"]
-            
+
             if "blocks" in block_containers and isinstance(block_containers["blocks"], list):
                 block_containers["blocks"] = [
                     self._clean_top_level_empty_values(block) if isinstance(block, dict) else block
                     for block in block_containers["blocks"]
                 ]
-            
+
             if "block_groups" in block_containers and isinstance(block_containers["block_groups"], list):
                 block_containers["block_groups"] = [
                     self._clean_top_level_empty_values(bg) if isinstance(bg, dict) else bg
                     for bg in block_containers["block_groups"]
                 ]
-        
+
         return cleaned
 
     async def apply(self, ctx: TransformContext) -> TransformContext:

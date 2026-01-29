@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.tools import tool
