@@ -617,7 +617,7 @@ async def stream_record_internal(
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
             else:
                 raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
-        
+
         # Validate that the org_id matches the record's org_id
         if record and record.org_id and record.org_id != org_id:
             logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
@@ -836,7 +836,7 @@ async def stream_record(
                     raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
             else:
                 raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
-        
+
         # Validate that the org_id matches the record's org_id
         if record and record.org_id and record.org_id != org_id:
             logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")

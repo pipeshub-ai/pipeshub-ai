@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import hashlib
-import os
 import uuid
 from datetime import datetime
 from io import BytesIO
@@ -39,9 +38,9 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
@@ -729,10 +728,10 @@ class WebConnector(BaseConnector):
                                 # Encode SVG content to base64
                                 svg_bytes = svg_content.encode('utf-8')
                                 svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
-                                
+
                                 # Convert SVG to PNG
                                 png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
-                                
+
                                 # Create new img tag with PNG data URI
                                 new_img = soup.new_tag('img')
                                 new_img['src'] = f"data:image/png;base64,{png_b64_str}"
@@ -743,10 +742,10 @@ class WebConnector(BaseConnector):
                                     new_img['alt'] = svg.get('title')
                                 else:
                                     new_img['alt'] = 'Converted SVG image'
-                                
+
                                 # Replace SVG tag with img tag
                                 svg.replace_with(new_img)
-                                self.logger.debug(f"✅ Converted SVG tag to PNG img tag")
+                                self.logger.debug("✅ Converted SVG tag to PNG img tag")
                             except Exception as svg_error:
                                 self.logger.warning(f"⚠️ Failed to convert SVG tag to PNG: {svg_error}. Removing SVG tag.")
                                 # If conversion fails, remove the SVG tag
@@ -800,7 +799,7 @@ class WebConnector(BaseConnector):
 
                                     # Normalize content type (remove parameters like charset)
                                     content_type = content_type.split(';')[0].strip().lower()
-                                    
+
                                     # Convert SVG to PNG before base64 encoding (OpenAI doesn't support SVG)
                                     if content_type == 'image/svg+xml':
                                         try:
@@ -843,7 +842,7 @@ class WebConnector(BaseConnector):
                     # Generate filename from record ID and timestamp
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                     safe_record_id = record.id.replace("-", "_")[:8] if record.id else "unknown"
-                    
+
                     # Determine file extension based on mime_type
                     if "html" in mime_type.lower():
                         ext = ".html"
@@ -857,7 +856,7 @@ class WebConnector(BaseConnector):
                         ext = ".pdf"
                     else:
                         ext = ".txt"
-                    
+
                     filename = f"{timestamp}_{safe_record_id}_{record.record_name}{ext}"
                     file_path = log_dir / filename
 
