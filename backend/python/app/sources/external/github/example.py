@@ -12,6 +12,7 @@ from github.AuthenticatedUser import AuthenticatedUser  # type: ignore
 token = os.getenv("GITHUB_PAT")
 # In order to test Github organization specific APIs, you need to set the GITHUB_ORGANIZATION environment variable
 organization = os.getenv("GITHUB_ORGANIZATION")
+# Needed if want to run for a specific repo
 repo = os.getenv("GITHUB_REPO")
 
 def print_result(title: str, res) -> None:
@@ -142,63 +143,11 @@ async def main() -> None:
     # issues_res = ds.list_issues(owner, repo,state='all')
     # print_result(f"List Issues for {owner}/{repo}", issues_res)
     # print(issues_res.data)
-    # for issue in issues_res.data:
-        # parent_issue_ul:Dict = getattr(issue, 'raw_data', None)
-        # parent_issue_url=parent_issue_ul.get('parent_issue_url',None)
-        # pull_request = getattr(issue,"pull_request",None)
-        # if pull_request:
-        #     pr_url = getattr(issue,"html_url",None).split('/')
-        #     print(f"Building blocks for pull request: {pr_url}")
-        #     pr_number =  int(pr_url[6])
-        #     owner = pr_url[3]
-        #     repo_name = pr_url[4]
-        #     pull_request = ds.get_pull(owner,repo_name,pr_number)
-        #     files_res = ds.get_pull_file_changes(owner,repo_name,pr_number)
-        #     if files_res.success and files_res.data:
-        #         print(f"Fetched raw data : {files_res.data}")
-        #         files = files_res.data
-                # create map for file name as key with bg_number as value
-                # in file data patch is present which is diff make another call for files content
-                # do other awy dict of filepath to list of  comments
-                # review_comments_res = ds.get_pull_review_comments(owner,repo_name,pr_number)
-                # review_comments_map:Dict[str,List[BlockComment]]={}
-                # for file in files:
-                #     print(f"Fetching content for file: {file.filename}")
-                #     # file content details 
-                #     print(f"file sha: {file.sha}")
-                #     print(f"file raw url: {file.filename}")
-                #     print(f"file patch: {repo_name}")
-                #     file_raw = getattr(file,"raw_data",None)
-                #     print(f"file raw data: {file_raw}")
-                #     file_blob_url = getattr(file,"blob_url",None).split('/')
-                #     print(f"file content url: {file_blob_url}")
-                #     file_ref = file_blob_url[6]
-                #     file_content_res = ds.get_file_contents(owner,repo_name,file.filename,file_ref)
-                #     if file_content_res.success and file_content_res.data:
-                #         print(f"Fetched content for file: {file.filename}")
-                #         print(f"file content: {file_content_res.data}")
-                        
-                
-                # print(parent_issue_ul['parent_issue_url'])
-        # print(f"second : {parent_issue_url}")
-    # extract issue numbers from issues_res.data
+    
+    # Extract issue numbers from issues_res.data
     # print(type(issues_res.data[0]))
     # issue_id = [i.id for i in issues_res.data]
     # print(issue_id)
-    
-    # get issue details for each issue number
-    # for issue_number in issue_numbers:
-    #     issue_res = ds.get_issue(owner, repo, issue_number)
-    #     print(type(issue_res))
-    #     # print_result(f"Get Issue {issue_number}", issue_res)
-    #     if issue_res.success and issue_res.data:
-    #         print("issue github id:", issue_res.data.raw_headers['etag'])
-    # List repos for a user
-    # repos_res = ds.list_user_repos(user_login)
-    # print_result(f"List Repos for {user_login}", repos_res)
-    # if repos_res.success:
-    #     names = [r.full_name for r in (repos_res.data or [])][:10]
-    #     print("sample repos:", names)
 
     # List pulls (public repo has a few historical PRs)
     # pulls_res = ds.list_pulls(owner, repo)
@@ -206,13 +155,6 @@ async def main() -> None:
     # if pulls_res.success:
     #     titles = [p.title for p in (pulls_res.data or [])][:10]
     #     print("sample PRs:", titles)
-
-    # List issues
-    # issues_res = ds.list_issues(owner, repo)
-    # print_result("List Issues", issues_res)
-    # if issues_res.success:
-    #     titles = [i.title for i in (issues_res.data or [])][:10]
-    #     print("sample issues:", titles)
 
     # List branches
     # branches_res = ds.list_branches(owner, repo)

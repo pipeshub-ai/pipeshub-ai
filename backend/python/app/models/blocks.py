@@ -40,11 +40,6 @@ class BlockType(str, Enum):
     DIVIDER = "divider"
     COMMIT = "commit"
 
-
-
-class CommentSubtype(str, Enum):
-    CODE_REVIEW = "code_review"
-
 class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
     COMMENT = "comment"
@@ -79,17 +74,16 @@ class CommentAttachment(BaseModel):
 
 class BlockComment(BaseModel):
     text: str
-    subtype: CommentSubtype
     format: DataFormat
     author_id: Optional[str] = Field(default=None, description="ID of the user who created the comment")
     author_name: Optional[str] = Field(default=None, description="Name of the user who created the comment")
     thread_id: Optional[str] = None
     resolution_status: Optional[str] = Field(default=None, description="Status of the comment (e.g., 'resolved', 'open')")
-    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in Linear)") # add html_url
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in Linear)")
     created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created in Linear")
     updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated in Linear")
-    attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment") # see attach. names only parse it out from markdown content
-    quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments") # lines quote on whixh comment made
+    attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
+    quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
 
 class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
@@ -414,7 +408,7 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
+    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
@@ -467,9 +461,8 @@ class BlockGroup(BaseModel):
 
         return v
     format: Optional[DataFormat] = None
-    # TODO: discuss below part as i need 1D but in Linear 2D
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
-    comments: List[BlockComment] = Field(default_factory=list, description="1D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
+    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
     source_modified_date: Optional[datetime] = None
 
 class BlockGroups(BaseModel):

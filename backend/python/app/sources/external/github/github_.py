@@ -344,29 +344,14 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-
-    # def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse[ContentFile]:
-    #     """Get file contents."""
-    #     try:
-    #         r = self._repo(owner, repo)
-    #         params = self._not_none(ref=ref)
-    #         content = r.get_contents(path, **params)
-    #         return GitHubResponse(success=True, data=content)
-    #     except Exception as e:
-    #         return GitHubResponse(success=False, error=str(e))
     def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse[ContentFile]:
         """Get file contents."""
         try:
-            print(f"[DEBUG] get_file_contents called with owner={owner}, repo={repo}, path={path}, ref={ref}")
             r = self._repo(owner, repo)
-            print(f"[DEBUG] Repository object: {r}")
             params = self._not_none(ref=ref)
-            print(f"[DEBUG] Params for get_contents: {params}")
             content = r.get_contents(path, **params)
-            print(f"[DEBUG] Content fetched: {content}")
             return GitHubResponse(success=True, data=content)
         except Exception as e:
-            print(f"[DEBUG] Exception in get_file_contents: {e}")
             return GitHubResponse(success=False, error=str(e))
 
     def create_file(self, owner: str, repo: str, path: str, message: str, content: bytes, branch: str | None = None) -> GitHubResponse[dict[str, object]]:
