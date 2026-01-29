@@ -2,12 +2,14 @@ import email.header
 import email.utils
 import re
 from logging import Logger
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 from app.models.entities import RecordType
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.graph_db.arango.arango import ArangoService
 
 
 class EmailMetadataInjector(Transformer):
@@ -29,7 +31,10 @@ class EmailMetadataInjector(Transformer):
     DEFAULT_MAX_METADATA_CHARS = 2000
 
     def __init__(
-        self, logger: Logger, arango_service: Any, config_service: Any = None
+        self,
+        logger: Logger,
+        arango_service: ArangoService,
+        config_service: Optional[ConfigurationService] = None,
     ) -> None:
         super().__init__()
         self.logger = logger
@@ -74,7 +79,7 @@ class EmailMetadataInjector(Transformer):
         cleaned = re.sub(r"\s+", " ", cleaned)
         return cleaned.strip()
 
-    def _normalize_addresses(self, raw: Any) -> List[str]:
+    def _normalize_addresses(self, raw: Optional[Union[str, List[Any], object]]) -> List[str]:
         """Parse and normalize email addresses with deduplication."""
         if not raw:
             return []
