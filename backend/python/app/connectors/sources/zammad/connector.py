@@ -1761,13 +1761,11 @@ class ZammadConnector(BaseConnector):
                     name=kb_name,
                     short_name=f"KB-{kb_id}",
                     group_type=RecordGroupType.KB,
-                    web_url=kb_web_url,
-                    inherit_permissions=True,
+                    web_url=kb_web_url
                 )
 
-                kb_permissions = [
-                    Permission(entity_type=EntityType.ORG, type=PermissionType.READ, external_id=None)
-                ]
+                # KB has no permissions - categories have their own permissions, no inheritance
+                kb_permissions: List[Permission] = []
 
                 kb_record_groups.append((kb_record_group, kb_permissions))
                 kb_map[kb_id] = kb_record_group
@@ -1882,17 +1880,13 @@ class ZammadConnector(BaseConnector):
                     ))
 
                 # If no role permissions, default to ORG permission
-                if not cat_permissions:
-                    cat_permissions.append(Permission(
-                        entity_type=EntityType.ORG,
-                        type=PermissionType.READ,
-                        external_id=None
-                    ))
-
-                # Determine inherit_permissions: Only inherit from KB if category has no role permissions
-                # Categories with strict role permissions should NOT inherit ORG permission from KB
-                has_role_permissions = bool(editor_role_ids) or bool(reader_role_ids)
-                cat_inherit_permissions = not has_role_permissions
+                # Each category has its own permissions, no inheritance from KB
+                # if not cat_permissions:
+                #     cat_permissions.append(Permission(
+                #         entity_type=EntityType.ORG,
+                #         type=PermissionType.READ,
+                #         external_id=None
+                #     ))
 
                 cat_record_group = RecordGroup(
                     id=str(uuid4()),
@@ -1904,7 +1898,7 @@ class ZammadConnector(BaseConnector):
                     short_name=f"CAT-{cat_id}",
                     group_type=RecordGroupType.KB,
                     parent_external_group_id=parent_external_group_id,
-                    inherit_permissions=cat_inherit_permissions,
+                    inherit_permissions=False,  # Categories have their own permissions, no inheritance
                     web_url=cat_web_url,
                 )
 
@@ -2044,7 +2038,19 @@ class ZammadConnector(BaseConnector):
                         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.KNOWLEDGE_BASE):
                             answer_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
-                        batch_records.append((answer_record, permissions))
+                        # Check if this is an existing record with changed permissions
+                        # When visibility changes (PUBLIC/INTERNAL/DRAFT/ARCHIVED), inherit_permissions changes too
+                        needs_permission_update = False
+                        if existing_record is not None:
+                            old_inherit = getattr(existing_record, 'inherit_permissions', None)
+                            new_inherit = answer_record.inherit_permissions
+                            # Detect permission change: inherit_permissions flag changed OR
+                            # record was updated (revision changed) - always refresh permissions on update
+                            if old_inherit != new_inherit or existing_record.external_revision_id != answer_record.external_revision_id:
+                                needs_permission_update = True
+                                self.logger.debug(f"Permission update needed for answer {answer_id}: inherit_permissions {old_inherit} -> {new_inherit}")
+
+                        batch_records.append((answer_record, permissions, needs_permission_update))
                         total_synced += 1
 
                         # Fetch attachments for the answer
@@ -2054,17 +2060,28 @@ class ZammadConnector(BaseConnector):
                             answer_permissions=permissions
                         )
                         if attachment_records:
-                            batch_records.extend(attachment_records)
+                            # Attachments also need permission update if parent does
+                            for att_record, att_perms in attachment_records:
+                                batch_records.append((att_record, att_perms, needs_permission_update))
 
                 except Exception as e:
                     self.logger.warning(f"Failed to process KB answer {answer_id}: {e}", exc_info=True)
 
             # Save batch
             if batch_records:
+                # Separate records that need permission updates from new records
+                records_for_new = [(rec, perms) for rec, perms, needs_update in batch_records]
+                records_needing_permission_update = [(rec, perms) for rec, perms, needs_update in batch_records if needs_update]
+
                 # Count answers vs attachments separately
-                batch_answers = sum(1 for record, _ in batch_records if isinstance(record, WebpageRecord))
+                batch_answers = sum(1 for record, _, _ in batch_records if isinstance(record, WebpageRecord))
                 batch_attachments = len(batch_records) - batch_answers
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(records_for_new)
+
+                # Update permissions for records that had visibility/permission changes
+                # This properly cleans up old permission edges before adding new ones
+                for record, perms in records_needing_permission_update:
+                    await self.data_entities_processor.on_updated_record_permissions(record, perms)
                 if batch_attachments > 0:
                     self.logger.debug(f"Processed batch: {batch_answers} KB answers, {batch_attachments} attachments")
                 else:
