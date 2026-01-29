@@ -208,16 +208,17 @@ export const useConnectorConfig = ({
   // Memoized helper functions
   const getBusinessOAuthData = useCallback((config: any) => {
     const authValues = config?.config?.auth?.values || config?.config?.auth || {};
+    
+    // Check if service account credentials exist by looking for key fields
+    const hasServiceAccountCredentials = 
+      authValues.client_id && 
+      authValues.project_id && 
+      (authValues.type === SERVICE_ACCOUNT_TYPE || authValues.private_key || authValues.client_email);
+    
     return {
       adminEmail: authValues.adminEmail || '',
-      jsonData:
-        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
-          ? authValues
-          : null,
-      fileName:
-        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
-          ? 'existing-credentials.json'
-          : null,
+      jsonData: hasServiceAccountCredentials ? authValues : null,
+      fileName: hasServiceAccountCredentials ? 'Service Account Credentials' : null,
     };
   }, []);
 
@@ -227,8 +228,8 @@ export const useConnectorConfig = ({
     return {
       certificate: authValues.certificate || null,
       privateKey: authValues.privateKey || null,
-      certificateFileName: authValues.certificate ? 'existing-certificate.pem' : null,
-      privateKeyFileName: authValues.privateKey ? 'existing-privatekey.pem' : null,
+      certificateFileName: authValues.certificate ? 'Client Certificate' : null,
+      privateKeyFileName: authValues.privateKey ? 'Private Key (PKCS#8)' : null,
     };
   }, []);
 
@@ -1589,8 +1590,6 @@ export const useConnectorConfig = ({
               validationSchema.fields || [],
               formData.auth
             );
-            
-            console.log('[SAVE DEBUG] Generic auth validation errors:', authErrors);
             
             // For OAuth type: Additional validation for creating new OAuth apps
             if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {

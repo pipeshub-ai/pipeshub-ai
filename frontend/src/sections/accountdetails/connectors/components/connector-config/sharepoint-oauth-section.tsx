@@ -581,7 +581,7 @@ const SharePointOAuthSection = forwardRef<HTMLDivElement, SharePointOAuthSection
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {certificateFileName || 'No file selected'}
+                  {certificateFileName || (certificateData ? 'Client Certificate' : 'No file selected')}
                 </Typography>
                 <Typography 
                   variant="caption" 
@@ -726,7 +726,7 @@ const SharePointOAuthSection = forwardRef<HTMLDivElement, SharePointOAuthSection
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {privateKeyFileName || 'No file selected'}
+                  {privateKeyFileName || (privateKeyData ? 'Private Key (PKCS#8)' : 'No file selected')}
                 </Typography>
                 <Typography 
                   variant="caption" 

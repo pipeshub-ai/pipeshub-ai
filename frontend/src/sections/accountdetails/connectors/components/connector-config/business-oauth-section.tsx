@@ -276,7 +276,7 @@ const BusinessOAuthSection = forwardRef<HTMLDivElement, BusinessOAuthSectionProp
                   whiteSpace: 'nowrap',
                 }}
               >
-                {fileName || 'No file selected'}
+                {fileName || (jsonData ? 'Service Account Credentials' : 'No file selected')}
               </Typography>
               <Typography 
                 variant="caption" 

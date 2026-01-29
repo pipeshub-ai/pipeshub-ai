@@ -1530,6 +1530,20 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                   })()}
 
                   {auth.customFields?.map((field) => {
+                    // Check if field already exists in current schema to prevent duplicate IDs
+                    const customFieldAuthType = isCreateMode
+                      ? selectedAuthType || (auth as any).supportedAuthTypes?.[0] || ''
+                      : auth.type || '';
+                    const customFieldSchemas = (auth as any).schemas || {};
+                    const customFieldSchema =
+                      customFieldAuthType && customFieldSchemas[customFieldAuthType]
+                        ? customFieldSchemas[customFieldAuthType]
+                        : { fields: [] };
+                    
+                    const isInCurrentSchema = customFieldSchema.fields?.some(
+                      (f: any) => f.name === field.name
+                    );
+                    
                     const shouldShow =
                       !auth.conditionalDisplay ||
                       !auth.conditionalDisplay[field.name] ||
@@ -1551,7 +1565,7 @@ const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
                         field.name === 'certificate' ||
                         field.name === 'privateKey');
 
-                    if (!shouldShow || isBusinessOAuthField || isSharePointCertField) return null;
+                    if (!shouldShow || isBusinessOAuthField || isSharePointCertField || isInCurrentSchema) return null;
 
                     return (
                       <Grid item xs={12} key={field.name} id={`auth-field-${field.name}`}>
