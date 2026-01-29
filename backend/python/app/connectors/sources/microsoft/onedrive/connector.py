@@ -57,10 +57,11 @@ from app.models.entities import (
     FileRecord,
     IndexingStatus,
     Record,
+    RecordGroup,
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission
+from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -967,6 +968,49 @@ class OneDriveConnector(BaseConnector):
             root_url = f"/users/{user_id}/drive/root/delta"
             sync_point_key = generate_record_sync_point_key(RecordType.DRIVE.value, "users", user_id)
             sync_point = await self.drive_delta_sync_point.read_sync_point(sync_point_key)
+
+            # Create RecordGroup if sync_point doesn't exist (first sync)
+            if not sync_point:
+                try:
+                    # Get user drive information
+                    drive = await self.msgraph_client.get_user_drive(user_id)
+                    # Get user info (email and display name)
+                    user_info = await self.msgraph_client.get_user_info(user_id)
+
+                    if user_info:
+                        # Create RecordGroup for the user's OneDrive
+                        display_name = user_info.get('display_name')
+                        user_email = user_info.get('email', user_id)
+
+                        if display_name:
+                            record_group_name = f"{display_name}'s OneDrive"
+                        else:
+                            record_group_name = f"OneDrive - {user_email}"
+
+                        record_group = RecordGroup(
+                            external_group_id=drive.id,
+                            name=record_group_name,
+                            group_type=RecordGroupType.DRIVE,
+                            connector_name=self.connector_name,
+                            connector_id=self.connector_id,
+                            web_url=getattr(drive, 'web_url', None),
+                            description=f"OneDrive for {display_name or user_email}",
+                        )
+
+                        owner_permission = Permission(
+                            email=user_email,
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER
+                        )
+
+                        # Save the RecordGroup
+                        await self.data_entities_processor.on_new_record_groups([(record_group, [owner_permission])])
+                        self.logger.info(f"Created RecordGroup for user {user_id} with drive ID {drive.id}")
+                    else:
+                        self.logger.warning(f"Could not fetch user info for {user_id}, skipping RecordGroup creation")
+                except Exception as e:
+                    self.logger.error(f"Error creating RecordGroup for user {user_id}: {e}", exc_info=True)
+                    # Continue with sync even if RecordGroup creation fails
 
             url = sync_point.get('deltaLink') or sync_point.get('nextLink') if sync_point else None
             if not url:
