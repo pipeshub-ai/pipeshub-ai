@@ -13,7 +13,6 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     CurrentNode,
     FilterOption,
     FiltersInfo,
-    IndexingStatusFilter,
     ItemPermission,
     KnowledgeHubNodesResponse,
     NodeItem,
@@ -21,8 +20,10 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     OriginType,
     PaginationInfo,
     PermissionsInfo,
-    RecordTypeFilter,
+    SortField,
+    SortOrder,
 )
+from app.models.entities import IndexingStatus, RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 FOLDER_MIME_TYPES = [
@@ -430,7 +431,7 @@ class KnowledgeHubService:
 
         if record_types:
             bind_vars["record_types"] = record_types
-            filter_conditions.append("(node.recordType == null OR node.recordType IN @record_types)")
+            filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
 
         if indexing_status:
             bind_vars["indexing_status"] = indexing_status
@@ -484,6 +485,7 @@ class KnowledgeHubService:
             parent_id=parent_id,
             parent_type=parent_type,
             org_id=org_id,
+            user_key=user_key,
             skip=skip,
             limit=limit,
             sort_field=sort_field,
@@ -605,11 +607,22 @@ class KnowledgeHubService:
         """Convert record type enum value to human-readable label"""
         label_map = {
             "FILE": "File",
+            "DRIVE": "Drive",
             "WEBPAGE": "Webpage",
             "MESSAGE": "Message",
+            "MAIL": "Mail",
+            "GROUP_MAIL": "Group Mail",
             "TICKET": "Ticket",
             "COMMENT": "Comment",
-            "MAIL": "Mail",
+            "INLINE_COMMENT": "Inline Comment",
+            "CONFLUENCE_PAGE": "Confluence Page",
+            "CONFLUENCE_BLOGPOST": "Confluence Blogpost",
+            "SHAREPOINT_PAGE": "SharePoint Page",
+            "SHAREPOINT_LIST": "SharePoint List",
+            "SHAREPOINT_LIST_ITEM": "SharePoint List Item",
+            "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint Document Library",
+            "LINK": "Link",
+            "PROJECT": "Project",
             "OTHERS": "Others",
         }
         return label_map.get(record_type, record_type.replace("_", " ").title())
@@ -624,10 +637,23 @@ class KnowledgeHubService:
             "QUEUED": "Queued",
             "PAUSED": "Paused",
             "FILE_TYPE_NOT_SUPPORTED": "File Type Not Supported",
-            "AUTO_INDEX_OFF": "Auto-Index Off",
+            "AUTO_INDEX_OFF": "Manual Indexing",
             "EMPTY": "Empty",
+            "ENABLE_MULTIMODAL_MODELS": "Enable Multimodal Models",
+            "CONNECTOR_DISABLED": "Connector Disabled",
         }
         return label_map.get(status, status.replace("_", " ").title())
+
+    def _get_sort_field_label(self, sort_field: str) -> str:
+        """Convert sort field enum value to human-readable label"""
+        label_map = {
+            "name": "Name",
+            "createdAt": "Created Date",
+            "updatedAt": "Modified Date",
+            "size": "Size",
+            "type": "Type",
+        }
+        return label_map.get(sort_field, sort_field.replace("_", " ").title())
 
     async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
         """Get filter options (dynamic KBs/Apps + static others)"""
@@ -656,13 +682,32 @@ class KnowledgeHubService:
                 for a in apps_data
             ]
 
+            # Node type labels mapping
+            node_type_labels = {
+                NodeType.FOLDER: "Folder",
+                NodeType.RECORD: "File",
+                NodeType.RECORD_GROUP: "Drive/Root",
+                NodeType.APP: "Connector",
+                NodeType.KB: "Knowledge Base",
+            }
+
+            # Node type icon paths mapping
+            node_type_icons = {
+                NodeType.FOLDER: '/assets/icons/files/folder.svg',
+                NodeType.RECORD: '/assets/icons/files/file.svg',
+                NodeType.RECORD_GROUP: '/assets/icons/files/folder-open.svg',
+                NodeType.APP: '/assets/icons/connectors/default.svg',
+                NodeType.KB: '/assets/icons/kb/knowledge-base.svg',
+            }
+
             return AvailableFilters(
                 nodeTypes=[
-                    FilterOption(id="folder", label="Folder", iconPath='/assets/icons/files/folder.svg'),
-                    FilterOption(id="record", label="File", iconPath='/assets/icons/files/file.svg'),
-                    FilterOption(id="recordGroup", label="Drive/Root", iconPath='/assets/icons/files/folder-open.svg'),
-                    FilterOption(id="app", label="Connector", iconPath='/assets/icons/connectors/default.svg'),
-                    FilterOption(id="kb", label="Knowledge Base", iconPath='/assets/icons/kb/knowledge-base.svg'),
+                    FilterOption(
+                        id=nt.value,
+                        label=node_type_labels.get(nt, nt.value),
+                        iconPath=node_type_icons.get(nt, '/assets/icons/files/file.svg')
+                    )
+                    for nt in NodeType
                 ],
                 recordTypes=[
                     FilterOption(
@@ -670,11 +715,15 @@ class KnowledgeHubService:
                         label=self._get_record_type_label(rt.value),
                         iconPath=self._get_record_type_icon_path(rt.value)
                     )
-                    for rt in RecordTypeFilter
+                    for rt in RecordType
                 ],
                 origins=[
-                    FilterOption(id="KB", label="Knowledge Base", iconPath='/assets/icons/connectors/default.svg'),
-                    FilterOption(id="CONNECTOR", label="External Connector", iconPath='/assets/icons/connectors/default.svg'),
+                    FilterOption(
+                        id=ot.value,
+                        label="Knowledge Base" if ot == OriginType.KB else "External Connector",
+                        iconPath='/assets/icons/connectors/default.svg'
+                    )
+                    for ot in OriginType
                 ],
                 connectors=app_options,
                 kbs=kb_options,
@@ -684,18 +733,21 @@ class KnowledgeHubService:
                         label=self._get_indexing_status_label(status.value),
                         iconPath=self._get_indexing_status_icon_path(status.value)
                     )
-                    for status in IndexingStatusFilter
+                    for status in IndexingStatus
                 ],
                 sortBy=[
-                    FilterOption(id="name", label="Name"),
-                    FilterOption(id="createdAt", label="Created Date"),
-                    FilterOption(id="updatedAt", label="Modified Date"),
-                    FilterOption(id="size", label="Size"),
-                    FilterOption(id="type", label="Type"),
+                    FilterOption(
+                        id=sf.value,
+                        label=self._get_sort_field_label(sf.value)
+                    )
+                    for sf in SortField
                 ],
                 sortOrder=[
-                    FilterOption(id="asc", label="Ascending"),
-                    FilterOption(id="desc", label="Descending"),
+                    FilterOption(
+                        id=so.value,
+                        label="Ascending" if so == SortOrder.ASC else "Descending"
+                    )
+                    for so in SortOrder
                 ]
             )
         except Exception as e:
@@ -706,11 +758,22 @@ class KnowledgeHubService:
         """Get icon path for record type"""
         icon_map = {
             "FILE": '/assets/icons/files/file.svg',
+            "DRIVE": '/assets/icons/files/folder-open.svg',
             "WEBPAGE": '/assets/icons/files/webpage.svg',
             "MESSAGE": '/assets/icons/files/message.svg',
+            "MAIL": '/assets/icons/files/mail.svg',
+            "GROUP_MAIL": '/assets/icons/files/mail.svg',
             "TICKET": '/assets/icons/files/ticket.svg',
             "COMMENT": '/assets/icons/files/comment.svg',
-            "MAIL": '/assets/icons/files/mail.svg',
+            "INLINE_COMMENT": '/assets/icons/files/comment.svg',
+            "CONFLUENCE_PAGE": '/assets/icons/files/webpage.svg',
+            "CONFLUENCE_BLOGPOST": '/assets/icons/files/webpage.svg',
+            "SHAREPOINT_PAGE": '/assets/icons/files/webpage.svg',
+            "SHAREPOINT_LIST": '/assets/icons/files/file.svg',
+            "SHAREPOINT_LIST_ITEM": '/assets/icons/files/file.svg',
+            "SHAREPOINT_DOCUMENT_LIBRARY": '/assets/icons/files/folder-open.svg',
+            "LINK": '/assets/icons/files/webpage.svg',
+            "PROJECT": '/assets/icons/files/folder-open.svg',
             "OTHERS": '/assets/icons/files/file.svg',
         }
         return icon_map.get(record_type, '/assets/icons/files/file.svg')
@@ -727,6 +790,8 @@ class KnowledgeHubService:
             "FILE_TYPE_NOT_SUPPORTED": '/assets/icons/status/not-supported.svg',
             "AUTO_INDEX_OFF": '/assets/icons/status/manual.svg',
             "EMPTY": '/assets/icons/status/empty.svg',
+            "ENABLE_MULTIMODAL_MODELS": '/assets/icons/status/in-progress.svg',
+            "CONNECTOR_DISABLED": '/assets/icons/status/paused.svg',
         }
         return icon_map.get(status, '/assets/icons/status/default.svg')
 
@@ -783,7 +848,7 @@ class KnowledgeHubService:
 
             if record_types:
                 bind_vars["record_types"] = record_types
-                filter_conditions.append("(node.recordType == null OR node.recordType IN @record_types)")
+                filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
 
             if indexing_status:
                 bind_vars["indexing_status"] = indexing_status
@@ -843,6 +908,7 @@ class KnowledgeHubService:
                 parent_id=parent_id,
                 parent_type=parent_type,
                 org_id=org_id,
+                user_key=user_key,
                 skip=skip,
                 limit=limit,
                 sort_field=sort_field,

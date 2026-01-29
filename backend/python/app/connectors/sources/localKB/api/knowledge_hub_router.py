@@ -7,12 +7,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     IncludeOption,
-    IndexingStatusFilter,
     KnowledgeHubErrorResponse,
     KnowledgeHubNodesResponse,
     NodeType,
     OriginType,
-    RecordTypeFilter,
     SortField,
     SortOrder,
 )
@@ -20,6 +18,7 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.models.entities import IndexingStatus, RecordType
 
 knowledge_hub_router = APIRouter(
     prefix="/api/v2/knowledge-hub",
@@ -366,14 +365,14 @@ async def _handle_get_nodes(
             parsed_node_types, _get_enum_values(NodeType), "node_types"
         )
         parsed_record_types = _validate_enum_values(
-            parsed_record_types, _get_enum_values(RecordTypeFilter), "record_types"
+            parsed_record_types, _get_enum_values(RecordType), "record_types"
         )
         parsed_origins = _validate_enum_values(
             parsed_origins, _get_enum_values(OriginType), "origins"
         )
         # connector_ids and kb_ids are dynamic, no enum validation needed
         parsed_indexing_status = _validate_enum_values(
-            parsed_indexing_status, _get_enum_values(IndexingStatusFilter), "indexing_status"
+            parsed_indexing_status, _get_enum_values(IndexingStatus), "indexing_status"
         )
         parsed_include = _validate_enum_values(
             parsed_include, _get_enum_values(IncludeOption), "include"
