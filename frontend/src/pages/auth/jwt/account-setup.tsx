@@ -30,8 +30,9 @@ export type AccountType = 'individual' | 'business';
 const metadata = { title: 'Account Setup' };
 
 export default function Page() {
-  const [open, setOpen] = useState(true);
-  const [accountType, setAccountType] = useState<AccountType | null>(null);
+  // Hidden: Account type selection dialog is now hidden, defaulting to business
+  const [open, setOpen] = useState(false);
+  const [accountType, setAccountType] = useState<AccountType | null>('business');
   const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -43,10 +44,10 @@ export default function Page() {
     severity: 'success' as 'success' | 'error' | 'warning',
   });
 
-  // Show dialog on first load
-  useEffect(() => {
-    setOpen(true);
-  }, []);
+  // Show dialog on first load - DISABLED: Now defaulting to business account
+  // useEffect(() => {
+  //   // setOpen(true); // Commented out - dialog hidden, defaulting to business
+  // }, []);
 
   useEffect(() => {
     const checkOrgExists = async () => {
@@ -87,185 +88,189 @@ export default function Page() {
         <title>{metadata.title}</title>
       </Helmet>
 
-      {/* Account Type Selection Dialog */}
-      <Dialog 
-        open={open} 
-        onClose={handleClose} 
-        maxWidth="sm" 
-        fullWidth
-        PaperProps={{
-          sx: {
-            borderRadius: 1,
-            bgcolor: isDarkMode ? 'background.paper' : '#fff',
-            boxShadow: isDarkMode ? '0 4px 20px rgba(0, 0, 0, 0.3)' : '0 4px 20px rgba(0, 0, 0, 0.1)',
-          }
-        }}
-      >
-        <DialogTitle 
-          sx={{ 
-            textAlign: 'center', 
-            pt: 4,
-            pb: 2,
+      {/* Account Type Selection Dialog - HIDDEN: Individual account creation is now disabled */}
+      {/* The dialog below is kept for future reference but is no longer shown */}
+      {/* To re-enable, set open state to true and accountType to null in the useState declarations above */}
+      {false && (
+        <Dialog 
+          open={open} 
+          onClose={handleClose} 
+          maxWidth="sm" 
+          fullWidth
+          PaperProps={{
+            sx: {
+              borderRadius: 1,
+              bgcolor: isDarkMode ? 'background.paper' : '#fff',
+              boxShadow: isDarkMode ? '0 4px 20px rgba(0, 0, 0, 0.3)' : '0 4px 20px rgba(0, 0, 0, 0.1)',
+            }
           }}
         >
-          <Typography 
-            variant="h5" 
+          <DialogTitle 
             sx={{ 
-              fontWeight: 600, 
-              mb: 1,
-              color: 'text.primary',
+              textAlign: 'center', 
+              pt: 4,
+              pb: 2,
             }}
           >
-            Choose Account Type
-          </Typography>
-          <Typography 
-            variant="body2" 
-            color="text.secondary"
-          >
-            Select the type of account you want to create
-          </Typography>
-        </DialogTitle>
-
-        <DialogContent sx={{ px: 3, pb: 4 }}>
-          <Stack 
-            spacing={2} 
-            direction={{ xs: 'column', sm: 'row' }} 
-            sx={{ mt: 1 }}
-          >
-            <Card
-              sx={{
-                flex: 1,
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                borderRadius: 1,
-                bgcolor: 'background.paper',
-                border: '1px solid',
-                borderColor: isDarkMode ? 'divider' : theme.palette.grey[200],
-                '&:hover': {
-                  borderColor: 'primary.main',
-                  boxShadow: isDarkMode ? 
-                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.15)}` : 
-                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.08)}`,
-                },
+            <Typography 
+              variant="h5" 
+              sx={{ 
+                fontWeight: 600, 
+                mb: 1,
+                color: 'text.primary',
               }}
-              onClick={() => handleAccountTypeSelect('individual')}
-              elevation={0}
             >
-              <CardContent
+              Choose Account Type
+            </Typography>
+            <Typography 
+              variant="body2" 
+              color="text.secondary"
+            >
+              Select the type of account you want to create
+            </Typography>
+          </DialogTitle>
+
+          <DialogContent sx={{ px: 3, pb: 4 }}>
+            <Stack 
+              spacing={2} 
+              direction={{ xs: 'column', sm: 'row' }} 
+              sx={{ mt: 1 }}
+            >
+              <Card
                 sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  textAlign: 'center',
-                  p: 3,
+                  flex: 1,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  borderRadius: 1,
+                  bgcolor: 'background.paper',
+                  border: '1px solid',
+                  borderColor: isDarkMode ? 'divider' : theme.palette.grey[200],
+                  '&:hover': {
+                    borderColor: 'primary.main',
+                    boxShadow: isDarkMode ? 
+                      `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.15)}` : 
+                      `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.08)}`,
+                  },
                 }}
+                onClick={() => handleAccountTypeSelect('individual')}
+                elevation={0}
               >
-                <Box
+                <CardContent
                   sx={{
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 48,
-                    height: 48,
-                    borderRadius: '12px',
-                    bgcolor: isDarkMode ? alpha(theme.palette.primary.main, 0.08) : alpha(theme.palette.primary.main, 0.04),
-                    mb: 2,
+                    textAlign: 'center',
+                    p: 3,
                   }}
                 >
-                  <Icon 
-                    icon={personIcon}
-                    width={24}
-                    height={24}
-                    color={theme.palette.primary.main} 
-                  />
-                </Box>
-                <Typography 
-                  variant="subtitle1" 
-                  sx={{ 
-                    fontWeight: 600, 
-                    mb: 0.5,
-                  }}
-                >
-                  Individual
-                </Typography>
-                <Typography 
-                  variant="body2" 
-                  color="text.secondary"
-                >
-                  For personal use or freelancers
-                </Typography>
-              </CardContent>
-            </Card>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 48,
+                      height: 48,
+                      borderRadius: '12px',
+                      bgcolor: isDarkMode ? alpha(theme.palette.primary.main, 0.08) : alpha(theme.palette.primary.main, 0.04),
+                      mb: 2,
+                    }}
+                  >
+                    <Icon 
+                      icon={personIcon}
+                      width={24}
+                      height={24}
+                      color={theme.palette.primary.main} 
+                    />
+                  </Box>
+                  <Typography 
+                    variant="subtitle1" 
+                    sx={{ 
+                      fontWeight: 600, 
+                      mb: 0.5,
+                    }}
+                  >
+                    Individual
+                  </Typography>
+                  <Typography 
+                    variant="body2" 
+                    color="text.secondary"
+                  >
+                    For personal use or freelancers
+                  </Typography>
+                </CardContent>
+              </Card>
 
-            <Card
-              sx={{
-                flex: 1,
-                cursor: 'pointer',
-                transition: 'all 0.2s',
-                borderRadius: 1,
-                bgcolor: 'background.paper',
-                border: '1px solid',
-                borderColor: isDarkMode ? 'divider' : theme.palette.grey[200],
-                '&:hover': {
-                  borderColor: 'primary.main',
-                  boxShadow: isDarkMode ? 
-                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.15)}` : 
-                    `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.08)}`,
-                },
-              }}
-              onClick={() => handleAccountTypeSelect('business')}
-              elevation={0}
-            >
-              <CardContent
+              <Card
                 sx={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  alignItems: 'center',
-                  textAlign: 'center',
-                  p: 3,
+                  flex: 1,
+                  cursor: 'pointer',
+                  transition: 'all 0.2s',
+                  borderRadius: 1,
+                  bgcolor: 'background.paper',
+                  border: '1px solid',
+                  borderColor: isDarkMode ? 'divider' : theme.palette.grey[200],
+                  '&:hover': {
+                    borderColor: 'primary.main',
+                    boxShadow: isDarkMode ? 
+                      `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.15)}` : 
+                      `0 4px 12px 0 ${alpha(theme.palette.primary.main, 0.08)}`,
+                  },
                 }}
+                onClick={() => handleAccountTypeSelect('business')}
+                elevation={0}
               >
-                <Box
+                <CardContent
                   sx={{
                     display: 'flex',
+                    flexDirection: 'column',
                     alignItems: 'center',
-                    justifyContent: 'center',
-                    width: 48,
-                    height: 48,
-                    borderRadius: '12px',
-                    bgcolor: isDarkMode ? alpha(theme.palette.primary.main, 0.08) : alpha(theme.palette.primary.main, 0.04),
-                    mb: 2,
+                    textAlign: 'center',
+                    p: 3,
                   }}
                 >
-                  <Icon 
-                    icon={buildingIcon}
-                    width={24}
-                    height={24}
-                    color={theme.palette.primary.main} 
-                  />
-                </Box>
-                <Typography 
-                  variant="subtitle1" 
-                  sx={{ 
-                    fontWeight: 600, 
-                    mb: 0.5,
-                  }}
-                >
-                  Organization
-                </Typography>
-                <Typography 
-                  variant="body2" 
-                  color="text.secondary"
-                >
-                  For companies and teams
-                </Typography>
-              </CardContent>
-            </Card>
-          </Stack>
-        </DialogContent>
-      </Dialog>
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      width: 48,
+                      height: 48,
+                      borderRadius: '12px',
+                      bgcolor: isDarkMode ? alpha(theme.palette.primary.main, 0.08) : alpha(theme.palette.primary.main, 0.04),
+                      mb: 2,
+                    }}
+                  >
+                    <Icon 
+                      icon={buildingIcon}
+                      width={24}
+                      height={24}
+                      color={theme.palette.primary.main} 
+                    />
+                  </Box>
+                  <Typography 
+                    variant="subtitle1" 
+                    sx={{ 
+                      fontWeight: 600, 
+                      mb: 0.5,
+                    }}
+                  >
+                    Organization
+                  </Typography>
+                  <Typography 
+                    variant="body2" 
+                    color="text.secondary"
+                  >
+                    For companies and teams
+                  </Typography>
+                </CardContent>
+              </Card>
+            </Stack>
+          </DialogContent>
+        </Dialog>
+      )}
 
-      {/* Render the AccountSetUpForm only after account type is selected */}
+      {/* Render the AccountSetUpForm - Now defaults to business account type */}
       {accountType && <AccountSetUpForm accountType={accountType} />}
     </>
   );
