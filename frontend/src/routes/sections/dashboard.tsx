@@ -57,6 +57,7 @@ const RecordDetails = lazy(() => import('src/pages/dashboard/knowledgebase/recor
 const KnowledgeSearch = lazy(
   () => import('src/pages/dashboard/knowledgebase/knowledgebase-search')
 );
+const AllRecordsPage = lazy(() => import('src/sections/knowledgebase/all-records-page'));
 
 // ----------------------------------------------------------------------
 
@@ -202,6 +203,7 @@ export const dashboardRoutes = [
         element: <AgentChatPage key="agent-conversation" />,
       },
       { path: 'record/:recordId', element: <RecordDetails /> },
+      { path: 'all-records', element: <ProtectedRoute component={AllRecordsPage} /> },
       {
         path: 'connectors',
         element: <Navigate to="/account/individual/settings/connector" replace />,

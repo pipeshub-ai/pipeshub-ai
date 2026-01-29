@@ -263,6 +263,7 @@ export default function RecordDetails() {
   let fileIcon: any = fileDocumentBoxIcon;
   let fileIconColor = '#1976d2';
   let extension = '';
+  fileIcon = getFileIcon(record.fileRecord?.extension || '', record.mimeType || '');
   if (isFileRecord && record.fileRecord) {
     // Check sizeInBytes in multiple possible locations: record object, or fileRecord
     // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
@@ -270,12 +271,12 @@ export default function RecordDetails() {
     if (sizeInBytes !== undefined && sizeInBytes !== null && !Number.isNaN(sizeInBytes) && sizeInBytes >= 0) {
       fileSize = formatFileSize(sizeInBytes);
     }
-    extension = record.fileRecord.extension
-      ? record.fileRecord.extension.toUpperCase()
-      : getExtensionFromMimeType(record.fileRecord.mimeType || record.mimeType || '');
+    // Get extension from fileRecord or derive from MIME type
+    const mimeType = record.fileRecord.mimeType || record.mimeType || '';
+    extension = record.fileRecord.extension || '';
     fileType = extension.toUpperCase() || 'N/A';
-    fileIcon = getFileIcon(extension || '');
-    fileIconColor = getFileIconColor(extension || '');
+    fileIcon = getFileIcon(extension, mimeType);
+    fileIconColor = getFileIconColor(extension, mimeType);
   } else if (isMailRecord) {
     fileIcon = emailIcon;
     fileIconColor = '#2196f3';
@@ -370,7 +371,7 @@ export default function RecordDetails() {
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 <IconButton
-                  onClick={() => navigate('/knowledge-base/details')}
+                  onClick={() => navigate('/all-records')}
                   size="small"
                   sx={{
                     borderRadius: 1,
@@ -396,7 +397,7 @@ export default function RecordDetails() {
                   <Stack direction="row" spacing={2} alignItems="center">
                     <Chip
                       size="small"
-                      label={record.recordType}
+                      label={record.recordType.split('_').join(' ')}
                       color="primary"
                       sx={{ height: 22, fontSize: '0.75rem' }}
                     />

@@ -1932,7 +1932,7 @@ export const reindexRecord =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-      const { depth = 0 } = req.body || {};
+      const { depth = 0, force = false } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -1946,7 +1946,7 @@ export const reindexRecord =
         `${appConfig.connectorBackend}/api/v1/records/${recordId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
-        { depth },
+        { depth, force },
       );
 
       handleConnectorResponse(
@@ -1957,7 +1957,7 @@ export const reindexRecord =
       );
 
       // Log successful reindex
-      logger.info('Record reindexed successfully');
+      logger.info('Record reindexed successfully', { force });
     } catch (error: any) {
       logger.error('Error reindexing record', {
         recordId: req.params.recordId,
@@ -1975,7 +1975,7 @@ export const reindexRecordGroup =
     try {
       const { recordGroupId } = req.params as { recordGroupId: string };
       const { userId, orgId } = req.user || {};
-      const { depth = 0 } = req.body || {};
+      const { depth = 0, force = false } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -1989,7 +1989,7 @@ export const reindexRecordGroup =
         `${appConfig.connectorBackend}/api/v1/record-groups/${recordGroupId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
-        { depth },
+        { depth, force },
       );
 
       handleConnectorResponse(
@@ -2003,6 +2003,7 @@ export const reindexRecordGroup =
       logger.info('Record group reindexed successfully', {
         recordGroupId,
         depth,
+        force,
       });
     } catch (error: any) {
       logger.error('Error reindexing record group', {
