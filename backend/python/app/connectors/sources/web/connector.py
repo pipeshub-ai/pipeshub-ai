@@ -1,11 +1,12 @@
 import asyncio
 import base64
 import hashlib
+import re
 import uuid
 from io import BytesIO
 from logging import Logger
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -299,8 +300,6 @@ class WebConnector(BaseConnector):
                 f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
             )
 
-            self.logger.info(f"visited_urls: {self.visited_urls}")
-
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)
             raise
@@ -433,8 +432,6 @@ class WebConnector(BaseConnector):
 
                         # Get text content
                         text_content = soup.get_text(separator='\n', strip=True)
-
-                        self.logger.debug(f"text_content: {text_content}")
 
                         # Store cleaned HTML for indexing
                         content_bytes = text_content.encode('utf-8')
@@ -690,14 +687,324 @@ class WebConnector(BaseConnector):
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
+    def _clean_base64_string(self, b64_str: str) -> str:
+        """
+        Clean and validate a base64 string to ensure it's valid for embedding in HTML
+        and downstream processing (e.g., OpenAI API).
+
+        This function performs thorough validation including:
+        - URL decoding (handles %3D -> = etc.)
+        - Whitespace/newline removal
+        - Character validation (A-Z, a-z, 0-9, +, /, =)
+        - Padding correction
+        - Decode validation to ensure the base64 is actually valid
+
+        Args:
+            b64_str: Base64 encoded string (may be URL-encoded)
+
+        Returns:
+            Cleaned and validated base64 string, or empty string if invalid
+        """
+        if not b64_str:
+            return ""
+
+        # First, URL-decode the string in case it contains %3D (=) or other encoded chars
+        cleaned = unquote(b64_str)
+
+        # Remove all whitespace, newlines, and tabs
+        cleaned = cleaned.replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
+
+        # Validate base64 characters
+        if not re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned):
+            self.logger.warning("⚠️ Invalid base64 characters detected, skipping")
+            return ""
+
+        # Fix padding if needed (base64 strings must be multiple of 4)
+        missing_padding = (-len(cleaned)) % 4
+        if missing_padding:
+            cleaned += "=" * missing_padding
+
+        # Validate by attempting to decode
+        try:
+            base64.b64decode(cleaned, validate=True)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Invalid base64 string (decode failed): {str(e)[:100]}")
+            return ""
+
+        return cleaned
+
+    def _clean_data_uris_in_html(self, html: str) -> str:
+        """
+        Clean and validate base64 in data URIs that might have been corrupted
+        by BeautifulSoup formatting or contain URL-encoded characters.
+
+        Args:
+            html: HTML string containing data URIs
+
+        Returns:
+            HTML string with cleaned data URIs
+        """
+        pattern = r'(data:image/[^;]+;base64,)([^"\'>]*(?:\s+[^"\'>]*)*?)(?=["\'>])'
+
+        def clean_match(match) -> str:
+            header = match.group(1)
+            b64_part = match.group(2)
+
+            # URL-decode and clean
+            cleaned_b64 = unquote(b64_part)
+            cleaned_b64 = cleaned_b64.replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
+
+            # Validate base64 characters
+            if not re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned_b64):
+                self.logger.warning("⚠️ Invalid base64 characters in data URI during post-processing")
+                return match.group(0)
+
+            # Fix padding
+            missing_padding = (-len(cleaned_b64)) % 4
+            if missing_padding:
+                cleaned_b64 += "=" * missing_padding
+
+            # Validate by attempting to decode
+            try:
+                base64.b64decode(cleaned_b64, validate=True)
+            except Exception as e:
+                self.logger.warning(f"⚠️ Invalid base64 in data URI (decode failed): {str(e)[:50]}")
+                return match.group(0)
+
+            return header + cleaned_b64
+
+        return re.sub(pattern, clean_match, html, flags=re.MULTILINE | re.DOTALL)
+
+    # ==================== HTML Processing Helpers ====================
+
+    def _remove_unwanted_tags(self, soup: BeautifulSoup) -> None:
+        """Remove script, style, noscript, and iframe tags from the soup."""
+        for tag in soup(["script", "style", "noscript", "iframe"]):
+            tag.decompose()
+
+    def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
+        """
+        Convert an SVG tag to a PNG img tag.
+
+        Args:
+            soup: BeautifulSoup object for creating new tags
+            svg: SVG tag element to convert
+
+        Returns:
+            True if conversion succeeded, False otherwise
+        """
+        try:
+            svg_content = str(svg)
+            svg_bytes = svg_content.encode('utf-8')
+            svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
+
+            # Convert SVG to PNG
+            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            png_b64_str = self._clean_base64_string(png_b64_str)
+
+            if not png_b64_str:
+                self.logger.warning("⚠️ Failed to clean/validate PNG base64 from SVG, skipping")
+                svg.decompose()
+                return False
+
+            # Create new img tag
+            new_img = soup.new_tag('img')
+            new_img['src'] = f"data:image/png;base64,{png_b64_str}"
+            new_img['alt'] = svg.get('aria-label') or svg.get('title') or 'Converted SVG image'
+
+            svg.replace_with(new_img)
+            self.logger.debug("✅ Converted SVG tag to PNG img tag")
+            return True
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to convert SVG tag to PNG: {e}. Removing SVG tag.")
+            svg.decompose()
+            return False
+
+    def _process_svg_tags(self, soup: BeautifulSoup) -> None:
+        """Convert all SVG tags to PNG img tags."""
+        for svg in soup.find_all('svg'):
+            self._convert_svg_tag_to_png(soup, svg)
+
+    async def _process_single_image(
+        self,
+        img,
+        soup: BeautifulSoup,
+        base_url: str,
+        headers: dict
+    ) -> None:
+        """
+        Process a single image tag: download if needed and convert to base64.
+
+        Args:
+            img: Image tag element
+            soup: BeautifulSoup object
+            base_url: Base URL for resolving relative URLs
+            headers: HTTP headers for requests
+        """
+        src = img.get('src')
+        if not src:
+            return
+
+        # Handle existing data URIs
+        if "data:image" in src:
+            if "," in src:
+                header, existing_b64 = src.split(",", 1)
+                cleaned_b64 = self._clean_base64_string(existing_b64)
+                if cleaned_b64:
+                    img['src'] = f"{header},{cleaned_b64}"
+                else:
+                    self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+                    img.decompose()
+            return
+
+        # Download and convert external images
+        try:
+            absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
+
+            async with self.session.get(absolute_url, headers=headers) as img_response:
+                if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
+                    self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
+                    return
+
+                img_bytes = await img_response.read()
+                if not img_bytes:
+                    return
+
+                content_type = self._determine_image_content_type(img_response, absolute_url)
+
+                # Convert to base64 (handle SVG specially)
+                if content_type == 'image/svg+xml':
+                    b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
+                    if not b64_str:
+                        img.decompose()
+                        return
+                    content_type = 'image/png'
+                else:
+                    b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                    b64_str = self._clean_base64_string(b64_str)
+                    if not b64_str:
+                        self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
+                        img.decompose()
+                        return
+                    self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
+
+                img['src'] = f"data:{content_type};base64,{b64_str}"
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to process image {src}: {e}")
+
+    def _determine_image_content_type(self, response, url: str) -> str:
+        """Determine the content type of an image from response headers or URL."""
+        content_type = response.headers.get('Content-Type', 'image/jpeg')
+
+        if not content_type or content_type == 'application/octet-stream':
+            parsed_url = urlparse(url)
+            path_lower = parsed_url.path.lower()
+
+            extension_map = {
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.svg': 'image/svg+xml',
+            }
+
+            for ext, mime in extension_map.items():
+                if path_lower.endswith(ext):
+                    return mime
+            return 'image/jpeg'
+
+        return content_type.split(';')[0].strip().lower()
+
+    def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
+        """Convert SVG bytes to PNG base64 string."""
+        try:
+            svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
+            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            png_b64_str = self._clean_base64_string(png_b64_str)
+
+            if not png_b64_str:
+                self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from SVG: {url}. Removing.")
+                return None
+
+            self.logger.debug(f"✅ Converted SVG to PNG and base64: {url}")
+            return png_b64_str
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
+            return None
+
+    async def _process_all_images(
+        self,
+        soup: BeautifulSoup,
+        base_url: str,
+        headers: dict
+    ) -> None:
+        """Process all image tags in the soup."""
+        for img in soup.find_all('img'):
+            await self._process_single_image(img, soup, base_url, headers)
+
+    async def _process_html_content(
+        self,
+        content_bytes: bytes,
+        record: Record,
+        headers: dict
+    ) -> Optional[str]:
+        """
+        Process HTML content: parse, clean, and convert images to base64.
+
+        Args:
+            content_bytes: Raw HTML content bytes
+            record: Record object containing URL and metadata
+            headers: HTTP headers for image requests
+
+        Returns:
+            Cleaned HTML string with embedded base64 images, or None on failure
+        """
+        try:
+            html_content = content_bytes.decode('utf-8')
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Remove unwanted tags
+            self._remove_unwanted_tags(soup)
+
+            # Convert SVG tags to PNG img tags
+            self._process_svg_tags(soup)
+
+            # Process all images: download and convert to base64
+            await self._process_all_images(soup, record.weburl, headers)
+
+            # Serialize and clean data URIs
+            cleaned_html = str(soup)
+            cleaned_html = self._clean_data_uris_in_html(cleaned_html)
+
+            return cleaned_html
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to parse/clean HTML: {e}")
+            return None
+
+    # ==================== Main Stream Record Method ====================
+
     async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
-        """Stream the web page content with proper content extraction."""
+        """
+        Stream the web page content with proper content extraction.
+
+        This method fetches web content, processes HTML (cleaning and converting
+        images to base64), and returns a streaming response.
+
+        Args:
+            record: Record object containing URL and metadata
+
+        Returns:
+            StreamingResponse with the processed content, or None on failure
+        """
         if not record.weburl:
             return None
 
         try:
-            # Use appropriate headers for streaming
             headers = {"Referer": self.url} if self.url else {}
+
             async with self.session.get(record.weburl, headers=headers) as response:
                 if response.status >= HttpStatusCode.BAD_REQUEST.value:
                     return None
@@ -705,137 +1012,19 @@ class WebConnector(BaseConnector):
                 content_bytes = await response.read()
                 mime_type = record.mime_type or "text/html"
 
-                # Process HTML content: parse, clean, and convert images to base64
+                # Process HTML content
                 cleaned_html_content = None
                 if "html" in mime_type.lower():
-                    try:
-                        # Parse HTML with BeautifulSoup
-                        html_content = content_bytes.decode('utf-8')
-                        soup = BeautifulSoup(html_content, 'html.parser')
+                    cleaned_html_content = await self._process_html_content(
+                        content_bytes, record, headers
+                    )
 
-                        # Remove unwanted tags (script, style, noscript, iframe)
-                        for tag in soup(["script", "style", "noscript", "iframe"]):
-                            tag.decompose()
-
-                        # Convert SVG tags to img tags with PNG base64 (OpenAI doesn't support SVG)
-                        svg_tags = soup.find_all('svg')
-                        for svg in svg_tags:
-                            try:
-                                # Get SVG content as string
-                                svg_content = str(svg)
-                                # Encode SVG content to base64
-                                svg_bytes = svg_content.encode('utf-8')
-                                svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
-
-                                # Convert SVG to PNG
-                                png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
-
-                                # Create new img tag with PNG data URI
-                                new_img = soup.new_tag('img')
-                                new_img['src'] = f"data:image/png;base64,{png_b64_str}"
-                                # Preserve alt text if present in SVG
-                                if svg.get('aria-label'):
-                                    new_img['alt'] = svg.get('aria-label')
-                                elif svg.get('title'):
-                                    new_img['alt'] = svg.get('title')
-                                else:
-                                    new_img['alt'] = 'Converted SVG image'
-
-                                # Replace SVG tag with img tag
-                                svg.replace_with(new_img)
-                                self.logger.debug("✅ Converted SVG tag to PNG img tag")
-                            except Exception as svg_error:
-                                self.logger.warning(f"⚠️ Failed to convert SVG tag to PNG: {svg_error}. Removing SVG tag.")
-                                # If conversion fails, remove the SVG tag
-                                svg.decompose()
-                                continue
-
-                        # Process images: download and convert to base64
-                        images = soup.find_all('img')
-                        for img in images:
-                            src = img.get('src')
-                            if not src:
-                                continue
-
-                            # Skip if already a data URI
-                            if "data:image" in src:
-                                continue
-
-                            try:
-                                # Convert relative URLs to absolute
-                                if not src.startswith(('http:', 'https:')):
-                                    absolute_url = urljoin(record.weburl, src)
-                                else:
-                                    absolute_url = src
-
-                                # Download the image
-                                async with self.session.get(absolute_url, headers=headers) as img_response:
-                                    if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
-                                        self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
-                                        continue
-
-                                    img_bytes = await img_response.read()
-                                    if not img_bytes:
-                                        continue
-
-                                    # Determine content type
-                                    content_type = img_response.headers.get('Content-Type', 'image/jpeg')
-                                    # Fallback to extension-based type if header is missing
-                                    if not content_type or content_type == 'application/octet-stream':
-                                        parsed_img_url = urlparse(absolute_url)
-                                        path_lower = parsed_img_url.path.lower()
-                                        if path_lower.endswith('.png'):
-                                            content_type = 'image/png'
-                                        elif path_lower.endswith('.gif'):
-                                            content_type = 'image/gif'
-                                        elif path_lower.endswith('.webp'):
-                                            content_type = 'image/webp'
-                                        elif path_lower.endswith('.svg'):
-                                            content_type = 'image/svg+xml'
-                                        else:
-                                            content_type = 'image/jpeg'
-
-                                    # Normalize content type (remove parameters like charset)
-                                    content_type = content_type.split(';')[0].strip().lower()
-
-                                    # Convert SVG to PNG before base64 encoding (OpenAI doesn't support SVG)
-                                    if content_type == 'image/svg+xml':
-                                        try:
-                                            # First encode SVG bytes to base64
-                                            svg_b64_str = base64.b64encode(img_bytes).decode('utf-8')
-                                            # Convert SVG base64 to PNG base64
-                                            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
-                                            # Update content type to PNG
-                                            content_type = 'image/png'
-                                            b64_str = png_b64_str
-                                            self.logger.debug(f"✅ Converted SVG to PNG and base64: {absolute_url}")
-                                        except Exception as svg_error:
-                                            self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {svg_error}. Removing image from HTML.")
-                                            # Remove the image tag entirely to prevent SVG URL from being extracted later
-                                            img.decompose()
-                                            continue
-                                    else:
-                                        # Convert to base64 for non-SVG images
-                                        b64_str = base64.b64encode(img_bytes).decode('utf-8')
-                                        self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
-
-                                    img['src'] = f"data:{content_type};base64,{b64_str}"
-
-                            except Exception as img_error:
-                                self.logger.warning(f"⚠️ Failed to process image {src}: {img_error}")
-                                continue
-
-                        # Get cleaned HTML string
-                        cleaned_html_content = str(soup)
-
-                    except Exception as html_error:
-                        self.logger.warning(f"⚠️ Failed to parse/clean HTML: {html_error}")
-
-                # Use cleaned HTML content if available, otherwise use original content
-                if cleaned_html_content:
-                    response_content = cleaned_html_content.encode('utf-8')
-                else:
-                    response_content = content_bytes
+                # Prepare response content
+                response_content = (
+                    cleaned_html_content.encode('utf-8')
+                    if cleaned_html_content
+                    else content_bytes
+                )
 
                 return create_stream_record_response(
                     BytesIO(response_content),
@@ -843,6 +1032,7 @@ class WebConnector(BaseConnector):
                     mime_type=mime_type,
                     fallback_filename=f"record_{record.id}"
                 )
+
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}")
             return None
