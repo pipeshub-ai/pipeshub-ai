@@ -112,15 +112,13 @@ class GitHubClient(IClient):
             config = await cls._get_connector_config(logger, config_service, connector_instance_id)
             if not config:
                 raise ValueError("Failed to get GitHub connector configuration")
-            # logger.info(f"config :  {config}")
             auth_config = config.get("auth", {})
             if not auth_config:
                 raise ValueError ("Auth configuration not found in Github connector configuration")
 
             credentials_config  = config.get("credentials",{})
             if not  credentials_config:
-                raise ValueError("Credentials configuration not found un Github connector configuration")
-            # logger.info(f"creds_config :  {credentials_config}")
+                raise ValueError("Credentials configuration not found in Github connector configuration")
             # Extract configuration values
             auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
 
@@ -134,7 +132,6 @@ class GitHubClient(IClient):
                 client =client_via_token
             elif auth_type == "OAUTH":
                 access_token =credentials_config.get("access_token","")
-                # logger.info(f"access token : {access_token}")
                 if not access_token:
                     raise ValueError("Access token required for OAuth auth type")
 
@@ -145,8 +142,8 @@ class GitHubClient(IClient):
                 raise ValueError(f"Invalid auth type: {auth_type}")
             return cls(client)
         except Exception as e:
-            logger.error(f"Failed to build ConflueGithub client from services: {str(e)}")
-            return
+            logger.error(f"Failed to build Github client from services: {str(e)}")
+            raise
 
     @staticmethod
     async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:

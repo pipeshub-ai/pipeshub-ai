@@ -2477,7 +2477,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 user_id=created_by
             )
             if not user_doc:
-                None
+                return None
             user_ = User.from_arango_user(user_doc)
             return user_
         except Exception as e:

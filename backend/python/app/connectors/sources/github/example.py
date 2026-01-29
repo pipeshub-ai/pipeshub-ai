@@ -46,7 +46,7 @@ async def test_run()->None:
     Initializes and runs the Github Individual connector sync process for testing.
     This is for individual/personal Github accounts, not team accounts.
     """
-    org_id = "68d28814cdabcc98a3e02605"
+    org_id = (os.getenv("GITHUB_TEST_ORG_ID") or "68d28814cdabcc98a3e02605").strip()
 
     async def create_test_users(arango_service: BaseArangoService) -> None:
         """
@@ -118,7 +118,7 @@ async def test_run()->None:
 
         missing_values = []
         if not access_token:
-            missing_values.append("GITHUB_PERSON_ACCESS_TOKEN")
+            missing_values.append("GITHUB_PERSONAL_ACCESS_TOKEN")
         if not app_key:
             missing_values.append("GITHUB_PERSONAL_APP_KEY")
         if not app_secret:
@@ -153,7 +153,7 @@ async def test_run()->None:
 
     async def run_connector(logger, data_store_provider, config_service) -> None:
         """
-        Create and run the Gtihub Individual connector.
+        Create and run the Github Individual connector.
         Handles initialization and sync execution.
         """
         github_connector = await GithubConnector.create_connector(
