@@ -2,10 +2,8 @@ import asyncio
 import base64
 import hashlib
 import uuid
-from datetime import datetime
 from io import BytesIO
 from logging import Logger
-from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -832,59 +830,6 @@ class WebConnector(BaseConnector):
 
                     except Exception as html_error:
                         self.logger.warning(f"⚠️ Failed to parse/clean HTML: {html_error}")
-
-                # Save cleaned content to file
-                try:
-                    # Create Documents/web-cleaned-logs directory
-                    log_dir = Path.home() / "Documents" / "web-cleaned-logs"
-                    log_dir.mkdir(parents=True, exist_ok=True)
-
-                    # Generate filename from record ID and timestamp
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    safe_record_id = record.id.replace("-", "_")[:8] if record.id else "unknown"
-
-                    # Determine file extension based on mime_type
-                    if "html" in mime_type.lower():
-                        ext = ".html"
-                    elif "json" in mime_type.lower():
-                        ext = ".json"
-                    elif "xml" in mime_type.lower():
-                        ext = ".xml"
-                    elif "text" in mime_type.lower():
-                        ext = ".txt"
-                    elif "pdf" in mime_type.lower():
-                        ext = ".pdf"
-                    else:
-                        ext = ".txt"
-
-                    filename = f"{timestamp}_{safe_record_id}_{record.record_name}{ext}"
-                    file_path = log_dir / filename
-
-                    # Write content
-                    if cleaned_html_content:
-                        # Save cleaned HTML with base64 images
-                        file_path.write_text(cleaned_html_content, encoding='utf-8')
-                        self.logger.info(f"✅ Saved cleaned HTML with base64 images to: {file_path}")
-                    elif mime_type.startswith("text/") or "html" in mime_type.lower() or "json" in mime_type.lower() or "xml" in mime_type.lower():
-                        # Try to decode as UTF-8 for text content
-                        try:
-                            content_text = content_bytes.decode('utf-8')
-                            file_path.write_text(content_text, encoding='utf-8')
-                        except UnicodeDecodeError:
-                            # Fallback: try other encodings or save as binary
-                            try:
-                                content_text = content_bytes.decode('latin-1')
-                                file_path.write_text(content_text, encoding='utf-8')
-                            except Exception:
-                                file_path.write_bytes(content_bytes)
-                    else:
-                        # For binary content, save as-is
-                        file_path.write_bytes(content_bytes)
-
-                    if not cleaned_html_content:
-                        self.logger.info(f"✅ Saved streamed content to: {file_path}")
-                except Exception as save_error:
-                    self.logger.warning(f"⚠️ Failed to save content to file: {save_error}")
 
                 # Use cleaned HTML content if available, otherwise use original content
                 if cleaned_html_content:
