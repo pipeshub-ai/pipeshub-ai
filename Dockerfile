@@ -78,7 +78,7 @@ RUN npm run build && \
 # -----------------------------------------------------------------------------
 # Stage 4: Frontend Build
 # -----------------------------------------------------------------------------
-FROM build-base AS frontend-build
+FROM node:20-slim AS frontend-build
 
 # Accept build arguments for whitelabel configuration
 ARG VITE_APP_NAME=""
