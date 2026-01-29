@@ -58,7 +58,7 @@ export class KafkaAdminService {
 
       const topicConfigs: ITopicConfig[] = topicsToCreate.map((t) => ({
         topic: t.topic,
-        numPartitions: t.numPartitions ?? 3,
+        numPartitions: t.numPartitions ?? 1,
         replicationFactor: t.replicationFactor ?? 1,
       }));
 
