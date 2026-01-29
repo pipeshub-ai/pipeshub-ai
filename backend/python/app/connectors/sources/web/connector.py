@@ -687,6 +687,8 @@ class WebConnector(BaseConnector):
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
+    # ==================== Base64 Validation Helpers ====================
+
     def _clean_base64_string(self, b64_str: str) -> str:
         """
         Clean and validate a base64 string to ensure it's valid for embedding in HTML
@@ -742,38 +744,65 @@ class WebConnector(BaseConnector):
             html: HTML string containing data URIs
 
         Returns:
-            HTML string with cleaned data URIs
+            HTML string with cleaned data URIs (invalid ones are removed)
         """
-        pattern = r'(data:image/[^;]+;base64,)([^"\'>]*(?:\s+[^"\'>]*)*?)(?=["\'>])'
+        # Use a simple, non-backtracking pattern that captures the data URI header
+        # Then we manually extract the base64 content up to the closing quote
+        pattern = r'data:image/[^;]+;base64,'
 
-        def clean_match(match) -> str:
-            header = match.group(1)
-            b64_part = match.group(2)
+        result = []
+        last_end = 0
+
+        for match in re.finditer(pattern, html):
+            header = match.group(0)
+            start = match.start()
+            base64_start = match.end()
+
+            # Find the end of base64 content (first quote or >)
+            base64_end = base64_start
+            while base64_end < len(html) and html[base64_end] not in '"\'>' :
+                base64_end += 1
+
+            b64_part = html[base64_start:base64_end]
 
             # URL-decode and clean
             cleaned_b64 = unquote(b64_part)
             cleaned_b64 = cleaned_b64.replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
 
-            # Validate base64 characters
-            if not re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned_b64):
+            # Validate and clean the base64
+            is_valid = False
+            if re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned_b64):
+                # Fix padding
+                missing_padding = (-len(cleaned_b64)) % 4
+                if missing_padding:
+                    cleaned_b64 += "=" * missing_padding
+
+                # Validate by attempting to decode
+                try:
+                    base64.b64decode(cleaned_b64, validate=True)
+                    is_valid = True
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Invalid base64 in data URI (decode failed): {str(e)[:50]}")
+            else:
                 self.logger.warning("⚠️ Invalid base64 characters in data URI during post-processing")
-                return match.group(0)
 
-            # Fix padding
-            missing_padding = (-len(cleaned_b64)) % 4
-            if missing_padding:
-                cleaned_b64 += "=" * missing_padding
+            # Add content up to this data URI
+            result.append(html[last_end:start])
 
-            # Validate by attempting to decode
-            try:
-                base64.b64decode(cleaned_b64, validate=True)
-            except Exception as e:
-                self.logger.warning(f"⚠️ Invalid base64 in data URI (decode failed): {str(e)[:50]}")
-                return match.group(0)
+            if is_valid:
+                # Add cleaned data URI
+                result.append(header + cleaned_b64)
+            else:
+                # Remove invalid image by not adding the data URI
+                # This effectively removes the src attribute value
+                self.logger.warning("⚠️ Removing invalid base64 data URI from HTML")
 
-            return header + cleaned_b64
+            last_end = base64_end
 
-        return re.sub(pattern, clean_match, html, flags=re.MULTILINE | re.DOTALL)
+        # Add remaining content
+        result.append(html[last_end:])
+
+        return ''.join(result)
 
     # ==================== HTML Processing Helpers ====================
 
