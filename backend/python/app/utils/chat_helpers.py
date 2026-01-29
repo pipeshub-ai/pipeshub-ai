@@ -1,4 +1,3 @@
-import re
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 from uuid import uuid4
@@ -114,7 +113,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             table_data = block.get("data",{})
             table_metadata = block.get("table_metadata", {})
             children = block.get("children")
-            
+
             # Handle both old and new children formats
             if children:
                 if isinstance(children, dict) and 'block_ranges' in children:
@@ -138,7 +137,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 first_block_index = None
                 last_block_index = None
                 all_block_indices = []
-            
+
             result["block_index"] = first_block_index
             if first_block_index is not None:
                 adjacent_chunks[virtual_record_id].append(first_block_index-1)
@@ -635,7 +634,7 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
         if block_ranges:
             # Return the first index from the first range
             return block_ranges[0].get('start')
-        
+
         # If no block ranges, check block group ranges
         block_group_ranges = children.get('block_group_ranges', [])
         if block_group_ranges:
@@ -646,7 +645,7 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
                 if nested_children:
                     return _find_first_block_index_recursive(block_groups, nested_children)
         return None
-    
+
     # Handle old format (list of BlockContainerIndex)
     if isinstance(children, list) and len(children) > 0:
         first_child = children[0]
@@ -686,7 +685,7 @@ def _extract_text_content_recursive(
     """
     content = ""
     indent = "  " * depth
-    
+
     # Handle new range-based format
     if isinstance(children, dict) and ('block_ranges' in children or 'block_group_ranges' in children):
         # Process block ranges
@@ -700,13 +699,13 @@ def _extract_text_content_recursive(
                     if virtual_record_id is not None and seen_chunks is not None:
                         child_id = f"{virtual_record_id}-{block_index}"
                         seen_chunks.add(child_id)
-                    
+
                     # Extract text from block
                     if 0 <= block_index < len(blocks):
                         child_block = blocks[block_index]
                         if child_block.get("type") == BlockType.TEXT.value:
                             content += f"{indent}{child_block.get('data', '')}\n"
-        
+
         # Process block group ranges
         block_group_ranges = children.get('block_group_ranges', [])
         for range_obj in block_group_ranges:
@@ -718,7 +717,7 @@ def _extract_text_content_recursive(
                     if virtual_record_id is not None and seen_chunks is not None:
                         child_id = f"{virtual_record_id}-{block_group_index}-block_group"
                         seen_chunks.add(child_id)
-                    
+
                     # Recursively process nested children
                     if 0 <= block_group_index < len(block_groups):
                         nested_group = block_groups[block_group_index]
@@ -728,11 +727,11 @@ def _extract_text_content_recursive(
                                 block_groups, blocks, nested_children, virtual_record_id, seen_chunks, depth + 1
                             )
         return content
-    
+
     # Handle old format (list of BlockContainerIndex)
     if not isinstance(children, list):
         return content
-        
+
     for child in children:
         block_index = child.get("block_index")
         block_group_index = child.get("block_group_index")
@@ -812,9 +811,9 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
     children = parent_block.get("children")
     if not children:
         return []
-    
+
     result_blocks = []
-    
+
     # Handle new range-based format
     if isinstance(children, dict) and 'block_ranges' in children:
         block_ranges = children.get('block_ranges', [])
@@ -826,14 +825,14 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
                     if 0 <= block_index < len(blocks):
                         result_blocks.append(blocks[block_index])
         return result_blocks
-    
+
     # Handle old format (list of BlockContainerIndex)
     if isinstance(children, list):
         for child in children:
             block_index = child.get("block_index")
             if block_index is not None and 0 <= block_index < len(blocks):
                 result_blocks.append(blocks[block_index])
-    
+
     return result_blocks
 
 
@@ -925,7 +924,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
                     if block_type == GroupType.TABLE.value:
                         table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
-                        
+
                         # Get block indices from children (handle both old and new formats)
                         children = corresponding_block_group.get("children")
                         rows_to_be_included_list = []
@@ -940,7 +939,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                             elif isinstance(children, list):
                                 # Old format
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
-                        
+
                         # Process table rows
                         child_results = []
                         for row_index in rows_to_be_included_list:

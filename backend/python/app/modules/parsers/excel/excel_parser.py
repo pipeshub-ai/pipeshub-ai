@@ -18,7 +18,6 @@ from tenacity import (
 
 from app.models.blocks import (
     Block,
-    BlockContainerIndex,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,

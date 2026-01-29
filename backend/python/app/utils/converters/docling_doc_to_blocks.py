@@ -1,4 +1,3 @@
-import json
 import uuid
 from typing import Optional
 
@@ -6,7 +5,6 @@ from docling.datamodel.document import DoclingDocument
 
 from app.models.blocks import (
     Block,
-    BlockContainerIndex,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
@@ -266,7 +264,7 @@ class DoclingDocToBlocksConverter():
             if len(cell_data) == 0:
                 self.logger.warning(f"No table cells found in the table data: {table_data}")
                 return None
-            
+
             # Get table grid for summary generation
             table_grid = table_data.get("grid", [])
             table_grid_data = []
@@ -275,7 +273,7 @@ class DoclingDocToBlocksConverter():
                 for cell in row:
                     row_data.append(cell.get("text", ""))
                 table_grid_data.append(row_data)
-            
+
             response = await get_table_summary_n_headers(self.config, table_grid_data)
             table_summary = response.summary if response else ""
             column_headers = response.headers if response else []
@@ -287,11 +285,11 @@ class DoclingDocToBlocksConverter():
             _captions = _resolve_ref_list(_captions)
             _footnotes = item.get("footnotes", [])
             _footnotes = _resolve_ref_list(_footnotes)
-            
+
             num_of_rows = table_data.get("num_rows", None)
             num_of_cols = table_data.get("num_cols", None)
             num_of_cells = num_of_rows * num_of_cols if num_of_rows and num_of_cols else None
-            
+
             block_group = BlockGroup(
                 index=len(block_groups),
                 name=item.get("name", ""),
