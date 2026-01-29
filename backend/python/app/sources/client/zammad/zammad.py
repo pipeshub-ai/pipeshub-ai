@@ -1,4 +1,5 @@
 import base64
+import json
 import logging
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, List, Optional, Union
@@ -13,16 +14,25 @@ from app.sources.client.iclient import IClient
 class ZammadResponse(BaseModel):
     """Standardized Zammad API response wrapper"""
     success: bool
-    data: Optional[Union[Dict[str, Any], List[Any]]] = None
+    data: Optional[Union[Dict[str, Any], List[Any], bytes]] = None
     error: Optional[str] = None
     message: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
-        return self.model_dump()
+        result = self.model_dump()
+        # Handle bytes data - convert to base64 for serialization
+        if isinstance(result.get("data"), bytes):
+            result["data"] = base64.b64encode(result["data"]).decode("utf-8")
+        return result
 
     def to_json(self) -> str:
         """Convert to JSON string"""
+        # Handle bytes data - convert to base64 for JSON serialization
+        if isinstance(self.data, bytes):
+            result = self.model_dump()
+            result["data"] = base64.b64encode(self.data).decode("utf-8")
+            return json.dumps(result)
         return self.model_dump_json()
 
 
@@ -242,6 +252,7 @@ class ZammadClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "ZammadClient":
         """Build ZammadClient using configuration service
         This method fetches Zammad configuration from the configuration service
@@ -249,6 +260,7 @@ class ZammadClient(IClient):
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID for multi-instance support
         Returns:
             ZammadClient instance
         Raises:
@@ -256,7 +268,7 @@ class ZammadClient(IClient):
         """
         try:
             # Get Zammad configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Zammad connector configuration")
@@ -265,9 +277,15 @@ class ZammadClient(IClient):
             if not auth_config:
                 raise ValueError("Auth configuration not found in Zammad connector configuration")
 
-            base_url = config.get("base_url") or config.get("baseUrl")
+            # Check for baseUrl in multiple locations (top-level or in auth config)
+            base_url = (
+                config.get("base_url") or
+                config.get("baseUrl") or
+                auth_config.get("base_url") or
+                auth_config.get("baseUrl")
+            )
             if not base_url:
-                raise ValueError("Base URL not found in Zammad connector configuration")
+                raise ValueError("Base URL not found in Zammad connector configuration. Please provide baseUrl in auth configuration.")
 
             # Get authentication type
             auth_type = auth_config.get("authType", "TOKEN")
@@ -291,8 +309,8 @@ class ZammadClient(IClient):
 
                 client = ZammadRESTClientViaToken(base_url, token)
 
-            elif auth_type == "OAUTH2" or auth_type == "BEARER":
-                bearer_token = auth_config.get("bearerToken") or auth_config.get("bearer_token", "")
+            elif auth_type == "OAUTH2" or auth_type == "BEARER" or auth_type == "OAUTH":
+                bearer_token = auth_config.get("bearerToken") or auth_config.get("bearer_token") or auth_config.get("accessToken", "")
 
                 if not bearer_token:
                     raise ValueError("Bearer token required for OAuth2 auth type")
@@ -312,17 +330,23 @@ class ZammadClient(IClient):
     @staticmethod
     async def _get_connector_config(
         logger: logging.Logger,
-        config_service: ConfigurationService
+        config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Fetch connector config from configuration service for Zammad
         Args:
             logger: Logger instance
             config_service: Configuration service instance
+            connector_instance_id: Optional connector instance ID
         Returns:
             Configuration dictionary
         """
         try:
-            config = await config_service.get_config("/services/connectors/zammad/config")
+            if connector_instance_id:
+                config_path = f"/services/connectors/{connector_instance_id}/config"
+            else:
+                config_path = "/services/connectors/zammad/config"
+            config = await config_service.get_config(config_path)
             return config or {}
         except Exception as e:
             logger.error(f"Failed to get Zammad connector config: {e}")

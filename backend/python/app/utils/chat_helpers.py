@@ -20,7 +20,7 @@ from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
 
-group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value]
+group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
 
 # Create a logger for this module
 logger = create_logger("chat_helpers")
@@ -692,6 +692,7 @@ def build_group_text(block_groups: List[Dict[str, Any]], blocks: List[Dict[str, 
         GroupType.FORM_AREA.value,
         GroupType.INLINE.value,
         GroupType.KEY_VALUE_AREA.value,
+        GroupType.TEXT_SECTION.value,
     ]
 
     if label not in valid_group_labels:
