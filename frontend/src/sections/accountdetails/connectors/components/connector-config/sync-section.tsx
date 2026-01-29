@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -34,32 +34,37 @@ interface SyncSectionProps {
   readOnly?: boolean; // If true, show read-only view (no editing)
 }
 
-const SyncSection: React.FC<SyncSectionProps> = ({
-  connectorConfig,
-  formData,
-  formErrors,
-  onFieldChange,
-  saving,
-  readOnly = false,
-}) => {
-  const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
-  const [showDocs, setShowDocs] = React.useState(false);
+const SyncSection = forwardRef<HTMLDivElement, SyncSectionProps>(
+  (
+    {
+      connectorConfig,
+      formData,
+      formErrors,
+      onFieldChange,
+      saving,
+      readOnly = false,
+    },
+    ref
+  ) => {
+    const theme = useTheme();
+    const isDark = theme.palette.mode === 'dark';
+    const [showDocs, setShowDocs] = React.useState(false);
 
-  if (!connectorConfig) return null;
+    if (!connectorConfig) return null;
 
-  const { sync } = connectorConfig.config;
+    const { sync } = connectorConfig.config;
 
-  return (
-    <Box
-      sx={{
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 1.5,
-        height: '100%',
-        pb: 3,
-      }}
-    >
+    return (
+      <Box
+        ref={ref}
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 1.5,
+          height: '100%',
+          pb: 3,
+        }}
+      >
       {/* Sync Strategy */}
       <Paper
         variant="outlined"
@@ -466,6 +471,8 @@ const SyncSection: React.FC<SyncSectionProps> = ({
       </Alert>
     </Box>
   );
-};
+});
+
+SyncSection.displayName = 'SyncSection';
 
 export default SyncSection;
