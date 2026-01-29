@@ -1,4 +1,5 @@
 import json
+from typing import Any, Dict
 
 import aiohttp
 import jwt
@@ -22,12 +23,53 @@ class BlobStorage(Transformer):
         self.config_service = config_service
         self.arango_service = arango_service
 
+    def _clean_top_level_empty_values(self, obj: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Remove top-level keys with None, empty strings, empty lists, and empty dicts.
+        Only processes the first level of the given object.
+        """
+        return {
+            k: v
+            for k, v in obj.items()
+            if v is not None and v != "" and v != [] and v != {}
+        }
+
+    def _clean_empty_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Clean empty values at the top level of:
+        1. The main record object
+        2. Each block in block_containers.blocks
+        3. Each block group in block_containers.block_groups
+        """
+        # Clean top-level record fields
+        cleaned = self._clean_top_level_empty_values(data)
+        
+        # Clean each block's top-level fields
+        if "block_containers" in cleaned and isinstance(cleaned["block_containers"], dict):
+            block_containers = cleaned["block_containers"]
+            
+            if "blocks" in block_containers and isinstance(block_containers["blocks"], list):
+                block_containers["blocks"] = [
+                    self._clean_top_level_empty_values(block) if isinstance(block, dict) else block
+                    for block in block_containers["blocks"]
+                ]
+            
+            if "block_groups" in block_containers and isinstance(block_containers["block_groups"], list):
+                block_containers["block_groups"] = [
+                    self._clean_top_level_empty_values(bg) if isinstance(bg, dict) else bg
+                    for bg in block_containers["block_groups"]
+                ]
+        
+        return cleaned
+
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        record_dict = record.model_dump(mode='json')
+        # Use exclude_none=True to skip None values, then clean empty values
+        record_dict = record.model_dump(mode='json', exclude_none=True)
+        record_dict = self._clean_empty_values(record_dict)
         document_id = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
 
         # Store the mapping if we have both IDs and arango_service is available
