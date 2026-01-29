@@ -56,6 +56,7 @@ import { filterAgents, sortAgents, formatTimestamp } from './utils/agent';
 import TemplateBuilder from './components/template-builder';
 import TemplateSelector from './components/template-selector';
 import AgentPermissionsDialog from './components/agent-builder/agent-permissions-dialog';
+import { AgentGridSkeleton, HeaderSkeleton } from './components/skeleton-loader';
 
 interface AgentsManagementProps {
   onAgentSelect?: (agent: Agent) => void;
@@ -565,10 +566,51 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
     ]
   );
 
+  // Show premium loading state
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>
-        <CircularProgress />
+      <Box sx={{ height: '90vh', display: 'flex', flexDirection: 'column' }}>
+        {/* Header Skeleton */}
+        <Box
+          sx={{
+            borderBottom: `1px solid ${borderColor}`,
+            backgroundColor: 'background.paper',
+          }}
+        >
+          <LinearProgress
+            sx={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              height: 2,
+              backgroundColor: 'transparent',
+            }}
+          />
+          <HeaderSkeleton />
+        </Box>
+
+        {/* Content Area with Skeleton */}
+        <Box
+          sx={{
+            flex: 1,
+            overflow: 'auto',
+          }}
+        >
+          <Container
+            maxWidth="xl"
+            sx={{
+              py: { xs: 2, sm: 3 },
+              px: { xs: 2, sm: 3 },
+            }}
+          >
+            <Fade in timeout={300}>
+              <Box>
+                <AgentGridSkeleton count={8} />
+              </Box>
+            </Fade>
+          </Container>
+        </Box>
       </Box>
     );
   }
@@ -584,18 +626,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           py: 2.5,
         }}
       >
-        {loading && (
-          <LinearProgress
-            sx={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              height: 2,
-              backgroundColor: 'transparent',
-            }}
-          />
-        )}
 
         <Stack
           direction="row"

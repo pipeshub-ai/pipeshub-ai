@@ -50,6 +50,8 @@ import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
+import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreMigration.service';
+import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import {
@@ -57,6 +59,7 @@ import {
   createOAuthClientsRouter,
   createOIDCDiscoveryRouter,
 } from './modules/oauth_provider/routes';
+import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 
 const loggerConfig = {
   service: 'Application',
@@ -86,6 +89,7 @@ export class Application {
     this.server = http.createServer(this.app);
   }
 
+
   async initialize(): Promise<void> {
     try {
       // Initialize Logger
@@ -93,6 +97,18 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+
+      // Ensure Kafka topics exist (important for Kafka deployments where auto-create is disabled)
+      try {
+        this.logger.info('Ensuring Kafka topics exist...');
+        await ensureKafkaTopicsExist(appConfig.kafka, this.logger, REQUIRED_KAFKA_TOPICS);
+        this.logger.info('Kafka topics check completed');
+      } catch (kafkaError: any) {
+        this.logger.warn(
+          `Could not verify/create Kafka topics: ${kafkaError.message}.`
+        );
+        // Don't throw - allow app to continue; topics might already exist or be created elsewhere
+      }
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
@@ -226,49 +242,54 @@ export class Application {
   }
 
   private configureMiddleware(appConfig: AppConfig): void {
-    const isDev = process.env.NODE_ENV !== 'production';
-    // Security middleware - configure helmet once with all options
-    const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
-    const connectSrc = [
-      ...new Set([
-        "'self'",
-        "https://static.cloudflareinsights.com",
-        // Login with google urls
-        'https://accounts.google.com',
-        'https://www.googleapis.com',
-        // Login with microsoft urls
-        'https://login.microsoftonline.com',
-        'https://graph.microsoft.com',
-        ...envConnectSrcs,
-        appConfig.connectorPublicUrl,
-      ]),
-    ].filter(Boolean);
+    const isStrictMode = process.env.STRICT_MODE === 'true';
+    if (isStrictMode) {
+      // Security middleware - configure helmet once with all options
+      const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
+      const connectSrc = [
+        ...new Set([
+          "'self'",
+          "https://static.cloudflareinsights.com",
+          // Login with google urls
+          'https://accounts.google.com',
+          'https://www.googleapis.com',
+          // Login with microsoft urls
+          'https://login.microsoftonline.com',
+          'https://graph.microsoft.com',
+          ...envConnectSrcs,
+          appConfig.connectorPublicUrl,
+        ]),
+      ].filter(Boolean);
 
-    this.app.use(helmet({
-      crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: [
-            "'self'",
-            ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-              "https://cdnjs.cloudflare.com",
-              "https://login.microsoftonline.com",
-              "https://graph.microsoft.com",
-            ]),
-            ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
-          ],
-          connectSrc: connectSrc,
-          objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-          frameSrc: ["'self'", "blob:"], // PDF rendering in frames
-          workerSrc: ["'self'", "blob:"], // PDF.js workers
-          childSrc: ["'self'", "blob:"], // PDF rendering
-          imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
-          fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-          mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
+      this.app.use(helmet({
+        crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: [
+              "'self'",
+              ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+                "https://cdnjs.cloudflare.com",
+                "https://login.microsoftonline.com",
+                "https://graph.microsoft.com",
+                "https://accounts.google.com",
+                "https://challenges.cloudflare.com",
+                "https://api.iconify.design",
+                "https://api.simplesvg.com"
+              ]),
+            ],
+            connectSrc: connectSrc,
+            objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
+            frameSrc: ["'self'", "blob:"], // PDF rendering in frames
+            workerSrc: ["'self'", "blob:"], // PDF.js workers
+            childSrc: ["'self'", "blob:"], // PDF rendering
+            imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
+            fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
+            mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
+          }
         }
-      }
-    }));
+      }));
+    }
 
     // Request context middleware
     this.app.use(requestContextMiddleware);
@@ -327,7 +348,7 @@ export class Application {
     );
     this.app.use('/api/v1/org', createOrgRouter(this.entityManagerContainer));
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer, this.entityManagerContainer));
+    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
 
     this.app.use(
       '/api/v1/userAccount',
@@ -492,6 +513,53 @@ export class Application {
       this.logger.error('Failed to initialize API documentation', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  /**
+   * Run migration from etcd to Redis BEFORE loading app config.
+   * This ensures secrets exist in Redis before we try to read them.
+   * Must be called before initialize().
+   */
+  async preInitMigration(): Promise<void> {
+    const logger = Logger.getInstance(loggerConfig);
+    const configurationManagerConfig = loadConfigurationManagerConfig();
+
+    if (configurationManagerConfig.storeType !== StoreType.Redis) {
+      logger.debug('KV store is not Redis, skipping pre-init migration check');
+      return;
+    }
+
+    logger.info('Checking KV store migration status before loading config...');
+    const migrationResult = await checkAndMigrateIfNeeded({
+      etcd: {
+        host: configurationManagerConfig.storeConfig.host,
+        port: configurationManagerConfig.storeConfig.port,
+        dialTimeout: configurationManagerConfig.storeConfig.dialTimeout,
+      },
+      redis: {
+        host: configurationManagerConfig.redisConfig.host,
+        port: configurationManagerConfig.redisConfig.port,
+        password: configurationManagerConfig.redisConfig.password,
+        db: configurationManagerConfig.redisConfig.db,
+        keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
+      },
+    });
+
+    if (migrationResult !== null) {
+      if (migrationResult.success) {
+        logger.info('KV store migration completed successfully', {
+          migratedKeys: migrationResult.migratedKeys.length,
+        });
+      } else {
+        logger.error('KV store migration failed', {
+          error: migrationResult.error,
+          failedKeys: migrationResult.failedKeys,
+        });
+        throw new Error(`KV store migration failed: ${migrationResult.error}`);
+      }
+    } else {
+      logger.info('KV store migration not needed (already completed or etcd not available)');
     }
   }
 }

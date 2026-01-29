@@ -1,9 +1,12 @@
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
+
+if TYPE_CHECKING:
+    pass
 
 
 class Point(BaseModel):
@@ -18,13 +21,15 @@ class CommentFormat(str, Enum):
 
 class BlockType(str, Enum):
     TEXT = "text"
+    IMAGE = "image"
+    TABLE_ROW = "table_row"
+
+    # Do not use these types as currently not supported
     PARAGRAPH = "paragraph"
     TEXTSECTION = "textsection"
     TABLE = "table"
-    TABLE_ROW = "table_row"
     TABLE_CELL = "table_cell"
     FILE = "file"
-    IMAGE = "image"
     VIDEO = "video"
     AUDIO = "audio"
     LINK = "link"
@@ -34,6 +39,18 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
+
+class BlockSubType(str, Enum):
+    CHILD_RECORD = "child_record"
+    COMMENT = "comment"
+    PARAGRAPH = "paragraph"
+    HEADING = "heading"
+    QUOTE = "quote"
+    LIST_ITEM = "list_item"
+    CODE = "code"
+    EQUATION = "equation"
+    DIVIDER = "divider"
+    LINK = "link"
 
 class DataFormat(str, Enum):
     TXT = "txt"
@@ -47,11 +64,23 @@ class DataFormat(str, Enum):
     BASE64 = "base64"
     UTF8 = "utf8"
 
+class CommentAttachment(BaseModel):
+    """Attachment model for comments"""
+    name: str = Field(description="Name of the attachment")
+    id: str = Field(description="ID of the attachment")
+
 class BlockComment(BaseModel):
     text: str
     format: DataFormat
+    author_id: Optional[str] = Field(default=None, description="ID of the user who created the comment")
+    author_name: Optional[str] = Field(default=None, description="Name of the user who created the comment")
     thread_id: Optional[str] = None
-    attachment_record_ids: Optional[List[str]] = None
+    resolution_status: Optional[str] = Field(default=None, description="Status of the comment (e.g., 'resolved', 'open')")
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in the source system)")
+    created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created")
+    updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated")
+    attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
+    quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
 
 class CitationMetadata(BaseModel):
     """Citation-specific metadata for referencing source locations"""
@@ -104,11 +133,23 @@ class TableCellMetadata(BaseModel):
     column_header: Optional[bool] = None
     row_header: Optional[bool] = None
 
+class ChildType(str, Enum):
+    """Type of child reference"""
+    RECORD = "record"
+    USER = "user"
+
+class ChildRecord(BaseModel):
+    """Metadata for child references (records, users, or other types)"""
+    child_type: ChildType = Field(description="Type of child: 'record', 'user', etc.")
+    child_id: str = Field(description="ID of the child (ArangoDB record ID, user ID, etc.)")
+    child_name: Optional[str] = Field(default=None, description="Name/title of the child")
+
 class TableRowMetadata(BaseModel):
     """Metadata specific to table row blocks"""
     row_number: Optional[int] = None
     row_span: Optional[int] = None
     is_header: bool = False
+    children_records: Optional[List[ChildRecord]] = None
 
 class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
@@ -175,15 +216,34 @@ class Confidence(str, Enum):
     LOW = "low"
 
 class GroupType(str, Enum):
+    TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
-    CODE = "code"
-    MEDIA = "media"
     SHEET = "sheet"
     FORM_AREA = "form_area"
     INLINE = "inline"
     KEY_VALUE_AREA = "key_value_area"
     ORDERED_LIST = "ordered_list"
+    COLUMN = "column"
+    COLUMN_LIST = "column_list"
+
+    # Do not use these types as currently not supported
+    CODE = "code"
+    MEDIA = "media"
+
+class GroupSubType(str, Enum):
+    MILESTONE = "milestone" # Milestone block group
+    UPDATE = "update" # Update block group
+    CHILD_RECORD = "child_record" # Child record reference block group
+    CONTENT = "content" # Content block group
+    RECORD = "record" # Record block group
+    COMMENT_THREAD = "comment_thread" # Comment thread block group (used for comments in a thread)
+    COMMENT = "comment" # Comment block group
+    TOGGLE = "toggle"
+    CALLOUT = "callout"
+    QUOTE = "quote"
+    SYNCED_BLOCK = "synced_block"
+    NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -206,9 +266,10 @@ class Block(BaseModel):
     index: int = None
     parent_index: Optional[int] = Field(default=None, description="Index of the parent block group")
     type: BlockType
+    sub_type: Optional[BlockSubType] = None
     name: Optional[str] = None
     format: DataFormat = None
-    comments: List[BlockComment] = Field(default_factory=list)
+    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments in API order")
     source_creation_date: Optional[datetime] = None
     source_update_date: Optional[datetime] = None
     source_id: Optional[str] = None
@@ -230,6 +291,7 @@ class Block(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
+    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
 
 class Blocks(BaseModel):
     blocks: List[Block] = Field(default_factory=list)
@@ -243,9 +305,11 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
+    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)
+    requires_processing : bool = Field(default=False, description="Indicates if further processing is needed for this block group")
     citation_metadata: Optional[CitationMetadata] = None
     list_metadata: Optional[ListMetadata] = None
     table_metadata: Optional[TableMetadata] = None
@@ -256,9 +320,12 @@ class BlockGroup(BaseModel):
     file_metadata: Optional[FileMetadata] = None
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
+    children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
     children: Optional[List[BlockContainerIndex]] = None
     data: Optional[Any] = None
     format: Optional[DataFormat] = None
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
+    comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
 
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)

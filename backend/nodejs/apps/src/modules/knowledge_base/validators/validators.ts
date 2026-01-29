@@ -9,7 +9,7 @@ export const getRecordByIdSchema = z.object({
 
 export const updateRecordSchema = z.object({
   body: z.object({
-    fileBuffer: z.any(),
+    fileBuffer: z.any().optional(),
     recordName: z.string().optional(),
   }),
   params: z.object({
@@ -726,5 +726,15 @@ export const deletePermissionsSchema = z.object({
   }),
   params: z.object({
     kbId: z.string().uuid(),
+  }),
+});
+
+export const moveRecordSchema = z.object({
+  body: z.object({
+    newParentId: z.string().nullable(),
+  }),
+  params: z.object({
+    kbId: z.string().uuid(),
+    recordId: z.string().min(1),
   }),
 });

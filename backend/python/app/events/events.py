@@ -201,48 +201,6 @@ class EventProcessor:
             origin = event_data.get("origin", "CONNECTOR" if connector != "" else "UPLOAD")
             record_name = event_data.get("recordName", f"Untitled-{record_id}")
 
-            if mime_type == "text/gmail_content":
-                if virtual_record_id is None:
-                    virtual_record_id = str(uuid4())
-
-                # MD5 deduplication for Gmail messages
-                html_content = event_data.get("body")
-                if html_content:
-                    try:
-                        if await self._check_duplicate_by_md5(html_content, doc):
-                            self.logger.info("Duplicate Gmail message detected, skipping processing")
-                            yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                            yield {"event": "indexing_complete", "data": {"record_id": record_id}}
-                            return
-
-                    except Exception as e:
-                        self.logger.error(f"❌ Error in Gmail MD5/duplicate processing: {repr(e)}")
-                        raise
-
-                    await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
-
-                    if event_type == EventTypes.UPDATE_RECORD.value:
-                        virtual_record_id = str(uuid4())
-
-                    self.logger.info("🚀 Processing Gmail Message")
-                    async for event in self.processor.process_gmail_message(
-                        recordName=record_name,
-                        recordId=record_id,
-                        version=record_version,
-                        source=connector,
-                        orgId=org_id,
-                        html_content=html_content,
-                        virtual_record_id=virtual_record_id
-                    ):
-                        yield event
-                    return
-                else:
-                    await self.mark_record_status(doc, ProgressStatus.EMPTY)
-                    yield {"event": "parsing_complete", "data": {"record_id": record_id}}
-                    yield {"event": "indexing_complete", "data": {"record_id": record_id}}
-                    return
-
-
             file_content = event_data.get("buffer")
 
             self.logger.debug(f"file_content type: {type(file_content)} length: {len(file_content)}")
@@ -335,6 +293,33 @@ class EventProcessor:
                     recordType=record_type,
                     connectorName=connector,
                     origin=origin
+                ):
+                    yield event
+                return
+
+            if mime_type == MimeTypes.BLOCKS.value:
+                self.logger.info("🚀 Processing Blocks Container")
+                async for event in self.processor.process_blocks(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    blocks_data=file_content,
+                    virtual_record_id=virtual_record_id,
+                ):
+                    yield event
+                return
+
+            if mime_type == MimeTypes.GMAIL.value:
+                async for event in self.processor.process_gmail_message(
+                    recordName=record_name,
+                    recordId=record_id,
+                    version=record_version,
+                    source=connector,
+                    orgId=org_id,
+                    html_content=file_content,
+                    virtual_record_id=virtual_record_id
                 ):
                     yield event
                 return
@@ -443,15 +428,21 @@ class EventProcessor:
                     yield event
 
             elif extension == ExtensionTypes.CSV.value or mime_type == MimeTypes.CSV.value:
-                async for event in self.processor.process_csv_document(
+                async for event in self.processor.process_delimited_document(
                     recordName=record_name,
                     recordId=record_id,
-                    version=record_version,
-                    source=connector,
-                    orgId=org_id,
-                    csv_binary=file_content,
+                    file_binary=file_content,
                     virtual_record_id=virtual_record_id,
-                    origin=origin,
+                ):
+                    yield event
+
+            elif extension == ExtensionTypes.TSV.value or mime_type == MimeTypes.TSV.value:
+                async for event in self.processor.process_delimited_document(
+                    recordName=record_name,
+                    recordId=record_id,
+                    file_binary=file_content,
+                    virtual_record_id=virtual_record_id,
+                    extension=ExtensionTypes.TSV.value
                 ):
                     yield event
 

@@ -117,6 +117,117 @@ const CITATION_SIZE_CONFIG = {
   MIN_GROUP_FONT_SIZE: 0.6,
 } as const;
 
+// Scrollable table wrapper with auto-scroll during streaming
+const ScrollableTableWrapper = ({ 
+  children, 
+  isStreaming = false 
+}: { 
+  children: React.ReactNode;
+  isStreaming?: boolean;
+}) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when streaming and content changes
+  React.useLayoutEffect(() => {
+    if (isStreaming && scrollRef.current) {
+      // Scroll to bottom to show latest content
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [children, isStreaming]);
+
+  return (
+    <Box
+      ref={scrollRef}
+      sx={{
+        my: 2,
+        width: '100%',
+        maxHeight: '50vh',
+        overflow: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        borderRadius: 1,
+        border: (themeVal) =>
+          `1px solid ${
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.08)'
+              : 'rgba(0, 0, 0, 0.08)'
+          }`,
+        '&::-webkit-scrollbar': {
+          width: 6,
+          height: 6,
+        },
+        '&::-webkit-scrollbar-track': {
+          bgcolor: (themeVal) =>
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.05)'
+              : 'rgba(0, 0, 0, 0.05)',
+          borderRadius: 3,
+        },
+        '&::-webkit-scrollbar-thumb': {
+          bgcolor: (themeVal) =>
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.2)'
+              : 'rgba(0, 0, 0, 0.2)',
+          borderRadius: 3,
+          '&:hover': {
+            bgcolor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? 'rgba(255, 255, 255, 0.3)'
+                : 'rgba(0, 0, 0, 0.3)',
+          },
+        },
+        '&::-webkit-scrollbar-corner': {
+          bgcolor: (themeVal) =>
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.05)'
+              : 'rgba(0, 0, 0, 0.05)',
+        },
+      }}
+    >
+      <Box
+        component="table"
+        sx={{
+          minWidth: 'max-content',
+          width: '100%',
+          borderCollapse: 'collapse',
+          '& th, & td': {
+            border: (themeVal) =>
+              `1px solid ${
+                themeVal.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.12)'
+                  : 'rgba(0, 0, 0, 0.12)'
+              }`,
+            padding: '10px 14px',
+            textAlign: 'left',
+            minWidth: 100,
+            maxWidth: 280,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            verticalAlign: 'top',
+            whiteSpace: 'normal',
+            wordBreak: 'break-word',
+          },
+          '& th': {
+            fontWeight: 600,
+            bgcolor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? '#2a2a2a'
+                : '#f5f5f5',
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            boxShadow: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? '0 2px 4px rgba(0, 0, 0, 0.3)'
+                : '0 2px 4px rgba(0, 0, 0, 0.1)',
+          },
+        }}
+      >
+        {children}
+      </Box>
+    </Box>
+  );
+};
+
 // StreamingContent component
 const StreamingContent = React.memo(
   ({
@@ -261,7 +372,7 @@ const StreamingContent = React.memo(
         if (citation?.metadata?.recordId) {
           try {
             const recordCitations = aggregatedCitations[citation.metadata.recordId] || [];
-            const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
+            const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(citation.metadata?.extension);
             onViewPdf('', citation, recordCitations, isExcelOrCSV);
           } catch (err) {
             console.error('Failed to fetch document:', err);
@@ -900,38 +1011,7 @@ const StreamingContent = React.memo(
             ),
             hr: () => <Divider sx={{ my: 3 }} />,
             table: ({ children }) => (
-              <Box
-                sx={{
-                  my: 2,
-                }}
-              >
-                <Box
-                  component="table"
-                  sx={{
-                    width: '100%',
-                    borderCollapse: 'collapse',
-                    '& th, & td': {
-                      border: (theme) =>
-                        `1px solid ${
-                          theme.palette.mode === 'dark'
-                            ? 'rgba(255, 255, 255, 0.12)'
-                            : 'rgba(0, 0, 0, 0.12)'
-                        }`,
-                      padding: '8px 12px',
-                      textAlign: 'left',
-                    },
-                    '& th': {
-                      fontWeight: 600,
-                      bgcolor: (theme) =>
-                        theme.palette.mode === 'dark'
-                          ? 'rgba(255, 255, 255, 0.05)'
-                          : 'rgba(0, 0, 0, 0.03)',
-                    },
-                  }}
-                >
-                  {children}
-                </Box>
-              </Box>
+              <ScrollableTableWrapper isStreaming={isStreaming}>{children}</ScrollableTableWrapper>
             ),
             thead: ({ children }) => (
               <Box component="thead" sx={{ display: 'table-header-group' }}>
@@ -950,13 +1030,21 @@ const StreamingContent = React.memo(
             ),
             th: ({ children }) => {
               const processedChildren = processChildrenForCitations(children);
+              // Extract text content for title attribute
+              const textContent = typeof children === 'string' 
+                ? children 
+                : Array.isArray(children) 
+                  ? children.filter(c => typeof c === 'string').join('') 
+                  : '';
               return (
                 <Box
                   component="th"
+                  title={textContent.length > 30 ? textContent : undefined}
                   sx={{
                     display: 'table-cell',
                     fontWeight: 600,
                     fontSize: '0.875rem',
+                    cursor: textContent.length > 30 ? 'help' : 'default',
                   }}
                 >
                   {processedChildren}
@@ -965,12 +1053,20 @@ const StreamingContent = React.memo(
             },
             td: ({ children }) => {
               const processedChildren = processChildrenForCitations(children);
+              // Extract text content for title attribute
+              const textContent = typeof children === 'string' 
+                ? children 
+                : Array.isArray(children) 
+                  ? children.filter(c => typeof c === 'string').join('') 
+                  : '';
               return (
                 <Box
                   component="td"
+                  title={textContent.length > 30 ? textContent : undefined}
                   sx={{
                     display: 'table-cell',
                     fontSize: '0.875rem',
+                    cursor: textContent.length > 30 ? 'help' : 'default',
                   }}
                 >
                   {processedChildren}

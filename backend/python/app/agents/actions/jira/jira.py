@@ -5,6 +5,7 @@ import re
 import threading
 from typing import Coroutine, Dict, List, Optional, Tuple
 
+from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
@@ -93,9 +94,50 @@ class Jira:
                     "data": {}
                 })
         else:
-            error_text = response.text if hasattr(response, 'text') else str(response)
+            # Extract error information from response
+            error_text = ""
+            error_message = None
+            error_details = None
+
+            try:
+                # Try to parse JSON error response
+                if response.is_json:
+                    error_data = response.json()
+                    # JIRA API error responses can have different structures
+                    if isinstance(error_data, dict):
+                        # Common JIRA error fields
+                        error_message = (
+                            error_data.get("error") or
+                            error_data.get("message") or
+                            error_data.get("errorMessages", [None])[0] if isinstance(error_data.get("errorMessages"), list) else None
+                        )
+                        error_details = (
+                            error_data.get("errors") or
+                            error_data.get("errorMessages") or
+                            error_data.get("details")
+                        )
+                        # If we found a structured error, use it
+                        if error_message:
+                            error_text = str(error_message)
+                            if error_details and error_details != error_message:
+                                error_text += f" - {error_details}"
+                        else:
+                            # Fallback to string representation of the error dict
+                            error_text = json.dumps(error_data)
+                    else:
+                        error_text = str(error_data)
+                else:
+                    # Not JSON, get raw text
+                    error_text = response.text() if hasattr(response, 'text') else str(response)
+            except Exception as e:
+                # If parsing fails, fall back to text extraction
+                logger.debug(f"Error parsing error response: {e}")
+                error_text = response.text() if hasattr(response, 'text') else str(response)
+
+            # Build error response
             error_response: Dict[str, object] = {
-                "error": f"HTTP {response.status}",
+                "error": error_message or f"HTTP {response.status}",
+                "status_code": response.status,
                 "details": error_text
             }
 
@@ -117,31 +159,34 @@ class Jira:
             Guidance message or None
         """
         guidance_map = {
-            HttpStatusCode.GONE: (
+            HttpStatusCode.GONE.value: (
                 "JIRA instance is no longer available. This usually means: "
                 "1) The JIRA instance has been deleted or moved, "
                 "2) The cloud ID is incorrect, "
                 "3) The authentication token is expired or invalid."
             ),
-            HttpStatusCode.UNAUTHORIZED: (
+            HttpStatusCode.UNAUTHORIZED.value: (
                 "Authentication failed. Please check: "
                 "1) The authentication token is valid and not expired, "
                 "2) The token has the necessary permissions for JIRA access."
             ),
-            HttpStatusCode.FORBIDDEN: (
+            HttpStatusCode.FORBIDDEN.value: (
                 "Access forbidden. Please check: "
                 "1) The token has the required permissions, "
                 "2) The user has access to the requested JIRA instance."
             ),
-            HttpStatusCode.NOT_FOUND: (
+            HttpStatusCode.NOT_FOUND.value: (
                 "Resource not found. Please check: "
                 "1) The project key exists, "
                 "2) The JIRA instance URL is correct."
             ),
-            HttpStatusCode.BAD_REQUEST: (
-                "Bad request. Please check field values and formats. "
-                "Common issues: invalid account IDs, incorrect field types, "
-                "or missing required fields."
+            HttpStatusCode.BAD_REQUEST.value: (
+                "Bad request. This usually means: "
+                "1) Invalid JQL query syntax (check field names and operators), "
+                "2) Invalid field values or formats, "
+                "3) Invalid account IDs, incorrect field types, or missing required fields. "
+                "For JQL queries, common issues: using '=' instead of 'IS EMPTY' for empty fields, "
+                "invalid field names, or incorrect operator usage."
             )
         }
         return guidance_map.get(status_code)
@@ -295,6 +340,80 @@ class Jira:
         except Exception:
             return description
 
+    def _validate_and_fix_jql(self, jql: str) -> Tuple[str, Optional[str]]:
+        """Validate and fix common JQL syntax errors.
+
+        Args:
+            jql: Original JQL query string
+
+        Returns:
+            Tuple of (fixed_jql, warning_message)
+        """
+        if not jql:
+            return jql, None
+
+        original_jql = jql
+        fixed_jql = jql
+        warnings = []
+
+        # Fix common JQL syntax errors
+        # 1. Fix resolution = Unresolved -> resolution IS EMPTY
+        # Pattern: resolution = Unresolved (case insensitive)
+        resolution_pattern = re.compile(
+            r'\bresolution\s*=\s*["\']?unresolved["\']?',
+            re.IGNORECASE
+        )
+        if resolution_pattern.search(fixed_jql):
+            fixed_jql = resolution_pattern.sub('resolution IS EMPTY', fixed_jql)
+            warnings.append("Fixed 'resolution = Unresolved' to 'resolution IS EMPTY'")
+
+        # 2. Fix status = Open -> status = "Open" (add quotes if missing)
+        # This is more complex, so we'll be conservative
+        # Only fix if it's clearly a status field without quotes
+        status_unquoted_pattern = re.compile(
+            r'\bstatus\s*=\s*([a-zA-Z][a-zA-Z0-9\s]+?)(?:\s+AND|\s+OR|\s+ORDER|\s*$)',
+            re.IGNORECASE
+        )
+        def quote_status(match: re.Match[str]) -> str:
+            status_value = match.group(1).strip()
+            # Don't quote if it already has quotes or is a function call
+            if '"' in status_value or "'" in status_value or '(' in status_value:
+                return match.group(0)
+            return f'status = "{status_value}"'
+
+        # Check if we need to fix status
+        # Note: We don't auto-fix status quotes as it might be intentional
+        # The API will handle validation and return appropriate errors
+        if 'status' in fixed_jql and status_unquoted_pattern.search(fixed_jql):
+            try:
+                # Check if the status value is already quoted
+                # This is a bit brittle, but we're just checking, not fixing
+                parts = fixed_jql.split('status', 1)[1].split('=', 1)[1].split()
+                if parts and not (parts[0].startswith('"') or parts[0].startswith("'")):
+                    # It's likely an unquoted status, but we'll let the API handle it
+                    # The API will return an error if the JQL is invalid
+                    pass
+            except (IndexError, ValueError):
+                # This can happen if the JQL is malformed
+                # The API call will fail and return an appropriate error
+                pass
+
+        # 3. Fix common typos: assignee = currentUser -> assignee = currentUser()
+        current_user_pattern = re.compile(
+            r'\bassignee\s*=\s*currentUser\b(?!\()',
+            re.IGNORECASE
+        )
+        if current_user_pattern.search(fixed_jql):
+            fixed_jql = current_user_pattern.sub('assignee = currentUser()', fixed_jql)
+            warnings.append("Fixed 'currentUser' to 'currentUser()'")
+
+        warning_msg = "; ".join(warnings) if warnings else None
+
+        if fixed_jql != original_jql:
+            logger.info(f"JQL auto-fixed: '{original_jql}' -> '{fixed_jql}'")
+
+        return fixed_jql, warning_msg
+
     @tool(
         app_name="jira",
         tool_name="validate_connection",
@@ -305,23 +424,29 @@ class Jira:
     def validate_connection(self) -> Tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
         try:
-            client = self.client.get_client()
-            auth_header = client.headers.get("Authorization", "")
-
-            if not auth_header.startswith("Bearer "):
-                return False, json.dumps({
-                    "message": "Invalid authentication header format",
-                    "error": "Authorization header should start with 'Bearer '"
-                })
-
-            token = auth_header[7:]
-            response = self._run_async(JiraClient.get_accessible_resources(token))
+            # Simply try to fetch the current user to validate the connection
+            # This is more reliable than trying to access the underlying client
+            response = self._run_async(self.client.get_current_user())
 
             if response.status == HttpStatusCode.SUCCESS.value:
-                resources = response.json()
+                user_data = response.json()
+                # Clean user data
+                cleaned_user = (
+                    ResponseTransformer(user_data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("accountId", "displayName", "emailAddress")
+                    .clean()
+                )
+
                 return True, json.dumps({
                     "message": "JIRA connection is valid",
-                    "accessible_resources": resources
+                    "user": {
+                        "accountId": cleaned_user.get("accountId"),
+                        "emailAddress": cleaned_user.get("emailAddress"),
+                        "displayName": cleaned_user.get("displayName")
+                    }
                 })
             else:
                 return self._handle_response(
@@ -332,6 +457,54 @@ class Jira:
 
         except Exception as e:
             logger.error(f"Error validating JIRA connection: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="jira",
+        tool_name="get_current_user",
+        description=(
+            "Get the current authenticated user's JIRA account details. "
+            "Returns the accountId, displayName, and emailAddress of the user making the request. "
+            "IMPORTANT: For JQL queries about 'my tickets' or 'assigned to me', you DON'T need to call "
+            "this tool - just use `assignee = currentUser()` directly in the JQL query."
+        ),
+        parameters=[],
+        returns="Current user's account details (accountId, displayName, emailAddress)"
+    )
+    def get_current_user(self) -> Tuple[bool, str]:
+        """Get the current authenticated JIRA user's details"""
+        try:
+            response = self._run_async(self.client.get_current_user())
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                user_data = response.json()
+                # Clean user data
+                cleaned_user = (
+                    ResponseTransformer(user_data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("accountId", "displayName", "emailAddress")
+                    .clean()
+                )
+
+                return True, json.dumps({
+                    "message": "Current user fetched successfully",
+                    "data": {
+                        "accountId": cleaned_user.get("accountId"),
+                        "displayName": cleaned_user.get("displayName"),
+                        "emailAddress": cleaned_user.get("emailAddress")
+                    }
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Current user fetched",
+                    include_guidance=True
+                )
+
+        except Exception as e:
+            logger.error(f"Error getting current user: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -369,7 +542,7 @@ class Jira:
             ToolParameter(
                 name="project_key",
                 type=ParameterType.STRING,
-                description="Project key (e.g., 'SP')",
+                description="JIRA project key (e.g., 'SP', 'PROJ', 'TEST'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
                 required=True
             ),
             ToolParameter(
@@ -498,11 +671,29 @@ class Jira:
                 except Exception:
                     pass
 
-            return self._handle_response(
-                response,
-                "Issue created successfully",
-                include_guidance=True
-            )
+            if response.status == HttpStatusCode.SUCCESS.value or response.status == HttpStatusCode.CREATED.value:
+                data = response.json()
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
+                          "issuetype", "created", "updated", "description", "fields")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Issue created successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Issue created successfully",
+                    include_guidance=True
+                )
 
         except Exception as e:
             logger.error(f"Error creating issue: {e}")
@@ -519,11 +710,28 @@ class Jira:
         """Get all JIRA projects"""
         try:
             response = self._run_async(self.client.get_all_projects())
-            return self._handle_response(
-                response,
-                "Projects fetched successfully",
-                include_guidance=True
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Projects fetched successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Projects fetched successfully",
+                    include_guidance=True
+                )
         except Exception as e:
             logger.error(f"Error getting projects: {e}")
             return False, json.dumps({"error": str(e)})
@@ -536,7 +744,7 @@ class Jira:
             ToolParameter(
                 name="project_key",
                 type=ParameterType.STRING,
-                description="Project key",
+                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
                 required=True
             ),
         ],
@@ -548,10 +756,27 @@ class Jira:
             response = self._run_async(
                 self.client.get_project(projectIdOrKey=project_key)
             )
-            return self._handle_response(
-                response,
-                "Project fetched successfully"
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Project fetched successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Project fetched successfully"
+                )
         except Exception as e:
             logger.error(f"Error getting project: {e}")
             return False, json.dumps({"error": str(e)})
@@ -559,30 +784,76 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="get_issues",
-        description="Get issues from a JIRA project",
+        description="Get issues from a JIRA project. For more specific queries, use search_issues with custom JQL.",
         parameters=[
             ToolParameter(
                 name="project_key",
                 type=ParameterType.STRING,
-                description="Project key",
+                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
                 required=True
             ),
+            ToolParameter(
+                name="days",
+                type=ParameterType.INTEGER,
+                description="Number of days to look back (default 30). Use larger values for older issues.",
+                required=False
+            ),
+            ToolParameter(
+                name="max_results",
+                type=ParameterType.INTEGER,
+                description="Maximum number of results to return (default 50)",
+                required=False
+            ),
         ],
-        returns="List of issues"
+        returns="List of issues from the project"
     )
-    def get_issues(self, project_key: str) -> Tuple[bool, str]:
-        """Get issues from a project"""
+    def get_issues(
+        self,
+        project_key: str,
+        days: Optional[int] = None,
+        max_results: Optional[int] = None
+    ) -> Tuple[bool, str]:
+        """Get issues from a project with configurable time range"""
         try:
+            # Escape project key and add time filter to avoid unbounded query errors
+            escaped_project_key = project_key.replace('"', '\\"')
+            time_filter = days or 30  # Default to 30 days if not specified
+            jql = f'project = "{escaped_project_key}" AND updated >= -{time_filter}d ORDER BY updated DESC'
+
+            # Use enhanced search endpoint (standard search has been removed - 410 Gone)
             response = self._run_async(
                 self.client.search_and_reconsile_issues_using_jql_post(
-                    jql=f"project = {project_key}"
+                    jql=jql,
+                    maxResults=max_results or 50,
+                    # Explicitly request key field to ensure issue keys are returned
+                    fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
                 )
             )
-            return self._handle_response(
-                response,
-                "Issues fetched successfully",
-                include_guidance=True
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields, keep essential ones
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
+                    .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
+                          "priority", "issuetype", "created", "updated", "description", "fields",
+                          "total", "startAt", "maxResults", "nextPageToken", "isLast")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Issues fetched successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Issues fetched successfully",
+                    include_guidance=True
+                )
         except Exception as e:
             logger.error(f"Error getting issues: {e}")
             return False, json.dumps({"error": str(e)})
@@ -607,10 +878,29 @@ class Jira:
             response = self._run_async(
                 self.client.get_issue(issueIdOrKey=issue_key)
             )
-            return self._handle_response(
-                response,
-                "Issue fetched successfully"
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
+                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
+                          "issuetype", "created", "updated", "description", "fields", "labels", "components")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Issue fetched successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Issue fetched successfully"
+                )
         except Exception as e:
             logger.error(f"Error getting issue: {e}")
             return False, json.dumps({"error": str(e)})
@@ -618,31 +908,130 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="search_issues",
-        description="Search for JIRA issues using JQL",
+        description=(
+            "Search for JIRA issues using JQL (JIRA Query Language). "
+            "For 'my tickets' or 'assigned to me': Use `assignee = currentUser()` - NO need to look up accountId! "
+            "MUST include a time filter (e.g., `updated >= -30d`) to avoid 'unbounded query' errors."
+        ),
         parameters=[
             ToolParameter(
                 name="jql",
                 type=ParameterType.STRING,
-                description="JQL query string",
+                description=(
+                    "JQL query string.\n"
+                    "\n"
+                    "CURRENT USER QUERIES:\n"
+                    "- Use `assignee = currentUser()` for 'my tickets' or 'assigned to me'\n"
+                    "- Do NOT call search_users first - currentUser() auto-resolves\n"
+                    "\n"
+                    "REQUIRED TIME FILTER (prevents unbounded query errors):\n"
+                    "- Always include: `AND updated >= -30d` or `AND created >= -7d`\n"
+                    "\n"
+                    "JQL SYNTAX RULES:\n"
+                    "- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)\n"
+                    "- Current user: `currentUser()` with parentheses\n"
+                    "- Status values: `status = \"Open\"` with quotes\n"
+                    "\n"
+                    "EXAMPLES:\n"
+                    "- `project = \"PA\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`\n"
+                    "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
+                    "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
+                ),
                 required=True
             ),
+            ToolParameter(
+                name="maxResults",
+                type=ParameterType.INTEGER,
+                description="Maximum number of results to return (default 50)",
+                required=False
+            ),
         ],
-        returns="List of matching issues"
+        returns="List of matching issues with key, summary, status, assignee, etc."
     )
-    def search_issues(self, jql: str) -> Tuple[bool, str]:
-        """Search for JIRA issues"""
+    def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
+        """Search for JIRA issues using the enhanced search endpoint"""
         try:
+            # Validate and fix JQL query
+            fixed_jql, jql_warning = self._validate_and_fix_jql(jql)
+
+            if fixed_jql != jql:
+                logger.info(f"JQL query auto-corrected: '{jql}' -> '{fixed_jql}'")
+
+            # Resolve currentUser() to actual accountId to avoid "unbounded query" errors
+            # The enhanced search API may not properly recognize currentUser() as a restriction
+            if "currentUser()" in fixed_jql:
+                try:
+                    user_response = self._run_async(self.client.get_current_user())
+                    if user_response.status == HttpStatusCode.SUCCESS.value:
+                        user_data = user_response.json()
+                        account_id = user_data.get("accountId")
+                        if account_id:
+                            # Replace currentUser() with the actual accountId
+                            fixed_jql = fixed_jql.replace("currentUser()", f'"{account_id}"')
+                            logger.info(f"Resolved currentUser() to accountId: {account_id}")
+                except Exception as e:
+                    logger.warning(f"Could not resolve currentUser(), using as-is: {e}")
+
+            # Use the enhanced search endpoint (POST /rest/api/3/search/jql)
+            # The standard search endpoint (/rest/api/3/search) has been removed (410 Gone)
             response = self._run_async(
-                self.client.search_and_reconsile_issues_using_jql(jql=jql)
+                self.client.search_and_reconsile_issues_using_jql_post(
+                    jql=fixed_jql,
+                    maxResults=maxResults or 50,
+                    # Explicitly request key field to ensure issue keys are returned
+                    fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
+                )
             )
-            return self._handle_response(
-                response,
-                "Issues fetched successfully",
-                include_guidance=True
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields, keep essential ones
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
+                    .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
+                          "priority", "issuetype", "created", "updated", "description", "fields",
+                          "total", "startAt", "maxResults", "nextPageToken", "isLast")
+                    .clean()
+                )
+                result = {
+                    "message": "Issues fetched successfully",
+                    "data": cleaned_data
+                }
+                if jql_warning:
+                    result["warning"] = jql_warning
+                    result["original_jql"] = jql
+                    result["fixed_jql"] = fixed_jql
+                return True, json.dumps(result)
+            else:
+                # Include JQL information in error response
+                error_result = self._handle_response(
+                    response,
+                    "Issues fetched successfully",
+                    include_guidance=True
+                )
+                # Add JQL context to error
+                try:
+                    error_data = json.loads(error_result[1])
+                    error_data["jql_query"] = fixed_jql
+                    if fixed_jql != jql:
+                        error_data["original_jql"] = jql
+                        error_data["jql_auto_fixed"] = True
+                    if jql_warning:
+                        error_data["jql_warning"] = jql_warning
+                    return error_result[0], json.dumps(error_data)
+                except Exception:
+                    # If parsing fails, return original error
+                    return error_result
         except Exception as e:
             logger.error(f"Error searching issues: {e}")
-            return False, json.dumps({"error": str(e)})
+            error_response = {"error": str(e)}
+            # jql is always in scope here as it's a function parameter
+            error_response["jql_query"] = jql
+            return False, json.dumps(error_response)
 
     @tool(
         app_name="jira",
@@ -673,10 +1062,28 @@ class Jira:
                     body_body=comment
                 )
             )
-            return self._handle_response(
-                response,
-                "Comment added successfully"
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value or response.status == HttpStatusCode.CREATED.value:
+                data = response.json()
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("id", "body", "author", "created", "updated",
+                          "accountId", "displayName", "emailAddress")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Comment added successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Comment added successfully"
+                )
         except Exception as e:
             logger.error(f"Error adding comment: {e}")
             return False, json.dumps({"error": str(e)})
@@ -701,10 +1108,28 @@ class Jira:
             response = self._run_async(
                 self.client.get_comments(issueIdOrKey=issue_key)
             )
-            return self._handle_response(
-                response,
-                "Comments fetched successfully"
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("comments", "id", "body", "author", "created", "updated",
+                          "accountId", "displayName", "emailAddress")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Comments fetched successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Comments fetched successfully"
+                )
         except Exception as e:
             logger.error(f"Error getting comments: {e}")
             return False, json.dumps({"error": str(e)})
@@ -712,12 +1137,19 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="search_users",
-        description="Search JIRA users by name or email",
+        description=(
+            "Search JIRA users by name or email. Returns user accountId needed for JQL queries. "
+            "NOTE: For searching issues assigned to the CURRENT user (self), use `assignee = currentUser()` "
+            "in JQL instead of calling this tool - it's faster and more reliable."
+        ),
         parameters=[
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Name or email to search",
+                description=(
+                    "Search query - can be part of a user's name, email, or display name. "
+                    "Must be at least 1 character. Example: 'john', 'john.doe@company.com'"
+                ),
                 required=True
             ),
             ToolParameter(
@@ -727,25 +1159,71 @@ class Jira:
                 required=False
             ),
         ],
-        returns="List of users with account IDs"
+        returns="List of users with account IDs (accountId, displayName, emailAddress)"
     )
     def search_users(
         self,
         query: str,
         max_results: Optional[int] = None
     ) -> Tuple[bool, str]:
-        """Search JIRA users"""
+        """Search JIRA users using the user picker API (more reliable than the search API)"""
         try:
+            # Validate query parameter
+            if not query or not query.strip():
+                error_msg = "Query parameter is required and cannot be empty."
+                logger.error(f"search_users validation failed: {error_msg}")
+                return False, json.dumps({
+                    "error": error_msg,
+                    "guidance": (
+                        "Provide a user name or email to search. "
+                        "TIP: For issues assigned to yourself, use `assignee = currentUser()` in JQL instead."
+                    )
+                })
+
+            query = query.strip()
+
+            # Use find_users_for_picker which is more reliable than find_users
+            # The /rest/api/3/user/picker endpoint always requires query and works correctly
             response = self._run_async(
-                self.client.find_users_by_query(
+                self.client.find_users_for_picker(
                     query=query,
-                    maxResults=max_results
+                    maxResults=max_results or 20
                 )
             )
-            return self._handle_response(
-                response,
-                "Users fetched successfully"
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # The user picker returns {"users": [...], "total": n, "header": "..."}
+                users = data.get("users", []) if isinstance(data, dict) else data
+
+                # Clean response: extract essential user info
+                cleaned_users = []
+                for user in users:
+                    cleaned_user = {
+                        "accountId": user.get("accountId"),
+                        "displayName": user.get("displayName"),
+                    }
+                    # Try to extract email from html field if available
+                    html = user.get("html", "")
+                    if "(" in html and ")" in html:
+                        # Extract email from format like "Name (email@example.com)"
+                        email_part = html.split("(")[-1].rstrip(")")
+                        if "@" in email_part:
+                            cleaned_user["emailAddress"] = email_part
+
+                    # Only include if accountId exists
+                    if cleaned_user.get("accountId"):
+                        cleaned_users.append(cleaned_user)
+
+                return True, json.dumps({
+                    "message": "Users fetched successfully",
+                    "data": cleaned_users
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Users fetched successfully"
+                )
         except Exception as e:
             logger.error(f"Error searching users: {e}")
             return False, json.dumps({"error": str(e)})
@@ -758,7 +1236,7 @@ class Jira:
             ToolParameter(
                 name="project_key",
                 type=ParameterType.STRING,
-                description="Project key",
+                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
                 required=True
             ),
             ToolParameter(
@@ -791,10 +1269,27 @@ class Jira:
                     maxResults=max_results
                 )
             )
-            return self._handle_response(
-                response,
-                "Assignable users fetched successfully"
-            )
+
+            if response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json()
+                # Clean response: remove redundant fields, keep essential user info
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("accountId", "displayName", "emailAddress")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Assignable users fetched successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Assignable users fetched successfully"
+                )
         except Exception as e:
             logger.error(f"Error fetching assignable users: {e}")
             return False, json.dumps({"error": str(e)})
@@ -807,7 +1302,7 @@ class Jira:
             ToolParameter(
                 name="project_key",
                 type=ParameterType.STRING,
-                description="Project key",
+                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
                 required=True
             ),
         ],
@@ -827,9 +1322,21 @@ class Jira:
                 )
 
             project = response.json()
+
+            # Clean the project data before processing
+            cleaned_project = (
+                ResponseTransformer(project)
+                .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                        "*.active", "*.timeZone", "*.locale", "*.accountType",
+                        "*.properties", "*._links", "*.subtask", "*.avatarId", "*.hierarchyLevel")
+                .keep("key", "id", "name", "projectTypeKey", "lead", "issueTypes", "components",
+                      "displayName", "emailAddress", "accountId", "description")
+                .clean()
+            )
+
             metadata = {
-                "project_key": project.get("key"),
-                "project_name": project.get("name"),
+                "project_key": cleaned_project.get("key"),
+                "project_name": cleaned_project.get("name"),
                 "issue_types": [
                     {
                         "id": it.get("id"),
@@ -837,7 +1344,7 @@ class Jira:
                         "description": it.get("description"),
                         "subtask": it.get("subtask", False)
                     }
-                    for it in project.get("issueTypes", [])
+                    for it in cleaned_project.get("issueTypes", [])
                 ],
                 "components": [
                     {
@@ -845,9 +1352,9 @@ class Jira:
                         "name": comp.get("name"),
                         "description": comp.get("description")
                     }
-                    for comp in project.get("components", [])
+                    for comp in cleaned_project.get("components", [])
                 ],
-                "lead": project.get("lead", {}).get("displayName")
+                "lead": cleaned_project.get("lead", {}).get("displayName")
             }
 
             return True, json.dumps({

@@ -1392,7 +1392,7 @@ export default function KnowledgeBaseSideBar({
                         width={16}
                         height={16}
                       />
-                      {status === 'AUTO_INDEX_OFF' ? 'Manual Sync' : status === 'CONNECTOR_DISABLED' ? 'Connector Disabled' : formatLabel(status)}
+                      {status === 'AUTO_INDEX_OFF' ? 'Manual Indexing' : status === 'CONNECTOR_DISABLED' ? 'Connector Disabled' : formatLabel(status)}
                     </Box>
                   }
                 />

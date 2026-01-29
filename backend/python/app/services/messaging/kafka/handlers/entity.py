@@ -1,4 +1,3 @@
-import asyncio
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -13,8 +12,6 @@ from app.connectors.services.base_arango_service import (
 )
 from app.containers.connector import (
     ConnectorAppContainer,
-    initialize_enterprise_google_account_services_fn,
-    initialize_individual_google_account_services_fn,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -367,31 +364,12 @@ class EntityEventService(BaseEventService):
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
 
-    async def __handle_google_app_account_services(self, org_id: str, account_type: str, app_names: list[str],connector_id: str, scope: str) -> bool:
-        """Handle Google account services"""
-        # Personal scope connectors use individual initialization regardless of account type
-        # (personal scope means individual user credentials, not admin/service account)
-        if scope == ConnectorScopes.PERSONAL.value:
-            await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
-            return True
-        # Team scope connectors use enterprise initialization for enterprise/business accounts
-        elif scope == ConnectorScopes.TEAM.value and (account_type == AccountType.ENTERPRISE.value or account_type == AccountType.BUSINESS.value):
-            await initialize_enterprise_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
-            return True
-        elif scope == ConnectorScopes.TEAM.value and account_type == AccountType.INDIVIDUAL.value:
-            await initialize_individual_google_account_services_fn(org_id, self.app_container, connector_id, app_names)
-            return True
-        else:
-            self.logger.error(f"Invalid account type/scope combination: account_type={account_type}, scope={scope}")
-            return False
-
     # APP EVENTS
     async def __handle_app_enabled(self, payload: dict) -> bool:
         """Handle app enabled event"""
         try:
             self.logger.info(f"📥 Processing app enabled event: {payload}")
             org_id = payload["orgId"]
-            app_group = payload["appGroup"]
             apps = payload["apps"]
             sync_action = payload.get("syncAction", "none")
             connector_id = payload.get("connectorId", "")
@@ -404,135 +382,18 @@ class EntityEventService(BaseEventService):
                 self.logger.error(f"Organization not found: {org_id}")
                 return False
 
-            # Check if Google apps (Drive, Gmail) are enabled
-            enabled_apps = set(apps)
-
-            if enabled_apps:
-                self.logger.info(f"Enabled apps are: {enabled_apps}")
-                # Initialize services based on account type
-                if self.app_container and "google" in app_group.lower():
-                    accountType = org["accountType"]
-                    # Use the existing app container to initialize services
-                    init_success = await self.__handle_google_app_account_services(org_id, accountType, enabled_apps,connector_id, scope)
-                    if not init_success:
-                        self.logger.error(
-                            f"❌ Failed to initialize services for account type: {org['accountType']}, scope: {scope}"
-                        )
-                        return False
-                    self.logger.info(
-                        f"✅ Successfully initialized services for account type: {org['accountType']}, scope: {scope}"
+            for app_name in apps:
+                if sync_action == "immediate":
+                    # Start sync for each app (connector already initialized for standard connectors)
+                    await self.__handle_sync_event(
+                        event_type=f"{app_name.lower()}.start",
+                        value={
+                            "orgId": org_id,
+                            "connector":app_name,
+                            "connectorId":connector_id,
+                            "scope": scope,
+                        },
                     )
-                else:
-                    self.logger.warning(
-                        "App container not provided, skipping service initialization"
-                    )
-
-                user_type = (
-                    AccountType.ENTERPRISE.value
-                    if org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value]
-                    else AccountType.INDIVIDUAL.value
-                )
-
-                # Handle enterprise/business account type
-                if user_type == AccountType.ENTERPRISE.value:
-                    active_users = await self.arango_service.get_users(
-                        org_id, active=True
-                    )
-
-                    for app_name in enabled_apps:
-                        if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping sync for {app_name}")
-                            continue
-
-                        # Gmail and Google Drive need both init and start events
-                        # They have specialized event handlers that require init to call initialize()
-                        # Use case-insensitive comparison since app_name comes as lowercase from payload
-                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value]:
-                            # Initialize app (this will fetch and create users)
-                            await self.__handle_sync_event(
-                                event_type=f"{app_name.lower()}.init",
-                                value={
-                                    "orgId": org_id,
-                                    "connector":app_name,
-                                    "connectorId":connector_id
-                                },
-                            )
-                            # TODO: Remove this sleep
-                            await asyncio.sleep(5)
-
-                        if sync_action == "immediate":
-                            # Start sync - connector should already be initialized
-                            await self.__handle_sync_event(
-                                event_type=f"{app_name.lower()}.start",
-                                value={
-                                    "orgId": org_id,
-                                    "connector":app_name,
-                                    "connectorId":connector_id
-                                },
-                            )
-                            # TODO: Remove this sleep
-                            await asyncio.sleep(5)
-
-                # For individual accounts, create edges between existing active users and apps
-                else:
-                    active_users = await self.arango_service.get_users(
-                        org_id, active=True
-                    )
-
-                    # First initialize each app
-                    for app_name in enabled_apps:
-                        if app_name in [Connectors.GOOGLE_CALENDAR.value]:
-                            self.logger.info(f"Skipping sync for {app_name}")
-                            continue
-
-                        # Gmail and Google Drive need both init and start events
-                        # They have specialized event handlers that require init to call initialize()
-                        # Use case-insensitive comparison since app_name comes as lowercase from payload
-                        if app_name.upper() in [Connectors.GOOGLE_MAIL.value]:
-                            # Initialize app
-                            await self.__handle_sync_event(
-                                event_type=f"{app_name.lower()}.init",
-                                value={
-                                    "orgId": org_id,
-                                    "connector":app_name,
-                                    "connectorId":connector_id
-                                },
-                            )
-                            # TODO: Remove this sleep
-                            await asyncio.sleep(5)
-
-                        # Start sync for each app (connector already initialized for standard connectors)
-                        await self.__handle_sync_event(
-                            event_type=f"{app_name.lower()}.start",
-                            value={
-                                "orgId": org_id,
-                                "connector":app_name,
-                                "connectorId":connector_id
-                            },
-                        )
-                        # TODO: Remove this sleep
-                        await asyncio.sleep(5)
-
-                    # Then create edges and start sync if needed
-                    for user in active_users:
-                        for app in enabled_apps:
-                            if sync_action == "immediate":
-                                # Start sync for individual user
-                                if app in [Connectors.GOOGLE_CALENDAR.value]:
-                                    self.logger.info("Skipping start")
-                                    continue
-
-                                await self.__handle_sync_event(
-                                    event_type=f'{app.lower()}.start',
-                                    value={
-                                        "orgId": org_id,
-                                        "email": user["email"],
-                                        "connector":app,
-                                        "connectorId":connector_id
-                                    },
-                                )
-                                # TODO: Remove this sleep
-                                await asyncio.sleep(5)
 
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
             return True

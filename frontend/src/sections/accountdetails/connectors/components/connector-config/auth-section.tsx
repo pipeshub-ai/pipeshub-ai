@@ -77,6 +77,7 @@ interface AuthSectionProps {
   certificateInputRef: React.RefObject<HTMLInputElement>;
   privateKeyInputRef: React.RefObject<HTMLInputElement>;
   onFieldChange: (section: string, fieldName: string, value: any) => void;
+  saveAttempted?: boolean;
   // Create-mode connector instance naming
   isCreateMode: boolean;
   instanceName: string;
@@ -127,6 +128,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   onInstanceNameChange,
   selectedAuthType,
   handleAuthTypeChange,
+  saveAttempted = false,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -768,13 +770,14 @@ const AuthSection: React.FC<AuthSectionProps> = ({
           clientIdError={formErrors.clientId || null}
           tenantIdError={formErrors.tenantId || null}
           sharepointDomainError={formErrors.sharepointDomain || null}
+          hasAdminConsentError={formErrors.hasAdminConsent || null}
           certificateFile={certificateFile}
           certificateFileName={certificateFileName}
-          certificateError={certificateError}
+          certificateError={formErrors.certificate || certificateError || null}
           certificateData={certificateData}
           privateKeyFile={privateKeyFile}
           privateKeyFileName={privateKeyFileName}
-          privateKeyError={privateKeyError}
+          privateKeyError={formErrors.privateKey || privateKeyError || null}
           privateKeyData={privateKeyData}
           onClientIdChange={(value) => onFieldChange('auth', 'clientId', value)}
           onTenantIdChange={(value) => onFieldChange('auth', 'tenantId', value)}
@@ -791,6 +794,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
           instanceNameError={instanceNameError}
           onInstanceNameChange={onInstanceNameChange}
           connectorName={connector.name}
+          showValidationSummary={saveAttempted}
         />
       )}
 

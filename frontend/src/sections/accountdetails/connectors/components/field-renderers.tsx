@@ -1090,9 +1090,41 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
   const theme = useTheme();
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
-  const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+  // Check if this is a JSON file field (service account JSON, etc.)
+  const isJsonFile = field.validation?.format?.includes('json') || field.name?.toLowerCase().includes('json');
+
+  const handleFileChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
+    if (!file) return;
+
+    // If this is a JSON file field, read and parse the JSON
+    if (isJsonFile) {
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text);
+
+        // Validate required fields for Google Cloud Service Account JSON
+        if (field.name === 'serviceAccountJson') {
+          const requiredFields = ['type', 'project_id', 'private_key', 'client_email'];
+          const missingFields = requiredFields.filter((fieldName) => !parsed[fieldName]);
+
+          if (missingFields.length > 0) {
+            return;
+          }
+
+          // Validate that it's a service account JSON
+          if (parsed.type !== 'service_account') {
+            return;
+          }
+        }
+
+        // Store the parsed JSON as stringified JSON string to match backend expectations
+        onChange(JSON.stringify(parsed));
+      } catch (parseError) {
+        // Silently handle parse errors
+      }
+    } else {
+      // For non-JSON files, store the File object directly
       onChange(file);
     }
   };
@@ -1169,10 +1201,10 @@ export const FileFieldRenderer: React.FC<BaseFieldProps> = ({
                   lineHeight: 1.4,
                 }}
               >
-                {value.name}
+                {value instanceof File ? value.name : 'File uploaded'}
               </Typography>
               <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
-                {(value.size / 1024).toFixed(1)} KB
+                {value instanceof File ? `${(value.size / 1024).toFixed(1)} KB` : ''}
               </Typography>
             </Box>
           </Box>

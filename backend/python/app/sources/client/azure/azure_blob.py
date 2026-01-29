@@ -1,6 +1,6 @@
 import json
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional
 
 try:
     from azure.core.exceptions import AzureError  # type: ignore
@@ -52,10 +52,8 @@ class AzureBlobConnectionStringConfig:
     """Configuration for Azure Blob Storage using Connection String
     Args:
         azureBlobConnectionString: The Azure Blob Storage connection string
-        containerName: The default container name (required)
     """
     azureBlobConnectionString: str
-    containerName: str
 
     def __post_init__(self) -> None:
         """Validate configuration after initialization"""
@@ -63,12 +61,6 @@ class AzureBlobConnectionStringConfig:
             raise AzureBlobConfigurationError(
                 "azureBlobConnectionString cannot be empty or None",
                 {"provided_value": self.azureBlobConnectionString}
-            )
-
-        if not self.containerName or not self.containerName.strip():
-            raise AzureBlobContainerError(
-                "containerName is required and cannot be empty or None",
-                container_name=self.containerName
             )
 
     def create_blob_service_client(self) -> BlobServiceClient:
@@ -116,126 +108,14 @@ class AzureBlobConnectionStringConfig:
         """Convert the configuration to a dictionary"""
         return {
             'authentication_method': 'connection_string',
-            'account_name': self.get_account_name(),
-            'container_name': self.containerName
-        }
-
-
-@dataclass
-class AzureBlobAccountKeyConfig:
-    """Configuration for Azure Blob Storage using Account Name and Key
-    Args:
-        accountName: The Azure storage account name
-        accountKey: The Azure storage account key
-        containerName: The default container name (required)
-        endpointProtocol: The endpoint protocol (https/http, default: https)
-        endpointSuffix: The endpoint suffix (default: core.windows.net)
-    """
-    accountName: str
-    accountKey: str
-    containerName: str
-    endpointProtocol: str = "https"
-    endpointSuffix: str = "core.windows.net"
-
-    def __post_init__(self) -> None:
-        """Validate configuration after initialization"""
-        if not self.accountName or not self.accountName.strip():
-            raise AzureBlobConfigurationError(
-                "accountName cannot be empty or None",
-                {"provided_value": self.accountName}
-            )
-
-        if not self.accountKey or not self.accountKey.strip():
-            raise AzureBlobConfigurationError(
-                "accountKey cannot be empty or None",
-                {"account_name": self.accountName}
-            )
-
-        if not self.containerName or not self.containerName.strip():
-            raise AzureBlobContainerError(
-                "containerName is required and cannot be empty or None",
-                container_name=self.containerName
-            )
-
-        if self.endpointProtocol not in ["https", "http"]:
-            raise AzureBlobConfigurationError(
-                f"endpointProtocol must be 'https' or 'http', got: {self.endpointProtocol}",
-                {"provided_value": self.endpointProtocol}
-            )
-
-    def create_blob_service_client(self) -> BlobServiceClient:
-        """Create BlobServiceClient using account name and key"""
-        try:
-            account_url = f"{self.endpointProtocol}://{self.accountName}.blob.{self.endpointSuffix}"
-            return BlobServiceClient(
-                account_url=account_url,
-                credential=self.accountKey
-            )
-        except Exception as e:
-            raise AzureBlobConfigurationError(
-                f"Failed to create BlobServiceClient with account key: {str(e)}",
-                {
-                    "account_name": self.accountName,
-                    "account_url": f"{self.endpointProtocol}://{self.accountName}.blob.{self.endpointSuffix}"
-                }
-            )
-
-    async def create_async_blob_service_client(self) -> AsyncBlobServiceClient:
-        """Create AsyncBlobServiceClient using account name and key"""
-        try:
-            account_url = f"{self.endpointProtocol}://{self.accountName}.blob.{self.endpointSuffix}"
-            return AsyncBlobServiceClient(
-                account_url=account_url,
-                credential=self.accountKey
-            )
-        except Exception as e:
-            raise AzureBlobConfigurationError(
-                f"Failed to create AsyncBlobServiceClient with account key: {str(e)}",
-                {
-                    "account_name": self.accountName,
-                    "account_url": f"{self.endpointProtocol}://{self.accountName}.blob.{self.endpointSuffix}"
-                }
-            )
-
-    def get_account_name(self) -> str:
-        """Get account name"""
-        return self.accountName
-
-    def get_account_url(self) -> str:
-        """Get the full account URL"""
-        return f"{self.endpointProtocol}://{self.accountName}.blob.{self.endpointSuffix}"
-
-    def get_authentication_method(self) -> str:
-        """Get authentication method"""
-        return "account_key"
-
-    def get_credentials_info(self) -> Dict[str, Any]:
-        """Get credential information (without sensitive data)"""
-        return {
-            'authentication_method': 'account_key',
-            'account_name': self.accountName,
-            'account_url': self.get_account_url(),
-            'container_name': self.containerName,
-            'endpoint_protocol': self.endpointProtocol,
-            'endpoint_suffix': self.endpointSuffix
-        }
-
-    def to_dict(self) -> dict:
-        """Convert the configuration to a dictionary"""
-        return {
-            'authentication_method': 'account_key',
-            'account_name': self.accountName,
-            'account_url': self.get_account_url(),
-            'container_name': self.containerName,
-            'endpoint_protocol': self.endpointProtocol,
-            'endpoint_suffix': self.endpointSuffix
+            'account_name': self.get_account_name()
         }
 
 
 class AzureBlobRESTClient:
     """Azure Blob Storage REST client that handles blob operations internally"""
 
-    def __init__(self, config: Union[AzureBlobConnectionStringConfig, AzureBlobAccountKeyConfig]) -> None: # type: ignore
+    def __init__(self, config: AzureBlobConnectionStringConfig) -> None:
         """Initialize with configuration"""
         self.config = config
         self._blob_service_client: Optional[BlobServiceClient] = None
@@ -265,9 +145,6 @@ class AzureBlobRESTClient:
                 )
         return self._async_blob_service_client
 
-    def get_container_name(self) -> str:
-        """Get the configured container name"""
-        return self.config.containerName
 
     def get_account_name(self) -> str:
         """Get the account name"""
@@ -278,12 +155,9 @@ class AzureBlobRESTClient:
 
     def get_account_url(self) -> str:
         """Get the account URL"""
-        if hasattr(self.config, 'get_account_url'):
-            return self.config.get_account_url()
-        elif isinstance(self.config, AzureBlobConnectionStringConfig):
-            account_name = self.config.get_account_name()
-            if account_name:
-                return f"https://{account_name}.blob.core.windows.net" # TODO : need to make this work for Azure sovereign clouds or custom endpoints(A more robust approach would be to retrieve the account URL from the BlobServiceClient instance itself)
+        account_name = self.config.get_account_name()
+        if account_name:
+            return f"https://{account_name}.blob.core.windows.net" # TODO : need to make this work for Azure sovereign clouds or custom endpoints(A more robust approach would be to retrieve the account URL from the BlobServiceClient instance itself)
         raise AzureBlobConfigurationError("Could not determine account URL from configuration")
 
     def get_authentication_method(self) -> str:
@@ -292,10 +166,7 @@ class AzureBlobRESTClient:
 
     def get_credentials_info(self) -> Dict[str, Any]:
         """Get credential information"""
-        if hasattr(self.config, 'get_credentials_info'):
-            return self.config.get_credentials_info()
-        else:
-            return self.config.to_dict()
+        return self.config.to_dict()
 
     async def close_async_client(self) -> None:
         """Close the async blob service client"""
@@ -303,9 +174,14 @@ class AzureBlobRESTClient:
             await self._async_blob_service_client.close()
             self._async_blob_service_client = None
 
-    async def ensure_container_exists(self) -> AzureBlobResponse:
-        """Ensure the configured container exists, create if it doesn't"""
-        container_name = self.get_container_name()
+    async def ensure_container_exists(self, container_name: str) -> AzureBlobResponse:
+        """Ensure the specified container exists, create if it doesn't"""
+        if not container_name:
+            raise AzureBlobContainerError(
+                "containerName is required for this operation",
+                container_name=None,
+                details={"error": "No container name provided"}
+            )
 
         try:
             async_blob_service_client = await self.get_async_blob_service_client()
@@ -360,9 +236,6 @@ class AzureBlobClient(IClient):
         """Return the AzureBlobRESTClient object"""
         return self.client
 
-    def get_container_name(self) -> str:
-        """Get the configured container name"""
-        return self.client.get_container_name()
 
     def get_credentials_info(self) -> Dict[str, Any]:
         """Get credential information"""
@@ -376,9 +249,9 @@ class AzureBlobClient(IClient):
         """Get the authentication method being used"""
         return self.client.get_authentication_method()
 
-    async def ensure_container_exists(self) -> AzureBlobResponse:
-        """Ensure the configured container exists, create if it doesn't"""
-        return await self.client.ensure_container_exists()
+    async def ensure_container_exists(self, container_name: str) -> AzureBlobResponse:
+        """Ensure the specified container exists, create if it doesn't"""
+        return await self.client.ensure_container_exists(container_name)
 
     async def get_async_blob_service_client(self) -> AsyncBlobServiceClient:
         """Get or create the AsyncBlobServiceClient"""
@@ -400,47 +273,15 @@ class AzureBlobClient(IClient):
             raise AzureBlobConfigurationError(f"Failed to build client with connection string config: {str(e)}")
 
     @classmethod
-    def build_with_account_key_config(cls, config: AzureBlobAccountKeyConfig) -> "AzureBlobClient": # type: ignore
-        """Build AzureBlobClient with account key configuration"""
-        try:
-            rest_client = AzureBlobRESTClient(config)
-            return cls(rest_client)
-        except Exception as e:
-            if isinstance(e, (AzureBlobConfigurationError, AzureBlobContainerError)):
-                raise
-            raise AzureBlobConfigurationError(f"Failed to build client with account key config: {str(e)}")
-
-    @classmethod
     def build_with_connection_string(
         cls,
-        azureBlobConnectionString: str,
-        containerName: str
+        azureBlobConnectionString: str
     ) -> "AzureBlobClient": # type: ignore
         """Build AzureBlobClient with connection string directly"""
         config = AzureBlobConnectionStringConfig(
-            azureBlobConnectionString=azureBlobConnectionString,
-            containerName=containerName
+            azureBlobConnectionString=azureBlobConnectionString
         )
         return cls.build_with_connection_string_config(config)
-
-    @classmethod
-    def build_with_account_key(
-        cls,
-        accountName: str,
-        accountKey: str,
-        containerName: str,
-        endpointProtocol: str = "https",
-        endpointSuffix: str = "core.windows.net"
-    ) -> "AzureBlobClient": # type: ignore
-        """Build AzureBlobClient with account name and key directly"""
-        config = AzureBlobAccountKeyConfig(
-            accountName=accountName,
-            accountKey=accountKey,
-            containerName=containerName,
-            endpointProtocol=endpointProtocol,
-            endpointSuffix=endpointSuffix
-        )
-        return cls.build_with_account_key_config(config)
 
     @classmethod
     async def build_from_services(
@@ -456,43 +297,14 @@ class AzureBlobClient(IClient):
 
             # Extract configuration parameters
             auth_config = config_data.get("auth", {})
-            auth_type = auth_config.get("authType", "CONNECTION_STRING")
-            container_name = auth_config.get("containerName")
+            connection_string = auth_config.get("azureBlobConnectionString")
+            if not connection_string:
+                raise AzureBlobConfigurationError("azureBlobConnectionString is required for Azure Blob Storage authentication")
 
-            if not container_name:
-                raise AzureBlobConfigurationError("containerName is required in Azure Blob Storage configuration")
-
-            if auth_type == "CONNECTION_STRING":
-                connection_string = auth_config.get("azureBlobConnectionString")
-                if not connection_string:
-                    raise AzureBlobConfigurationError("azureBlobConnectionString is required for CONNECTION_STRING authType")
-
-                config = AzureBlobConnectionStringConfig(
-                    azureBlobConnectionString=connection_string,
-                    containerName=container_name
-                )
-                return cls.build_with_connection_string_config(config)
-
-            elif auth_type == "ACCOUNT_KEY":
-                account_name = auth_config.get("accountName")
-                account_key = auth_config.get("accountKey")
-                endpoint_protocol = auth_config.get("endpointProtocol", "https")
-                endpoint_suffix = auth_config.get("endpointSuffix", "core.windows.net")
-
-                if not account_name or not account_key:
-                    raise AzureBlobConfigurationError("accountName and accountKey are required for ACCOUNT_KEY authType")
-
-                config = AzureBlobAccountKeyConfig(
-                    accountName=account_name,
-                    accountKey=account_key,
-                    containerName=container_name,
-                    endpointProtocol=endpoint_protocol,
-                    endpointSuffix=endpoint_suffix
-                )
-                return cls.build_with_account_key_config(config)
-
-            else:
-                raise AzureBlobConfigurationError(f"Unsupported authType: {auth_type}")
+            config = AzureBlobConnectionStringConfig(
+                azureBlobConnectionString=connection_string
+            )
+            return cls.build_with_connection_string_config(config)
 
         except Exception as e:
             logger.error(f"Failed to build Azure Blob Storage client from services: {e}")

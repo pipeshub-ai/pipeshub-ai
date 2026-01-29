@@ -1,10 +1,11 @@
 import uuid
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    EntityRelations,
     MimeTypes,
     OriginTypes,
     RecordRelations,
@@ -22,11 +23,15 @@ from app.models.entities import (
     CommentRecord,
     FileRecord,
     IndexingStatus,
+    LinkPublicStatus,
+    LinkRecord,
     MailRecord,
     Person,
+    ProjectRecord,
     Record,
     RecordGroup,
     RecordType,
+    RelatedExternalRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -70,7 +75,25 @@ class DataSourceEntitiesProcessor:
         RecordType.CONFLUENCE_PAGE,
         RecordType.CONFLUENCE_BLOGPOST,
         RecordType.SHAREPOINT_PAGE,
+        RecordType.PROJECT,
+        RecordType.LINK,
+        RecordType.TICKET
     ]
+
+    # Record relation types that connectors create for related external records
+    # Used for cleanup when related_external_records changes
+    LINK_RELATION_TYPES = [
+        RecordRelations.BLOCKS.value,
+        RecordRelations.DUPLICATES.value,
+        RecordRelations.DEPENDS_ON.value,
+        RecordRelations.CLONES.value,
+        RecordRelations.IMPLEMENTS.value,
+        RecordRelations.REVIEWS.value,
+        RecordRelations.CAUSES.value,
+        RecordRelations.RELATED.value,
+        RecordRelations.LINKED_TO.value,
+    ]
+
     def __init__(self, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService) -> None:
         self.logger = logger
         self.data_store_provider: DataStoreProvider = data_store_provider
@@ -90,6 +113,8 @@ class DataSourceEntitiesProcessor:
         kafka_producer_config = KafkaProducerConfig(
             bootstrap_servers=bootstrap_servers,
             client_id=producer_config.get("client_id", "connectors"),
+            ssl=producer_config.get("ssl", False),
+            sasl=producer_config.get("sasl"),
         )
         self.messaging_producer: IMessagingProducer = MessagingFactory.create_producer(
             broker_type="kafka",
@@ -157,10 +182,20 @@ class DataSourceEntitiesProcessor:
             return MailRecord(**base_params)
         elif parent_record_type == RecordType.TICKET:
             return TicketRecord(**base_params)
+        elif parent_record_type == RecordType.PROJECT:
+            return ProjectRecord(**base_params)
         elif parent_record_type in [RecordType.COMMENT, RecordType.INLINE_COMMENT]:
             return CommentRecord(
                 **base_params,
                 author_source_id="",  # Will be updated when real parent is synced
+            )
+        elif parent_record_type == RecordType.LINK:
+            return LinkRecord(
+                **base_params,
+                url=parent_external_id,  # Use external_id as placeholder URL
+                title=None,
+                is_public=LinkPublicStatus.UNKNOWN,
+                linked_record_id=None,
             )
         else:
             raise ValueError(
@@ -192,9 +227,96 @@ class DataSourceEntitiesProcessor:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
-    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_related_external_records(
+        self,
+        record: Record,
+        related_external_records: List[RelatedExternalRecord],
+        tx_store: TransactionStore
+    ) -> None:
+        """
+        Handle related external records by creating record relations.
+        Creates placeholder records if not found, then creates edges with the specified relation types.
+
+        This method first deletes ALL existing link-type edges from this record to ensure
+        stale relationships are removed, then creates new edges based on the current related_external_records.
+
+        Args:
+            record: The record to create relations for
+            related_external_records: List of RelatedExternalRecord objects (strict type checking)
+            tx_store: Transaction store
+        """
+        # Always clean up all possible link relation types to handle removed links
+        relation_types_to_delete = self.LINK_RELATION_TYPES
+
+        if relation_types_to_delete:
+            try:
+                deleted_count = await tx_store.delete_edges_by_relationship_types(
+                    from_id=record.id,
+                    from_collection=CollectionNames.RECORDS.value,
+                    collection=CollectionNames.RECORD_RELATIONS.value,
+                    relationship_types=list(relation_types_to_delete)
+                )
+                if deleted_count > 0:
+                    self.logger.debug(
+                        f"Deleted {deleted_count} existing edge(s) of types {relation_types_to_delete} "
+                        f"for record: {record.id}"
+                    )
+            except Exception as e:
+                self.logger.warning(f"Failed to delete existing edges for record {record.id}: {str(e)}")
+
+        for related_ext_record in related_external_records:
+            # Strict type check - only accept RelatedExternalRecord objects
+            if not isinstance(related_ext_record, RelatedExternalRecord):
+                self.logger.warning(
+                    f"Skipping invalid related_external_record: expected RelatedExternalRecord, "
+                    f"got {type(related_ext_record).__name__}"
+                )
+                continue
+
+            external_record_id = related_ext_record.external_record_id
+            record_type = related_ext_record.record_type
+            relation_type_enum = related_ext_record.relation_type
+
+            if not external_record_id:
+                continue
+
+            # Look up the related record by external ID and connector
+            related_record = await tx_store.get_record_by_external_id(
+                connector_id=record.connector_id,
+                external_id=external_record_id
+            )
+
+            # Create placeholder related record if not found (similar to _handle_parent_record)
+            if related_record is None and record_type:
+                # record_type is already a RecordType enum from RelatedExternalRecord
+                related_record = self._create_placeholder_parent_record(
+                    parent_external_id=external_record_id,
+                    parent_record_type=record_type,
+                    record=record,
+                )
+                await tx_store.batch_upsert_records([related_record])
+
+            # Create relation using the specific relation_type
+            if related_record and isinstance(related_record, Record):
+                # relation_type_enum is already a RecordRelations enum, get its value
+                relation_type = relation_type_enum.value
+
+                await tx_store.create_record_relation(
+                    from_record_id=record.id,
+                    to_record_id=related_record.id,
+                    relation_type=relation_type
+                )
+
+    async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> Optional[str]:
+        """
+        Prepare record group by looking up or creating it, and set record_group_id on the record.
+        This should be called BEFORE saving the record so record_group_id is included in the first save.
+
+        Returns:
+            record_group_id if record group was found/created, None otherwise
+        """
         if record.external_record_group_id is None:
-            return
+            return None
 
         record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
                                                                       external_id=record.external_record_group_id)
@@ -212,13 +334,201 @@ class DataSourceEntitiesProcessor:
             # Todo: Create a edge between the record group and the App
 
         if record_group:
-            # Set the record_group_id on the record
+            # Set the record_group_id on the record BEFORE saving
             record.record_group_id = record_group.id
-            # Create a edge between the record and the record group if it doesn't exist
-            await tx_store.create_record_group_relation(record.id, record_group.id)
+            return record_group.id
 
-            if record.inherit_permissions:
-                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+        return None
+
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+        """
+        Create edges between record and record group.
+        This should be called AFTER saving the record (when record.id is available).
+        """
+        if not record.id or not record_group_id:
+            return
+
+        # Create a edge between the record and the record group if it doesn't exist
+        await tx_store.create_record_group_relation(record.id, record_group_id)
+
+        if record.inherit_permissions:
+            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+
+    async def _prepare_ticket_user_edge(
+        self,
+        ticket: TicketRecord,
+        user_email: Optional[str],
+        edge_type: EntityRelations,
+        timestamp_attr_name: str,
+        fallback_timestamp_attr: str,
+        tx_store: TransactionStore,
+        edge_type_name: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Helper method to prepare a ticket-user edge data dictionary.
+
+        Args:
+            ticket: The TicketRecord to create edge for
+            user_email: Email of the user to link to
+            edge_type: The type of edge (ASSIGNED_TO, CREATED_BY, REPORTED_BY)
+            timestamp_attr_name: Name of the connector-provided timestamp attribute
+            fallback_timestamp_attr: Name of the fallback timestamp attribute
+            tx_store: The transaction store
+            edge_type_name: Human-readable name for logging
+
+        Returns:
+            Edge data dictionary if user is found, None otherwise
+        """
+        if not user_email:
+            return None
+
+        try:
+            # Only get existing user by email - do not create if not found
+            user = await tx_store.get_user_by_email(user_email)
+
+            if not user:
+                return None
+
+            # Use connector-provided timestamp if available, otherwise fallback
+            source_timestamp = None
+            # Try primary timestamp first
+            if hasattr(ticket, timestamp_attr_name):
+                timestamp_value = getattr(ticket, timestamp_attr_name, None)
+                if timestamp_value is not None:
+                    source_timestamp = timestamp_value
+
+            # If primary is None or not set, try fallback
+            if source_timestamp is None and hasattr(ticket, fallback_timestamp_attr):
+                fallback_value = getattr(ticket, fallback_timestamp_attr, None)
+                if fallback_value is not None:
+                    # Use fallback timestamp even if 0 (it's the best we have)
+                    source_timestamp = fallback_value
+
+            edge_data = {
+                "_from": f"{CollectionNames.RECORDS.value}/{ticket.id}",
+                "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                "edgeType": edge_type.value,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            if source_timestamp is not None:
+                edge_data["sourceTimestamp"] = source_timestamp
+
+            return edge_data
+        except Exception as e:
+            self.logger.warning(f"Failed to create {edge_type_name} edge for ticket {ticket.id}: {str(e)}")
+            return None
+
+    async def _handle_ticket_user_edges(self, ticket: TicketRecord, tx_store: TransactionStore) -> None:
+        """
+        Create entity relationship edges for tickets (ASSIGNED_TO, CREATED_BY, REPORTED_BY).
+
+        This method creates edges in the entityRelations collection linking tickets to users.
+        It first deletes existing edges for this ticket to avoid duplicates, then creates new ones.
+
+        Args:
+            ticket: The TicketRecord to create edges for
+            tx_store: The transaction store
+        """
+        # First, delete existing ticket-user edges for this ticket to avoid duplicates
+        try:
+            await tx_store.delete_edges_from(ticket.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing ticket-user edges for ticket {ticket.id}: {str(e)}")
+
+        edges_to_create = []
+
+        # Create ASSIGNED_TO edge if assignee exists and user is found
+        assignee_edge = await self._prepare_ticket_user_edge(
+            ticket=ticket,
+            user_email=ticket.assignee_email,
+            edge_type=EntityRelations.ASSIGNED_TO,
+            timestamp_attr_name="assignee_source_timestamp",
+            fallback_timestamp_attr="source_updated_at",
+            tx_store=tx_store,
+            edge_type_name="ASSIGNED_TO"
+        )
+        if assignee_edge:
+            edges_to_create.append(assignee_edge)
+
+        # Create CREATED_BY edge if creator exists and user is found
+        creator_edge = await self._prepare_ticket_user_edge(
+            ticket=ticket,
+            user_email=ticket.creator_email,
+            edge_type=EntityRelations.CREATED_BY,
+            timestamp_attr_name="creator_source_timestamp",
+            fallback_timestamp_attr="source_created_at",
+            tx_store=tx_store,
+            edge_type_name="CREATED_BY"
+        )
+        if creator_edge:
+            edges_to_create.append(creator_edge)
+
+        # Create REPORTED_BY edge if reporter exists and user is found
+        reporter_edge = await self._prepare_ticket_user_edge(
+            ticket=ticket,
+            user_email=ticket.reporter_email,
+            edge_type=EntityRelations.REPORTED_BY,
+            timestamp_attr_name="reporter_source_timestamp",
+            fallback_timestamp_attr="source_created_at",
+            tx_store=tx_store,
+            edge_type_name="REPORTED_BY"
+        )
+        if reporter_edge:
+            edges_to_create.append(reporter_edge)
+
+        # Batch create all edges using specialized method that includes edgeType in UPSERT match
+        if edges_to_create:
+            await tx_store.batch_create_entity_relations(edges_to_create)
+            self.logger.info(f"Created {len(edges_to_create)} entity relation edges for ticket {ticket.id}")
+
+    async def _handle_project_lead_edge(self, project: ProjectRecord, tx_store: TransactionStore) -> None:
+        """
+        Create entity relationship edge for project lead (LEAD_BY).
+
+        This method creates an edge in the entityRelations collection linking project to lead user.
+        It first deletes existing entity relation edges for this project to avoid duplicates, then creates a new one.
+
+        Args:
+            project: The ProjectRecord to create edge for
+            tx_store: The transaction store
+        """
+        # First, delete existing entity relation edges for this project to avoid duplicates
+        # Note: Projects currently only have LEAD_BY edges, but we delete all to be safe
+        try:
+            await tx_store.delete_edges_from(project.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
+        except Exception as e:
+            self.logger.warning(f"Failed to delete existing entity relation edges for project {project.id}: {str(e)}")
+
+        # Create LEAD_BY edge if lead exists and user is found
+        if not project.lead_email:
+            return
+
+        try:
+            # Only get existing user by email - do not create if not found
+            user = await tx_store.get_user_by_email(project.lead_email)
+
+            if not user:
+                return
+
+            # Use source_updated_at if available, otherwise source_created_at
+            source_timestamp = project.source_updated_at or project.source_created_at
+
+            edge_data = {
+                "_from": f"{CollectionNames.RECORDS.value}/{project.id}",
+                "_to": f"{CollectionNames.USERS.value}/{user.id}",
+                "edgeType": EntityRelations.LEAD_BY.value,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            if source_timestamp is not None:
+                edge_data["sourceTimestamp"] = source_timestamp
+
+            # Create the edge using specialized method that includes edgeType in UPSERT match
+            await tx_store.batch_create_entity_relations([edge_data])
+            self.logger.info(f"Created LEAD_BY entity relation edge for project {project.id} -> user {user.id}")
+        except Exception as e:
+            self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
         # Set org_id for the record
@@ -391,8 +701,8 @@ class DataSourceEntitiesProcessor:
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
-        # Handle record group FIRST to set record_group_id before saving the record
-        await self._handle_record_group(record, tx_store)
+        # Prepare record group BEFORE saving (so record_group_id is included in first save)
+        record_group_id = await self._handle_record_group(record, tx_store)
 
         if existing_record is None:
             self.logger.info("New record: %s", record)
@@ -404,8 +714,25 @@ class DataSourceEntitiesProcessor:
             if record.external_revision_id != existing_record.external_revision_id:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
+        # Link record to group AFTER saving (when record.id is available for edges)
+        if record_group_id:
+            await self._link_record_to_group(record, record_group_id, tx_store)
+
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
+
+        # Handle related external records (issue links, project links, etc.)
+        # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
+        if isinstance(record, (TicketRecord, ProjectRecord)):
+            await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+
+        # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
+        if isinstance(record, TicketRecord):
+            await self._handle_ticket_user_edges(record, tx_store)
+
+        # Create project-lead relationship edge (LEAD_BY) if record is a ProjectRecord
+        if isinstance(record, ProjectRecord):
+            await self._handle_project_lead_edge(record, tx_store)
 
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
@@ -1115,9 +1442,9 @@ class DataSourceEntitiesProcessor:
 
                 if not user_group:
                     self.logger.warning(
-                        f"Cannot delete group: Group with external ID {external_group_id} not found in database"
+                        f"❕ Group with external ID {external_group_id} not in database, skipping deletion"
                     )
-                    return False
+                    return True
 
                 group_internal_id = user_group.id
                 group_name = user_group.name

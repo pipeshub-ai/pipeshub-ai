@@ -59,7 +59,6 @@ from app.connectors.core.registry.filters import (
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
@@ -79,7 +78,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.gcs.gcs import GCSClient
 from app.sources.external.gcs.gcs import GCSDataSource
-from app.utils.streaming import stream_content
+from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Default connector endpoint for signed URL generation
@@ -231,10 +230,9 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             AuthField(
                 name="serviceAccountJson",
                 display_name="Service Account JSON",
-                placeholder="Paste your service account JSON key here",
-                description="The Service Account JSON key from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
-                field_type="TEXTAREA",
-                max_length=10000,
+                placeholder="Click to upload service account JSON file",
+                description="Upload your Service Account JSON key file from Google Cloud Console. Go to IAM & Admin > Service Accounts > Keys to create one.",
+                field_type="FILE",
                 is_secret=True
             ),
         ])
@@ -261,16 +259,7 @@ class GCSDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="File Extensions",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            option_source_type=OptionSourceType.MANUAL,
-            default_value=[],
-            default_operator=ListOperator.IN.value
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -859,10 +848,48 @@ class GCSConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
+    def _get_gcs_revision_id(self, obj: Dict) -> str:
+        """
+        Determines a stable revision ID for a GCS object.
+
+        It prioritizes the MD5 hash as a content fingerprint, which is stable
+        across renames/copies. If not available, it falls back to the
+        generation/metageneration numbers.
+
+        Args:
+            obj: GCS object metadata dictionary
+
+        Returns:
+            Revision ID string (Md5Hash, "generation:metageneration", or "")
+        """
+        md5_hash = obj.get("Md5Hash")
+        if md5_hash:
+            return md5_hash
+
+        generation = obj.get("Generation")
+        if generation:
+            metageneration = obj.get("Metageneration")
+            return f"{generation}:{metageneration}" if metageneration else str(generation)
+
+        return ""
+
     async def _process_gcs_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
-        """Process a single GCS object and convert it to a FileRecord."""
+        """Process a single GCS object and convert it to a FileRecord.
+
+        Logic mirrors S3:
+        1. Extract path and revision fingerprint
+        2. Try lookup by path (externalRecordId) - PRIMARY
+           ├─ Found → Compare revisions
+           │   ├─ Different → Content change → Update record
+           │   └─ Same → Skip (no changes)
+           └─ Not Found → Try lookup by revision (externalRevisionId) - FALLBACK
+               ├─ Found → Move/rename detected
+               │   ├─ Remove old parent relationship
+               │   └─ Update record
+               └─ Not Found → New file → Create new record
+        """
         try:
             key = obj.get("Key", "")
             if not key:
@@ -898,12 +925,13 @@ class GCSConnector(BaseConnector):
                 created_timestamp_ms = timestamp_ms
 
             external_record_id = f"{bucket_name}/{normalized_key}"
-            # Use generation + metageneration as revision ID (similar to etag for S3)
-            generation = obj.get("Generation")
-            metageneration = obj.get("Metageneration")
-            current_revision_id = f"{generation}:{metageneration}" if generation else obj.get("Md5Hash", "")
 
-            # Check for existing record
+            # Use a stable "content fingerprint" first (similar to S3 ETag usage).
+            # - `Md5Hash` changes when content changes and is stable across renames/copies when content is identical
+            # - fall back to generation/metageneration when no md5 is available (e.g., composite objects)
+            current_revision_id = self._get_gcs_revision_id(obj)
+
+            # PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id, external_id=external_record_id
@@ -915,16 +943,26 @@ class GCSConnector(BaseConnector):
                 stored_revision = existing_record.external_revision_id or ""
                 if current_revision_id and stored_revision and current_revision_id == stored_revision:
                     self.logger.debug(
-                        f"Skipping {normalized_key}: revision unchanged"
+                        f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
 
-                if current_revision_id != stored_revision:
+                # Content changed or missing revision - sync properly from GCS
+                if current_revision_id and stored_revision and current_revision_id != stored_revision:
                     self.logger.info(
-                        f"Content change detected: {normalized_key}"
+                        f"Content change detected: {normalized_key} - externalRevisionId changed from {stored_revision} to {current_revision_id}"
                     )
+                elif not current_revision_id or not stored_revision:
+                    if not current_revision_id:
+                        self.logger.warning(
+                            f"Current revision missing for {normalized_key}, processing record"
+                        )
+                    if not stored_revision:
+                        self.logger.debug(
+                            f"Stored revision missing for {normalized_key}, processing record"
+                        )
             elif current_revision_id:
-                # Try lookup by revision ID for move detection
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
                         connector_id=self.connector_id, external_revision_id=current_revision_id
@@ -933,12 +971,12 @@ class GCSConnector(BaseConnector):
                 if existing_record:
                     is_move = True
                     self.logger.info(
-                        f"Move/rename detected: {normalized_key}"
+                        f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
                 else:
                     self.logger.debug(f"New document: {normalized_key}")
             else:
-                self.logger.debug(f"New document: {normalized_key}")
+                self.logger.debug(f"New document: {normalized_key} (no revision available)")
 
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
@@ -1136,10 +1174,11 @@ class GCSConnector(BaseConnector):
                 detail="File not found or access denied",
             )
 
-        return StreamingResponse(
+        return create_stream_record_response(
             stream_content(signed_url, record_id=record.id, file_name=record.record_name),
-            media_type=record.mime_type if record.mime_type else "application/octet-stream",
-            headers={"Content-Disposition": f"attachment; filename={record.record_name}"},
+            filename=record.record_name,
+            mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+            fallback_filename=f"record_{record.id}"
         )
 
     async def cleanup(self) -> None:
@@ -1323,9 +1362,7 @@ class GCSConnector(BaseConnector):
                 return None
 
             # Check revision ID
-            generation = obj_metadata.get("Generation")
-            metageneration = obj_metadata.get("Metageneration")
-            current_revision_id = f"{generation}:{metageneration}" if generation else obj_metadata.get("Md5Hash", "")
+            current_revision_id = self._get_gcs_revision_id(obj_metadata)
             stored_revision = record.external_revision_id
 
             if current_revision_id == stored_revision:

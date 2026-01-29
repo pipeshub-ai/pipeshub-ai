@@ -206,6 +206,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.HTML.value,
                 MimeTypes.PLAIN_TEXT.value,
                 MimeTypes.MARKDOWN.value,
+                MimeTypes.BLOCKS.value,
                 MimeTypes.PNG.value,
                 MimeTypes.JPG.value,
                 MimeTypes.JPEG.value,
@@ -220,6 +221,7 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.PPTX.value,
                 MimeTypes.PPT.value,
                 MimeTypes.MDX.value,
+                MimeTypes.TSV.value,
             ]
 
             supported_extensions = [
@@ -240,6 +242,7 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.JPEG.value,
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
+                ExtensionTypes.TSV.value,
             ]
 
             if (

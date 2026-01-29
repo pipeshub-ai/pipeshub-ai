@@ -103,7 +103,7 @@
   resolved "https://registry.npmjs.org/@aws-amplify/notifications/-/notifications-2.0.43.tgz"
   integrity sha512-oOuJBy/LfkkMoLGpNLocthay5GKWcnpWKQieQRa2/0AUD2PpQnw+VyXLNDTGC8c6+wVEbIHEwsnZZbivLPk9wQ==
   dependencies:
-    lodash "^4.17.21"
+    lodash "^4.17.23"
     tslib "^2.5.0"
 
 "@aws-amplify/storage@6.6.1":
@@ -5153,9 +5153,9 @@ locate-path@^6.0.0:
   dependencies:
     p-locate "^5.0.0"
 
-lodash-es@^4.17.21:
-  version "4.17.21"
-  resolved "https://registry.npmjs.org/lodash-es/-/lodash-es-4.17.21.tgz"
+lodash-es@^4.17.23:
+  version "4.17.23"
+  resolved "https://registry.npmjs.org/lodash-es/-/lodash-es-4.17.23.tgz"
   integrity sha512-mKnC+QJ9pWVzv+C4/U3rRsHapFfHvQFoFB92e52xeyGMcX6/OlIl78je1u8vePzYZSkkogMPJ2yjxxsb89cxyw==
 
 lodash.clonedeep@^4.5.0:
@@ -5178,10 +5178,10 @@ lodash.throttle@^4.1.1:
   resolved "https://registry.npmjs.org/lodash.throttle/-/lodash.throttle-4.1.1.tgz"
   integrity sha512-wIkUCfVKpVsWo3JSZlc+8MB5it+2AN5W8J7YVMST30UrvcQNZ1Okbj+rbVniijTWE6FGYy4XJq/rHkas8qJMLQ==
 
-lodash@^4.17.21:
-  version "4.17.21"
-  resolved "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
-  integrity sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==
+lodash@^4.17.23, lodash@^4.17.23:
+  version "4.17.23"
+  resolved "https://registry.npmjs.org/lodash/-/lodash-4.17.23.tgz"
+  integrity sha512-LgVTMpQtIopCi79SJeDiP0TfWi5CNEc/L/aRdTh3yIvmZXTnheWpKjSZhnvMl8iXbC1tFg9gdHHDMLoV7CnG+w==
 
 longest-streak@^3.0.0:
   version "3.1.0"
@@ -7003,8 +7003,8 @@ simplebar-core@^1.2.6:
   integrity sha512-H5NYU+O+uvqOH5VXw3+lgoc1vTI6jL8LOZJsw4xgRpV7uIPjRpmLPdz0TrouxwKHBhpVLzVIlyKhaRLelIThMw==
   dependencies:
     "@types/lodash-es" "^4.17.6"
-    lodash "^4.17.21"
-    lodash-es "^4.17.21"
+    lodash "^4.17.23"
+    lodash-es "^4.17.23"
 
 simplebar-react@^3.2.6:
   version "3.2.6"

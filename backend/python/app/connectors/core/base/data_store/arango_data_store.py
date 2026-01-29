@@ -152,6 +152,19 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_key: str, edge_collection: str, to_collection: str) -> None:
         return await self.arango_service.delete_edges_between_collections(from_key, edge_collection, to_collection, transaction=self.txn)
 
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str]
+    ) -> int:
+        """Delete edges by relationship types from a record."""
+        from_key = f"{from_collection}/{from_id}"
+        return await self.arango_service.delete_edges_by_relationship_types(
+            from_key, collection, relationship_types, transaction=self.txn
+        )
+
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.arango_service.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
 
@@ -402,7 +415,12 @@ class ArangoTransactionStore(TransactionStore):
         """Rollback the ArangoDB transaction"""
         self.txn.abort_transaction()
 
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str
+    ) -> None:
         record_edge = {
                     "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
                     "_to": f"{CollectionNames.RECORDS.value}/{to_record_id}",
@@ -559,6 +577,47 @@ class ArangoTransactionStore(TransactionStore):
 
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.arango_service.batch_create_edges(edges, collection=collection, transaction=self.txn)
+
+    async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
+        """
+        Batch create entity relation edges with edgeType in UPSERT match condition.
+
+        Uses UPSERT to avoid duplicates - matches on _from, _to, and edgeType.
+        This is specialized for entityRelations collection where multiple edges
+        can exist between the same entities with different edgeType values (e.g., ASSIGNED_TO, CREATED_BY, REPORTED_BY, LEAD_BY).
+
+        Args:
+            edges: List of edge documents with _from, _to, and edgeType
+        """
+        if not edges:
+            return
+
+        try:
+            self.logger.info("🚀 Batch creating entity relation edges")
+
+            # For entity relations, include edgeType in the UPSERT match condition
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to, edgeType: edge.edgeType }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "edges": edges,
+                "@collection": CollectionNames.ENTITY_RELATIONS.value
+            }
+
+            cursor = self.txn.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            self.logger.info(
+                f"✅ Successfully created {len(results)} entity relation edges."
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
+            raise
 
 class ArangoDataStore(DataStoreProvider):
     """ArangoDB data store"""

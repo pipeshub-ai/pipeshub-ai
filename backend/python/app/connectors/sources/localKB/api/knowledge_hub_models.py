@@ -122,6 +122,7 @@ class NodeItem(BaseModel):
     origin: OriginType = Field(..., description="Origin type (KB or CONNECTOR)")
     connector: Optional[str] = Field(None, description="Connector name (only for CONNECTOR origin)")
     recordType: Optional[str] = Field(None, description="Record type (only when nodeType is record)")
+    recordGroupType: Optional[str] = Field(None, description="Record group type (only when nodeType is recordGroup, e.g. SLACK_CHANNEL, CONFLUENCE_SPACES)")
     indexingStatus: Optional[str] = Field(None, description="Indexing status (only when nodeType is record)")
     createdAt: int = Field(..., description="Creation timestamp (epoch ms)")
     updatedAt: int = Field(..., description="Update timestamp (epoch ms)")
@@ -130,7 +131,9 @@ class NodeItem(BaseModel):
     extension: Optional[str] = Field(None, description="File extension (only for file records)")
     webUrl: Optional[str] = Field(None, description="Web URL for the node")
     hasChildren: bool = Field(..., description="True if node has any children (for sidebar)")
+    previewRenderable: Optional[bool] = Field(None, description="Whether preview can be rendered for this record")
     permission: Optional[ItemPermission] = Field(None, description="User's permission on this item")
+    sharingStatus: Optional[str] = Field(None, description="Sharing status: 'private', 'shared', or 'workspace' (only for kb and app node types)")
 
     class Config:
         use_enum_values = True
@@ -173,6 +176,7 @@ class FilterOption(BaseModel):
     """Response model for a filter option"""
     id: str = Field(..., description="Filter ID value to send in requests")
     label: str = Field(..., description="Display label for the filter")
+    type: Optional[str] = Field(None, description="Additional type information (e.g., connector type for apps)")
 
 
 class AvailableFilters(BaseModel):

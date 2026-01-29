@@ -68,6 +68,7 @@ export const getFileIcon = (
     case 'xls':
     case 'xlsx':
     case 'csv':
+    case 'tsv':
       return xlsIcon;
     case 'ppt':
     case 'pptx':

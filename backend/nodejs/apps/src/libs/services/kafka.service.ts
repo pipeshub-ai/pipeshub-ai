@@ -29,7 +29,7 @@ export abstract class BaseKafkaConnection implements IKafkaConnection {
       this.kafka = new Kafka({
         clientId: this.config.clientId,
         brokers: this.config.brokers,
-        // ssl: this.config.ssl,
+        ssl: this.config.ssl,
         sasl: this.config.sasl,
       });
     } catch (error) {

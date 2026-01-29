@@ -32,6 +32,7 @@ class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
     GOOGLE_DRIVE_WORKSPACE = "DRIVE WORKSPACE"
     GOOGLE_MAIL = "GMAIL"
+    GOOGLE_MAIL_WORKSPACE = "GMAIL WORKSPACE"
     GOOGLE_CALENDAR = "CALENDAR"
 
     ONEDRIVE = "ONEDRIVE"
@@ -60,6 +61,8 @@ class Connectors(Enum):
     GCS = "GCS"
     AZURE_BLOB = "AZURE BLOB"
     AZURE_FILES = "AZURE FILES"
+    LINEAR = "LINEAR"
+    ZAMMAD = "ZAMMAD"
 
     UNKNOWN = "UNKNOWN"
 
@@ -78,6 +81,8 @@ class AppGroups(Enum):
     MINIO = "MinIO"
     GOOGLE_CLOUD = "Google Cloud"
     AZURE = "Azure"
+    LINEAR = "Linear"
+    ZAMMAD = "Zammad"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -121,7 +126,8 @@ class CollectionNames(Enum):
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
-    TICKET_RELATIONS = "ticketRelations"  # Standard ticket relationship edges
+    ENTITY_RELATIONS = "entityRelations"
+    PROJECTS = "projects"
 
     # Users and groups
     PEOPLE = "people"
@@ -186,6 +192,7 @@ class ExtensionTypes(Enum):
     XLSX = "xlsx"
     XLS = "xls"
     CSV = "csv"
+    TSV = "tsv"
     TXT = "txt"
     MD = "md"
     MDX = "mdx"
@@ -213,6 +220,7 @@ class MimeTypes(Enum):
     XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     XLS = "application/vnd.ms-excel"
     CSV = "text/csv"
+    TSV = "text/tab-separated-values"
     BIN = "application/octet-stream"
     NOTION_TEXT = "notion/text"
     NOTION_PAGE_COMMENT_TEXT = "notion/pageCommentText"
@@ -272,35 +280,24 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
-    DUPLICATE = "DUPLICATE"
     OTHERS = "OTHERS"
-    LINKED_TO = "LINKED_TO"  # For ticket linking relationships
-
-
-class LinkRelationshipTag(str, Enum):
-    """Standard relationship tags for LINKED_TO edges in ticket relationships"""
-    RELATES_TO = "RELATES_TO"
+    LINKED_TO = "LINKED_TO"
     BLOCKS = "BLOCKS"
-    BLOCKED_BY = "BLOCKED_BY"
     DUPLICATES = "DUPLICATES"
-    DUPLICATED_BY = "DUPLICATED_BY"
     DEPENDS_ON = "DEPENDS_ON"
-    REQUIRED_BY = "REQUIRED_BY"
     CLONES = "CLONES"
-    CLONED_FROM = "CLONED_FROM"
-    PARENT = "PARENT"
-    CHILD = "CHILD"
+    IMPLEMENTS = "IMPLEMENTS"
+    REVIEWS = "REVIEWS"
+    CAUSES = "CAUSES"
     RELATED = "RELATED"
-    SPLIT_FROM = "SPLIT_FROM"
-    MERGED_INTO = "MERGED_INTO"
-    UNKNOWN = "UNKNOWN"
 
 
-class TicketEdgeTypes(Enum):
-    """Standard edge types for ticket relationships"""
-    ASSIGNED_TO = "ASSIGNED_TO"  # Ticket -> User (assignee)
-    REPORTED_BY = "REPORTED_BY"  # Ticket -> User (reporter)
-    CREATED_BY = "CREATED_BY"  # Ticket -> User (creator)
+class EntityRelations(Enum):
+    """Standard edge types for entity relationships"""
+    ASSIGNED_TO = "ASSIGNED_TO"
+    REPORTED_BY = "REPORTED_BY"
+    CREATED_BY = "CREATED_BY"
+    LEAD_BY = "LEAD_BY"
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
@@ -330,5 +327,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "TICKET": CollectionNames.TICKETS.value,
     "COMMENT": CollectionNames.COMMENTS.value,
     "INLINE_COMMENT": CollectionNames.COMMENTS.value,
+    "LINK": CollectionNames.LINKS.value,
+    "PROJECT": CollectionNames.PROJECTS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

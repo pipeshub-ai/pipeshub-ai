@@ -311,6 +311,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str],
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete edges from a node by relationship types.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            collection (str): Edge collection name
+            relationship_types (List[str]): List of relationship type values to delete
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
     async def delete_edges_to(
         self,
         to_id: str,
@@ -760,15 +784,35 @@ class IGraphDBProvider(ABC):
         transaction: Optional[str] = None
     ) -> Optional['Record']:
         """
-        Get a record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
+        Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
 
         Args:
-            connector_id (str): Connector ID
-            issue_key (str): Jira issue key (e.g., "PROJ-123")
-            transaction (Optional[Any]): Optional transaction context
+            connector_id: Connector ID
+            issue_key: Jira issue key (e.g., "PROJ-123")
+            transaction: Optional transaction ID
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            Optional[Record]: Record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_weburl(
+        self,
+        weburl: str,
+        org_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Optional['Record']:
+        """
+        Get record by weburl (exact match).
+
+        Args:
+            weburl: Web URL to search for
+            org_id: Optional organization ID to filter by
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
         """
         pass
 
@@ -1115,8 +1159,8 @@ class IGraphDBProvider(ABC):
         Args:
             from_record_id (str): Source record ID
             to_record_id (str): Target record ID
-            relation_type (str): Type of relation (e.g., 'PARENT_CHILD', 'ATTACHMENT')
-            transaction (Optional[Any]): Optional transaction context
+            relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "BLOCKS", etc.)
+            transaction (Optional[str]): Optional transaction ID
         """
         pass
 

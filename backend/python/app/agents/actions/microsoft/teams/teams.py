@@ -1,12 +1,11 @@
-import asyncio
 import json
 import logging
 from typing import Optional, Tuple
 
+from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.teams.teams import TeamsDataSource
 
@@ -24,22 +23,6 @@ class Teams:
             None
         """
         self.client = TeamsDataSource(client)
-
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # If we're already in an async context, we need to use a thread pool
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(asyncio.run, coro)
-                    return future.result()
-            else:
-                return loop.run_until_complete(coro)
-        except Exception as e:
-            logger.error(f"Error running async operation: {e}")
-            raise
 
     @tool(
         app_name="teams",
@@ -156,7 +139,7 @@ class Teams:
         """
         try:
             # Use TeamsDataSource method
-            response = self._run_async(self.client.teams_team_get_team(
+            response = run_async(self.client.teams_team_get_team(
                 team_id=team_id
             ))
 

@@ -388,7 +388,7 @@ export const ListView: React.FC<ListViewProps> = ({
         color = theme.palette.text.secondary;
         break;
       case 'AUTO_INDEX_OFF':
-        displayLabel = 'MANUAL SYNC';
+        displayLabel = 'MANUAL INDEXING';
         color = theme.palette.primary.main;
         break;
       case 'EMPTY':

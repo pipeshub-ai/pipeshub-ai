@@ -25,6 +25,7 @@ export class RedisService {
     const redisOptions: RedisOptions = {
       host: this.config.host,
       port: this.config.port,
+      username: this.config.username,
       password: this.config.password,
       db: this.config.db || 0,
       connectTimeout: this.config.connectTimeout || 10000,
@@ -35,6 +36,12 @@ export class RedisService {
         return delay;
       },
     };
+
+    // Add TLS configuration if enabled
+    if (this.config.tls) {
+      redisOptions.tls = {};
+      this.logger.info('Redis TLS enabled');
+    }
 
     this.client = new Redis(redisOptions);
 

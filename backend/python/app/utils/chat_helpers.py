@@ -346,15 +346,19 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             if extension is None:
                 extension = get_extension_from_mimetype(mime_type)
 
-
             block_num = meta.get("blockNum")
             if block_num is None:
-                if extension == "xlsx":
+                if extension == "xlsx" or extension == "tsv":
                     # Guard against non-dict data
                     if isinstance(data, dict):
                         block_num = [data.get("row_number", 1)]
                     else:
                         block_num = [1]
+                elif extension == "csv":
+                    if isinstance(data, dict):
+                        block_num = [data.get("row_number", 1)-1]
+                    else:
+                        block_num = [0]
                 else:
                     block_num = [block.get("index", 0) + 1]
 

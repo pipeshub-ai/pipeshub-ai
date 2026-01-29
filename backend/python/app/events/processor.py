@@ -1,6 +1,7 @@
 import io
+import json
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from bs4 import BeautifulSoup
 from html_to_markdown import convert
@@ -21,6 +22,7 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import (
     Block,
     BlockContainerIndex,
+    BlockGroup,
     BlocksContainer,
     BlockType,
     CitationMetadata,
@@ -28,6 +30,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.pdf.docling import DoclingProcessor
 from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -600,6 +603,496 @@ class Processor:
             self.logger.error(f"❌ Error processing DOCX document: {str(e)}")
             raise
 
+    async def process_blocks(
+        self, recordName, recordId, version, source, orgId, blocks_data, virtual_record_id
+    ) -> AsyncGenerator[Dict[str, Any], None]:
+        """Process BlocksContainer and attach to record for indexing, yielding phase completion events.
+
+        For BlockGroups with requires_processing=True, processes their data through docling
+        and merges the resulting blocks back into the container.
+
+        Args:
+            recordName (str): Name of the record
+            recordId (str): ID of the record
+            version (str): Version of the record
+            source (str): Source of the document
+            orgId (str): Organization ID
+            blocks_data (bytes|str|dict): BlocksContainer data (JSON string, bytes, or dict)
+            virtual_record_id (str): Virtual record ID
+        """
+        self.logger.info(
+            f"🚀 Starting Blocks Container processing for record: {recordName}"
+        )
+
+        try:
+            # Deserialize blocks_data to BlocksContainer
+            if isinstance(blocks_data, bytes):
+                blocks_data = blocks_data.decode('utf-8')
+
+            if isinstance(blocks_data, str):
+                blocks_dict = json.loads(blocks_data)
+            elif isinstance(blocks_data, dict):
+                blocks_dict = blocks_data
+            else:
+                raise ValueError(f"Invalid blocks_data type: {type(blocks_data)}")
+
+            # Convert dict to BlocksContainer
+            block_containers = BlocksContainer(**blocks_dict)
+
+            # Process BlockGroups with requires_processing=True through docling
+            block_containers = await self._process_blockgroups_through_docling(
+                block_containers, recordName
+            )
+
+            # Signal parsing complete after blocks are processed
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Get record from database
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
+                # Must yield indexing_complete to release indexing semaphore properly
+                yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+
+            # Convert to Record entity and attach blocks
+            record = convert_record_dict_to_record(record)
+            record.block_containers = block_containers
+            record.virtual_record_id = virtual_record_id
+
+            # Apply indexing pipeline
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(
+                document_extraction=self.document_extraction,
+                sink_orchestrator=self.sink_orchestrator
+            )
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info("✅ Blocks Container processing completed successfully")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
+            raise
+
+    def _separate_block_groups_by_index(
+        self, block_groups: List[BlockGroup]
+    ) -> Tuple[List[BlockGroup], List[BlockGroup]]:
+        """
+        Separate block groups into those with valid index and those without.
+
+        Args:
+            block_groups: List of block groups to separate
+
+        Returns:
+            Tuple of (block_groups_with_index, block_groups_without_index)
+        """
+        block_groups_with_index: List[BlockGroup] = []
+        block_groups_without_index: List[BlockGroup] = []
+
+        for bg in block_groups:
+            if bg.index is not None:
+                block_groups_with_index.append(bg)
+            else:
+                block_groups_without_index.append(bg)
+
+        return block_groups_with_index, block_groups_without_index
+
+    async def _process_blockgroup_images(
+        self, markdown_data: str, block_group_index: int
+    ) -> Tuple[str, Dict[str, str]]:
+        """
+        Extract images from markdown and convert URLs to base64.
+
+        Args:
+            markdown_data: Markdown content to process
+            block_group_index: Index of the block group (for logging)
+
+        Returns:
+            Tuple of (modified_markdown, caption_map) where caption_map maps alt text to base64 URIs
+        """
+        caption_map: Dict[str, str] = {}
+        modified_markdown = markdown_data
+
+        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+        image_parser = self.parsers.get(ExtensionTypes.PNG.value)
+
+        if md_parser and image_parser:
+            modified_markdown, images = md_parser.extract_and_replace_images(markdown_data)
+
+            if images:
+                # Collect all image URLs
+                urls_to_convert = [image["url"] for image in images]
+
+                # Convert URLs to base64
+                base64_urls = await image_parser.urls_to_base64(urls_to_convert)
+
+                # Create caption map with base64 URLs
+                for i, image in enumerate(images):
+                    if base64_urls[i]:
+                        caption_map[image["new_alt_text"]] = base64_urls[i]
+
+                self.logger.debug(
+                    f"📷 Extracted {len(images)} images from BlockGroup {block_group_index}, "
+                    f"converted {len([u for u in base64_urls if u])} to base64"
+                )
+
+        return modified_markdown, caption_map
+
+    def _map_base64_images_to_blocks(
+        self, blocks: List[Block], caption_map: Dict[str, str], block_group_index: int
+    ) -> None:
+        """
+        Map base64 images to image blocks using captions.
+
+        Args:
+            blocks: List of blocks to process
+            caption_map: Map of alt text to base64 URIs
+            block_group_index: Index of the block group (for logging)
+        """
+        if not caption_map:
+            return
+
+        for block in blocks:
+            if block.type == BlockType.IMAGE.value and block.image_metadata:
+                caption = block.image_metadata.captions
+                if caption:
+                    caption = caption[0] if isinstance(caption, list) else caption
+                    if caption in caption_map and caption_map[caption]:
+                        if block.data is None:
+                            block.data = {}
+                        if isinstance(block.data, dict):
+                            block.data["uri"] = caption_map[caption]
+                        else:
+                            # If data is not a dict, create a new dict with the uri
+                            block.data = {"uri": caption_map[caption]}
+                    else:
+                        self.logger.warning(
+                            f"⚠️ Skipping image with caption '{caption}' in BlockGroup {block_group_index} - no valid base64 data available"
+                        )
+
+    async def _process_single_blockgroup_through_docling(
+        self,
+        block_group: BlockGroup,
+        record_name: str,
+        processor: DoclingProcessor,
+        md_parser: Optional[MarkdownParser]
+    ) -> Tuple[List[BlockGroup], List[Block]]:
+        """
+        Process a single block group through docling.
+
+        Args:
+            block_group: Block group to process
+            record_name: Name of the record (for filename generation)
+            processor: DoclingProcessor instance
+            md_parser: Markdown parser instance
+
+        Returns:
+            Tuple of (new_block_groups, new_blocks) from processing
+
+        Raises:
+            ValueError: If block group has no valid markdown data or docling returns empty result
+        """
+        # Extract markdown data from BlockGroup
+        markdown_data = block_group.data
+        if not markdown_data or not isinstance(markdown_data, str):
+            raise ValueError(
+                f"BlockGroup {block_group.index} has no valid markdown data"
+            )
+
+        # Extract and replace images from markdown, then convert URLs to base64
+        modified_markdown, caption_map = await self._process_blockgroup_images(
+            markdown_data, block_group.index
+        )
+
+        # Parse the modified markdown to bytes
+        if md_parser:
+            md_bytes = md_parser.parse_string(modified_markdown)
+        else:
+            md_bytes = modified_markdown.encode('utf-8')
+
+        # Create filename from BlockGroup name or use default
+        filename = block_group.name or f"{Path(record_name).stem}_blockgroup_{block_group.index}.md"
+        if not filename.endswith('.md'):
+            filename = f"{filename}.md"
+
+        # Process through docling
+        self.logger.debug(
+            f"📄 Processing BlockGroup {block_group.index} ({block_group.name}) through docling"
+        )
+        processed_blocks_container = await processor.load_document(filename, md_bytes)
+
+        if not processed_blocks_container:
+            raise ValueError(
+                f"Docling returned empty result for BlockGroup {block_group.index}"
+            )
+
+        # Map base64 images to image blocks using captions
+        self._map_base64_images_to_blocks(
+            processed_blocks_container.blocks, caption_map, block_group.index
+        )
+
+        self.logger.debug(
+            f"✅ Processed BlockGroup {block_group.index}: "
+            f"collected {len(processed_blocks_container.blocks)} blocks, "
+            f"{len(processed_blocks_container.block_groups)} block_groups"
+        )
+
+        return processed_blocks_container.block_groups, processed_blocks_container.blocks
+
+    def _calculate_index_shift_map(
+        self,
+        block_groups_with_index: List[BlockGroup],
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]]
+    ) -> Dict[int, int]:
+        """
+        Calculate index shift mappings for block groups.
+
+        Builds a map of original_index -> cumulative_shift_amount where
+        cumulative_shift = sum of new_block_groups from all parents with index < original_index.
+
+        Args:
+            block_groups_with_index: List of block groups with valid indices
+            processing_results: Map of parent_index -> (new_block_groups, new_blocks)
+
+        Returns:
+            Dictionary mapping original_index to shift amount
+        """
+        index_shift_map: Dict[int, int] = {}
+        cumulative_shift = 0
+
+        for bg in block_groups_with_index:
+            original_index = bg.index
+            index_shift_map[original_index] = cumulative_shift
+
+            # If this block_group was processed, add its new block_groups to the shift
+            if original_index in processing_results:
+                num_new_block_groups = len(processing_results[original_index][0])
+                cumulative_shift += num_new_block_groups
+
+        return index_shift_map
+
+    def _build_updated_blocks_container(
+        self,
+        block_containers: BlocksContainer,
+        block_groups_with_index: List[BlockGroup],
+        block_groups_without_index: List[BlockGroup],
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]],
+        index_shift_map: Dict[int, int],
+        initial_block_count: int
+    ) -> BlocksContainer:
+        """
+        Build the final BlocksContainer with updated indices.
+
+        Args:
+            block_containers: Original BlocksContainer
+            block_groups_with_index: Block groups with valid indices
+            block_groups_without_index: Block groups without indices
+            processing_results: Map of parent_index -> (new_block_groups, new_blocks)
+            index_shift_map: Map of original_index to shift amount
+            initial_block_count: Initial count of blocks
+
+        Returns:
+            New BlocksContainer with processed blocks merged in
+        """
+        new_block_groups: List[BlockGroup] = []
+        new_blocks: List[Block] = []
+        processed_indices = set(processing_results.keys())
+
+        # Track block index offset (blocks are appended at the end)
+        block_index_offset = initial_block_count
+
+        # Build new block_groups list
+        for bg in block_groups_with_index:
+            original_index = bg.index
+            shift_amount = index_shift_map[original_index]
+            final_index = original_index + shift_amount
+
+            # Update block_group's index
+            bg.index = final_index
+
+            # Update parent_index if it references a shifted block_group
+            if bg.parent_index is not None and bg.parent_index in index_shift_map:
+                bg.parent_index += index_shift_map[bg.parent_index]
+
+            # Update children references
+            if bg.children:
+                for child in bg.children:
+                    if child.block_group_index is not None and child.block_group_index in index_shift_map:
+                        child.block_group_index += index_shift_map[child.block_group_index]
+
+            # Add the block_group to the result
+            new_block_groups.append(bg)
+
+            # If this block_group was processed, insert its children and mark as processed
+            if original_index in processed_indices:
+                bg.requires_processing = False
+
+                # Get processing results
+                new_block_groups_list, new_blocks_list = processing_results[original_index]
+                insertion_index = final_index + 1
+
+                # Initialize children array if needed
+                if bg.children is None:
+                    bg.children = []
+
+                # Assign indices to new block_groups and update references
+                for i, new_bg in enumerate(new_block_groups_list):
+                    new_bg.index = insertion_index + i
+
+                    # Set parent_index to parent's final index if not set
+                    if new_bg.parent_index is None:
+                        new_bg.parent_index = final_index
+                    else:
+                        # If parent_index exists, it's a relative index from docling
+                        new_bg.parent_index = new_bg.parent_index + insertion_index
+
+                    # Update children indices in the new block_group
+                    if new_bg.children:
+                        for child in new_bg.children:
+                            if child.block_index is not None:
+                                child.block_index += block_index_offset
+                            if child.block_group_index is not None:
+                                child.block_group_index += insertion_index
+
+                    new_block_groups.append(new_bg)
+
+                    # Add to parent's children
+                    bg.children.append(BlockContainerIndex(block_group_index=new_bg.index))
+
+                # Process new blocks with sequential indices
+                for block_i, new_block in enumerate(new_blocks_list):
+                    # Assign sequential block index
+                    new_block.index = block_index_offset + block_i
+
+                    # Set parent_index
+                    if new_block.parent_index is None:
+                        new_block.parent_index = final_index
+                    else:
+                        # If parent_index exists, it's a relative index from docling
+                        new_block.parent_index = new_block.parent_index + insertion_index
+
+                    new_blocks.append(new_block)
+
+                    # Add blocks that directly belong to the parent BlockGroup
+                    if new_block.parent_index == final_index:
+                        bg.children.append(BlockContainerIndex(block_index=new_block.index))
+
+                # Update block offset for next iteration
+                block_index_offset += len(new_blocks_list)
+
+        # Append block_groups with None index at end
+        new_block_groups.extend(block_groups_without_index)
+
+        # Update all original blocks' parent_index references
+        for block in block_containers.blocks:
+            if block.parent_index is not None and block.parent_index in index_shift_map:
+                block.parent_index += index_shift_map[block.parent_index]
+
+        # Build final BlocksContainer
+        return BlocksContainer(
+            block_groups=new_block_groups,
+            blocks=list(block_containers.blocks) + new_blocks
+        )
+
+    async def _process_blockgroups_through_docling(
+        self, block_containers: BlocksContainer, record_name: str
+    ) -> BlocksContainer:
+        """
+        Process BlockGroups with requires_processing=True through docling.
+
+        Uses a functional approach:
+        1. Process all BlockGroups that need processing, collecting results
+        2. Calculate index mappings upfront
+        3. Build new BlocksContainer in a single pass
+
+        Args:
+            block_containers: BlocksContainer to process
+            record_name: Name of the record (for docling processing)
+
+        Returns:
+            BlocksContainer with processed blocks merged in
+        """
+        if not block_containers.block_groups:
+            return block_containers
+
+        # Separate block_groups with valid index from those with None index
+        block_groups_with_index, block_groups_without_index = self._separate_block_groups_by_index(
+            block_containers.block_groups
+        )
+
+        # Filter BlockGroups that need processing (already in sequence from connector)
+        block_groups_to_process = [
+            bg for bg in block_groups_with_index
+            if bg.requires_processing and bg.data
+        ]
+
+        if not block_groups_to_process:
+            self.logger.debug("No BlockGroups require processing")
+            return block_containers
+
+        self.logger.info(
+            f"🔄 Processing {len(block_groups_to_process)} BlockGroups through docling"
+        )
+
+        # ========== PHASE 1: Process all BlockGroups and collect results ==========
+        # Map: parent_index -> (new_block_groups, new_blocks)
+        processing_results: Dict[int, Tuple[List[BlockGroup], List[Block]]] = {}
+        processor = DoclingProcessor(logger=self.logger, config=self.config_service)
+        initial_block_count = len(block_containers.blocks)
+
+        # Get markdown parser for processing
+        md_parser = self.parsers.get(ExtensionTypes.MD.value)
+
+        for block_group in block_groups_to_process:
+            try:
+                new_block_groups, new_blocks = await self._process_single_blockgroup_through_docling(
+                    block_group, record_name, processor, md_parser
+                )
+
+                # Store results for later merging
+                processing_results[block_group.index] = (new_block_groups, new_blocks)
+
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Error processing BlockGroup {block_group.index} through docling: {e}",
+                    exc_info=True
+                )
+                # Stop processing if any BlockGroup fails
+                raise
+
+        if not processing_results:
+            self.logger.debug("No BlockGroups were successfully processed")
+            return block_containers
+
+        # ========== PHASE 2: Calculate index mappings upfront ==========
+        index_shift_map = self._calculate_index_shift_map(
+            block_groups_with_index, processing_results
+        )
+
+        # ========== PHASE 3: Build new BlocksContainer in a single pass ==========
+        result = self._build_updated_blocks_container(
+            block_containers,
+            block_groups_with_index,
+            block_groups_without_index,
+            processing_results,
+            index_shift_map,
+            initial_block_count
+        )
+
+        self.logger.info(
+            f"✅ Processed {len(processing_results)} BlockGroups. "
+            f"Total blocks: {len(result.blocks)}, "
+            f"Total block_groups: {len(result.block_groups)}"
+        )
+
+        return result
+
     async def process_excel_document(
         self, recordName, recordId, version, source, orgId, excel_binary, virtual_record_id
     ) -> AsyncGenerator[Dict[str, Any], None]:
@@ -676,61 +1169,64 @@ class Processor:
             self.logger.error(f"❌ Error processing XLS document: {str(e)}")
             raise
 
-    async def process_csv_document(
-        self, recordName, recordId, version, source, orgId, csv_binary, virtual_record_id, origin
+    async def process_delimited_document(
+        self, recordName, recordId, file_binary, virtual_record_id, extension = None
     ) -> AsyncGenerator[Dict[str, Any], None]:
-        """Process CSV document, yielding phase completion events.
+        """Process delimited document (CSV/TSV), yielding phase completion events.
 
         Args:
             recordName (str): Name of the record
             recordId (str): ID of the record
-            version (str): Version of the record
-            source (str): Source of the document
-            orgId (str): Organization ID
-            csv_binary (bytes): Binary content of the CSV file
+            file_binary (bytes): Binary content of the delimited file (CSV/TSV)
+            virtual_record_id (str): Virtual record ID
+            extension (str): File extension type (defaults to CSV if None)
         """
         self.logger.info(
-            f"🚀 Starting CSV document processing for record: {recordName}"
+            f"🚀 Starting delimited document processing for record: {recordName}"
         )
 
         try:
-            # Initialize CSV parser
-            self.logger.debug("📊 Processing CSV content")
-            parser = self.parsers[ExtensionTypes.CSV.value]
+            # Initialize parser
+            self.logger.debug("📊 Processing delimited file content")
+            if extension is None:
+                parser = self.parsers[ExtensionTypes.CSV.value]
+            else:
+                parser = self.parsers[extension]
 
             llm, _ = await get_llm(self.config_service)
 
             # Try different encodings to decode binary data
             encodings = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
-            csv_result = None
+            all_rows = None
             for encoding in encodings:
                 try:
                     self.logger.debug(
-                        f"Attempting to decode CSV with {encoding} encoding"
+                        f"Attempting to decode delimited file with {encoding} encoding"
                     )
                     # Decode binary data to string
-                    csv_text = csv_binary.decode(encoding)
+                    csv_text = file_binary.decode(encoding)
 
                     # Create string stream from decoded text
                     csv_stream = io.StringIO(csv_text)
 
-                    # Use the parser's read_stream method directly
-                    csv_result = parser.read_stream(csv_stream)
+                    # Read raw rows for table detection
+                    all_rows = parser.read_raw_rows(csv_stream)
+
 
                     self.logger.info(
-                        f"✅ Successfully parsed CSV with {encoding} encoding. Rows: {len(csv_result):,}"
+                        f"✅ Successfully parsed delimited file with {encoding} encoding. Rows: {len(all_rows)}"
                     )
                     break
                 except UnicodeDecodeError:
                     self.logger.debug(f"Failed to decode with {encoding} encoding")
                     continue
                 except Exception as e:
-                    self.logger.debug(f"Failed to process CSV with {encoding} encoding: {str(e)}")
+                    self.logger.debug(f"Failed to process delimited file with {encoding} encoding: {str(e)}")
                     continue
 
 
-            if csv_result is None or not csv_result:
-                self.logger.info(f"Unable to decode CSV file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
+            if all_rows is None or not all_rows:
+                self.logger.info(f"Unable to decode delimited file with any supported encoding or it is empty for record: {recordName}. Setting indexing status to EMPTY.")
 
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
@@ -738,41 +1234,50 @@ class Processor:
 
                 return
 
-            self.logger.debug("📑 CSV result processed")
+            self.logger.debug("📑 Delimited file result processed")
 
-            # Extract domain metadata from CSV content
-            self.logger.info("🎯 Extracting domain metadata")
-            if csv_result:
+            # Detect multiple tables
+            tables = parser.find_tables_in_csv(all_rows)
+            self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
-                record = await self.arango_service.get_document(
-                    recordId, CollectionNames.RECORDS.value
-                    )
-                if record is None:
-                    self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-                    yield {"event": "indexing_complete", "data": {"record_id": recordId}}
-                    return
-                record = convert_record_dict_to_record(record)
-                record.virtual_record_id = virtual_record_id
-
-                # Signal parsing complete after CSV is parsed (before LLM block creation)
+            record = await self.arango_service.get_document(
+                recordId, CollectionNames.RECORDS.value
+            )
+            if record is None:
+                self.logger.error(f"❌ Record {recordId} not found in database")
                 yield {"event": "parsing_complete", "data": {"record_id": recordId}}
-
-                # Create blocks (involves LLM calls for row descriptions and summaries)
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, llm)
-                record.block_containers = block_containers
-
-                ctx = TransformContext(record=record)
-                pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
-                await pipeline.apply(ctx)
-
-                # Signal indexing complete
                 yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+                return
+            record = convert_record_dict_to_record(record)
+            record.virtual_record_id = virtual_record_id
 
-            self.logger.info("✅ CSV processing completed successfully")
+            # Signal parsing complete after delimited file is parsed (before LLM block creation)
+            yield {"event": "parsing_complete", "data": {"record_id": recordId}}
+
+            # Route to appropriate processing method based on number of tables
+            if len(tables) == 1:
+                # Single table - use existing logic for backward compatibility
+                self.logger.info("📊 Processing as single table (backward compatibility mode)")
+                csv_result, line_numbers = parser.convert_table_to_dict(tables[0])
+                block_containers = await parser.get_blocks_from_csv_result(csv_result, line_numbers, llm)
+            else:
+                # Multiple tables - use new multi-table processing
+                self.logger.info(f"📊 Processing {len(tables)} tables with multi-table logic")
+                block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
+
+            record.block_containers = block_containers
+
+            ctx = TransformContext(record=record)
+            pipeline = IndexingPipeline(document_extraction=self.document_extraction, sink_orchestrator=self.sink_orchestrator)
+            await pipeline.apply(ctx)
+
+            # Signal indexing complete
+            yield {"event": "indexing_complete", "data": {"record_id": recordId}}
+
+            self.logger.info("✅ Delimited file processing completed successfully")
 
         except Exception as e:
-            self.logger.error(f"❌ Error processing CSV document: {str(e)}")
+            self.logger.error(f"❌ Error processing delimited document: {str(e)}")
             raise
 
 

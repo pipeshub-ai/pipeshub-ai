@@ -405,7 +405,7 @@ export const GridView: React.FC<GridViewProps> = ({
       case 'FILE_TYPE_NOT_SUPPORTED':
         return 'Not Supported';
       case 'AUTO_INDEX_OFF':
-        return 'Manual Sync';
+        return 'Manual Indexing';
       case 'EMPTY':
         return 'Empty';
       case 'ENABLE_MULTIMODAL_MODELS':

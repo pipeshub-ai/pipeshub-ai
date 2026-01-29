@@ -85,6 +85,8 @@ interface AuthStep {
   step: number;
   methods: string[];
   authProviders: Record<string, any>;
+  isJitProvisioning?: boolean;
+  jitEnabledMethods?: string[];
 }
 
 // Tab configuration
@@ -254,6 +256,8 @@ export const AuthenticationView = () => {
           step: response.currentStep,
           methods: response.allowedMethods,
           authProviders: response.authProviders || {},
+          isJitProvisioning: response.isJitProvisioning,
+          jitEnabledMethods: response.jitEnabledMethods,
         };
 
         setAuthSteps([newStep]);
@@ -634,6 +638,21 @@ export const AuthenticationView = () => {
                 }}
               >
                 {error}
+              </Alert>
+            </Grow>
+          )}
+
+          {/* JIT Provisioning info message */}
+          {currentStep?.isJitProvisioning && (
+            <Grow in>
+              <Alert
+                severity="info"
+                sx={{
+                  mb: 3,
+                  '& .MuiAlert-message': { width: '100%' },
+                }}
+              >
+                Your account will be created automatically upon successful sign-in.
               </Alert>
             </Grow>
           )}

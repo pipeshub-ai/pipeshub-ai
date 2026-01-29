@@ -2431,7 +2431,7 @@ class ConfluenceDataSource:
     async def get_page_by_id(
         self,
         id: int,
-        body_format: Optional[Dict[str, Any]] = None,
+        body_format: Optional[str] = None,
         get_draft: Optional[bool] = None,
         status: Optional[list[str]] = None,
         version: Optional[int] = None,
@@ -2447,7 +2447,7 @@ class ConfluenceDataSource:
         include_direct_children: Optional[bool] = None,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
-        """Auto-generated from OpenAPI: Get page by id\n\nHTTP GET /pages/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (Dict[str, Any], optional)\n  - get-draft (bool, optional)\n  - status (list[str], optional)\n  - version (int, optional)\n  - include-labels (bool, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)\n  - include-favorited-by-current-user-status (bool, optional)\n  - include-webresources (bool, optional)\n  - include-collaborators (bool, optional)\n  - include-direct-children (bool, optional)"""
+        """Auto-generated from OpenAPI: Get page by id\n\nHTTP GET /pages/{id}\nPath params:\n  - id (int)\nQuery params:\n  - body-format (str, optional) - One of: storage, atlas_doc_format, view, export_view, anonymous_export_view, styled_view, editor\n  - get-draft (bool, optional)\n  - status (list[str], optional)\n  - version (int, optional)\n  - include-labels (bool, optional)\n  - include-properties (bool, optional)\n  - include-operations (bool, optional)\n  - include-likes (bool, optional)\n  - include-versions (bool, optional)\n  - include-version (bool, optional)\n  - include-favorited-by-current-user-status (bool, optional)\n  - include-webresources (bool, optional)\n  - include-collaborators (bool, optional)\n  - include-direct-children (bool, optional)"""
         if self._client is None:
             raise ValueError('HTTP client is not initialized')
         _headers: Dict[str, Any] = dict(headers or {})

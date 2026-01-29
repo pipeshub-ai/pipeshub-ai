@@ -985,7 +985,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                                 e.preventDefault();
                                 const allRecordCitations =
                                   aggregatedCitations[recordInfo.recordId] || recordCitations;
-                                const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(
+                                const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(
                                   recordInfo.extension || ''
                                 );
                                 onViewPdf('', firstCitation, allRecordCitations, isExcelOrCSV);
@@ -1128,7 +1128,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                             const allRecordCitations = aggregatedCitations[
                               citation.metadata.recordId
                             ] || [citation];
-                            const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(
+                            const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(
                               citation.metadata?.extension || ''
                             );
                             onViewPdf('', citation, allRecordCitations, isExcelOrCSV);

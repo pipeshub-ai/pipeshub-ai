@@ -7,4 +7,5 @@ export interface DistributedKeyValueStore<T> {
   watchKey(key: string, callback: (value: T | null) => void): Promise<void>;
   listKeysInDirectory(directory: string): Promise<string[]>;
   compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean>;
+  healthCheck(): Promise<boolean>;
 }

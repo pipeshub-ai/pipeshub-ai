@@ -648,11 +648,7 @@ export const extractAgentConfigFromFlow = (
     kb,
     connectors, // Unified array with category field
     vectorDBs: [],
-    tags: currentAgent?.tags || ['flow-based', 'visual-workflow'],
-    flow: {
-      nodes,
-      edges,
-    },
+    tags: currentAgent?.tags || ['flow-based', 'visual-workflow']
   };
 };
 

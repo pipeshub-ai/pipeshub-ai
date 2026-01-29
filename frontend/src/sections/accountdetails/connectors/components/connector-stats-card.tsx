@@ -206,10 +206,10 @@ export const ConnectorStatsCard = ({
     ...(indexingStatus.AUTO_INDEX_OFF > 0
       ? [
           {
-            label: 'Manual Sync',
+            label: 'Manual Indexing',
             count: indexingStatus.AUTO_INDEX_OFF,
             icon: fileCancelOutlineIcon,
-            tooltip: 'Auto Index Off',
+            tooltip: 'Index manually from All records',
             key: 'autoIndexOff' as const,
           },
         ]

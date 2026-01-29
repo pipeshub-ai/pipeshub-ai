@@ -127,14 +127,11 @@ export class StorageController {
     if (!document) {
       return false;
     }
-    const response1 = await adapter.getBufferFromStorageService(
-      document,
-      version1,
-    );
-    const response2 = await adapter.getBufferFromStorageService(
-      document,
-      version2,
-    );
+    // OPTIMIZATION: Parallelize both buffer reads
+    const [response1, response2] = await Promise.all([
+      adapter.getBufferFromStorageService(document, version1),
+      adapter.getBufferFromStorageService(document, version2),
+    ]);
     return (
       (response1.data as Buffer)?.equals(response2.data as Buffer) ?? false
     );
@@ -473,13 +470,13 @@ export class StorageController {
   ): Promise<void> {
     try {
       const { buffer, originalname, size, mimetype } = req.body.fileBuffer;
-      const currentVersionNote = req.body.currentVersionNote; // use this only when current was already modified when upload next version was clicked
-      const nextVersionNote = req.body.nextVersionNote; // use this for next version note
+      const currentVersionNote = req.body.currentVersionNote;
+      const nextVersionNote = req.body.nextVersionNote;
       const userId = extractUserId(req);
       const docResult: DocumentInfoResponse | undefined = await getDocumentInfo(
         req,
         next,
-      ); // Use the middleware to get docInfo
+      );
 
       if (!docResult) {
         throw new NotFoundError('Error fetching document from db');
@@ -498,8 +495,9 @@ export class StorageController {
         throw new ForbiddenError('Update buffer failed: File format mismatch');
       }
 
-      await document.save();
       const adapter = await this.initializeStorageAdapter(req);
+      
+      // Check if document changed (current vs last version)
       const isDocumentChanged = !(await this.compareDocuments(
         document,
         undefined,
@@ -509,12 +507,13 @@ export class StorageController {
         adapter,
       ));
 
+      // If current document was modified since last version, save it as a new version first
       if (isDocumentChanged === true) {
-        const nextVersion = document.versionHistory?.length ?? 0;
-        const newDocumentFilePath = `${document.documentPath}/versions/v${nextVersion}${document.extension}`;
+        const versionToSave = document.versionHistory?.length ?? 0;
+        const versionFilePath = `${document.documentPath}/versions/v${versionToSave}${document.extension}`;
         const bufferResponse = await adapter.getBufferFromStorageService(
           document,
-          undefined, //passing version as undefined to get the buffer of current
+          undefined,
         );
 
         if (bufferResponse.statusCode !== 200) {
@@ -526,30 +525,24 @@ export class StorageController {
         const response = await this.cloneDocument(
           document,
           bufferResponse.data as Buffer,
-          newDocumentFilePath,
+          versionFilePath,
           next,
           adapter,
         );
 
-        if (!response) {
-          throw new InternalServerError('Failed to upload document');
-        }
-
-        if (response.statusCode !== 200) {
+        if (!response || response.statusCode !== 200) {
           throw new InternalServerError(
-            response.data ?? 'Some error occurred while uploading next version',
+            response?.data ?? 'Failed to save current version before update',
           );
         }
+
         const storageConfig =
           (await this.keyValueStoreService.get<string>(storageEtcdPaths)) ||
           '{}';
         const { storageType } = JSON.parse(storageConfig);
-        if (!isValidStorageVendor(storageType ?? '')) {
-          throw new BadRequestError(`Invalid storage type: ${storageType}`);
-        }
 
         document.versionHistory?.push({
-          version: nextVersion,
+          version: versionToSave,
           [`${storageType}`]: {
             url: response?.data,
           },
@@ -564,53 +557,55 @@ export class StorageController {
             : undefined,
           createdAt: Date.now(),
         });
-
-        await document.save();
       }
 
+      // Now upload the new file - parallelize version and current writes
       const nextVersion = document.versionHistory?.length ?? 0;
-      const newDocumentFilePath = `${document.documentPath}/versions/v${nextVersion}${document.extension}`;
+      const versionFilePath = `${document.documentPath}/versions/v${nextVersion}${document.extension}`;
+      const currentFilePath = `${document.documentPath}/current/${document.documentName}${document.extension}`;
 
       const nextVersionPayload: FilePayload = {
         buffer: buffer,
         mimeType: mimetype,
-        documentPath: newDocumentFilePath,
+        documentPath: versionFilePath,
         isVersioned: document.isVersionedFile,
       };
 
-      const response = await adapter.uploadDocumentToStorageService(
-        nextVersionPayload as FilePayload,
-      );
+      const currentPayload: FilePayload = {
+        buffer: buffer,
+        mimeType: mimetype,
+        documentPath: currentFilePath,
+        isVersioned: document.isVersionedFile,
+      };
 
-      if (response.statusCode !== 200) {
+      // OPTIMIZATION: Upload to both locations in parallel
+      const [versionResponse, currentResponse] = await Promise.all([
+        adapter.uploadDocumentToStorageService(nextVersionPayload),
+        adapter.uploadDocumentToStorageService(currentPayload),
+      ]);
+
+      if (versionResponse.statusCode !== 200) {
         throw new InternalServerError(
-          `some error occurred while uploading, try after sometime: ${response.msg}`,
+          `Failed to upload version file: ${versionResponse.msg}`,
         );
       }
 
-      const currentFileResponse = await this.cloneDocument(
-        document,
-        buffer,
-        `${document.documentPath}/current/${document.documentName}${document.extension}`,
-        next,
-        adapter,
-      );
-
-      if (currentFileResponse && currentFileResponse.statusCode !== 200) {
+      if (currentResponse.statusCode !== 200) {
         throw new InternalServerError(
-          currentFileResponse.data ??
-            'Some error occurred while uploading next version',
+          `Failed to upload current file: ${currentResponse.msg}`,
         );
       }
 
       const fileExtension = path.extname(originalname);
 
+      // Update document metadata
       document.mutationCount = (document.mutationCount ?? 0) + 1;
+      document.sizeInBytes = size;
 
       document.versionHistory?.push({
         version: nextVersion,
         [`${storageType}`]: {
-          url: response?.data,
+          url: versionResponse?.data,
         },
         size: size,
         mutationCount: document.mutationCount,
@@ -624,8 +619,7 @@ export class StorageController {
         createdAt: Date.now(),
       });
 
-      document.sizeInBytes = size;
-
+      // Single save at the end
       await document.save();
 
       res.status(HTTP_STATUS.OK).json(document);

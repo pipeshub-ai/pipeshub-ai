@@ -28,7 +28,6 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterField,
     FilterType,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     load_connector_filters,
@@ -97,16 +96,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="File Extensions",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            option_source_type=OptionSourceType.MANUAL,
-            default_value=[],
-            default_operator=ListOperator.IN.value
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())

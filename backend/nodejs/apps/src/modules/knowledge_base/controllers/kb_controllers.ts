@@ -771,7 +771,7 @@ export const uploadRecordsToKB =
           sourceLastModifiedTimestamp: validLastModified,
           isDeleted: false,
           isArchived: false,
-          indexingStatus: INDEXING_STATUS.NOT_STARTED,
+          indexingStatus: INDEXING_STATUS.QUEUED,
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
@@ -938,7 +938,7 @@ export const uploadRecordsToFolder =
           sourceLastModifiedTimestamp: validLastModified,
           isDeleted: false,
           isArchived: false,
-          indexingStatus: INDEXING_STATUS.NOT_STARTED,
+          indexingStatus: INDEXING_STATUS.QUEUED,
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
@@ -1141,15 +1141,15 @@ export const updateRecord =
       let fileUploaded = false;
       let storageDocumentId = null;
 
-      if (hasFileBuffer && updateResult?.record) {
+      if (hasFileBuffer && updateResult) {
         // Use the externalRecordId as the storageDocumentId
-        storageDocumentId = updateResult.record.externalRecordId;
+        storageDocumentId = updateResult.externalRecordId;
 
         // Check if we have a valid externalRecordId to use
         if (!storageDocumentId) {
           logger.error('No external record ID found after database update', {
             recordId,
-            updatedRecord: updateResult?.record._key,
+            updatedRecord: updateResult?._key,
           });
           throw new BadRequestError(
             'Cannot update file: No external record ID found for this record',
@@ -1164,7 +1164,7 @@ export const updateRecord =
           mimeType: mimetype,
           extension,
           storageDocumentId: storageDocumentId,
-          version: updateResult?.record.version,
+          version: updateResult?.version,
         });
 
         try {
@@ -1181,18 +1181,21 @@ export const updateRecord =
           logger.info('File uploaded to storage successfully', {
             recordId,
             storageDocumentId,
-            version: updateResult?.record.version,
+            version: updateResult?.version,
           });
 
           fileUploaded = true;
         } catch (storageError: any) {
+          const is404 = storageError?.response?.status === 404;
+          
           logger.error(
             'Failed to upload file to storage after database update',
             {
               recordId,
               storageDocumentId: storageDocumentId,
               error: storageError.message,
-              version: updateResult.record.version,
+              version: updateResult.version,
+              is404,
             },
           );
 
@@ -1203,9 +1206,17 @@ export const updateRecord =
             {
               recordId,
               storageDocumentId,
-              databaseVersion: updateResult.record.version,
+              databaseVersion: updateResult.version,
             },
           );
+
+          // Provide specific error message for 404 (file not found in storage)
+          if (is404) {
+            throw new InternalServerError(
+              `File storage document not found. The original file may have been deleted` +
+              `Please delete this record and re-upload the file.`,
+            );
+          }
 
           throw new InternalServerError(
             `Record updated but file upload failed: ${storageError.message}. Please retry the file upload.`,
@@ -1221,7 +1232,7 @@ export const updateRecord =
         fileUploaded,
         newFileName: fileUploaded ? originalname : undefined,
         updatedFields: Object.keys(updatedData),
-        version: updateResult.record?.version,
+        version: updateResult?.version,
         requestId: req.context?.requestId,
       });
 
@@ -1230,7 +1241,7 @@ export const updateRecord =
         message: fileUploaded
           ? 'Record updated with new file version'
           : 'Record updated successfully',
-        record: updateResult.record,
+        record: updateResult,
         fileUploaded,
         meta: {
           requestId: req.context?.requestId,
@@ -2695,5 +2706,55 @@ export const resyncConnectorRecords =
       });
       next(error);
       return; // Added return statement
+    }
+  };
+
+/**
+ * Move a record (file or folder) to a different location within the same KB.
+ */
+export const moveRecord =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      const { kbId, recordId } = req.params;
+      const { newParentId } = req.body;
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+
+      logger.info(
+        `Moving record ${recordId} to ${newParentId ? `folder ${newParentId}` : 'KB root'} in KB ${kbId}`,
+      );
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/record/${recordId}/move`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { newParentId },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Moving record',
+        'Record not found',
+      );
+    } catch (error: any) {
+      logger.error('Error moving record', {
+        error: error.message,
+        kbId: req.params.kbId,
+        recordId: req.params.recordId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'move record');
+      next(handleError);
     }
   };

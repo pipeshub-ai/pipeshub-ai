@@ -13,7 +13,6 @@ from app.connectors.core.registry.connector import (
     CalendarConnector,
     DocsConnector,
     FormsConnector,
-    LinearConnector,
     MeetConnector,
     NotionConnector,
     SlackConnector,
@@ -24,8 +23,8 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 
-# from app.connectors.sources.azure_blob.connector import AzureBlobConnector
 # from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
@@ -36,10 +35,13 @@ from app.connectors.sources.dropbox_individual.connector import (
 from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
 )
-from app.connectors.sources.google.drive.team.connector import (
-    GoogleDriveTeamConnector,
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+from app.connectors.sources.google.gmail.individual.connector import (
+    GoogleGmailIndividualConnector,
 )
+from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
+from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -67,6 +69,8 @@ class ConnectorFactory:
         "box": BoxConnector,
         "drive": GoogleDriveIndividualConnector,
         "driveworkspace": GoogleDriveTeamConnector,
+        "gmail": GoogleGmailIndividualConnector,
+        "gmailworkspace": GoogleGmailTeamConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "nextcloud": NextcloudConnector,
@@ -76,8 +80,9 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
-        #"azureblob": AzureBlobConnector,
+        "azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
+        "linear": LinearConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -90,7 +95,6 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'linear': LinearConnector,
         'notion': NotionConnector,
         'airtable': AirtableConnector,
     }
@@ -182,7 +186,10 @@ class ConnectorFactory:
 
         if connector:
             try:
-                await connector.init()
+                success = await connector.init()
+                if not success:
+                    logger.error(f"❌ Failed to initialize {name} {connector_id} connector")
+                    return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:

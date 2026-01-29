@@ -68,6 +68,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     formErrors,
     saveError,
     conditionalDisplay,
+    saveAttempted,
 
     // Business OAuth state (Google Workspace)
     isCreateMode,
@@ -281,6 +282,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           instanceName={instanceName}
           instanceNameError={instanceNameError}
           onInstanceNameChange={setInstanceName}
+          saveAttempted={saveAttempted}
           selectedAuthType={selectedAuthType}
           handleAuthTypeChange={handleAuthTypeChange}
         />
@@ -413,6 +415,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           certificateInputRef={certificateInputRef}
           privateKeyInputRef={privateKeyInputRef}
           onFieldChange={handleFieldChange}
+          saveAttempted={saveAttempted}
         />
       );
     }
@@ -505,6 +508,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               onFieldChange={handleFieldChange}
               selectedAuthType={selectedAuthType}
               handleAuthTypeChange={handleAuthTypeChange}
+              saveAttempted={saveAttempted}
             />
           );
         case 1:
@@ -578,6 +582,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             onFieldChange={handleFieldChange}
             selectedAuthType={selectedAuthType}
             handleAuthTypeChange={handleAuthTypeChange}
+            saveAttempted={saveAttempted}
           />
         );
       case 1:
@@ -641,6 +646,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     setInstanceName,
     selectedAuthType,
     handleAuthTypeChange,
+    saveAttempted,
   ]);
 
   if (loading) {

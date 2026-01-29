@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
@@ -24,11 +25,25 @@ class KafkaMessagingProducer(IMessagingProducer):
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaProducerConfig) -> Dict[str, Any]:
-        """Convert KafkaProducerConfig dataclass to dictionary format for aiokafka consumer"""
-        return {
+        """Convert KafkaProducerConfig dataclass to dictionary format for aiokafka producer"""
+        config: Dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'client_id': kafka_config.client_id,
         }
+
+        # Add SSL/SASL configuration
+        if kafka_config.ssl:
+            config["ssl_context"] = ssl.create_default_context()
+            sasl_config = kafka_config.sasl or {}
+            if sasl_config.get("username"):
+                config["security_protocol"] = "SASL_SSL"
+                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                config["sasl_plain_username"] = sasl_config["username"]
+                config["sasl_plain_password"] = sasl_config["password"]
+            else:
+                config["security_protocol"] = "SSL"
+
+        return config
 
     # implementing abstract methods from IMessagingProducer
     async def initialize(self) -> None:

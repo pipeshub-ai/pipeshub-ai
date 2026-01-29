@@ -67,6 +67,7 @@ from app.sources.client.nextcloud.nextcloud import (
     NextcloudRESTClientViaUsernamePassword,
 )
 from app.sources.external.nextcloud.nextcloud import NextcloudDataSource
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 NEXTCLOUD_PERM_MASK_ALL = 31
@@ -1648,12 +1649,11 @@ class NextcloudConnector(BaseConnector):
             async def generate() -> AsyncIterator[bytes]:
                 yield file_content
 
-            return StreamingResponse(
+            return create_stream_record_response(
                 generate(),
-                media_type=record.mime_type if record.mime_type else "application/octet-stream",
-                headers={
-                    "Content-Disposition": f"attachment; filename={record.record_name}"
-                }
+                filename=record.record_name,
+                mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+                fallback_filename=f"record_{record.id}"
             )
         except HTTPException:
             raise

@@ -286,7 +286,7 @@ const CitationHoverCard = ({
     if (citation?.metadata?.recordId) {
       try {
         const extension = getExtension();
-        const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(extension);
+        const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(extension);
         onViewPdf('', citation, aggregatedCitations, isExcelOrCSV);
       } catch (err) {
         console.error('Failed to fetch document:', err);

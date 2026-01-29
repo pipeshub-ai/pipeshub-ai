@@ -1,7 +1,16 @@
-from typing import List, Literal
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel
-from typing_extensions import TypedDict
+from pydantic import BaseModel, Field
+from typing_extensions import NotRequired, TypedDict
+
+
+class ReferenceDataItem(TypedDict):
+    """Schema for reference data items (IDs for follow-up queries)"""
+    name: str           # Display name shown to user
+    id: str             # Technical ID (numeric ID, UUID, etc.)
+    type: NotRequired[str]        # Item type (e.g., "jira_project", "jira_issue")
+    key: NotRequired[str]         # Short key/code (e.g., "PA" for Jira project) - CRITICAL for JQL
+    accountId: NotRequired[str]   # Jira user accountId - needed for assignee/reporter JQL
 
 
 class AnswerWithMetadata(BaseModel):
@@ -11,23 +20,27 @@ class AnswerWithMetadata(BaseModel):
     confidence: Literal["Very High", "High", "Medium", "Low"]
     answerMatchType: Literal["Derived From Blocks", "Exact Match", "Fuzzy Match", "Inferred", "Other"]
     blockNumbers: List[int]
+    referenceData: Optional[List[Dict[str, Any]]] = Field(default=None, description="IDs and metadata for follow-up queries")
 
 
-class AnswerWithMetadataDict(TypedDict):
+class AnswerWithMetadataDict(TypedDict, total=False):
     """Schema for the answer with metadata"""
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Derived From Tool Execution"]
     blockNumbers: List[str]
+    referenceData: List[ReferenceDataItem]  # Optional: IDs for follow-up queries
+
 
 class AnswerWithMetadataJSON(BaseModel):
     """Schema for the answer with metadata"""
     answer: str
     reason: str
     confidence: Literal["Very High", "High", "Medium", "Low"]
-    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record"]
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Derived From Tool Execution"]
     blockNumbers: List[str]
+    referenceData: Optional[List[Dict[str, Any]]] = Field(default=None, description="IDs and metadata for follow-up queries")
 
 
 qna_prompt = """
