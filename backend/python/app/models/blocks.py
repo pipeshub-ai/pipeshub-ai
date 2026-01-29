@@ -239,6 +239,8 @@ class GroupSubType(str, Enum):
     RECORD = "record" # Record block group
     COMMENT_THREAD = "comment_thread" # Comment thread block group (used for comments in a thread)
     COMMENT = "comment" # Comment block group
+    PROJECT_CONTENT = "project_content"
+    ISSUE_CONTENT = "issue_content"
     TOGGLE = "toggle"
     CALLOUT = "callout"
     QUOTE = "quote"
@@ -305,7 +307,7 @@ class BlockGroup(BaseModel):
     index: int = None
     name: Optional[str] = Field(description="Name of the block group",default=None)
     type: GroupType = Field(description="Type of the block group")
-    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, content)")
+    sub_type: Optional[GroupSubType] = Field(default=None, description="Subtype of the block group (e.g., milestone, update, project_content)")
     parent_index: Optional[int] = Field(description="Index of the parent block group",default=None)
     description: Optional[str] = Field(description="Description of the block group",default=None)
     source_group_id: Optional[str] = Field(description="Source group identifier",default=None)

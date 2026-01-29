@@ -268,12 +268,12 @@ class RecordTypes(Enum):
     GROUP_MAIL = "GROUP_MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
+    DATABASE = "DATABASE"
+    DATASOURCE = "DATASOURCE"
     COMMENT = "COMMENT"
     TICKET = "TICKET"
     MESSAGE = "MESSAGE"
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
-    NOTION_DATABASE = "NOTION_DATABASE"
-    NOTION_PAGE = "NOTION_PAGE"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
 
@@ -330,5 +330,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "INLINE_COMMENT": CollectionNames.COMMENTS.value,
     "LINK": CollectionNames.LINKS.value,
     "PROJECT": CollectionNames.PROJECTS.value,
+    "DATABASE": CollectionNames.WEBPAGES.value,
+    "DATASOURCE": CollectionNames.WEBPAGES.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

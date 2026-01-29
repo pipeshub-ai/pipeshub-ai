@@ -53,7 +53,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -82,7 +82,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -110,7 +110,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -138,7 +138,7 @@ class NotionDataSource:
             method="DELETE",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -177,7 +177,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -205,7 +205,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -235,7 +235,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -266,7 +266,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -294,7 +294,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -336,7 +336,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -365,7 +365,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -394,7 +394,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -422,7 +422,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -450,7 +450,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -481,7 +481,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -517,7 +517,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -546,7 +546,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -581,7 +581,68 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
+            body=request_body,
+        )
+        try:
+            response = await self.http_client.execute(request)
+            return NotionResponse(success=True, data=response)
+        except Exception as e:
+            return NotionResponse(success=False, error=str(e))
+
+    async def retrieve_data_source_by_id(self, data_source_id: str, **kwargs) -> NotionResponse:
+        """Retrieve a data source by its ID (without database_id)
+
+        HTTP GET /data_sources/{data_source_id}
+
+        Args:
+            data_source_id (str, required): Data source ID to retrieve
+
+        Returns:
+            NotionResponse: Standardized response wrapper with success/data/error
+        """
+        params: Dict[str, Any] = {}
+        if kwargs:
+            params.update(kwargs)
+        url = self.base_url + "/data_sources/{data_source_id}".format(data_source_id=data_source_id)
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=self.http_client.headers,
+            query={k: str(v) for k, v in params.items() if v is not None},
+        )
+        try:
+            response = await self.http_client.execute(request)
+            return NotionResponse(success=True, data=response)
+        except Exception as e:
+            return NotionResponse(success=False, error=str(e))
+
+    async def query_data_source_by_id(
+        self,
+        data_source_id: str,
+        request_body: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> NotionResponse:
+        """Query a data source by its ID to get rows (without database_id)
+
+        HTTP POST /data_sources/{data_source_id}/query
+
+        Args:
+            data_source_id (str, required): Data source ID to query
+            request_body (Dict[str, Any], optional): Query parameters (filter, sorts, start_cursor, page_size)
+
+        Returns:
+            NotionResponse: Standardized response wrapper with success/data/error
+        """
+        params: Dict[str, Any] = {}
+        if kwargs:
+            params.update(kwargs)
+        url = self.base_url + "/data_sources/{data_source_id}/query".format(data_source_id=data_source_id)
+        request = HTTPRequest(
+            method="POST",
+            url=url,
+            headers=self.http_client.headers,
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -611,7 +672,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -653,7 +714,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -680,7 +741,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -709,7 +770,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -738,7 +799,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -767,7 +828,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -795,7 +856,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -827,7 +888,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -856,7 +917,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -891,7 +952,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -918,7 +979,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -944,7 +1005,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -968,7 +1029,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1009,7 +1070,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1036,7 +1097,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1063,7 +1124,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1092,7 +1153,7 @@ class NotionDataSource:
             method="PUT",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1121,7 +1182,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1149,7 +1210,7 @@ class NotionDataSource:
             method="DELETE",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1190,7 +1251,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1217,7 +1278,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1244,7 +1305,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1273,7 +1334,7 @@ class NotionDataSource:
             method="PUT",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1302,7 +1363,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1330,7 +1391,7 @@ class NotionDataSource:
             method="DELETE",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1359,7 +1420,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1387,7 +1448,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1415,7 +1476,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1443,7 +1504,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1473,7 +1534,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1501,7 +1562,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1541,7 +1602,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1576,7 +1637,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1605,7 +1666,7 @@ class NotionDataSource:
             method="DELETE",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1640,7 +1701,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1668,7 +1729,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1697,7 +1758,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1725,7 +1786,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1760,7 +1821,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1789,7 +1850,7 @@ class NotionDataSource:
             method="DELETE",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1816,7 +1877,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1844,7 +1905,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1874,7 +1935,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1902,7 +1963,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1930,7 +1991,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -1958,7 +2019,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -1987,7 +2048,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -2015,7 +2076,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -2045,7 +2106,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -2074,7 +2135,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -2109,7 +2170,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -2137,7 +2198,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -2165,7 +2226,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -2194,7 +2255,7 @@ class NotionDataSource:
             method="POST",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:
@@ -2222,7 +2283,7 @@ class NotionDataSource:
             method="GET",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
         )
         try:
             response = await self.http_client.execute(request)
@@ -2250,7 +2311,7 @@ class NotionDataSource:
             method="PATCH",
             url=url,
             headers=self.http_client.headers,
-            query_params={k: str(v) for k, v in params.items() if v is not None},
+            query={k: str(v) for k, v in params.items() if v is not None},
             body=request_body,
         )
         try:

@@ -14,7 +14,6 @@ from app.connectors.core.registry.connector import (
     DocsConnector,
     FormsConnector,
     MeetConnector,
-    NotionConnector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
@@ -50,10 +49,9 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 )
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
+from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.s3.connector import S3Connector
-from app.connectors.sources.servicenow.servicenow.connector import (
-    ServiceNowConnector,
-)
+from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
 
@@ -86,6 +84,7 @@ class ConnectorFactory:
         "azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,
+        "notion": NotionConnector,
         "zammad": ZammadConnector,
     }
 
@@ -99,7 +98,6 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'notion': NotionConnector,
         'airtable': AirtableConnector,
     }
 
