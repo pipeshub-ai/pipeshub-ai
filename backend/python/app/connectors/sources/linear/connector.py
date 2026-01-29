@@ -63,6 +63,7 @@ from app.models.blocks import (
     BlockComment,
     BlockContainerIndex,
     BlockGroup,
+    BlockGroupChildren,
     BlocksContainer,
     ChildRecord,
     ChildType,
@@ -4140,18 +4141,13 @@ class LinearConnector(BaseConnector):
             if bg.parent_index is not None:
                 blockgroup_children_map[bg.parent_index].append(bg.index)
 
-        # Now populate the children arrays
+        # Now populate the children arrays using range-based structure
         for bg in block_groups:
-            children_list = []
-
             # Add child BlockGroups
             if bg.index in blockgroup_children_map:
-                for child_bg_index in sorted(blockgroup_children_map[bg.index]):
-                    children_list.append(BlockContainerIndex(block_group_index=child_bg_index))
-
-            # Set children if we have any
-            if children_list:
-                bg.children = children_list
+                child_bg_indices = sorted(blockgroup_children_map[bg.index])
+                # Convert to range-based structure
+                bg.children = BlockGroupChildren.from_indices(block_group_indices=child_bg_indices)
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 

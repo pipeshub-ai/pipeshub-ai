@@ -20,6 +20,7 @@ from app.models.blocks import (
     Block,
     BlockContainerIndex,
     BlockGroup,
+    BlockGroupChildren,
     BlocksContainer,
     BlockType,
     DataFormat,
@@ -644,7 +645,7 @@ Do not include any additional explanation or text."""
 
             # Create SHEET group
             sheet_group_index = len(block_groups)
-            sheet_group_children: List[BlockContainerIndex] = []
+            sheet_table_group_indices = []
             sheet_group = BlockGroup(
                 index=sheet_group_index,
                 name=sheet_result["sheet_name"],
@@ -667,8 +668,10 @@ Do not include any additional explanation or text."""
                 headers = table.get("headers", [])
                 rows = table.get("rows", [])
 
-                table_group_children: List[BlockContainerIndex] = []
-                table_markdown = self.to_markdown(headers, rows)
+                table_row_block_indices = []
+                num_of_rows = len(rows)
+                num_of_cols = len(headers) if headers else (len(rows[0]["raw_data"]) if rows else 0)
+                num_of_cells = num_of_rows * num_of_cols
                 table_group = BlockGroup(
                     index=table_group_index,
                     name=None,
@@ -677,20 +680,20 @@ Do not include any additional explanation or text."""
                     description=None,
                     source_group_id=None,
                     table_metadata=TableMetadata(
-                        num_of_rows=len(rows),
-                        num_of_cols=len(headers) if headers else (len(rows[0]["raw_data"]) if rows else 0),
+                        num_of_rows=num_of_rows,
+                        num_of_cols=num_of_cols,
+                        num_of_cells=num_of_cells,
                     ),
                     data={
                         "table_summary": table.get("summary", ""),
                         "column_headers": headers,
-                        "table_markdown": table_markdown,
                         "sheet_number": sheet_idx,
                         "sheet_name": sheet_name,
                     },
                     format=DataFormat.JSON,
                 )
                 block_groups.append(table_group)
-                sheet_group_children.append(BlockContainerIndex(block_group_index=table_group_index))
+                sheet_table_group_indices.append(table_group_index)
 
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
@@ -704,64 +707,24 @@ Do not include any additional explanation or text."""
                             data={
                                 "row_natural_language_text": row.get("natural_language_text", ""),
                                 "row_number": int(row.get("row_num") or (i + 1)),
-                                "row": json.dumps(row_data, default=self._json_default),
                                 "sheet_number": sheet_idx,
                                 "sheet_name": sheet_name,
                             },
                             parent_index=table_group_index,
                         )
                     )
-                    table_group_children.append(BlockContainerIndex(block_index=block_index))
+                    table_row_block_indices.append(block_index)
 
-                # attach table children
-                block_groups[table_group_index].children = table_group_children
+                # attach table children using range-based structure
+                block_groups[table_group_index].children = BlockGroupChildren.from_indices(
+                    block_indices=table_row_block_indices
+                )
 
-            # attach sheet children (its tables)
-            block_groups[sheet_group_index].children = sheet_group_children
+            # attach sheet children (its tables) using range-based structure
+            block_groups[sheet_group_index].children = BlockGroupChildren.from_indices(
+                block_group_indices=sheet_table_group_indices
+            )
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    def to_markdown(self, headers: List[str], rows: List[Dict[str, Any]]) -> str:
-        """
-        Convert CSV data to markdown table format.
-        Args:
-            data: List of dictionaries from read_stream() method
-        Returns:
-            String containing markdown formatted table
-        """
-        if not headers and not rows:
-            return ""
-
-        # Get headers from the first row
-        headers = list(headers)
-
-        # Start building the markdown table
-        markdown_lines = []
-
-        # Add header row
-        header_row = "| " + " | ".join(str(header) for header in headers) + " |"
-        markdown_lines.append(header_row)
-
-        # Add separator row
-        separator_row = "|" + "|".join(" --- " for _ in headers) + "|"
-        markdown_lines.append(separator_row)
-        data = []
-        for row in rows:
-            data.append(row.get("raw_data", {}))
-        # Add data rows
-        for row in data:
-            # Handle None values and convert to string, escape pipe characters
-            formatted_values = []
-            for header in headers:
-                value = row.get(header, "")
-                if value is None:
-                    value = ""
-                # Escape pipe characters and convert to string
-                value_str = str(value).replace("|", "\\|")
-                formatted_values.append(value_str)
-
-            data_row = "| " + " | ".join(formatted_values) + " |"
-            markdown_lines.append(data_row)
-
-        return "\n".join(markdown_lines)
 

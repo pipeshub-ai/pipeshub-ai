@@ -67,6 +67,7 @@ from app.models.blocks import (
     Block,
     BlockContainerIndex,
     BlockGroup,
+    BlockGroupChildren,
     BlocksContainer,
     ChildRecord,
     ChildType,
@@ -3603,23 +3604,25 @@ class JiraConnector(BaseConnector):
             if b.parent_index is not None:
                 block_children_map[b.parent_index].append(b.index)
 
-        # Now populate the children arrays
+        # Now populate the children arrays using range-based structure
         for bg in block_groups:
-            children_list: List[BlockContainerIndex] = []
+            child_block_indices = []
+            child_bg_indices = []
 
             # Add child BlockGroups
             if bg.index in blockgroup_children_map:
-                for child_bg_index in sorted(blockgroup_children_map[bg.index]):
-                    children_list.append(BlockContainerIndex(block_group_index=child_bg_index))
+                child_bg_indices = sorted(blockgroup_children_map[bg.index])
 
             # Add child Blocks
             if bg.index in block_children_map:
-                for child_block_index in sorted(block_children_map[bg.index]):
-                    children_list.append(BlockContainerIndex(block_index=child_block_index))
+                child_block_indices = sorted(block_children_map[bg.index])
 
             # Set children if we have any
-            if children_list:
-                bg.children = children_list
+            if child_block_indices or child_bg_indices:
+                bg.children = BlockGroupChildren.from_indices(
+                    block_indices=child_block_indices,
+                    block_group_indices=child_bg_indices
+                )
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
