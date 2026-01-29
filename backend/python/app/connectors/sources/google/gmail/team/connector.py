@@ -2769,7 +2769,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     detail="File ID not found in record"
                 )
 
-            self.logger.info(f"\n\n\n\n\nStreaming Gmail record: {file_id}, type: {record_type}, convertTo: {convertTo}")
+            self.logger.info(f"Streaming Gmail record: {file_id}, type: {record_type}, convertTo: {convertTo}")
 
             # Get user email from user_id if provided, otherwise get user with permission to node
             user_email = None

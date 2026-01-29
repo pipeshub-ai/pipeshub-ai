@@ -93,6 +93,7 @@ class ImageParser:
 
     async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
         try:
+
             # Check if already a base64 data URL
             if url.startswith('data:image/'):
                 # Skip SVG images - check the MIME type in the data URL

@@ -1,10 +1,12 @@
 import asyncio
+import base64
 import hashlib
+import re
 import uuid
 from io import BytesIO
 from logging import Logger
 from typing import Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -35,6 +37,8 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # MIME type mapping for common file extensions
@@ -683,14 +687,353 @@ class WebConnector(BaseConnector):
         """Return the web URL as the signed URL."""
         return record.weburl if record.weburl else None
 
+    # ==================== Base64 Validation Helpers ====================
+
+    def _clean_base64_string(self, b64_str: str) -> str:
+        """
+        Clean and validate a base64 string to ensure it's valid for embedding in HTML
+        and downstream processing (e.g., OpenAI API).
+
+        This function performs thorough validation including:
+        - URL decoding (handles %3D -> = etc.)
+        - Whitespace/newline removal
+        - Character validation (A-Z, a-z, 0-9, +, /, =)
+        - Padding correction
+        - Decode validation to ensure the base64 is actually valid
+
+        Args:
+            b64_str: Base64 encoded string (may be URL-encoded)
+
+        Returns:
+            Cleaned and validated base64 string, or empty string if invalid
+        """
+        if not b64_str:
+            return ""
+
+        # First, URL-decode the string in case it contains %3D (=) or other encoded chars
+        cleaned = unquote(b64_str)
+
+        # Remove all whitespace, newlines, and tabs
+        cleaned = cleaned.replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
+
+        # Validate base64 characters
+        if not re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned):
+            self.logger.warning("⚠️ Invalid base64 characters detected, skipping")
+            return ""
+
+        # Fix padding if needed (base64 strings must be multiple of 4)
+        missing_padding = (-len(cleaned)) % 4
+        if missing_padding:
+            cleaned += "=" * missing_padding
+
+        # Validate by attempting to decode
+        try:
+            base64.b64decode(cleaned, validate=True)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Invalid base64 string (decode failed): {str(e)[:100]}")
+            return ""
+
+        return cleaned
+
+    def _clean_data_uris_in_html(self, html: str) -> str:
+        """
+        Clean and validate base64 in data URIs that might have been corrupted
+        by BeautifulSoup formatting or contain URL-encoded characters.
+
+        Args:
+            html: HTML string containing data URIs
+
+        Returns:
+            HTML string with cleaned data URIs (invalid ones are removed)
+        """
+        # Use a simple, non-backtracking pattern that captures the data URI header
+        # Then we manually extract the base64 content up to the closing quote
+        pattern = r'data:image/[^;]+;base64,'
+
+        result = []
+        last_end = 0
+
+        for match in re.finditer(pattern, html):
+            header = match.group(0)
+            start = match.start()
+            base64_start = match.end()
+
+            # Find the end of base64 content (first quote or >)
+            base64_end = base64_start
+            while base64_end < len(html) and html[base64_end] not in '"\'>' :
+                base64_end += 1
+
+            b64_part = html[base64_start:base64_end]
+
+            # URL-decode and clean
+            cleaned_b64 = unquote(b64_part)
+            cleaned_b64 = cleaned_b64.replace("\n", "").replace("\r", "").replace(" ", "").replace("\t", "")
+
+            # Validate and clean the base64
+            is_valid = False
+            if re.fullmatch(r"[A-Za-z0-9+/=]+", cleaned_b64):
+                # Fix padding
+                missing_padding = (-len(cleaned_b64)) % 4
+                if missing_padding:
+                    cleaned_b64 += "=" * missing_padding
+
+                # Validate by attempting to decode
+                try:
+                    base64.b64decode(cleaned_b64, validate=True)
+                    is_valid = True
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Invalid base64 in data URI (decode failed): {str(e)[:50]}")
+            else:
+                self.logger.warning("⚠️ Invalid base64 characters in data URI during post-processing")
+
+            # Add content up to this data URI
+            result.append(html[last_end:start])
+
+            if is_valid:
+                # Add cleaned data URI
+                result.append(header + cleaned_b64)
+            else:
+                # Remove invalid image by not adding the data URI
+                # This effectively removes the src attribute value
+                self.logger.warning("⚠️ Removing invalid base64 data URI from HTML")
+
+            last_end = base64_end
+
+        # Add remaining content
+        result.append(html[last_end:])
+
+        return ''.join(result)
+
+    # ==================== HTML Processing Helpers ====================
+
+    def _remove_unwanted_tags(self, soup: BeautifulSoup) -> None:
+        """Remove script, style, noscript, and iframe tags from the soup."""
+        for tag in soup(["script", "style", "noscript", "iframe"]):
+            tag.decompose()
+
+    def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
+        """
+        Convert an SVG tag to a PNG img tag.
+
+        Args:
+            soup: BeautifulSoup object for creating new tags
+            svg: SVG tag element to convert
+
+        Returns:
+            True if conversion succeeded, False otherwise
+        """
+        try:
+            svg_content = str(svg)
+            svg_bytes = svg_content.encode('utf-8')
+            svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
+
+            # Convert SVG to PNG
+            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            png_b64_str = self._clean_base64_string(png_b64_str)
+
+            if not png_b64_str:
+                self.logger.warning("⚠️ Failed to clean/validate PNG base64 from SVG, skipping")
+                svg.decompose()
+                return False
+
+            # Create new img tag
+            new_img = soup.new_tag('img')
+            new_img['src'] = f"data:image/png;base64,{png_b64_str}"
+            new_img['alt'] = svg.get('aria-label') or svg.get('title') or 'Converted SVG image'
+
+            svg.replace_with(new_img)
+            self.logger.debug("✅ Converted SVG tag to PNG img tag")
+            return True
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to convert SVG tag to PNG: {e}. Removing SVG tag.")
+            svg.decompose()
+            return False
+
+    def _process_svg_tags(self, soup: BeautifulSoup) -> None:
+        """Convert all SVG tags to PNG img tags."""
+        for svg in soup.find_all('svg'):
+            self._convert_svg_tag_to_png(soup, svg)
+
+    async def _process_single_image(
+        self,
+        img,
+        soup: BeautifulSoup,
+        base_url: str,
+        headers: dict
+    ) -> None:
+        """
+        Process a single image tag: download if needed and convert to base64.
+
+        Args:
+            img: Image tag element
+            soup: BeautifulSoup object
+            base_url: Base URL for resolving relative URLs
+            headers: HTTP headers for requests
+        """
+        src = img.get('src')
+        if not src:
+            return
+
+        # Handle existing data URIs
+        if "data:image" in src:
+            if "," in src:
+                header, existing_b64 = src.split(",", 1)
+                cleaned_b64 = self._clean_base64_string(existing_b64)
+                if cleaned_b64:
+                    img['src'] = f"{header},{cleaned_b64}"
+                else:
+                    self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+                    img.decompose()
+            return
+
+        # Download and convert external images
+        try:
+            absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
+
+            async with self.session.get(absolute_url, headers=headers) as img_response:
+                if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
+                    self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
+                    return
+
+                img_bytes = await img_response.read()
+                if not img_bytes:
+                    return
+
+                content_type = self._determine_image_content_type(img_response, absolute_url)
+
+                # Convert to base64 (handle SVG specially)
+                if content_type == 'image/svg+xml':
+                    b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
+                    if not b64_str:
+                        img.decompose()
+                        return
+                    content_type = 'image/png'
+                else:
+                    b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                    b64_str = self._clean_base64_string(b64_str)
+                    if not b64_str:
+                        self.logger.warning(f"⚠️ Failed to clean/validate base64 for image: {absolute_url}. Removing.")
+                        img.decompose()
+                        return
+                    self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
+
+                img['src'] = f"data:{content_type};base64,{b64_str}"
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to process image {src}: {e}")
+
+    def _determine_image_content_type(self, response, url: str) -> str:
+        """Determine the content type of an image from response headers or URL."""
+        content_type = response.headers.get('Content-Type', 'image/jpeg')
+
+        if not content_type or content_type == 'application/octet-stream':
+            parsed_url = urlparse(url)
+            path_lower = parsed_url.path.lower()
+
+            extension_map = {
+                '.png': 'image/png',
+                '.gif': 'image/gif',
+                '.webp': 'image/webp',
+                '.svg': 'image/svg+xml',
+            }
+
+            for ext, mime in extension_map.items():
+                if path_lower.endswith(ext):
+                    return mime
+            return 'image/jpeg'
+
+        return content_type.split(';')[0].strip().lower()
+
+    def _convert_svg_bytes_to_png_base64(self, svg_bytes: bytes, url: str) -> Optional[str]:
+        """Convert SVG bytes to PNG base64 string."""
+        try:
+            svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
+            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+            png_b64_str = self._clean_base64_string(png_b64_str)
+
+            if not png_b64_str:
+                self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from SVG: {url}. Removing.")
+                return None
+
+            self.logger.debug(f"✅ Converted SVG to PNG and base64: {url}")
+            return png_b64_str
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
+            return None
+
+    async def _process_all_images(
+        self,
+        soup: BeautifulSoup,
+        base_url: str,
+        headers: dict
+    ) -> None:
+        """Process all image tags in the soup."""
+        for img in soup.find_all('img'):
+            await self._process_single_image(img, soup, base_url, headers)
+
+    async def _process_html_content(
+        self,
+        content_bytes: bytes,
+        record: Record,
+        headers: dict
+    ) -> Optional[str]:
+        """
+        Process HTML content: parse, clean, and convert images to base64.
+
+        Args:
+            content_bytes: Raw HTML content bytes
+            record: Record object containing URL and metadata
+            headers: HTTP headers for image requests
+
+        Returns:
+            Cleaned HTML string with embedded base64 images, or None on failure
+        """
+        try:
+            html_content = content_bytes.decode('utf-8')
+            soup = BeautifulSoup(html_content, 'html.parser')
+
+            # Remove unwanted tags
+            self._remove_unwanted_tags(soup)
+
+            # Convert SVG tags to PNG img tags
+            self._process_svg_tags(soup)
+
+            # Process all images: download and convert to base64
+            await self._process_all_images(soup, record.weburl, headers)
+
+            # Serialize and clean data URIs
+            cleaned_html = str(soup)
+            cleaned_html = self._clean_data_uris_in_html(cleaned_html)
+
+            return cleaned_html
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to parse/clean HTML: {e}")
+            return None
+
+    # ==================== Main Stream Record Method ====================
+
     async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
-        """Stream the web page content with proper content extraction."""
+        """
+        Stream the web page content with proper content extraction.
+
+        This method fetches web content, processes HTML (cleaning and converting
+        images to base64), and returns a streaming response.
+
+        Args:
+            record: Record object containing URL and metadata
+
+        Returns:
+            StreamingResponse with the processed content, or None on failure
+        """
         if not record.weburl:
             return None
 
         try:
-            # Use appropriate headers for streaming
             headers = {"Referer": self.url} if self.url else {}
+
             async with self.session.get(record.weburl, headers=headers) as response:
                 if response.status >= HttpStatusCode.BAD_REQUEST.value:
                     return None
@@ -698,16 +1041,27 @@ class WebConnector(BaseConnector):
                 content_bytes = await response.read()
                 mime_type = record.mime_type or "text/html"
 
-                # For PDF and other binary formats, return as-is
-                # For other text formats (JSON, XML, TXT), return as-is
+                # Process HTML content
+                cleaned_html_content = None
+                if "html" in mime_type.lower():
+                    cleaned_html_content = await self._process_html_content(
+                        content_bytes, record, headers
+                    )
 
-                return StreamingResponse(
-                    BytesIO(content_bytes),
-                    media_type=mime_type,
-                    headers={
-                        "Content-Disposition": f"inline; filename={record.record_name}"
-                    }
+                # Prepare response content
+                response_content = (
+                    cleaned_html_content.encode('utf-8')
+                    if cleaned_html_content
+                    else content_bytes
                 )
+
+                return create_stream_record_response(
+                    BytesIO(response_content),
+                    filename=record.record_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record.id}"
+                )
+
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}")
             return None

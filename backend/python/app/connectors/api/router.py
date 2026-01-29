@@ -809,6 +809,14 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
+        # Validate that the org_id matches the record's org_id
+        if record and record.org_id and record.org_id != org_id:
+            logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
+            org_id = record.org_id
+            org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
         access_check = await arango_service.check_record_access_with_details(user_id, org_id, record_id)
