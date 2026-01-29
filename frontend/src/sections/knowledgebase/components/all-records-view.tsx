@@ -8,38 +8,47 @@ import refreshIcon from '@iconify-icons/mdi/refresh';
 import eyeIcon from '@iconify-icons/mdi/eye-outline';
 import databaseIcon from '@iconify-icons/mdi/database';
 import dotsIcon from '@iconify-icons/mdi/dots-vertical';
-import codeJsonIcon from '@iconify-icons/mdi/code-json';
 import folderIcon from '@iconify-icons/mdi/folder-outline';
 import chevronRightIcon from '@iconify-icons/mdi/chevron-right';
 import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
 import homeIcon from '@iconify-icons/mdi/home';
-import languageCIcon from '@iconify-icons/mdi/language-c';
-import languageGoIcon from '@iconify-icons/mdi/language-go';
+import languageCIcon from '@iconify-icons/vscode-icons/file-type-c3';
 import filePdfBoxIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
-import languagePhpIcon from '@iconify-icons/mdi/language-php';
+import languagePhpIcon from '@iconify-icons/vscode-icons/file-type-php3';
 import downloadIcon from '@iconify-icons/mdi/download-outline';
 import fileWordBoxIcon from '@iconify-icons/vscode-icons/file-type-word';
 import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
-import languageCss3Icon from '@iconify-icons/mdi/language-css3';
-import languageJavaIcon from '@iconify-icons/mdi/language-java';
-import languageRubyIcon from '@iconify-icons/mdi/language-ruby';
-import emailOutlineIcon from '@iconify-icons/mdi/email-outline';
+import languageCss3Icon from '@iconify-icons/vscode-icons/file-type-css';
+import languageJavaIcon from '@iconify-icons/vscode-icons/file-type-java';
+import languageRubyIcon from '@iconify-icons/vscode-icons/file-type-ruby';
+import emailOutlineIcon from '@iconify-icons/vscode-icons/file-type-outlook';
 import fileExcelBoxIcon from '@iconify-icons/vscode-icons/file-type-excel';
 import fileImageBoxIcon from '@iconify-icons/vscode-icons/file-type-image';
-import languageHtml5Icon from '@iconify-icons/mdi/language-html5';
-import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
-import languagePythonIcon from '@iconify-icons/mdi/language-python';
+import languageHtml5Icon from '@iconify-icons/vscode-icons/file-type-html';
+import fileArchiveBoxIcon from '@iconify-icons/vscode-icons/file-type-zip2';
+import languagePythonIcon from '@iconify-icons/vscode-icons/file-type-python';
 import noteTextOutlineIcon from '@iconify-icons/vscode-icons/file-type-text';
-import fileCodeOutlineIcon from '@iconify-icons/mdi/file-code-outline';
+import fileCodeOutlineIcon from '@iconify-icons/vscode-icons/file-type-source';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
 import libraryIcon from '@iconify-icons/mdi/library';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import languageMarkdownIcon from '@iconify-icons/vscode-icons/file-type-markdown';
-import fileMusicOutlineIcon from '@iconify-icons/mdi/file-music-outline';
-import fileVideoOutlineIcon from '@iconify-icons/mdi/file-video-outline';
+import fileMusicOutlineIcon from '@iconify-icons/vscode-icons/file-type-audio';
+import fileVideoOutlineIcon from '@iconify-icons/vscode-icons/file-type-video';
 import filePowerpointBoxIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
-import languageJavascriptIcon from '@iconify-icons/mdi/language-javascript';
+import languageJavascriptIcon from '@iconify-icons/vscode-icons/file-type-js-official';
 import fileDocumentOutlineIcon from '@iconify-icons/mdi/file-document-outline';
+// Additional premium file type icons
+import fileSvgIcon from '@iconify-icons/vscode-icons/file-type-svg';
+import fileJsonIcon from '@iconify-icons/vscode-icons/file-type-json';
+import fileYamlIcon from '@iconify-icons/vscode-icons/file-type-yaml';
+import fileTypescriptIcon from '@iconify-icons/vscode-icons/file-type-typescript-official';
+import fileGoIcon from '@iconify-icons/vscode-icons/file-type-go-gopher';
+import fileSqlIcon from '@iconify-icons/vscode-icons/file-type-sql';
+// Premium image icons
+import imageIcon from '@iconify-icons/mdi/image';
+import panoramaIcon from '@iconify-icons/mdi/panorama';
+import gifIcon from '@iconify-icons/mdi/file-gif-box';
 // Node type icons
 import bookOpenVariantIcon from '@iconify-icons/mdi/book-open-variant';
 import folderOpenIcon from '@iconify-icons/mdi/folder-open';
@@ -80,6 +89,7 @@ import { KnowledgeBaseAPI } from '../services/api';
 import DeleteRecordDialog from '../delete-record-dialog';
 import DynamicFilterSidebar, { AppliedFilters, AvailableFilters } from './dynamic-filter-sidebar';
 import { ORIGIN } from '../constants/knowledge-search';
+import { getExtensionFromMimeType, getFileIcon, getFileIconColor } from '../utils/utils';
 
 // New Props Interface - receives state from URL via parent
 interface AllRecordsViewProps {
@@ -532,122 +542,6 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     return getFileIcon(node.extension || '', node.mimeType);
   };
 
-  const getFileIcon = (extension: string, mimeType?: string) => {
-    if ((!extension || extension === '') && mimeType) {
-      switch (mimeType) {
-        case 'application/vnd.google-apps.document':
-        case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-        case 'application/vnd.microsoft.word.document.macroEnabled.12':
-        case 'application/vnd.ms-word.document.macroEnabled.12':
-        case 'application/vnd.ms-word.document':
-          return fileWordBoxIcon;
-        case 'application/vnd.google-apps.spreadsheet':
-        case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-        case 'application/vnd.microsoft.excel.sheet.macroEnabled.12':
-        case 'application/vnd.ms-excel.sheet.macroEnabled.12':
-        case 'application/vnd.ms-excel':
-          return fileExcelBoxIcon;
-        case 'application/vnd.google-apps.presentation':
-        case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
-        case 'application/vnd.microsoft.powerpoint.presentation.macroEnabled.12':
-        case 'application/vnd.ms-powerpoint.presentation.macroEnabled.12':
-        case 'application/vnd.ms-powerpoint':
-          return filePowerpointBoxIcon;
-        case 'application/vnd.google-apps.form':
-          return noteTextOutlineIcon;
-        case 'application/vnd.google-apps.drawing':
-          return fileImageBoxIcon;
-        case 'application/vnd.google-apps.folder':
-          return folderIcon;
-        case 'application/vnd.microsoft.onedrive.document':
-          return fileWordBoxIcon;
-        case 'application/vnd.microsoft.onedrive.spreadsheet':
-          return fileExcelBoxIcon;
-        case 'application/vnd.microsoft.onedrive.presentation':
-          return filePowerpointBoxIcon;
-        case 'application/vnd.microsoft.onedrive.drawing':
-          return fileImageBoxIcon;
-        case 'application/vnd.microsoft.onedrive.folder':
-        case 'application/vnd.folder':
-          return folderIcon;
-        default:
-          return fileDocumentOutlineIcon;
-      }
-    }
-
-    const ext = extension?.toLowerCase() || '';
-    switch (ext) {
-      case 'pdf':
-        return filePdfBoxIcon;
-      case 'doc':
-      case 'docx':
-        return fileWordBoxIcon;
-      case 'xls':
-      case 'xlsx':
-      case 'csv':
-        return fileExcelBoxIcon;
-      case 'ppt':
-      case 'pptx':
-        return filePowerpointBoxIcon;
-      case 'jpg':
-      case 'jpeg':
-      case 'png':
-      case 'gif':
-      case 'svg':
-      case 'webp':
-        return fileImageBoxIcon;
-      case 'zip':
-      case 'rar':
-      case '7z':
-      case 'tar':
-      case 'gz':
-        return fileArchiveBoxIcon;
-      case 'txt':
-        return noteTextOutlineIcon;
-      case 'md':
-      case 'mdx':
-        return languageMarkdownIcon;
-      case 'html':
-      case 'htm':
-        return languageHtml5Icon;
-      case 'css':
-        return languageCss3Icon;
-      case 'js':
-      case 'ts':
-      case 'jsx':
-      case 'tsx':
-        return languageJavascriptIcon;
-      case 'json':
-        return codeJsonIcon;
-      case 'py':
-        return languagePythonIcon;
-      case 'java':
-        return languageJavaIcon;
-      case 'c':
-      case 'cpp':
-      case 'cs':
-        return languageCIcon;
-      case 'php':
-        return languagePhpIcon;
-      case 'rb':
-        return languageRubyIcon;
-      case 'go':
-        return languageGoIcon;
-      case 'sql':
-        return databaseIcon;
-      case 'mp3':
-      case 'wav':
-        return fileMusicOutlineIcon;
-      case 'mp4':
-      case 'avi':
-        return fileVideoOutlineIcon;
-      case 'eml':
-      case 'msg':
-        return emailOutlineIcon;
-      default:
-        return fileDocumentOutlineIcon;
-    }
-  };
 
   const formatFileSize = (bytes: number): string => {
     if (!bytes || bytes === 0) return '—';
@@ -833,41 +727,72 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             {/* Use connector icon path for app nodes */}
             {connectorIconPath ? (
               <Box
-                component="img"
-                src={connectorIconPath}
-                alt={node.name}
                 sx={{
-                  width: 24,
-                  height: 24,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                   mr: 1.5,
                   flexShrink: 0,
-                  opacity: 0.9,
+                  width: 28,
+                  height: 28,
                 }}
-              />
+              >
+                <Box
+                  component="img"
+                  src={connectorIconPath}
+                  alt={node.name}
+                  sx={{
+                    width: 26,
+                    height: 26,
+                    flexShrink: 0,
+                  }}
+                />
+              </Box>
             ) : nodeTypeDisplay ? (
               /* Use MDI icons for kb, folder, recordGroup */
-              <Icon
-                icon={nodeTypeDisplay.icon}
-                style={{
-                  fontSize: '24px',
-                  color: nodeTypeDisplay.color,
-                  marginRight: '12px',
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mr: 1.5,
                   flexShrink: 0,
+                  width: 28,
+                  height: 28,
                 }}
-              />
+              >
+                <Icon
+                  icon={nodeTypeDisplay.icon}
+                  style={{
+                    fontSize: '26px',
+                    color: nodeTypeDisplay.color,
+                    flexShrink: 0,
+                  }}
+                />
+              </Box>
             ) : (
-              /* For record nodes, use file type icons based on extension/mimeType */
-              <Icon
-                icon={getFileIcon(node.extension || '', node.mimeType)}
-                style={{
-                  fontSize: '24px',
-                  color: theme.palette.text.secondary,
-                  marginRight: '12px',
-                  flexShrink: 0,
-                  opacity: 0.9,
-                }}
-              />
-            )}
+              /* For record nodes, use premium file type icons based on extension/mimeType */
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 1.5,
+                      flexShrink: 0,
+                      width: 28,
+                      height: 28,
+                    }}
+                  >
+                    <Icon
+                      icon={getFileIcon(node.extension || '', node.mimeType)}
+                      style={{
+                        fontSize: '28px',
+                        flexShrink: 0,
+                        color: getFileIconColor(node.extension || '', node.mimeType),
+                      }}
+                    />
+                  </Box>
+                )}
             <Typography
               variant="body2"
               noWrap
@@ -922,7 +847,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           kb: 'Knowledge Base',
           folder: 'Folder',
           recordGroup: 'Folder',
-          record: params.row.recordType || 'File',
+          record: params.row.recordType?.split('_').join(' ') || 'File',
         };
         return (
           <Chip
@@ -1023,7 +948,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         const node = params.row;
         
         if (params.value === 'CONNECTOR') {
-          // Show connector icon + connector name
+          // Show connector icon + connector name with premium styling
           return (
             <Box sx={{ 
               display: 'flex', 
@@ -1038,19 +963,19 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 src={getConnectorIconPath(node.connector)}
                 alt={node.connector}
                 sx={{
-                  width: 18,
-                  height: 18,
+                  width: 20,
+                  height: 20,
                   flexShrink: 0,
                 }}
               />
-              <Typography variant="caption" sx={{ fontWeight: 500, color: theme.palette.primary.main }}>
+              <Typography variant="caption" sx={{ fontWeight: 600, color: theme.palette.primary.main }}>
                 {node.connector}
               </Typography>
             </Box>
           );
         }
         
-        // Show KB icon + "Knowledge Base" text
+        // Show KB icon + "Knowledge Base" text with premium styling
         return (
           <Box sx={{ 
             display: 'flex', 
@@ -1063,12 +988,12 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             <Icon
               icon={bookOpenVariantIcon}
               style={{
-                fontSize: '18px',
+                fontSize: '20px',
                 color: theme.palette.success.main,
                 flexShrink: 0,
               }}
             />
-            <Typography variant="caption" sx={{ fontWeight: 500, color: theme.palette.primary.main }}>
+            <Typography variant="caption" sx={{ fontWeight: 600, color: theme.palette.primary.main }}>
               Knowledge Base
             </Typography>
           </Box>
