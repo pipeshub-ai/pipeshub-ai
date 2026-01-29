@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field, HttpUrl, field_validator
 if TYPE_CHECKING:
     pass
 
-
 class Point(BaseModel):
     x: float
     y: float
@@ -39,6 +38,7 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
+    COMMIT = "commit"
 
 class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
@@ -63,6 +63,9 @@ class DataFormat(str, Enum):
     YAML = "yaml"
     BASE64 = "base64"
     UTF8 = "utf8"
+    PATCH = "patch"
+    DIFF = "diff"
+    CODE = "code"
 
 class CommentAttachment(BaseModel):
     """Attachment model for comments"""
@@ -76,9 +79,9 @@ class BlockComment(BaseModel):
     author_name: Optional[str] = Field(default=None, description="Name of the user who created the comment")
     thread_id: Optional[str] = None
     resolution_status: Optional[str] = Field(default=None, description="Status of the comment (e.g., 'resolved', 'open')")
-    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in the source system)")
-    created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created")
-    updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated")
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in Linear)")
+    created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created in Linear")
+    updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated in Linear")
     attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
     quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
 
@@ -219,6 +222,8 @@ class GroupType(str, Enum):
     TEXT_SECTION = "text_section"
     LIST = "list"
     TABLE = "table"
+    COMMITS = "commits"
+    PATCH = "patch"
     SHEET = "sheet"
     FORM_AREA = "form_area"
     INLINE = "inline"
@@ -230,6 +235,7 @@ class GroupType(str, Enum):
     # Do not use these types as currently not supported
     CODE = "code"
     MEDIA = "media"
+    FULL_CODE_PATCH = "full_code_patch"
 
 class GroupSubType(str, Enum):
     MILESTONE = "milestone" # Milestone block group
@@ -244,6 +250,9 @@ class GroupSubType(str, Enum):
     QUOTE = "quote"
     SYNCED_BLOCK = "synced_block"
     NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
+    ISSUE_CONTENT = "issue_content"
+    PR_CONTENT = "pr_content"
+    PR_FILE_CHANGE = "pr_file_change"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -300,6 +309,10 @@ class BlockContainerIndex(BaseModel):
     block_index: Optional[int] = None
     block_group_index: Optional[int] = None
 
+class FullCodePatchData(BaseModel):
+    patch: str
+    full_code: str
+
 class BlockGroup(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
     index: int = None
@@ -326,6 +339,7 @@ class BlockGroup(BaseModel):
     format: Optional[DataFormat] = None
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
     comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
+    source_modified_date: Optional[datetime] = None
 
 class BlockGroups(BaseModel):
     block_groups: List[BlockGroup] = Field(default_factory=list)
