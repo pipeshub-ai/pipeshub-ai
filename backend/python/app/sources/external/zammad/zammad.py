@@ -1148,13 +1148,11 @@ class ZammadDataSource:
 
     async def get_kb_answer_attachment(
         self,
-        answer_id: int,
         id: int
     ) -> ZammadResponse:
         """Get KB answer attachment
 
         Args:
-            answer_id: int (required) - KB answer ID (not used in URL, kept for compatibility)
             id: int (required) - attachment ID
 
         Returns:

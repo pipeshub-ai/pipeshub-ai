@@ -2805,7 +2805,6 @@ class ZammadConnector(BaseConnector):
             try:
                 # Download attachment using datasource
                 response = await datasource.get_kb_answer_attachment(
-                    answer_id=0,
                     id=attachment_id
                 )
 
@@ -2890,7 +2889,6 @@ class ZammadConnector(BaseConnector):
 
             # Download KB answer attachment
             response = await datasource.get_kb_answer_attachment(
-                answer_id=int(answer_id),
                 id=int(attachment_id)
             )
 
