@@ -113,7 +113,7 @@ interface UseConnectorConfigReturn {
 }
 
 // Constants
-const MIN_INSTANCE_NAME_LENGTH = 3;
+const MIN_INSTANCE_NAME_LENGTH = 2;
 const REQUIRED_SERVICE_ACCOUNT_FIELDS = ['client_id', 'project_id', 'type'];
 const SERVICE_ACCOUNT_TYPE = 'service_account';
 
