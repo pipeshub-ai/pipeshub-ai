@@ -1509,7 +1509,7 @@ export const useConnectorConfig = ({
     try {
       setSaving(true);
       setSaveError(null);
-      setSaveAttempted(true); // Mark that save was attempted
+      setSaveAttempted(true);
 
       const isNoAuthType = isNoneAuthType(connector.authType);
 
@@ -1577,7 +1577,7 @@ export const useConnectorConfig = ({
               authErrors.privateKey = privateKeyError;
             }
           } else {
-            // Use schema from existing auth type in edit mode (authOnly mode)
+            // Generic auth validation (API keys, manual OAuth, etc.)
             const validationAuthType = connectorConfig.config.auth?.type || '';
             const validationAuthSchemas = connectorConfig.config.auth?.schemas || {};
             const validationSchema = validationAuthType && validationAuthSchemas[validationAuthType]
@@ -1589,6 +1589,8 @@ export const useConnectorConfig = ({
               validationSchema.fields || [],
               formData.auth
             );
+            
+            console.log('[SAVE DEBUG] Generic auth validation errors:', authErrors);
             
             // For OAuth type: Additional validation for creating new OAuth apps
             if (validationAuthType === 'OAUTH' && !formData.auth.oauthConfigId && isAdmin) {

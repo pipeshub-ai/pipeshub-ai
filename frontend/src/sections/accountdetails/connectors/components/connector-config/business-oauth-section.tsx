@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -35,36 +35,41 @@ interface BusinessOAuthSectionProps {
   connectorName: string;
 }
 
-const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
-  adminEmail,
-  adminEmailError,
-  selectedFile,
-  fileName,
-  fileError,
-  jsonData,
-  onAdminEmailChange,
-  onFileUpload,
-  onFileChange,
-  fileInputRef,
-  isCreateMode,
-  instanceName,
-  instanceNameError,
-  onInstanceNameChange,
-  connectorName,
-}) => {
-  const theme = useTheme();
+const BusinessOAuthSection = forwardRef<HTMLDivElement, BusinessOAuthSectionProps>(
+  (
+    {
+      adminEmail,
+      adminEmailError,
+      selectedFile,
+      fileName,
+      fileError,
+      jsonData,
+      onAdminEmailChange,
+      onFileUpload,
+      onFileChange,
+      fileInputRef,
+      isCreateMode,
+      instanceName,
+      instanceNameError,
+      onInstanceNameChange,
+      connectorName,
+    },
+    ref
+  ) => {
+    const theme = useTheme();
 
-  return (
-    <Paper
-      variant="outlined"
-      sx={{
-        p: 2,
-        borderRadius: 1.25,
-        bgcolor: alpha(theme.palette.info.main, 0.02),
-        borderColor: alpha(theme.palette.divider, 0.1),
-        mb: 2,
-      }}
-    >
+    return (
+      <Paper
+        ref={ref}
+        variant="outlined"
+        sx={{
+          p: 2,
+          borderRadius: 1.25,
+          bgcolor: alpha(theme.palette.info.main, 0.02),
+          borderColor: alpha(theme.palette.divider, 0.1),
+          mb: 2,
+        }}
+      >
       {/* Section Header */}
       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
         <Box
@@ -135,7 +140,7 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
       )}
 
       {/* Admin Email Field */}
-      <Box sx={{ mb: 2 }}>
+      <Box id="business-oauth-admin-email" sx={{ mb: 2 }}>
         <Typography 
           variant="subtitle2" 
           sx={{ 
@@ -148,6 +153,7 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
           Admin Email Address *
         </Typography>
         <TextField
+          id="admin-email-input"
           fullWidth
           required
           size="small"
@@ -194,7 +200,7 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
       </Box>
 
       {/* JSON File Upload */}
-      <Box>
+      <Box id="business-oauth-file-upload">
         <Typography 
           variant="subtitle2" 
           sx={{ 
@@ -388,6 +394,8 @@ const BusinessOAuthSection: React.FC<BusinessOAuthSectionProps> = ({
       )}
     </Paper>
   );
-};
+});
+
+BusinessOAuthSection.displayName = 'BusinessOAuthSection';
 
 export default BusinessOAuthSection;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, createRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -55,6 +55,13 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
+  
+  // Refs for scrolling to error sections
+  const authSectionRef = createRef<HTMLDivElement>();
+  const filtersSectionRef = createRef<HTMLDivElement>();
+  const syncSectionRef = createRef<HTMLDivElement>();
+  const sharepointSectionRef = createRef<HTMLDivElement>();
+  const businessOAuthSectionRef = createRef<HTMLDivElement>();
 
   // Check if connector is active - prevents saving while active
   const isConnectorActive = connector.isActive;
@@ -241,11 +248,248 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     };
   }, [activeStep, checkScroll]);
 
+  /**
+   * Auto-scroll to first validation error after Save button is clicked.
+   * Only triggers when saveAttempted is true and validation errors exist.
+   */
+  useEffect(() => {
+    // Early return if Save button hasn't been clicked yet
+    if (!saveAttempted) return;
+    
+    // Check if any validation errors exist
+    const hasValidationErrors = 
+      Object.values(formErrors.auth || {}).some(Boolean) ||
+      Object.values(formErrors.filters || {}).some(Boolean) ||
+      Object.values(formErrors.sync || {}).some(Boolean) ||
+      instanceNameError || adminEmailError || fileError || certificateError || privateKeyError;
+    
+    if (!hasValidationErrors) return;
+
+    // Helper: Check if error object has any truthy values
+    const hasErrors = (errors: Record<string, string> = {}) => 
+      Object.values(errors).some(Boolean);
+
+    // Connector type detection
+    const isSharePointCertAuth = 
+      connector.type === 'SharePoint Online' &&
+      (connector.authType === 'OAUTH_CERTIFICATE' || connector.authType === 'OAUTH_ADMIN_CONSENT');
+
+    const isGoogleBusinessOAuth = 
+      isBusiness &&
+      connector.appGroup === 'Google Workspace' &&
+      connector.authType === 'OAUTH' &&
+      connector.scope === 'team';
+
+    // Section-specific error checking
+    const hasSharePointErrors = () => {
+      if (!isSharePointCertAuth) return false;
+      return !!(certificateError || privateKeyError || hasErrors(formErrors.auth));
+    };
+
+    const hasBusinessOAuthErrors = () => {
+      if (!isGoogleBusinessOAuth) return false;
+      return !!(adminEmailError || fileError);
+    };
+    
+    const hasGenericAuthErrors = () => 
+      hasErrors(formErrors.auth) || !!instanceNameError;
+    
+    // Get DOM element ID for first error field in each section
+    const getFirstSharePointErrorId = (): string | null => {
+      const authErrors = formErrors.auth || {};
+      if (authErrors.clientId) return 'sharepoint-client-id';
+      if (authErrors.tenantId) return 'sharepoint-tenant-id';
+      if (authErrors.sharepointDomain) return 'sharepoint-domain';
+      if (authErrors.hasAdminConsent) return 'sharepoint-admin-consent';
+      if (certificateError) return 'certificate-upload-section';
+      if (privateKeyError) return 'private-key-upload-section';
+      return null;
+    };
+
+    const getFirstBusinessOAuthErrorId = (): string | null => {
+      if (adminEmailError) return 'business-oauth-admin-email';
+      if (fileError) return 'business-oauth-file-upload';
+      return null;
+    };
+
+    const getFirstGenericAuthErrorId = (): string | null => {
+      if (instanceNameError) return 'auth-instance-name-section';
+      
+      const errorFieldName = Object.keys(formErrors.auth || {}).find(
+        key => formErrors.auth?.[key]
+      );
+      
+      return errorFieldName ? `auth-field-${errorFieldName}` : null;
+    };
+
+    /**
+     * Determine which section contains errors based on form mode and active step.
+     * Returns the ref to the section that should be scrolled to.
+     */
+    const determineErrorSection = (): React.RefObject<HTMLDivElement> | null => {
+      if (authOnly) {
+        // Auth-only mode: Check authentication sections in priority order
+        if (hasSharePointErrors()) return sharepointSectionRef;
+        if (hasBusinessOAuthErrors()) return businessOAuthSectionRef;
+        if (hasGenericAuthErrors()) return authSectionRef;
+        return null;
+      }
+      
+      if (syncSettingsMode || enableMode || syncOnly) {
+        // Sync/Enable mode: Skip auth, check filters and sync
+        if (hasFilters) {
+          if (activeStep === 0 && hasErrors(formErrors.filters)) return filtersSectionRef;
+          if (activeStep === 1 && hasErrors(formErrors.sync)) return syncSectionRef;
+          if (hasErrors(formErrors.filters)) return filtersSectionRef;
+        } else if (hasErrors(formErrors.sync)) {
+          return syncSectionRef;
+        }
+        return null;
+      }
+      
+      // Full form mode: Check errors based on current step
+      const hasAuthErrors = hasErrors(formErrors.auth) || !!instanceNameError || 
+        !!adminEmailError || !!fileError || !!certificateError || !!privateKeyError;
+      
+      if (isNoAuthType) {
+        // No auth type: Only filters and sync steps
+        if (hasFilters) {
+          if (activeStep === 0 && hasErrors(formErrors.filters)) return filtersSectionRef;
+          if (activeStep === 1 && hasErrors(formErrors.sync)) return syncSectionRef;
+        } else if (hasErrors(formErrors.sync)) {
+          return syncSectionRef;
+        }
+      } else if (hasFilters) {
+        // Three-step workflow: Auth → Filters → Sync
+        if (activeStep === 0 && hasAuthErrors) {
+          if (hasSharePointErrors()) return sharepointSectionRef;
+          if (hasBusinessOAuthErrors()) return businessOAuthSectionRef;
+          return authSectionRef;
+        }
+        if (activeStep === 1 && hasErrors(formErrors.filters)) return filtersSectionRef;
+        if (activeStep === 2 && hasErrors(formErrors.sync)) return syncSectionRef;
+      } else {
+        // Two-step workflow: Auth → Sync
+        if (activeStep === 0 && hasAuthErrors) {
+          if (hasSharePointErrors()) return sharepointSectionRef;
+          if (hasBusinessOAuthErrors()) return businessOAuthSectionRef;
+          return authSectionRef;
+        }
+        if (activeStep === 1 && hasErrors(formErrors.sync)) return syncSectionRef;
+      }
+      
+      return null;
+    };
+    
+    const targetSectionRef = determineErrorSection();
+    if (!targetSectionRef?.current || !scrollContainerRef.current) return;
+    
+    const scrollContainer = scrollContainerRef.current;
+    const targetSection = targetSectionRef.current;
+    
+    /**
+     * Find the first error element within the target section.
+     * Tries to find specific field by ID first, then falls back to CSS selectors.
+     */
+    const findFirstErrorElement = (): HTMLElement | null => {
+      // Get error field ID based on section type
+      let errorFieldId: string | null = null;
+      
+      if (targetSectionRef === sharepointSectionRef) {
+        errorFieldId = getFirstSharePointErrorId();
+      } else if (targetSectionRef === businessOAuthSectionRef) {
+        errorFieldId = getFirstBusinessOAuthErrorId();
+      } else if (targetSectionRef === authSectionRef) {
+        errorFieldId = getFirstGenericAuthErrorId();
+      }
+      
+      // Try to find element by ID
+      if (errorFieldId) {
+        let element = targetSection.querySelector(`#${errorFieldId}`);
+        if (element) return element as HTMLElement;
+        
+        // For generic auth, search within nested container
+        if (targetSectionRef === authSectionRef) {
+          const genericAuthSection = targetSection.querySelector('#generic-auth-section');
+          if (genericAuthSection) {
+            element = genericAuthSection.querySelector(`#${errorFieldId}`);
+            if (element) return element as HTMLElement;
+          }
+        }
+      }
+      
+      // Fallback: Find first element with error styling
+      const errorSelectors = [
+        '.MuiFormHelperText-root.Mui-error',
+        '.MuiFormControl-root.Mui-error',
+        '.MuiOutlinedInput-root.Mui-error',
+        '[aria-invalid="true"]',
+      ];
+      
+      const foundElement = errorSelectors.reduce<HTMLElement | null>((result, selector) => {
+        if (result) return result; // Already found, skip remaining selectors
+        
+        const elements = targetSection.querySelectorAll(selector);
+        if (elements.length > 0) {
+          const element = elements[0] as HTMLElement;
+          // Prefer parent with ID for better scroll positioning
+          const parent = element.closest('[id]');
+          return (parent || element) as HTMLElement;
+        }
+        return null;
+      }, null);
+      
+      // Return found element or section as last resort
+      return foundElement || targetSection;
+    };
+    
+    const errorElement = findFirstErrorElement();
+    if (!errorElement) return;
+    
+    // Perform scroll after brief delay to ensure DOM is ready
+    const SCROLL_DELAY = 100;
+    const SCROLL_OFFSET = 100; // pixels from top for better visibility
+    
+    setTimeout(() => {
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const elementRect = errorElement.getBoundingClientRect();
+      const scrollTop = scrollContainer.scrollTop + (elementRect.top - containerRect.top) - SCROLL_OFFSET;
+      
+      scrollContainer.scrollTo({
+        top: Math.max(0, scrollTop),
+        behavior: 'smooth'
+      });
+    }, SCROLL_DELAY);
+  }, [
+    saveAttempted,
+    formErrors,
+    instanceNameError,
+    adminEmailError,
+    fileError,
+    certificateError,
+    privateKeyError,
+    activeStep,
+    authOnly,
+    syncSettingsMode,
+    enableMode,
+    syncOnly,
+    isNoAuthType,
+    hasFilters,
+    connector,
+    isBusiness,
+    authSectionRef,
+    filtersSectionRef,
+    syncSectionRef,
+    sharepointSectionRef,
+    businessOAuthSectionRef,
+  ]);
+
   const renderStepContent = useCallback(() => {
     // Auth only mode: show only authentication
     if (authOnly) {
       return (
         <AuthSection
+          ref={authSectionRef}
           connector={connector}
           connectorConfig={connectorConfig}
           formData={formData.auth}
@@ -285,6 +529,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           saveAttempted={saveAttempted}
           selectedAuthType={selectedAuthType}
           handleAuthTypeChange={handleAuthTypeChange}
+          sharepointSectionRef={sharepointSectionRef}
+          businessOAuthSectionRef={businessOAuthSectionRef}
         />
       );
     }
@@ -297,6 +543,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 0:
             return (
               <FiltersSection
+                ref={filtersSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.filters}
                 formErrors={formErrors.filters}
@@ -308,6 +555,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 1:
             return (
               <SyncSection
+                ref={syncSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.sync}
                 formErrors={formErrors.sync}
@@ -322,6 +570,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       // If no filters, show sync settings as the only step
       return (
         <SyncSection
+          ref={syncSectionRef}
           connectorConfig={connectorConfig}
           formData={formData.sync}
           formErrors={formErrors.sync}
@@ -337,6 +586,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 0:
             return (
               <FiltersSection
+                ref={filtersSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.filters}
                 formErrors={formErrors.filters}
@@ -348,6 +598,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 1:
             return (
               <SyncSection
+                ref={syncSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.sync}
                 formErrors={formErrors.sync}
@@ -362,6 +613,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       // No filters, only sync
       return (
         <SyncSection
+          ref={syncSectionRef}
           connectorConfig={connectorConfig}
           formData={formData.sync}
           formErrors={formErrors.sync}
@@ -375,6 +627,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     if (isCreateMode) {
       return (
         <AuthSection
+          ref={authSectionRef}
           connector={connector}
           connectorConfig={connectorConfig}
           formData={formData.auth}
@@ -416,6 +669,8 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           privateKeyInputRef={privateKeyInputRef}
           onFieldChange={handleFieldChange}
           saveAttempted={saveAttempted}
+          sharepointSectionRef={sharepointSectionRef}
+          businessOAuthSectionRef={businessOAuthSectionRef}
         />
       );
     }
@@ -428,6 +683,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 0:
             return (
               <FiltersSection
+                ref={filtersSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.filters}
                 formErrors={formErrors.filters}
@@ -439,6 +695,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 1:
             return (
               <SyncSection
+                ref={syncSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.sync}
                 formErrors={formErrors.sync}
@@ -453,6 +710,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       // No filters, only sync
       return (
         <SyncSection
+          ref={syncSectionRef}
           connectorConfig={connectorConfig}
           formData={formData.sync}
           formErrors={formErrors.sync}
@@ -468,6 +726,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         case 0:
           return (
             <AuthSection
+              ref={authSectionRef}
               connector={connector}
               connectorConfig={connectorConfig}
               formData={formData.auth}
@@ -509,11 +768,14 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               selectedAuthType={selectedAuthType}
               handleAuthTypeChange={handleAuthTypeChange}
               saveAttempted={saveAttempted}
+              sharepointSectionRef={sharepointSectionRef}
+              businessOAuthSectionRef={businessOAuthSectionRef}
             />
           );
         case 1:
           return (
             <FiltersSection
+              ref={filtersSectionRef}
               connectorConfig={connectorConfig}
               formData={formData.filters}
               formErrors={formErrors.filters}
@@ -525,6 +787,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         case 2:
           return (
             <SyncSection
+              ref={syncSectionRef}
               connectorConfig={connectorConfig}
               formData={formData.sync}
               formErrors={formErrors.sync}
@@ -542,6 +805,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       case 0:
         return (
           <AuthSection
+            ref={authSectionRef}
             connector={connector}
             connectorConfig={connectorConfig}
             formData={formData.auth}
@@ -583,11 +847,14 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             selectedAuthType={selectedAuthType}
             handleAuthTypeChange={handleAuthTypeChange}
             saveAttempted={saveAttempted}
+            sharepointSectionRef={sharepointSectionRef}
+            businessOAuthSectionRef={businessOAuthSectionRef}
           />
         );
       case 1:
         return (
           <SyncSection
+            ref={syncSectionRef}
             connectorConfig={connectorConfig}
             formData={formData.sync}
             formErrors={formErrors.sync}
@@ -647,6 +914,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     selectedAuthType,
     handleAuthTypeChange,
     saveAttempted,
+    authSectionRef,
+    businessOAuthSectionRef,
+    filtersSectionRef,
+    sharepointSectionRef,
+    syncSectionRef,
   ]);
 
   if (loading) {
