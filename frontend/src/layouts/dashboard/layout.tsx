@@ -15,6 +15,7 @@ import { useAdmin } from 'src/context/AdminContext';
 
 import { Iconify } from 'src/components/iconify';
 import { useSettingsContext } from 'src/components/settings';
+import { getGithubUrl, hasGithubLink } from 'src/config-global';
 
 import { useAuthContext } from 'src/auth/hooks';
 import { useWhiteLabel } from 'src/context/WhiteLabelContext';
@@ -178,21 +179,23 @@ export function DashboardLayout({ sx, children, header, data }: DashboardLayoutP
             ),
             rightArea: (
               <Box display="flex" sx={{ mr: 1 }} alignItems="center" gap={{ xs: 0, sm: 0.75 }}>
-                <IconButton
-                  component="a"
-                  href="https://github.com/pipeshub-ai/pipeshub-ai"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  aria-label="GitHub Repository"
-                  size="large"
-                >
-                  <Iconify
-                    icon={githubIcon}
-                    color={theme.palette.mode === 'dark' ? 'white' : 'black'}
-                    width={30}
-                    height={30}
-                  />
-                </IconButton>
+                {hasGithubLink() && (
+                  <IconButton
+                    component="a"
+                    href={getGithubUrl()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="GitHub Repository"
+                    size="large"
+                  >
+                    <Iconify
+                      icon={githubIcon}
+                      color={theme.palette.mode === 'dark' ? 'white' : 'black'}
+                      width={30}
+                      height={30}
+                    />
+                  </IconButton>
+                )}
                 {/* task center remaining  */}
                 <ThemeToggleButton />
                 {/* Pass the dynamic account menu items instead of static _account */}

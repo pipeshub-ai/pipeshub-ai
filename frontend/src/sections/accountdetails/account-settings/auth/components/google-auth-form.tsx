@@ -20,6 +20,7 @@ import {
 import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 
 import { getGoogleAuthConfig, updateGoogleAuthConfig } from '../utils/auth-configuration-service';
 
@@ -429,13 +430,15 @@ const GoogleAuthForm = forwardRef<GoogleAuthFormRef, GoogleAuthFormProps>(
             {snackbar.message}
           </Alert>
         </Snackbar>
-        <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-          Refer to{' '}
-          <Link href="https://docs.pipeshub.com/auth/google" target="_blank" rel="noopener">
-            the documentation
-          </Link>{' '}
-          for more information.
-        </Alert>
+        {shouldShowDocs() && getDocumentationUrl(DOCS_PATHS.GOOGLE_AUTH) && (
+          <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
+            Refer to{' '}
+            <Link href={getDocumentationUrl(DOCS_PATHS.GOOGLE_AUTH)} target="_blank" rel="noopener">
+              the documentation
+            </Link>{' '}
+            for more information.
+          </Alert>
+        )}
       </>
     );
   }

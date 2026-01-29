@@ -21,6 +21,7 @@ import {
   Chip,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 import infoIcon from '@iconify-icons/eva/info-outline';
 import bookIcon from '@iconify-icons/mdi/book-outline';
 import settingsIcon from '@iconify-icons/mdi/settings';
@@ -370,7 +371,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
 
   const pipeshubDocumentationUrl =
     documentationLinks?.find((link) => link.type === 'pipeshub')?.url ||
-    `https://docs.pipeshub.com/connectors/overview`;
+    getDocumentationUrl(DOCS_PATHS.CONNECTORS_OVERVIEW);
 
   documentationLinks = documentationLinks?.filter((link) => link.type !== 'pipeshub');
 
@@ -402,34 +403,36 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       {/* Compact Documentation Alert */}
-      <Alert
-        variant="outlined"
-        severity="info"
-        sx={{
-          borderRadius: 1.25,
-          py: 1,
-          px: 1.75,
-          fontSize: '0.875rem',
-          '& .MuiAlert-icon': { fontSize: '1.25rem', py: 0.5 },
-          '& .MuiAlert-message': { py: 0.25 },
-          alignItems: 'center',
-        }}
-      >
-        Refer to{' '}
-        <Link
-          href={pipeshubDocumentationUrl}
-          target="_blank"
-          rel="noopener"
+      {shouldShowDocs() && pipeshubDocumentationUrl && (
+        <Alert
+          variant="outlined"
+          severity="info"
           sx={{
-            fontWeight: 600,
-            textDecoration: 'none',
-            '&:hover': { textDecoration: 'underline' },
+            borderRadius: 1.25,
+            py: 1,
+            px: 1.75,
+            fontSize: '0.875rem',
+            '& .MuiAlert-icon': { fontSize: '1.25rem', py: 0.5 },
+            '& .MuiAlert-message': { py: 0.25 },
+            alignItems: 'center',
           }}
         >
-          our documentation
-        </Link>{' '}
-        for more information.
-      </Alert>
+          Refer to{' '}
+          <Link
+            href={pipeshubDocumentationUrl}
+            target="_blank"
+            rel="noopener"
+            sx={{
+              fontWeight: 600,
+              textDecoration: 'none',
+              '&:hover': { textDecoration: 'underline' },
+            }}
+          >
+            our documentation
+          </Link>{' '}
+          for more information.
+        </Alert>
+      )}
 
       {/* Collapsible Redirect URI */}
       {shouldShowRedirectUri && (

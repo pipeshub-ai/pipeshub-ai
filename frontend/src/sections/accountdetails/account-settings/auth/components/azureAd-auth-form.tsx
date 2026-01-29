@@ -21,6 +21,7 @@ import {
 import axios from 'src/utils/axios';
 
 import { Iconify } from 'src/components/iconify';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 
 import { getAzureAuthConfig, updateAzureAuthConfig } from '../utils/auth-configuration-service';
 
@@ -427,17 +428,19 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
             {snackbar.message}
           </Alert>
         </Snackbar>
-        <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-          Refer to{' '}
-          <Link
-            href="https://docs.pipeshub.com/auth/microsoft-azureAd"
-            target="_blank"
-            rel="noopener"
-          >
-            the documentation
-          </Link>{' '}
-          for more information.
-        </Alert>
+        {shouldShowDocs() && getDocumentationUrl(DOCS_PATHS.AZURE_AD) && (
+          <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
+            Refer to{' '}
+            <Link
+              href={getDocumentationUrl(DOCS_PATHS.AZURE_AD)}
+              target="_blank"
+              rel="noopener"
+            >
+              the documentation
+            </Link>{' '}
+            for more information.
+          </Alert>
+        )}
       </>
     );
   }

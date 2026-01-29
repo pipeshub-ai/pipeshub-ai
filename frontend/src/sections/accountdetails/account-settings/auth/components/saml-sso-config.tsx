@@ -31,6 +31,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { Iconify } from 'src/components/iconify';
 
 import { useAuthContext } from 'src/auth/hooks';
+import { getDocumentationUrl, shouldShowDocs, DOCS_PATHS } from 'src/utils/docs-helper';
 
 import { getSamlSsoConfig, updateSamlSsoConfig } from '../utils/auth-configuration-service';
 
@@ -618,13 +619,15 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
           {snackbar.message}
         </Alert>
       </Snackbar>
-      <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
-        Refer to{' '}
-        <Link href="https://docs.pipeshub.com/auth/saml" target="_blank" rel="noopener">
-          the documentation
-        </Link>{' '}
-        for more information.
-      </Alert>
+      {shouldShowDocs() && getDocumentationUrl(DOCS_PATHS.SAML) && (
+        <Alert variant="outlined" severity="info" sx={{ my: 3 }}>
+          Refer to{' '}
+          <Link href={getDocumentationUrl(DOCS_PATHS.SAML)} target="_blank" rel="noopener">
+            the documentation
+          </Link>{' '}
+          for more information.
+        </Alert>
+      )}
     </Container>
   );
 };

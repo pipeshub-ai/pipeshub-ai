@@ -19,6 +19,15 @@ export type ConfigValue = {
   };
   aiBackend: string;
   turnstileSiteKey: string;
+  whitelabel: {
+    appName: string;
+    appTitle: string;
+    appTagline: string;
+    githubUrl: string;
+    docsBaseUrl: string;
+    signinImageUrl: string;
+    assistantName: string;
+  };
 };
 
 // ----------------------------------------------------------------------
@@ -42,4 +51,32 @@ export const CONFIG: ConfigValue = {
     skip: false,
     redirectPath: paths.dashboard.root,
   },
+  whitelabel: {
+    appName: import.meta.env.VITE_APP_NAME ?? '',
+    appTitle: import.meta.env.VITE_APP_TITLE ?? '',
+    appTagline: import.meta.env.VITE_APP_TAGLINE ?? '',
+    githubUrl: import.meta.env.VITE_GITHUB_URL ?? '',
+    docsBaseUrl: import.meta.env.VITE_DOCS_BASE_URL ?? '',
+    signinImageUrl: import.meta.env.VITE_SIGNIN_IMAGE_URL ?? '',
+    assistantName: import.meta.env.VITE_ASSISTANT_NAME ?? '',
+  },
 };
+
+// Whitelabel helper functions
+export const getAppName = () => CONFIG.whitelabel.appName || '';
+export const getAppTitle = () => CONFIG.whitelabel.appTitle || '';
+export const getAppTagline = () => CONFIG.whitelabel.appTagline || '';
+export const getGithubUrl = () => CONFIG.whitelabel.githubUrl;
+export const getDocsUrl = (path: string = '') => {
+  const base = CONFIG.whitelabel.docsBaseUrl;
+  if (!base) return '';
+  // Handle trailing slashes
+  const cleanBase = base.replace(/\/$/, '');
+  const cleanPath = path.replace(/^\//, '');
+  return cleanPath ? `${cleanBase}/${cleanPath}` : cleanBase;
+};
+export const hasGithubLink = () => Boolean(CONFIG.whitelabel.githubUrl);
+export const hasDocsLink = () => Boolean(CONFIG.whitelabel.docsBaseUrl);
+export const getSigninImageUrl = () => CONFIG.whitelabel.signinImageUrl;
+export const hasSigninImage = () => Boolean(CONFIG.whitelabel.signinImageUrl);
+export const getAssistantName = () => CONFIG.whitelabel.assistantName || 'Assistant';

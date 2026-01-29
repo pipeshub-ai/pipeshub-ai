@@ -74,10 +74,30 @@ RUN npm run build && \
     # Clean npm cache
     npm cache clean --force
 
+
 # -----------------------------------------------------------------------------
 # Stage 4: Frontend Build
 # -----------------------------------------------------------------------------
-FROM node:20-slim AS frontend-build
+FROM build-base AS frontend-build
+
+# Accept build arguments for whitelabel configuration
+ARG VITE_APP_NAME=""
+ARG VITE_APP_TITLE=""
+ARG VITE_APP_TAGLINE=""
+ARG VITE_GITHUB_URL=""
+ARG VITE_DOCS_BASE_URL=""
+ARG VITE_SIGNIN_IMAGE_URL=""
+ARG VITE_ASSISTANT_NAME=""
+
+# Set as environment variables for Vite build
+ENV VITE_APP_NAME=$VITE_APP_NAME
+ENV VITE_APP_TITLE=$VITE_APP_TITLE
+ENV VITE_APP_TAGLINE=$VITE_APP_TAGLINE
+ENV VITE_GITHUB_URL=$VITE_GITHUB_URL
+ENV VITE_DOCS_BASE_URL=$VITE_DOCS_BASE_URL
+ENV VITE_SIGNIN_IMAGE_URL=$VITE_SIGNIN_IMAGE_URL
+ENV VITE_ASSISTANT_NAME=$VITE_ASSISTANT_NAME
+
 WORKDIR /app/frontend
 
 RUN mkdir -p packages

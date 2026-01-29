@@ -8,6 +8,7 @@ import { useTheme } from '@mui/material/styles';
 
 import { RouterLink } from 'src/routes/components';
 
+import { getSigninImageUrl, hasSigninImage } from 'src/config-global';
 import { varAlpha, bgGradient } from 'src/theme/styles';
 
 // ----------------------------------------------------------------------
@@ -31,11 +32,16 @@ export function Section({
   layoutQuery,
   methods,
   title = 'Manage the job',
-  imgUrl = `/logo/signinpage.png`,
+  imgUrl,
   subtitle = 'More effectively with optimized workflows.',
   ...other
 }: SectionProps) {
   const theme = useTheme();
+
+  // Use whitelabel signin image URL if configured, otherwise use provided imgUrl or hide
+  const signinImageUrl = getSigninImageUrl();
+  const finalImageUrl = signinImageUrl || imgUrl;
+  const shouldShowImage = hasSigninImage() || imgUrl;
 
   return (
     <Box
@@ -86,23 +92,25 @@ export function Section({
         )} */}
       </div>
 
-      <Box
-        component="img"
-        alt="Dashboard illustration"
-        src={imgUrl}
-        sx={{
-          width: 'auto', // Auto width
-          height: '100%', // Full viewport height
-          display: 'block', // Block display
-          objectFit: 'cover', // Maintain aspect ratio
-          position: 'fixed', // Fixed position relative to viewport
-          top: 0, // Top of viewport
-          left: 0, // Left side of viewport
-          marginLeft: '0', // No margin on left
-          marginRight: '0', // Auto margin on right
-          zIndex: 0, // Higher z-index to keep above other elements
-        }}
-      />
+      {shouldShowImage && finalImageUrl && (
+        <Box
+          component="img"
+          alt="Dashboard illustration"
+          src={finalImageUrl}
+          sx={{
+            width: 'auto', // Auto width
+            height: '100%', // Full viewport height
+            display: 'block', // Block display
+            objectFit: 'cover', // Maintain aspect ratio
+            position: 'fixed', // Fixed position relative to viewport
+            top: 0, // Top of viewport
+            left: 0, // Left side of viewport
+            marginLeft: '0', // No margin on left
+            marginRight: '0', // Auto margin on right
+            zIndex: 0, // Higher z-index to keep above other elements
+          }}
+        />
+      )}
 
       {!!methods?.length && method && (
         <Box component="ul" gap={2} display="flex">
