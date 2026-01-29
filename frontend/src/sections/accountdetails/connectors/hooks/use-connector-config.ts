@@ -113,7 +113,7 @@ interface UseConnectorConfigReturn {
 }
 
 // Constants
-const MIN_INSTANCE_NAME_LENGTH = 3;
+const MIN_INSTANCE_NAME_LENGTH = 2;
 const REQUIRED_SERVICE_ACCOUNT_FIELDS = ['client_id', 'project_id', 'type'];
 const SERVICE_ACCOUNT_TYPE = 'service_account';
 
@@ -208,16 +208,17 @@ export const useConnectorConfig = ({
   // Memoized helper functions
   const getBusinessOAuthData = useCallback((config: any) => {
     const authValues = config?.config?.auth?.values || config?.config?.auth || {};
+    
+    // Check if service account credentials exist by looking for key fields
+    const hasServiceAccountCredentials = 
+      authValues.client_id && 
+      authValues.project_id && 
+      (authValues.type === SERVICE_ACCOUNT_TYPE || authValues.private_key || authValues.client_email);
+    
     return {
       adminEmail: authValues.adminEmail || '',
-      jsonData:
-        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
-          ? authValues
-          : null,
-      fileName:
-        authValues.client_id && authValues.project_id && authValues.type === SERVICE_ACCOUNT_TYPE
-          ? 'existing-credentials.json'
-          : null,
+      jsonData: hasServiceAccountCredentials ? authValues : null,
+      fileName: hasServiceAccountCredentials ? 'Service Account Credentials' : null,
     };
   }, []);
 
@@ -227,8 +228,8 @@ export const useConnectorConfig = ({
     return {
       certificate: authValues.certificate || null,
       privateKey: authValues.privateKey || null,
-      certificateFileName: authValues.certificate ? 'existing-certificate.pem' : null,
-      privateKeyFileName: authValues.privateKey ? 'existing-privatekey.pem' : null,
+      certificateFileName: authValues.certificate ? 'Client Certificate' : null,
+      privateKeyFileName: authValues.privateKey ? 'Private Key (PKCS#8)' : null,
     };
   }, []);
 
@@ -1511,7 +1512,7 @@ export const useConnectorConfig = ({
     try {
       setSaving(true);
       setSaveError(null);
-      setSaveAttempted(true); // Mark that save was attempted
+      setSaveAttempted(true);
 
       const isNoAuthType = isNoneAuthType(connector.authType);
 
@@ -1579,7 +1580,7 @@ export const useConnectorConfig = ({
               authErrors.privateKey = privateKeyError;
             }
           } else {
-            // Use schema from existing auth type in edit mode (authOnly mode)
+            // Generic auth validation (API keys, manual OAuth, etc.)
             const validationAuthType = connectorConfig.config.auth?.type || '';
             const validationAuthSchemas = connectorConfig.config.auth?.schemas || {};
             const validationSchema = validationAuthType && validationAuthSchemas[validationAuthType]

@@ -227,6 +227,7 @@ class SyncFilterKey(str, Enum):
     SITE_NAMES = "site_names"
     CHANNEL_IDS = "channel_ids"
     BOOK_IDS = "book_ids"
+    GROUP_IDS = "group_ids"
 
     # Content filters
     CONTENT_STATUS = "content_status"
@@ -282,6 +283,9 @@ class IndexingFilterKey(str, Enum):
     BLOGPOST_ATTACHMENTS = "blogpost_attachments"
     ISSUE_COMMENTS = "issue_comments"
     ISSUE_ATTACHMENTS = "issue_attachments"
+
+    # Knowledge base
+    KNOWLEDGE_BASE = "knowledge_base"
 
     SHARED = "shared"
     SHARED_WITH_ME = "shared_with_me"

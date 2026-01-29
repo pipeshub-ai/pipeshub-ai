@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -86,49 +86,59 @@ interface AuthSectionProps {
   // Auth type selection (create mode only)
   selectedAuthType: string | null;
   handleAuthTypeChange: (authType: string) => void;
+
+  // Refs for nested sections (for auto-scroll to errors)
+  sharepointSectionRef?: React.RefObject<HTMLDivElement>;
+  businessOAuthSectionRef?: React.RefObject<HTMLDivElement>;
 }
 
-const AuthSection: React.FC<AuthSectionProps> = ({
-  connector,
-  connectorConfig,
-  formData,
-  formErrors,
-  conditionalDisplay,
-  accountTypeLoading,
-  isBusiness,
-  adminEmail,
-  adminEmailError,
-  selectedFile,
-  fileName,
-  fileError,
-  jsonData,
-  onAdminEmailChange,
-  onFileUpload,
-  onFileChange,
-  fileInputRef,
-  certificateFile,
-  certificateFileName,
-  certificateError,
-  certificateData,
-  privateKeyFile,
-  privateKeyFileName,
-  privateKeyError,
-  privateKeyData,
-  onCertificateUpload,
-  onCertificateChange,
-  onPrivateKeyUpload,
-  onPrivateKeyChange,
-  certificateInputRef,
-  privateKeyInputRef,
-  onFieldChange,
-  isCreateMode,
-  instanceName,
-  instanceNameError,
-  onInstanceNameChange,
-  selectedAuthType,
-  handleAuthTypeChange,
-  saveAttempted = false,
-}) => {
+const AuthSection = forwardRef<HTMLDivElement, AuthSectionProps>(
+  (
+    {
+      connector,
+      connectorConfig,
+      formData,
+      formErrors,
+      conditionalDisplay,
+      accountTypeLoading,
+      isBusiness,
+      adminEmail,
+      adminEmailError,
+      selectedFile,
+      fileName,
+      fileError,
+      jsonData,
+      onAdminEmailChange,
+      onFileUpload,
+      onFileChange,
+      fileInputRef,
+      certificateFile,
+      certificateFileName,
+      certificateError,
+      certificateData,
+      privateKeyFile,
+      privateKeyFileName,
+      privateKeyError,
+      privateKeyData,
+      onCertificateUpload,
+      onCertificateChange,
+      onPrivateKeyUpload,
+      onPrivateKeyChange,
+      certificateInputRef,
+      privateKeyInputRef,
+      onFieldChange,
+      isCreateMode,
+      instanceName,
+      instanceNameError,
+      onInstanceNameChange,
+      selectedAuthType,
+      handleAuthTypeChange,
+      saveAttempted = false,
+      sharepointSectionRef,
+      businessOAuthSectionRef,
+    },
+    ref
+  ) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const { isAdmin } = useAdmin();
@@ -400,7 +410,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
   };
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+    <Box ref={ref} sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
       {/* Compact Documentation Alert */}
       <Alert
         variant="outlined"
@@ -739,6 +749,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
       {!accountTypeLoading &&
         customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') && (
           <BusinessOAuthSection
+            ref={businessOAuthSectionRef}
             adminEmail={adminEmail}
             adminEmailError={adminEmailError}
             selectedFile={selectedFile}
@@ -760,6 +771,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
       {/* SharePoint Certificate OAuth Section */}
       {!accountTypeLoading && isSharePointCertificateAuth(connector) && (
         <SharePointOAuthSection
+          ref={sharepointSectionRef}
           clientId={formData.clientId || ''}
           tenantId={formData.tenantId || ''}
           sharepointDomain={formData.sharepointDomain || ''}
@@ -800,6 +812,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
         !customGoogleBusinessOAuth(connector, isBusiness ? 'business' : 'individual') &&
         !isSharePointCertificateAuth(connector) && (
           <Paper
+            id="generic-auth-section"
             variant="outlined"
             sx={{
               p: 2,
@@ -1026,7 +1039,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
 
             {/* Instance Name Field - Show in create mode only */}
             {isCreateMode && (
-              <Box sx={{ mb: 2.5 }}>
+              <Box id="auth-instance-name-section" sx={{ mb: 2.5 }}>
                 <Grid container spacing={2}>
                   <Grid item xs={12}>
                     <FieldRenderer
@@ -1494,6 +1507,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                           item
                           xs={12}
                           key={`${schemaAuthType}-${field.name}`}
+                          id={`auth-field-${field.name}`}
                           sx={{
                             animation: 'fadeIn 0.2s ease-in-out',
                             '@keyframes fadeIn': {
@@ -1516,6 +1530,20 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                   })()}
 
                   {auth.customFields?.map((field) => {
+                    // Check if field already exists in current schema to prevent duplicate IDs
+                    const customFieldAuthType = isCreateMode
+                      ? selectedAuthType || (auth as any).supportedAuthTypes?.[0] || ''
+                      : auth.type || '';
+                    const customFieldSchemas = (auth as any).schemas || {};
+                    const customFieldSchema =
+                      customFieldAuthType && customFieldSchemas[customFieldAuthType]
+                        ? customFieldSchemas[customFieldAuthType]
+                        : { fields: [] };
+                    
+                    const isInCurrentSchema = customFieldSchema.fields?.some(
+                      (f: any) => f.name === field.name
+                    );
+                    
                     const shouldShow =
                       !auth.conditionalDisplay ||
                       !auth.conditionalDisplay[field.name] ||
@@ -1537,10 +1565,10 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                         field.name === 'certificate' ||
                         field.name === 'privateKey');
 
-                    if (!shouldShow || isBusinessOAuthField || isSharePointCertField) return null;
+                    if (!shouldShow || isBusinessOAuthField || isSharePointCertField || isInCurrentSchema) return null;
 
                     return (
-                      <Grid item xs={12} key={field.name}>
+                      <Grid item xs={12} key={field.name} id={`auth-field-${field.name}`}>
                         <FieldRenderer
                           field={field}
                           value={formData[field.name]}
@@ -1594,7 +1622,7 @@ const AuthSection: React.FC<AuthSectionProps> = ({
                       };
 
                       return (
-                        <Grid item xs={12} key={fieldName}>
+                        <Grid item xs={12} key={fieldName} id={`auth-field-${fieldName}`}>
                           <FieldRenderer
                             field={conditionalField}
                             value={formData[fieldName]}
@@ -1614,6 +1642,8 @@ const AuthSection: React.FC<AuthSectionProps> = ({
         )}
     </Box>
   );
-};
+});
+
+AuthSection.displayName = 'AuthSection';
 
 export default AuthSection;

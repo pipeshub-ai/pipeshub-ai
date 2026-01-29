@@ -94,7 +94,7 @@ export const buildAIResponseMessage = (
     throw new InternalServerError('AI response must include an answer');
   }
 
-  return {
+  const message: IMessage = {
     messageType: 'bot_response',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -118,6 +118,14 @@ export const buildAIResponseMessage = (
     },
     modelInfo: modelInfo,
   };
+
+  // Include referenceData if present (IDs for follow-up queries)
+  // This stores technical IDs that were in the response for later reference
+  if (aiResponse.data.referenceData && Array.isArray(aiResponse.data.referenceData)) {
+    message.referenceData = aiResponse.data.referenceData;
+  }
+
+  return message;
 };
 
 export const formatPreviousConversations = (messages: IMessage[]) => {
@@ -126,6 +134,8 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
     .map((msg) => ({
       content: msg.content,
       role: msg.messageType,
+      // Include referenceData for follow-up queries (IDs from tool responses)
+      ...(msg.referenceData && msg.referenceData.length > 0 && { referenceData: msg.referenceData }),
     }));
 };
 

@@ -99,7 +99,6 @@ async def isJwtTokenValid(request: Request) -> dict:
         regular_jwt_secret = secret_keys.get("jwtSecret")
         scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
         algorithm = os.environ.get("JWT_ALGORITHM", "HS256")
-
         # Validate required secrets exist
         if not regular_jwt_secret:
             raise ValueError("Missing jwtSecret in configuration")

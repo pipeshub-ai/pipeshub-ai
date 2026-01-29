@@ -41,6 +41,7 @@ from app.connectors.sources.google.gmail.individual.connector import (
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.linear.connector import LinearConnector
+from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -52,6 +53,7 @@ from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
+from app.connectors.sources.zammad.connector import ZammadConnector
 
 
 class ConnectorFactory:
@@ -78,10 +80,12 @@ class ConnectorFactory:
         "s3": S3Connector,
         "minio": MinIOConnector,
         "gcs": GCSConnector,
+        "kb": KnowledgeBaseConnector,
         "azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,
         "notion": NotionConnector,
+        "zammad": ZammadConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -184,7 +188,10 @@ class ConnectorFactory:
 
         if connector:
             try:
-                await connector.init()
+                success = await connector.init()
+                if not success:
+                    logger.error(f"❌ Failed to initialize {name} {connector_id} connector")
+                    return None
                 logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:

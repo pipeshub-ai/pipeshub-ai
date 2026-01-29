@@ -113,6 +113,10 @@ class ValueMapper:
         "unstarted": Status.NEW,
         "started": Status.IN_PROGRESS,
         "planned": Status.NEW,
+        # Zammad-specific status values
+        "pending reminder": Status.PENDING,
+        "pending close": Status.PENDING,
+        "merged": Status.CLOSED,
     }
 
     # Default priority mappings (connector-specific mappings can override)
@@ -134,6 +138,11 @@ class ValueMapper:
         "no priority": Priority.UNKNOWN,
         "0": Priority.UNKNOWN,
         "p0": Priority.UNKNOWN,
+        # Zammad-specific priority values (with numeric prefixes)
+        "1 low": Priority.LOW,
+        "2 normal": Priority.MEDIUM,
+        "3 high": Priority.HIGH,
+        "4 urgent": Priority.HIGHEST,
     }
 
     # Default type mappings (connector-specific mappings can override)

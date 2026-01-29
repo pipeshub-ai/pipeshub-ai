@@ -48,6 +48,7 @@ export interface Pagination {
 }
 
 export interface Filters {
+  nodeTypes?: string[];
   recordTypes?: string[];
   origin?: string[];
   indexingStatus?: string[];
@@ -59,7 +60,7 @@ export interface Filters {
   connectors?: string[];
   app?: string[];
   permissions?: string[];
-  kb?:string[];
+  kb?: string[];
 }
 
 export interface FilterHeaderProps {

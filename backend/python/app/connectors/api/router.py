@@ -2,6 +2,7 @@ import asyncio
 import base64
 import io
 import json
+import mimetypes
 import os
 import tempfile
 import time
@@ -64,6 +65,7 @@ from app.connectors.sources.google.google_drive.drive_webhook_handler import (
     AbstractDriveWebhookHandler,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.models.entities import Record
 from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
@@ -78,6 +80,33 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = create_logger("connector_service")
 
 router = APIRouter()
+
+
+def get_mime_type_from_record(record: Record) -> str:
+    """
+    Get the MIME type for a record, using the following priority:
+    1. Record's stored mime_type attribute
+    2. Guess from record_name or name extension using mimetypes module
+    3. Fallback to application/octet-stream
+
+    Args:
+        record: The record object
+    Returns:
+        str: The MIME type
+    """
+    # Try to get mime_type from record
+    if hasattr(record, 'mime_type') and record.mime_type:
+        return record.mime_type
+
+    # Try to guess from record_name or name attribute
+    record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None)
+    if record_name:
+        guessed_type, _ = mimetypes.guess_type(record_name)
+        if guessed_type:
+            return guessed_type
+
+    # Fallback to octet-stream
+    return "application/octet-stream"
 
 
 async def _stream_google_api_request(request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
@@ -601,7 +630,9 @@ async def stream_record_internal(
             else:
                 buffer = response['data']
 
-            return Response(content=buffer or b'', media_type="application/octet-stream")
+            # Get the correct MIME type from the record
+            mime_type = get_mime_type_from_record(record)
+            return Response(content=buffer or b'', media_type=mime_type)
 
         connector_id = record.connector_id
         connector = container.connectors_map[connector_id]
@@ -671,31 +702,7 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
 
         # Handle KB separately - fetch from storage service
-        connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
-        config_service: ConfigurationService = container.config_service()
-        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
-            endpoints = await config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
-            jwt_payload = {
-                "orgId": org_id,
-                "scopes": ["storage:token"],
-            }
-            storage_token = await generate_jwt(config_service, jwt_payload)
-            response = await make_api_call(
-                route=buffer_url, token=storage_token
-            )
-            if isinstance(response["data"], dict):
-                data = response['data'].get('data')
-                buffer = bytes(data) if isinstance(data, list) else data
-            else:
-                buffer = response['data']
-
-            return Response(content=buffer or b'', media_type="application/octet-stream")
-
         try:
             connector_obj: BaseConnector = container.connectors_map[connector_id]
             if not connector_obj:
@@ -778,6 +785,14 @@ async def stream_record(
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
 
+        # Validate that the org_id matches the record's org_id
+        if record and record.org_id and record.org_id != org_id:
+            logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
+            org_id = record.org_id
+            org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
         access_check = await arango_service.check_record_access_with_details(user_id, org_id, record_id)
@@ -793,31 +808,11 @@ async def stream_record(
         logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
         # Different auth handling based on account type and connector scope
 
-        # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
-        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
-            endpoints = await config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
-            jwt_payload = {
-                "orgId": org_id,
-                "scopes": ["storage:token"],
-            }
-            storage_token = await generate_jwt(config_service, jwt_payload)
-            response = await make_api_call(
-                route=buffer_url, token=storage_token
-            )
-            if isinstance(response["data"], dict):
-                data = response['data'].get('data')
-                buffer = bytes(data) if isinstance(data, list) else data
-            else:
-                buffer = response['data']
-
-            return Response(content=buffer or b'', media_type="application/octet-stream")
 
         try:
+            logger.info("Stream Record called at router")
+            logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
             connector_obj: BaseConnector = container.connectors_map[connector_id]
             if not connector_obj:
                 raise HTTPException(

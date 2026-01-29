@@ -288,6 +288,37 @@ class MSGraphClient:
             self.logger.warning(f"Could not fetch details for user {user_id}: {ex}")
             return None
 
+    async def get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches user information (email and display name) by user ID.
+
+        Args:
+            user_id: The user identifier
+
+        Returns:
+            Dict with 'email' and 'display_name' keys, or None if user not found
+        """
+        try:
+            async with self.rate_limiter:
+                query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    select=['id', 'mail', 'userPrincipalName', 'displayName']
+                )
+                request_configuration = RequestConfiguration(
+                    query_parameters=query_params
+                )
+
+                user = await self.client.users.by_user_id(user_id).get(request_configuration)
+
+                if user:
+                    return {
+                        'email': user.mail or user.user_principal_name,
+                        'display_name': user.display_name
+                    }
+            return None
+        except Exception as ex:
+            self.logger.warning(f"Could not fetch user info for {user_id}: {ex}")
+            return None
+
     async def get_user_drive(self, user_id: str) -> Optional[Drive]:
         """
         Check if a user has a OneDrive drive provisioned.

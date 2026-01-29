@@ -818,14 +818,18 @@ async def stream_llm_response(
                     logger.error(f"   - virtual_record_id_to_result: {len(virtual_record_id_to_result) if virtual_record_id_to_result else 0}")
                     logger.error(f"   - records: {len(records) if records else 0}")
 
-                yield {
-                    "event": "complete",
-                    "data": {
+                complete_data = {
                         "answer": normalized,
                         "citations": c,  # Use normalized citations
                         "reason": parsed.get("reason"),
                         "confidence": parsed.get("confidence"),
-                    },
+                    }
+                # Include referenceData if present (IDs for follow-up queries)
+                if parsed.get("referenceData"):
+                    complete_data["referenceData"] = parsed.get("referenceData")
+                yield {
+                    "event": "complete",
+                    "data": complete_data,
                 }
             except Exception:
                 # Fallback if JSON parsing fails
@@ -1572,14 +1576,18 @@ async def call_aiter_llm_stream(
 
         final_answer = parsed.answer if parsed.answer else state.answer_buf
         normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
+        complete_data = {
+            "answer": normalized,
+            "citations": c,
+            "reason": parsed.reason,
+            "confidence": parsed.confidence,
+        }
+        # Include referenceData if present (IDs for follow-up queries)
+        if hasattr(parsed, 'referenceData') and parsed.referenceData:
+            complete_data["referenceData"] = parsed.referenceData
         yield {
             "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": c,
-                "reason": parsed.reason,
-                "confidence": parsed.confidence,
-            },
+            "data": complete_data,
         }
     except Exception as e:
         logger.error("Error in call_aiter_llm_stream", exc_info=True)

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -11,6 +11,8 @@ import {
   useTheme,
   Divider,
   Grid,
+  FormControl,
+  FormHelperText,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import cloudIcon from '@iconify-icons/mdi/microsoft-azure';
@@ -72,41 +74,45 @@ interface SharePointOAuthSectionProps {
   showValidationSummary: boolean;
 }
 
-const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
-  clientId,
-  tenantId,
-  sharepointDomain,
-  hasAdminConsent,
-  clientIdError,
-  tenantIdError,
-  sharepointDomainError,
-  hasAdminConsentError,
-  certificateFile,
-  certificateFileName,
-  certificateError,
-  certificateData,
-  privateKeyFile,
-  privateKeyFileName,
-  privateKeyError,
-  privateKeyData,
-  onClientIdChange,
-  onTenantIdChange,
-  onSharePointDomainChange,
-  onAdminConsentChange,
-  onCertificateUpload,
-  onCertificateChange,
-  onPrivateKeyUpload,
-  onPrivateKeyChange,
-  certificateInputRef,
-  privateKeyInputRef,
-  isCreateMode,
-  instanceName,
-  instanceNameError,
-  onInstanceNameChange,
-  connectorName,
-  showValidationSummary,
-}) => {
-  const theme = useTheme();
+const SharePointOAuthSection = forwardRef<HTMLDivElement, SharePointOAuthSectionProps>(
+  (
+    {
+      clientId,
+      tenantId,
+      sharepointDomain,
+      hasAdminConsent,
+      clientIdError,
+      tenantIdError,
+      sharepointDomainError,
+      hasAdminConsentError,
+      certificateFile,
+      certificateFileName,
+      certificateError,
+      certificateData,
+      privateKeyFile,
+      privateKeyFileName,
+      privateKeyError,
+      privateKeyData,
+      onClientIdChange,
+      onTenantIdChange,
+      onSharePointDomainChange,
+      onAdminConsentChange,
+      onCertificateUpload,
+      onCertificateChange,
+      onPrivateKeyUpload,
+      onPrivateKeyChange,
+      certificateInputRef,
+      privateKeyInputRef,
+      isCreateMode,
+      instanceName,
+      instanceNameError,
+      onInstanceNameChange,
+      connectorName,
+      showValidationSummary,
+    },
+    ref
+  ) => {
+    const theme = useTheme();
 
   // Collect all validation errors for the summary card
   const validationErrors: string[] = [];
@@ -122,6 +128,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
 
   return (
     <Paper
+      ref={ref}
       variant="outlined"
       sx={{
         p: 2,
@@ -175,8 +182,9 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
       </Box>
 
       {/* Validation Error Summary Card */}
-      {shouldShowSummary && (
+      {/* {shouldShowSummary && (
         <Paper
+          id="sharepoint-validation-summary"
           variant="outlined"
           sx={{
             p: 2,
@@ -238,7 +246,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
             </Box>
           </Box>
         </Paper>
-      )}
+      )} */}
 
       {/* Connector Name Field */}
       {isCreateMode && (
@@ -269,6 +277,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
       {/* Azure AD Application Fields */}
       <Box sx={{ mb: 2 }}>
         <TextField
+          id="sharepoint-client-id"
           fullWidth
           required
           size="small"
@@ -316,6 +325,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
         />
 
         <TextField
+          id="sharepoint-tenant-id"
           fullWidth
           size="small"
           label="Directory (Tenant) ID"
@@ -362,6 +372,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
         />
 
         <TextField
+          id="sharepoint-domain"
           fullWidth
           required
           size="small"
@@ -408,7 +419,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
           }}
         />
 
-        <Box>
+        <FormControl id="sharepoint-admin-consent" error={!!hasAdminConsentError} sx={{ width: '100%' }}>
           <FormControlLabel
             control={
               <Checkbox
@@ -434,20 +445,17 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
             }
           />
           {hasAdminConsentError && (
-            <Typography 
-              variant="caption" 
+            <FormHelperText
               sx={{ 
-                color: theme.palette.error.main,
                 mt: 0.75,
                 ml: 4.5,
-                display: 'block',
                 fontSize: '0.75rem',
               }}
             >
               {hasAdminConsentError}
-            </Typography>
+            </FormHelperText>
           )}
-        </Box>
+        </FormControl>
       </Box>
 
       <Divider sx={{ my: 2 }} />
@@ -497,7 +505,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
         </Box>
 
         {/* Certificate File Upload */}
-        <Box sx={{ mb: 2 }}>
+        <Box id="certificate-upload-section" sx={{ mb: 2 }}>
           <Typography 
             variant="subtitle2" 
             sx={{ 
@@ -573,7 +581,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {certificateFileName || 'No file selected'}
+                  {certificateFileName || (certificateData ? 'Client Certificate' : 'No file selected')}
                 </Typography>
                 <Typography 
                   variant="caption" 
@@ -642,7 +650,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
         </Box>
 
         {/* Private Key File Upload */}
-        <Box sx={{ mb: 2 }}>
+        <Box id="private-key-upload-section" sx={{ mb: 2 }}>
           <Typography 
             variant="subtitle2" 
             sx={{ 
@@ -718,7 +726,7 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {privateKeyFileName || 'No file selected'}
+                  {privateKeyFileName || (privateKeyData ? 'Private Key (PKCS#8)' : 'No file selected')}
                 </Typography>
                 <Typography 
                   variant="caption" 
@@ -891,6 +899,8 @@ const SharePointOAuthSection: React.FC<SharePointOAuthSectionProps> = ({
       )}
     </Paper>
   );
-};
+});
+
+SharePointOAuthSection.displayName = 'SharePointOAuthSection';
 
 export default SharePointOAuthSection;

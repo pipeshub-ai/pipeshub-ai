@@ -53,6 +53,7 @@ export const paths = {
       root: `${ROOTS.DASHBOARD}knowledge-base/details`,
       search: `${ROOTS.DASHBOARD}knowledge-base/search`,
     },
+    allRecords: `${ROOTS.DASHBOARD}all-records`,
     copilot: {
       root: `${ROOTS.DASHBOARD}copilot`,
     },
