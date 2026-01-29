@@ -702,31 +702,7 @@ async def download_file(
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
 
         # Handle KB separately - fetch from storage service
-        connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
-        config_service: ConfigurationService = container.config_service()
-        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
-            endpoints = await config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
-            jwt_payload = {
-                "orgId": org_id,
-                "scopes": ["storage:token"],
-            }
-            storage_token = await generate_jwt(config_service, jwt_payload)
-            response = await make_api_call(
-                route=buffer_url, token=storage_token
-            )
-            if isinstance(response["data"], dict):
-                data = response['data'].get('data')
-                buffer = bytes(data) if isinstance(data, list) else data
-            else:
-                buffer = response['data']
-
-            return Response(content=buffer or b'', media_type="application/octet-stream")
-
         try:
             connector_obj: BaseConnector = container.connectors_map[connector_id]
             if not connector_obj:
@@ -832,33 +808,11 @@ async def stream_record(
         logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
         # Different auth handling based on account type and connector scope
 
-        # Handle KB separately - fetch from storage service
         container: ConnectorAppContainer = request.app.container
-        if connector_name == Connectors.KNOWLEDGE_BASE.value.lower() or connector_name is None:
-            endpoints = await config_service.get_config(
-                config_node_constants.ENDPOINTS.value
-            )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
-            jwt_payload = {
-                "orgId": org_id,
-                "scopes": ["storage:token"],
-            }
-            storage_token = await generate_jwt(config_service, jwt_payload)
-            response = await make_api_call(
-                route=buffer_url, token=storage_token
-            )
-            if isinstance(response["data"], dict):
-                data = response['data'].get('data')
-                buffer = bytes(data) if isinstance(data, list) else data
-            else:
-                buffer = response['data']
-
-            # Get the correct MIME type from the record
-            mime_type = get_mime_type_from_record(record)
-            return Response(content=buffer or b'', media_type=mime_type)
 
         try:
+            logger.info("Stream Record called at router")
+            logger.info(f"Connector: {connector_name} connector_id: {connector_id}")
             connector_obj: BaseConnector = container.connectors_map[connector_id]
             if not connector_obj:
                 raise HTTPException(

@@ -127,7 +127,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
-  const appItems = useMemo(() => apps || [], [apps]);
+  // Filter out KB apps at the source - they're handled separately via knowledgeBases
+  const appItems = useMemo(() => (apps || []).filter((app) => app?.name !== 'KB'), [apps]);
   // Prefetch app icons to avoid flicker when switching tabs
   useEffect(() => {
     try {

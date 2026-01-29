@@ -3,7 +3,7 @@ from inspect import isclass
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.services.base_arango_service import (
     BaseArangoService as ArangoService,
@@ -818,7 +818,9 @@ class ConnectorRegistry:
             # - team scope in enterprise accounts (to prevent instability)
             if is_beta_connector and account_type and account_type.lower() in ['enterprise', 'business'] and scope == ConnectorScope.TEAM.value:
                 continue
-
+            # Skip hidden connectors
+            if metadata.get('config', {}).get('hideConnector', False):
+                continue
             connector_info = self._build_connector_info(connector_type, metadata, scope=scope)
             if matches_search(connector_info):
                 connectors.append(connector_info)
@@ -844,7 +846,9 @@ class ConnectorRegistry:
                 if normalized_name in beta_names:
                     continue
 
-            # Count by scope
+            # Skip hidden connectors
+            if metadata.get('config', {}).get('hideConnector', False):
+                continue
             connector_scopes = metadata.get('connectorScopes', [])
             if ConnectorScope.PERSONAL.value in connector_scopes:
                 registry_counts_by_scope["personal"] += 1
@@ -898,10 +902,12 @@ class ConnectorRegistry:
             query = """
             FOR doc IN @@collection
                 FILTER doc._id != null
+                FILTER doc.type != @kb_connector_type
             """
 
             bind_vars = {
-                "@collection": self._collection_name
+                "@collection": self._collection_name,
+                "kb_connector_type": Connectors.KNOWLEDGE_BASE.value
             }
 
             # Add scope filter if specified
@@ -962,6 +968,7 @@ class ConnectorRegistry:
                     team_count_query = """
                     FOR doc IN @@collection
                         FILTER doc._id != null
+                        FILTER doc.type != @kb_connector_type
                         FILTER doc.scope == @team_scope
                         FILTER doc.isConfigured == true
                         COLLECT WITH COUNT INTO total
@@ -970,6 +977,7 @@ class ConnectorRegistry:
                     team_bind_vars = {
                         "@collection": self._collection_name,
                         "team_scope": ConnectorScope.TEAM.value,
+                        "kb_connector_type": Connectors.KNOWLEDGE_BASE.value
                     }
                     team_cursor = arango_service.db.aql.execute(team_count_query, bind_vars=team_bind_vars)
                     scope_counts["team"] = next(team_cursor, 0)
