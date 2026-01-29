@@ -698,7 +698,6 @@ Do not include any additional explanation or text."""
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
                     block_index = len(blocks)
-                    row_data = row.get("raw_data", {})
                     blocks.append(
                         Block(
                             index=block_index,

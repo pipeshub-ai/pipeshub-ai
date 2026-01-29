@@ -1056,8 +1056,6 @@ class Processor:
                 # Shift block_group ranges that reference shifted block groups
                 for range_obj in bg.children.block_group_ranges:
                     # For each index in the range, check if it needs shifting
-                    # Note: This is complex because ranges might need to be split if only some indices shift
-                    # For simplicity, we'll shift the entire range if the start is in the shift map
                     if range_obj.start in index_shift_map:
                         shift_amount = index_shift_map[range_obj.start]
                         range_obj.start += shift_amount

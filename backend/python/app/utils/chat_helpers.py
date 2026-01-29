@@ -184,6 +184,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     }
                     flattened_results.append(table_result)
                     continue
+                else:
+                    rows_to_be_included[f"{virtual_record_id}_{index}"]=[]
+                    continue
             else:
                 continue
         elif block.get("parent_index") is not None:
