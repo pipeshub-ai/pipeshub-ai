@@ -603,10 +603,28 @@ async def stream_record_internal(
         )
         org, record = await asyncio.gather(org_task, record_task)
 
-        if not org:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        if not org:
+            # Fallback: try using the record's org_id if available
+            if record and record.org_id:
+                logger.warning(f"Org {org_id} from JWT not found, trying record's org_id: {record.org_id}")
+                org = await arango_service.get_document(record.org_id, CollectionNames.ORGS.value)
+                if org:
+                    org_id = record.org_id  # Update org_id for later use
+                else:
+                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+            else:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+        
+        # Validate that the org_id matches the record's org_id
+        if record and record.org_id and record.org_id != org_id:
+            logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
+            org_id = record.org_id
+            org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
@@ -804,10 +822,28 @@ async def stream_record(
         )
         org, record = await asyncio.gather(org_task, record_task)
 
-        if not org:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        if not org:
+            # Fallback: try using the record's org_id if available
+            if record and record.org_id:
+                logger.warning(f"Org {org_id} from JWT not found, trying record's org_id: {record.org_id}")
+                org = await arango_service.get_document(record.org_id, CollectionNames.ORGS.value)
+                if org:
+                    org_id = record.org_id  # Update org_id for later use
+                else:
+                    raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+            else:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+        
+        # Validate that the org_id matches the record's org_id
+        if record and record.org_id and record.org_id != org_id:
+            logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
+            org_id = record.org_id
+            org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions

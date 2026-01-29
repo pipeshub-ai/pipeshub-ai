@@ -40,6 +40,8 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.utils.streaming import create_stream_record_response
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
@@ -299,6 +301,8 @@ class WebConnector(BaseConnector):
             self.logger.info(
                 f"✅ Web crawl completed: {len(self.visited_urls)} pages processed"
             )
+
+            self.logger.info(f"visited_urls: {self.visited_urls}")
 
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)
@@ -716,6 +720,39 @@ class WebConnector(BaseConnector):
                         for tag in soup(["script", "style", "noscript", "iframe"]):
                             tag.decompose()
 
+                        # Convert SVG tags to img tags with PNG base64 (OpenAI doesn't support SVG)
+                        svg_tags = soup.find_all('svg')
+                        for svg in svg_tags:
+                            try:
+                                # Get SVG content as string
+                                svg_content = str(svg)
+                                # Encode SVG content to base64
+                                svg_bytes = svg_content.encode('utf-8')
+                                svg_b64_str = base64.b64encode(svg_bytes).decode('utf-8')
+                                
+                                # Convert SVG to PNG
+                                png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+                                
+                                # Create new img tag with PNG data URI
+                                new_img = soup.new_tag('img')
+                                new_img['src'] = f"data:image/png;base64,{png_b64_str}"
+                                # Preserve alt text if present in SVG
+                                if svg.get('aria-label'):
+                                    new_img['alt'] = svg.get('aria-label')
+                                elif svg.get('title'):
+                                    new_img['alt'] = svg.get('title')
+                                else:
+                                    new_img['alt'] = 'Converted SVG image'
+                                
+                                # Replace SVG tag with img tag
+                                svg.replace_with(new_img)
+                                self.logger.debug(f"✅ Converted SVG tag to PNG img tag")
+                            except Exception as svg_error:
+                                self.logger.warning(f"⚠️ Failed to convert SVG tag to PNG: {svg_error}. Removing SVG tag.")
+                                # If conversion fails, remove the SVG tag
+                                svg.decompose()
+                                continue
+
                         # Process images: download and convert to base64
                         images = soup.find_all('img')
                         for img in images:
@@ -761,11 +798,31 @@ class WebConnector(BaseConnector):
                                         else:
                                             content_type = 'image/jpeg'
 
-                                    # Convert to base64
-                                    b64_str = base64.b64encode(img_bytes).decode('utf-8')
-                                    img['src'] = f"data:{content_type};base64,{b64_str}"
+                                    # Normalize content type (remove parameters like charset)
+                                    content_type = content_type.split(';')[0].strip().lower()
+                                    
+                                    # Convert SVG to PNG before base64 encoding (OpenAI doesn't support SVG)
+                                    if content_type == 'image/svg+xml':
+                                        try:
+                                            # First encode SVG bytes to base64
+                                            svg_b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                                            # Convert SVG base64 to PNG base64
+                                            png_b64_str = ImageParser.svg_base64_to_png_base64(svg_b64_str)
+                                            # Update content type to PNG
+                                            content_type = 'image/png'
+                                            b64_str = png_b64_str
+                                            self.logger.debug(f"✅ Converted SVG to PNG and base64: {absolute_url}")
+                                        except Exception as svg_error:
+                                            self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {svg_error}. Removing image from HTML.")
+                                            # Remove the image tag entirely to prevent SVG URL from being extracted later
+                                            img.decompose()
+                                            continue
+                                    else:
+                                        # Convert to base64 for non-SVG images
+                                        b64_str = base64.b64encode(img_bytes).decode('utf-8')
+                                        self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
 
-                                    self.logger.debug(f"✅ Converted image to base64: {absolute_url}")
+                                    img['src'] = f"data:{content_type};base64,{b64_str}"
 
                             except Exception as img_error:
                                 self.logger.warning(f"⚠️ Failed to process image {src}: {img_error}")
@@ -801,7 +858,7 @@ class WebConnector(BaseConnector):
                     else:
                         ext = ".txt"
                     
-                    filename = f"{timestamp}_{safe_record_id}{ext}"
+                    filename = f"{timestamp}_{safe_record_id}_{record.record_name}{ext}"
                     file_path = log_dir / filename
 
                     # Write content
@@ -836,12 +893,11 @@ class WebConnector(BaseConnector):
                 else:
                     response_content = content_bytes
 
-                return StreamingResponse(
+                return create_stream_record_response(
                     BytesIO(response_content),
-                    media_type=mime_type,
-                    headers={
-                        "Content-Disposition": f"inline; filename={record.record_name}"
-                    }
+                    filename=record.record_name,
+                    mime_type=mime_type,
+                    fallback_filename=f"record_{record.id}"
                 )
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.id}: {e}")

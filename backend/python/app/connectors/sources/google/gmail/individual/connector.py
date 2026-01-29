@@ -1370,7 +1370,6 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """
         # Check if file_id is a Drive file ID (no tilde, typically longer alphanumeric)
         # Drive file IDs don't contain tildes, while our stable IDs use messageId~partId format
-        print(f"\n\n\n\n\nfile_id: {file_id}")
         is_drive_file = "~" not in file_id
 
         if is_drive_file:

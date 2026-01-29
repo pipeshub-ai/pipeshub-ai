@@ -94,7 +94,6 @@ class ImageParser:
     async def _fetch_single_url(self, session: aiohttp.ClientSession, url: str) -> str | None:
         try:
 
-            self.logger.debug(f"\n\n\n\n\n\nurl: {url}")
             # Check if already a base64 data URL
             if url.startswith('data:image/'):
                 # Skip SVG images - check the MIME type in the data URL
@@ -113,12 +112,8 @@ class ImageParser:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
                 response.raise_for_status()
 
-                print(f"\n\n\n\n\n\nresponse headers: {response.headers}")
-
                 get_content_type_header = response.headers.get('content-type', '').lower()
                 get_content_type = get_content_type_header.split(';')[0].strip()
-                self.logger.debug(f"\n\n\n\n\n\nget_content_type: {get_content_type}")
-                self.logger.debug(f"url: {url}")
                 is_valid = self._is_valid_image_content_type(get_content_type)
                 self.logger.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
 
