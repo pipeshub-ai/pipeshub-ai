@@ -314,10 +314,6 @@ class BlockGroupChildren(BaseModel):
     block_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block indices")
     block_group_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block group indices")
     
-    
-    
-
-    
     def add_block_index(self, index: int) -> None:
         """Add a block index, merging into existing ranges if contiguous"""
         if not self.block_ranges:
