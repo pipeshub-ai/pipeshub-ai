@@ -55,6 +55,7 @@ from app.connectors.sources.servicenow.servicenow.connector import (
     ServiceNowConnector,
 )
 from app.connectors.sources.web.connector import WebConnector
+from app.connectors.sources.zammad.connector import ZammadConnector
 
 
 class ConnectorFactory:
@@ -85,6 +86,7 @@ class ConnectorFactory:
         "azureblob": AzureBlobConnector,
         # "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,
+        "zammad": ZammadConnector,
     }
 
     # Beta connector definitions - single source of truth
