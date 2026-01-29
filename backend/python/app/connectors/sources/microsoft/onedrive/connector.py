@@ -722,14 +722,14 @@ class OneDriveConnector(BaseConnector):
 
             if delta_link is None:
                 self.logger.info("No sync point found, performing initial full sync...")
-                
+
                 # IMPORTANT: Get delta link BEFORE full sync to avoid missing changes
                 # that occur during the sync
                 delta_link = await self._get_initial_delta_link()
-                
+
                 # Perform the full sync
                 await self._perform_initial_full_sync()
-                
+
                 # Only save the delta link if full sync succeeded
                 if delta_link:
                     await self.user_group_sync_point.update_sync_point(
@@ -752,7 +752,7 @@ class OneDriveConnector(BaseConnector):
         """
         Consumes the delta API to obtain a deltaLink checkpoint.
         Called BEFORE initial full sync to ensure no changes are missed.
-        
+
         Returns:
             The deltaLink string, or None if unable to obtain one.
         """
@@ -763,7 +763,7 @@ class OneDriveConnector(BaseConnector):
         try:
             while True:
                 result = await self.msgraph_client.get_groups_delta_response(url)
-                
+
                 # We ignore the data - just consuming to get the deltaLink
                 groups_count = len(result.get('groups', []))
                 self.logger.debug(f"Delta initialization: skipping page with {groups_count} groups")
@@ -794,7 +794,7 @@ class OneDriveConnector(BaseConnector):
         for group in groups:
             try:
                 members = await self.msgraph_client.get_group_members(group.id)
-                
+
                 user_group = AppUserGroup(
                     source_user_group_id=group.id,
                     app_name=self.connector_name,
@@ -835,7 +835,7 @@ class OneDriveConnector(BaseConnector):
         Performs incremental sync using the Graph Delta API.
         Processes only changes since the last sync.
         """
-        
+
         if not url:
             self.logger.warning("No valid URL in sync point, falling back to full delta sync")
             url = "https://graph.microsoft.com/v1.0/groups/delta"
@@ -877,7 +877,7 @@ class OneDriveConnector(BaseConnector):
             if result.get('next_link'):
                 url = result.get('next_link')
                 await self.user_group_sync_point.update_sync_point(
-                    sync_point_key, 
+                    sync_point_key,
                     {"nextLink": url, "deltaLink": None}
                 )
             elif result.get('delta_link'):
@@ -900,7 +900,6 @@ class OneDriveConnector(BaseConnector):
         email = await self.msgraph_client.get_user_email(user_id)
 
         if not email:
-            self.logger.warning(f"Could not find email for user ID {user_id}, skipping member change")
             return
 
         if '@removed' in member_change:
