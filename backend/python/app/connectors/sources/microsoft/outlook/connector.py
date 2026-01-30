@@ -106,8 +106,8 @@ STANDARD_OUTLOOK_FOLDERS = [
 ]
 
 # Magic Numbers / Constants
-THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22
-FILTER_TIMESTAMP_BUFFER_SECONDS = 60
+
+MAX_GAP_FILL_PAGES = 1000
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_GROUP_BATCH_SIZE = 10
 DEFAULT_API_PAGE_SIZE = 100
@@ -1105,7 +1105,7 @@ class OutlookConnector(BaseConnector):
     async def _fetch_historical_group_gap(
         self, group: AppUserGroup, org_id: str, start_ts: int, end_ts: int
     ) -> Tuple[int, List[Record]]:
-        """Fetch group threads specifically between start_ts and end_ts (Gap Fill)."""
+        """Fetch group threads specifically between start_ts and end_ts (Gap Fill) with robust pagination."""
         try:
             group_id = group.source_user_group_id
 
@@ -1121,34 +1121,66 @@ class OutlookConnector(BaseConnector):
 
             all_gap_records = []
             processed_count = 0
+            
+            # Pagination loop
+            next_link = None
+            page_count = 0
+            
+            while True:
+                page_count += 1
+                if page_count > self.MAX_GAP_FILL_PAGES:
+                    self.logger.warning(f"Gap fill for {group.name} hit max pages ({self.MAX_GAP_FILL_PAGES}). Stopping early.")
+                    break
+                
+                try:
+                    # We must use list_threads directly as _get_group_threads only handles 'ge'
+                    async with self.rate_limiter:
+                        response = await self.external_outlook_client.groups_list_threads(
+                            group_id=group_id,
+                            select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
+                            filter=filter_str,
+                            odata_next_link=next_link
+                        )
 
-            # We must use list_threads directly as _get_group_threads only handles 'ge'
-            async with self.rate_limiter:
-                response = await self.external_outlook_client.groups_list_threads(
-                    group_id=group_id,
-                    select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
-                    filter=filter_str
-                )
+                    if not response.success:
+                        self.logger.error(f"Failed to fetch group gap threads page {page_count}: {response.error}")
+                        # If a page fails, we stop to verify integirty rather than partial skipping of chunks
+                        raise GapFillFailedException(f"Failed to fetch page {page_count}: {response.error}")
 
-            if not response.success:
-                raise GapFillFailedException(f"Failed to fetch group gap threads: {response.error}")
+                    threads = self._safe_get_attr(response.data, 'value', [])
+                    
+                    if not threads and page_count == 1:
+                        # Only break if first page is empty. Middle pages might be empty? OData usually doesn't return empty middle pages.
+                        break
+                    
+                    for thread in threads:
+                         # For gap fill, pass None as last_sync_timestamp
+                         p_count, t_records = await self._process_group_thread(org_id, group, thread, last_sync_timestamp=None)
+                         processed_count += p_count
+                         all_gap_records.extend(t_records)
 
-            threads = self._safe_get_attr(response.data, 'value', [])
-
-            # Note: Pagination for groups_list_threads might be needed if the gap is huge.
-            # Assuming standard page size for now, but production might need a loop here similar to _get_all_users
-
-            for thread in threads:
-                 # For gap fill, we pass None as last_sync_timestamp to _process_group_thread
-                 # because we want ALL posts in this specific thread (since the thread itself is in the gap)
-                 # effectively relying on the thread's existence in this time window.
-                 p_count, t_records = await self._process_group_thread(org_id, group, thread, last_sync_timestamp=None)
-                 processed_count += p_count
-                 all_gap_records.extend(t_records)
+                    # Check for next page
+                    next_link = self._safe_get_attr(response.data, '@odata.nextLink')
+                    if not next_link:
+                         next_link = self._safe_get_attr(response.data, 'odata_next_link')
+                    
+                    if not next_link:
+                        break
+                        
+                except GapFillFailedException:
+                    raise
+                except Exception as e:
+                    self.logger.error(f"Unexpected error processing gap fill page {page_count}: {e}", exc_info=True)
+                    # For safety, if we hit an unexpected error in the middle of a page, we abort gap fill
+                    # to avoid creating a "Swiss cheese" data state where we think we filled the gap but missed chunks.
+                    raise GapFillFailedException(f"Error processing page {page_count}: {e}") from e
 
             return processed_count, all_gap_records
 
         except Exception as e:
+             # Ensure any exception bubbling up wraps in GapFillFailedException so check point logic works
+             if isinstance(e, GapFillFailedException):
+                 raise
              raise GapFillFailedException(f"Group Gap fill failed: {e}") from e
 
     async def _get_group_threads(self, group_id: str, last_sync_timestamp: Optional[str] = None) -> List[Dict]:
