@@ -7,16 +7,16 @@ const baseNavData = [
     items: [
       { title: 'Assistant', path: paths.dashboard.root },
       {
+        title: 'All Records',
+        path: paths.dashboard.allRecords,
+      },
+      {
         title: 'Collections',
         path: paths.dashboard.collections.root,
       },
       {
         title: 'Knowledge Search',
         path: paths.dashboard.knowledgeSearch.root,
-      },
-      {
-        title: 'All Records',
-        path: paths.dashboard.allRecords,
       },
     ],
   },
