@@ -50,7 +50,7 @@ import imageIcon from '@iconify-icons/mdi/image';
 import panoramaIcon from '@iconify-icons/mdi/panorama';
 import gifIcon from '@iconify-icons/mdi/file-gif-box';
 // Node type icons
-import bookOpenVariantIcon from '@iconify-icons/mdi/book-open-variant';
+import folderMultipleIcon from '@iconify-icons/mdi/folder-multiple';
 import folderOpenIcon from '@iconify-icons/mdi/folder-open';
 import appsIcon from '@iconify-icons/mdi/apps';
 
@@ -81,8 +81,9 @@ import {
   InputAdornment,
   LinearProgress,
   CircularProgress,
+  Skeleton,
   Dialog,
-  Button
+  Button,
 } from '@mui/material';
 
 import { KnowledgeBaseAPI } from '../services/api';
@@ -210,6 +211,193 @@ const MainContentContainer = ({ theme, sidebarOpen, ...props }: any) => (
     {...props}
   />
 );
+
+// DataGrid Skeleton Loader
+const DataGridSkeleton: React.FC<{ rowCount?: number }> = ({ rowCount = 10 }) => {
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
+  return (
+    <Box
+      sx={{
+        flexGrow: 1,
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      {/* Header Skeleton */}
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          height: '56px',
+          px: 2,
+          borderBottom: '1px solid',
+          borderColor: 'divider',
+          backgroundColor: alpha('#000', 0.02),
+        }}
+      >
+        <Skeleton variant="text" width={60} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width="20%" height={20} sx={{ mr: 'auto' }} />
+        <Skeleton variant="text" width={100} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width={100} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width={120} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width={80} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width={120} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width={120} height={20} sx={{ mr: 3 }} />
+        <Skeleton variant="text" width={60} height={20} />
+      </Box>
+
+      {/* Rows Skeleton */}
+      <Box sx={{ flexGrow: 1, overflow: 'auto' }}>
+        {Array.from(new Array(rowCount)).map((_, index) => (
+          <Box
+            key={index}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              height: '56px',
+              px: 2,
+              ml: 1,
+              borderBottom: '1px solid',
+              borderColor: alpha('#000', 0.05),
+            }}
+          >
+            {/* # column */}
+            <Skeleton
+              variant="text"
+              width={40}
+              height={16}
+              sx={{
+                mr: 2,
+                bgcolor: alpha(theme.palette.text.disabled, isDark ? 0.08 : 0.06),
+              }}
+            />
+
+            {/* Name column with icon */}
+            <Box sx={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 200, mr: 2 }}>
+              <Skeleton
+                variant="circular"
+                width={24}
+                height={24}
+                sx={{
+                  mr: 1.5,
+                  bgcolor: alpha(theme.palette.primary.main, 0.1),
+                }}
+              />
+              <Skeleton
+                variant="text"
+                width="60%"
+                height={16}
+                sx={{ bgcolor: alpha(theme.palette.text.primary, isDark ? 0.1 : 0.08) }}
+              />
+            </Box>
+
+            {/* Type column */}
+            <Skeleton
+              variant="rounded"
+              width={100}
+              height={24}
+              sx={{
+                mr: 2,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.divider, 0.5),
+              }}
+            />
+
+            {/* Status column */}
+            <Skeleton
+              variant="text"
+              width={100}
+              height={16}
+              sx={{
+                mr: 2,
+                bgcolor: alpha(theme.palette.text.secondary, isDark ? 0.08 : 0.06),
+              }}
+            />
+
+            {/* Source column */}
+            <Box sx={{ display: 'flex', alignItems: 'center', width: 120, mr: 2 }}>
+              <Skeleton
+                variant="circular"
+                width={18}
+                height={18}
+                sx={{
+                  mr: 1,
+                  bgcolor: alpha(theme.palette.primary.main, 0.1),
+                }}
+              />
+              <Skeleton
+                variant="text"
+                width="60%"
+                height={14}
+                sx={{ bgcolor: alpha(theme.palette.text.secondary, isDark ? 0.08 : 0.06) }}
+              />
+            </Box>
+
+            {/* Size column */}
+            <Skeleton
+              variant="text"
+              width={70}
+              height={14}
+              sx={{
+                mr: 2,
+                bgcolor: alpha(theme.palette.text.secondary, isDark ? 0.08 : 0.06),
+              }}
+            />
+
+            {/* Created column */}
+            <Box sx={{ width: 120, mr: 2 }}>
+              <Skeleton
+                variant="text"
+                width="80%"
+                height={14}
+                sx={{
+                  mb: 0.25,
+                  bgcolor: alpha(theme.palette.text.primary, isDark ? 0.08 : 0.06),
+                }}
+              />
+              <Skeleton
+                variant="text"
+                width="60%"
+                height={12}
+                sx={{ bgcolor: alpha(theme.palette.text.secondary, isDark ? 0.08 : 0.06) }}
+              />
+            </Box>
+
+            {/* Updated column */}
+            <Box sx={{ width: 120, mr: 2 }}>
+              <Skeleton
+                variant="text"
+                width="80%"
+                height={14}
+                sx={{
+                  mb: 0.25,
+                  bgcolor: alpha(theme.palette.text.primary, isDark ? 0.08 : 0.06),
+                }}
+              />
+              <Skeleton
+                variant="text"
+                width="60%"
+                height={12}
+                sx={{ bgcolor: alpha(theme.palette.text.secondary, isDark ? 0.08 : 0.06) }}
+              />
+            </Box>
+
+            {/* Actions column */}
+            <Skeleton
+              variant="circular"
+              width={32}
+              height={32}
+              sx={{ bgcolor: alpha(theme.palette.text.secondary, isDark ? 0.08 : 0.06) }}
+            />
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+};
 
 const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   nodeType,
@@ -517,7 +705,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   const getNodeTypeIcon = (type: string, hasChildren: boolean): { icon: any; color: string } => {
     switch (type) {
       case 'kb':
-        return { icon: bookOpenVariantIcon, color: theme.palette.success.main };
+        return { icon: folderMultipleIcon, color: theme.palette.success.main };
       case 'folder':
         return hasChildren
           ? { icon: folderOpenIcon, color: theme.palette.warning.main }
@@ -844,7 +1032,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       renderCell: (params) => {
         const typeLabels: Record<string, string> = {
           app: 'Connector',
-          kb: 'Knowledge Base',
+          kb: 'Collection',
           folder: 'Folder',
           recordGroup: 'Folder',
           record: params.row.recordType?.split('_').join(' ') || 'File',
@@ -986,7 +1174,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             width: '100%'
           }}>
             <Icon
-              icon={bookOpenVariantIcon}
+              icon={folderMultipleIcon}
               style={{
                 fontSize: '20px',
                 color: theme.palette.success.main,
@@ -994,7 +1182,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
               }}
             />
             <Typography variant="caption" sx={{ fontWeight: 600, color: theme.palette.primary.main }}>
-              Knowledge Base
+            Collection
             </Typography>
           </Box>
         );
@@ -1570,21 +1758,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 }}
               >
                 {loading && items.length === 0 ? (
-                  <Box
-                    sx={{
-                      display: 'flex',
-                      justifyContent: 'center',
-                      alignItems: 'center',
-                      height: '100%',
-                      flexDirection: 'column',
-                      gap: 2,
-                    }}
-                  >
-                    <CircularProgress size={36} thickness={4} />
-                    <Typography variant="body1" color="text.secondary">
-                      Loading records...
-                    </Typography>
-                  </Box>
+                  <DataGridSkeleton rowCount={limit} />
                 ) : (
                   <>
                     <Box sx={{ flexGrow: 1, height: 'calc(100% - 64px)', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
@@ -1642,6 +1816,27 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                         sx={{
                           border: 'none',
                           height: '100%',
+                          // Custom scrollbar styles for visibility on Mac
+                          '& .MuiDataGrid-virtualScroller': {
+                            '&::-webkit-scrollbar': {
+                              width: '6px',
+                              height: '6px',
+                            },
+                            '&::-webkit-scrollbar-track': {
+                              backgroundColor: 'transparent',
+                            },
+                            '&::-webkit-scrollbar-thumb': {
+                              backgroundColor: theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.text.secondary, 0.25)
+                                : alpha(theme.palette.text.secondary, 0.16),
+                              borderRadius: '3px',
+                              '&:hover': {
+                                backgroundColor: theme.palette.mode === 'dark'
+                                  ? alpha(theme.palette.text.secondary, 0.4)
+                                  : alpha(theme.palette.text.secondary, 0.24),
+                              },
+                            },
+                          },
                           '& .MuiDataGrid-columnHeaders': {
                             backgroundColor: alpha('#000', 0.02),
                             borderBottom: '1px solid',

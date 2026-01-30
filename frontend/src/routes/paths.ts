@@ -49,6 +49,12 @@ export const paths = {
       details: (id: string) => `${ROOTS.DASHBOARD}/workflows/${id}`,
       edit: (id: string) => `${ROOTS.DASHBOARD}/workflows/${id}/edit`,
     },
+    collections: {
+      root: `${ROOTS.DASHBOARD}collections`,
+    },
+    knowledgeSearch: {
+      root: `${ROOTS.DASHBOARD}knowledge-search`,
+    },
     knowledgebase: {
       root: `${ROOTS.DASHBOARD}knowledge-base/details`,
       search: `${ROOTS.DASHBOARD}knowledge-base/search`,

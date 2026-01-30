@@ -339,7 +339,7 @@ const KnowledgeSearch = ({
             Knowledge Search
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-            Search across your organization&apos;s knowledge base to find documents, FAQs, and other
+            Search across your organization&apos;s collections and applications to find documents, FAQs, and other
             resources
           </Typography>
 
@@ -586,7 +586,7 @@ const KnowledgeSearch = ({
                   }}
                 >
                   Enter a search term above to discover documents, FAQs, and other resources from
-                  your organization&apos;s knowledge base.
+                  your organization&apos;s collection.
                 </Typography>
               </Box>
             )}

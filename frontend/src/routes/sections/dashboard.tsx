@@ -12,69 +12,83 @@ import { ConnectorProvider } from 'src/sections/accountdetails/connectors/contex
 
 import { AuthGuard } from 'src/auth/guard';
 import { useAuthContext } from 'src/auth/hooks';
+
+// ----------------------------------------------------------------------
+// LAZY LOADED PAGES
 // ----------------------------------------------------------------------
 
-// Overview
+// QNA Pages
 const ChatBotPage = lazy(() => import('src/pages/dashboard/qna/chatbot'));
 const AgentPage = lazy(() => import('src/pages/dashboard/qna/agent'));
 const AgentBuilderPage = lazy(() => import('src/pages/dashboard/qna/agent-builder'));
 const AgentChatPage = lazy(() => import('src/sections/qna/agents/agent-chat'));
-// Accountdetails
+
+// Account Pages
 const CompanyProfile = lazy(() => import('src/pages/dashboard/account/company-profile'));
 const UsersAndGroups = lazy(() => import('src/pages/dashboard/account/user-and-groups'));
 const GroupDetails = lazy(() => import('src/pages/dashboard/account/group-details'));
 const UserProfile = lazy(() => import('src/pages/dashboard/account/user-profile'));
 const PersonalProfile = lazy(() => import('src/pages/dashboard/account/personal-profile'));
+
+// Settings Pages
 const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
+const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
+const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
+
+// Connector Pages
 const ConnectorSettings = lazy(
   () => import('src/pages/dashboard/account/connectors/connector-settings')
 );
 const ConnectorRegistry = lazy(() => import('src/pages/dashboard/account/connectors/registry'));
-
-// Generic connector management (parameterized by name)
 const ConnectorManagementPage = lazy(
   () => import('src/pages/dashboard/account/connectors/[connectorId]')
 );
-
-// OAuth callback page for connectors
 const ConnectorOAuthCallback = lazy(
   () => import('src/pages/dashboard/account/connectors/oauth-callback')
 );
 
-// OAuth configuration page
-const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
-
-const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
-
-// knowledge-base
-const KnowledgeBaseList = lazy(() => import('src/pages/dashboard/knowledgebase/knowledgebase'));
+// Knowledge Base Pages
+const Collections = lazy(() => import('src/pages/dashboard/knowledgebase/collections'));
 const RecordDetails = lazy(() => import('src/pages/dashboard/knowledgebase/record-details'));
 const KnowledgeSearch = lazy(
-  () => import('src/pages/dashboard/knowledgebase/knowledgebase-search')
+  () => import('src/pages/dashboard/knowledgebase/knowledge-search')
 );
 const AllRecordsPage = lazy(() => import('src/sections/knowledgebase/all-records-page'));
 
 // ----------------------------------------------------------------------
+// GUARD COMPONENTS
+// ----------------------------------------------------------------------
 
-// Redirect component based on account type
-function AccountTypeRedirect() {
+/**
+ * FullNameGuard - Ensures user has completed their profile
+ */
+export function FullNameGuard({ children }: { children: ReactNode }) {
   const { user } = useAuthContext();
-  const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
+  const hasFullName = !!(user?.fullName && user.fullName.trim() !== '');
 
-  if (isBusiness) {
-    return <Navigate to="/account/company-settings/profile" replace />;
+  if (!hasFullName) {
+    return <Navigate to="/" replace />;
   }
-  return <Navigate to="/account/individual/profile" replace />;
+
+  return <>{children}</>;
 }
 
-// Guard components
+/**
+ * BusinessRouteGuard - Ensures user has a business account
+ */
 function BusinessRouteGuard({ children }: { children: ReactNode }) {
-  const { user } = useAuthContext();
+  const { user, loading } = useAuthContext();
+  
+  // Show loading screen while auth is being checked
+  if (loading) {
+    return <LoadingScreen />;
+  }
+  
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (!isBusiness) {
@@ -84,8 +98,17 @@ function BusinessRouteGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * IndividualRouteGuard - Ensures user has an individual account
+ */
 function IndividualRouteGuard({ children }: { children: ReactNode }) {
-  const { user } = useAuthContext();
+  const { user, loading } = useAuthContext();
+  
+  // Show loading screen while auth is being checked
+  if (loading) {
+    return <LoadingScreen />;
+  }
+  
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (isBusiness) {
@@ -95,9 +118,18 @@ function IndividualRouteGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+/**
+ * AdminRouteGuard - Ensures user is a business admin
+ */
 function AdminRouteGuard({ children }: { children: ReactNode }) {
-  const { isAdmin } = useAdmin();
-  const { user } = useAuthContext();
+  const { isAdmin, loading: adminLoading, isInitialized } = useAdmin();
+  const { user, loading: authLoading } = useAuthContext();
+  
+  // Show loading screen while auth or admin status is being checked
+  if (authLoading || adminLoading || !isInitialized) {
+    return <LoadingScreen />;
+  }
+  
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (!isBusiness) {
@@ -111,71 +143,89 @@ function AdminRouteGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-export function FullNameGuard({ children }: { children: ReactNode }) {
-  const { user } = useAuthContext();
+// ----------------------------------------------------------------------
+// REDIRECT COMPONENTS
+// ----------------------------------------------------------------------
 
-  // Check if user has a full name
-  const hasFullName = !!(user?.fullName && user.fullName.trim() !== '');
-
-  if (!hasFullName) {
-    // Redirect to the home page where the dialog will appear
-    return <Navigate to="/" replace />;
+/**
+ * AccountTypeRedirect - Redirects based on account type
+ */
+function AccountTypeRedirect() {
+  const { user, loading } = useAuthContext();
+  
+  // Show loading screen while auth is being checked
+  if (loading) {
+    return <LoadingScreen />;
   }
+  
+  const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
-  // If we're here, the user has a full name and can proceed
-  return <>{children}</>;
+  if (isBusiness) {
+    return <Navigate to="/account/company-settings/profile" replace />;
+  }
+  return <Navigate to="/account/individual/profile" replace />;
 }
 
-// Route components with guards
-const BusinessOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
-  <AuthGuard>
-    <FullNameGuard>
-      <BusinessRouteGuard>
-        <Component />
-      </BusinessRouteGuard>
-    </FullNameGuard>
-  </AuthGuard>
-);
+// ----------------------------------------------------------------------
+// ROUTE WRAPPER COMPONENTS
+// ----------------------------------------------------------------------
 
-const BusinessAdminOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
-  <AuthGuard>
-    <FullNameGuard>
-      <AdminRouteGuard>
-        <Component />
-      </AdminRouteGuard>
-    </FullNameGuard>
-  </AuthGuard>
-);
+/**
+ * WithAuth - Wrapper to conditionally apply auth guards based on CONFIG.auth.skip
+ */
+const WithAuth = ({ children }: { children: ReactNode }) => {
+  if (CONFIG.auth.skip) {
+    return <>{children}</>;
+  }
+  return <AuthGuard><FullNameGuard>{children}</FullNameGuard></AuthGuard>;
+};
 
-const IndividualOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
-  <AuthGuard>
-    <FullNameGuard>
-      <IndividualRouteGuard>
-        <Component />
-      </IndividualRouteGuard>
-    </FullNameGuard>
-  </AuthGuard>
-);
-
-const AdminProtectedRoute = ({ component: Component }: { component: React.ComponentType }) => (
-  <AuthGuard>
-    <FullNameGuard>
-      <AdminRouteGuard>
-        <Component />
-      </AdminRouteGuard>
-    </FullNameGuard>
-  </AuthGuard>
-);
-
+/**
+ * ProtectedRoute - Basic authenticated route with full name check
+ */
 const ProtectedRoute = ({ component: Component }: { component: React.ComponentType }) => (
-  <AuthGuard>
-    <FullNameGuard>
-      <Component />
-    </FullNameGuard>
-  </AuthGuard>
+  <WithAuth>
+    <Component />
+  </WithAuth>
 );
 
-// Layout with outlet for nested routes
+/**
+ * BusinessOnlyRoute - Route accessible only to business accounts
+ */
+const BusinessOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
+  <WithAuth>
+    <BusinessRouteGuard>
+      <Component />
+    </BusinessRouteGuard>
+  </WithAuth>
+);
+
+/**
+ * IndividualOnlyRoute - Route accessible only to individual accounts
+ */
+const IndividualOnlyRoute = ({ component: Component }: { component: React.ComponentType }) => (
+  <WithAuth>
+    <IndividualRouteGuard>
+      <Component />
+    </IndividualRouteGuard>
+  </WithAuth>
+);
+
+/**
+ * AdminProtectedRoute - Route accessible only to business admins
+ */
+const AdminProtectedRoute = ({ component: Component }: { component: React.ComponentType }) => (
+  <WithAuth>
+    <AdminRouteGuard>
+      <Component />
+    </AdminRouteGuard>
+  </WithAuth>
+);
+
+// ----------------------------------------------------------------------
+// LAYOUT CONFIGURATION
+// ----------------------------------------------------------------------
+
 const layoutContent = (
   <ConnectorProvider>
     <DashboardLayout>
@@ -186,13 +236,22 @@ const layoutContent = (
   </ConnectorProvider>
 );
 
+// ----------------------------------------------------------------------
+// ROUTE CONFIGURATION
+// ----------------------------------------------------------------------
+
 export const dashboardRoutes = [
   {
     path: '/',
     element: CONFIG.auth.skip ? <>{layoutContent}</> : <AuthGuard>{layoutContent}</AuthGuard>,
     children: [
+      // ----------------------------------------------------------------------
+      // QNA Routes
+      // ----------------------------------------------------------------------
       { element: <ChatBotPage key="home" />, index: true },
       { path: ':conversationId', element: <ChatBotPage key="conversation" /> },
+      
+      // Agent Routes
       { path: 'agents', element: <AgentPage key="agent" /> },
       { path: 'agents/new', element: <AgentBuilderPage key="agent-builder" /> },
       { path: 'agents/:agentKey', element: <AgentChatPage key="agent-chat" /> },
@@ -202,369 +261,251 @@ export const dashboardRoutes = [
         path: 'agents/:agentKey/conversations/:conversationId',
         element: <AgentChatPage key="agent-conversation" />,
       },
+
+      // ----------------------------------------------------------------------
+      // Knowledge Base Routes
+      // ----------------------------------------------------------------------
       { path: 'record/:recordId', element: <RecordDetails /> },
       { path: 'all-records', element: <ProtectedRoute component={AllRecordsPage} /> },
+      {
+        path: 'knowledge-search',
+        element: <ProtectedRoute component={KnowledgeSearch} />,
+      },
+      {
+        path: 'collections',
+        element: <ProtectedRoute component={Collections} />,
+      },
+
+      // ----------------------------------------------------------------------
+      // Connector Routes (Legacy redirect)
+      // ----------------------------------------------------------------------
       {
         path: 'connectors',
         element: <Navigate to="/account/individual/settings/connector" replace />,
       },
-
-      // OAuth callback route for connectors
       {
         path: 'connectors/oauth/callback/:connectorId',
         element: <ConnectorOAuthCallback />,
       },
+      // ----------------------------------------------------------------------
+      // Account Routes
+      // ----------------------------------------------------------------------
       {
         path: 'account',
         children: [
-          // Catch-all redirect for /account path
-          { index: true, element: <ProtectedRoute component={AccountTypeRedirect} /> },
+          // Redirect /account to appropriate profile based on account type
+          { 
+            index: true, 
+            element: <ProtectedRoute component={AccountTypeRedirect} /> 
+          },
 
-          // Business account routes
+          // ----------------------------------------------------------------------
+          // Business Account Routes
+          // ----------------------------------------------------------------------
           {
             path: 'company-settings/profile',
-            element: CONFIG.auth.skip ? (
-              <CompanyProfile />
-            ) : (
-              <BusinessOnlyRoute component={CompanyProfile} />
-            ),
+            element: <BusinessOnlyRoute component={CompanyProfile} />,
           },
           {
             path: 'company-settings/personal-profile',
-            element: CONFIG.auth.skip ? (
-              <PersonalProfile />
-            ) : (
-              <BusinessOnlyRoute component={PersonalProfile} />
-            ),
+            element: <BusinessOnlyRoute component={PersonalProfile} />,
           },
-
-          // Admin-only routes (business + admin)
           {
             path: 'company-settings/user-profile/:id',
-            element: CONFIG.auth.skip ? (
-              <UserProfile />
-            ) : (
-              <AdminProtectedRoute component={UserProfile} />
-            ),
+            element: <AdminProtectedRoute component={UserProfile} />,
           },
           {
             path: 'company-settings/groups/:id',
-            element: CONFIG.auth.skip ? (
-              <GroupDetails />
-            ) : (
-              <AdminProtectedRoute component={GroupDetails} />
-            ),
+            element: <AdminProtectedRoute component={GroupDetails} />,
           },
+          // Business Settings & Management Routes
           {
             path: 'company-settings',
             children: [
-              // Index route for company-settings
+              // Redirect /account/company-settings to profile
               {
                 index: true,
-                element: (
-                  <ProtectedRoute
-                    component={() => <Navigate to="/account/company-settings/profile" replace />}
-                  />
-                ),
+                element: <Navigate to="/account/company-settings/profile" replace />,
               },
 
+              // User & Group Management (Admin only)
               {
                 path: 'users',
-                element: CONFIG.auth.skip ? (
-                  <UsersAndGroups />
-                ) : (
-                  <AdminProtectedRoute component={UsersAndGroups} />
-                ),
+                element: <AdminProtectedRoute component={UsersAndGroups} />,
               },
               {
                 path: 'groups',
-                element: CONFIG.auth.skip ? (
-                  <UsersAndGroups />
-                ) : (
-                  <AdminProtectedRoute component={UsersAndGroups} />
-                ),
+                element: <AdminProtectedRoute component={UsersAndGroups} />,
               },
               {
                 path: 'invites',
-                element: CONFIG.auth.skip ? (
-                  <UsersAndGroups />
-                ) : (
-                  <AdminProtectedRoute component={UsersAndGroups} />
-                ),
+                element: <AdminProtectedRoute component={UsersAndGroups} />,
               },
+              // Business Admin Settings
               {
                 path: 'settings',
                 children: [
-                  // Index route for company settings
+                  // Redirect /account/company-settings/settings to authentication
                   {
                     index: true,
-                    element: CONFIG.auth.skip ? (
-                      <Navigate to="/account/company-settings/settings/authentication" replace />
-                    ) : (
-                      <FullNameGuard>
-                        <AdminRouteGuard>
-                          <Navigate
-                            to="/account/company-settings/settings/authentication"
-                            replace
-                          />
-                        </AdminRouteGuard>
-                      </FullNameGuard>
-                    ),
+                    element: <Navigate to="/account/company-settings/settings/authentication" replace />,
                   },
 
+                  // Authentication Settings
                   {
                     path: 'authentication',
                     children: [
                       {
-                        element: CONFIG.auth.skip ? (
-                          <AuthenticationSettings />
-                        ) : (
-                          <BusinessAdminOnlyRoute component={AuthenticationSettings} />
-                        ),
                         index: true,
+                        element: <AdminProtectedRoute component={AuthenticationSettings} />,
                       },
                       {
                         path: 'saml',
-                        element: CONFIG.auth.skip ? (
-                          <SamlSsoConfigPage />
-                        ) : (
-                          <BusinessAdminOnlyRoute component={SamlSsoConfigPage} />
-                        ),
+                        element: <AdminProtectedRoute component={SamlSsoConfigPage} />,
                       },
                     ],
                   },
+
+                  // Connector Settings
                   {
                     path: 'connector',
                     children: [
                       {
-                        element: <ConnectorSettings />,
                         index: true,
+                        element: <AdminProtectedRoute component={ConnectorSettings} />,
                       },
                       {
                         path: 'registry',
-                        element: <ConnectorRegistry />,
+                        element: <AdminProtectedRoute component={ConnectorRegistry} />,
                       },
                       {
                         path: 'oauth/callback/:connectorId',
-                        element: <ConnectorOAuthCallback />,
+                        element: <AdminProtectedRoute component={ConnectorOAuthCallback} />,
                       },
                       {
                         path: ':connectorId',
-                        element: <ConnectorManagementPage />,
+                        element: <AdminProtectedRoute component={ConnectorManagementPage} />,
                       },
                     ],
                   },
+
+                  // OAuth Configuration
                   {
                     path: 'oauth-config',
-                    element: CONFIG.auth.skip ? (
-                      <OAuthConfig />
-                    ) : (
-                      <BusinessAdminOnlyRoute component={OAuthConfig} />
-                    ),
+                    element: <AdminProtectedRoute component={OAuthConfig} />,
                   },
+
+                  // AI Models Settings
                   {
                     path: 'ai-models',
-                    element: CONFIG.auth.skip ? (
-                      <AiModelsSettings />
-                    ) : (
-                      <BusinessAdminOnlyRoute component={AiModelsSettings} />
-                    ),
+                    element: <AdminProtectedRoute component={AiModelsSettings} />,
                   },
+
+                  // Platform Settings
                   {
                     path: 'platform',
-                    element: CONFIG.auth.skip ? (
-                      <PlatformSettings />
-                    ) : (
-                      <BusinessAdminOnlyRoute component={PlatformSettings} />
-                    ),
+                    element: <AdminProtectedRoute component={PlatformSettings} />,
                   },
+
+                  // Prompts Settings
                   {
                     path: 'prompts',
-                    element: CONFIG.auth.skip ? (
-                      <PromptsSettings />
-                    ) : (
-                      <BusinessAdminOnlyRoute component={PromptsSettings} />
-                    ),
+                    element: <AdminProtectedRoute component={PromptsSettings} />,
                   },
                 ],
               },
             ],
           },
 
-          // Individual account routes
+          // ----------------------------------------------------------------------
+          // Individual Account Routes
+          // ----------------------------------------------------------------------
           {
             path: 'individual',
             children: [
-              // Index route for individual
+              // Redirect /account/individual to profile
               {
                 index: true,
-                element: (
-                  <ProtectedRoute
-                    component={() => <Navigate to="/account/individual/profile" replace />}
-                  />
-                ),
+                element: <Navigate to="/account/individual/profile" replace />,
               },
 
+              // Personal Profile
               {
                 path: 'profile',
-                element: CONFIG.auth.skip ? (
-                  <PersonalProfile />
-                ) : (
-                  <IndividualOnlyRoute component={PersonalProfile} />
-                ),
+                element: <IndividualOnlyRoute component={PersonalProfile} />,
               },
+              // Individual Settings
               {
                 path: 'settings',
                 children: [
-                  // Index route for individual settings
+                  // Redirect /account/individual/settings to authentication
                   {
                     index: true,
-                    element: CONFIG.auth.skip ? (
-                      <Navigate to="/account/individual/settings/authentication" replace />
-                    ) : (
-                      <FullNameGuard>
-                        <IndividualRouteGuard>
-                          <Navigate to="/account/individual/settings/authentication" replace />
-                        </IndividualRouteGuard>
-                      </FullNameGuard>
-                    ),
+                    element: <Navigate to="/account/individual/settings/authentication" replace />,
                   },
 
+                  // Authentication Settings
                   {
                     path: 'authentication',
                     children: [
                       {
-                        element: CONFIG.auth.skip ? (
-                          <AuthenticationSettings />
-                        ) : (
-                          <IndividualOnlyRoute component={AuthenticationSettings} />
-                        ),
                         index: true,
+                        element: <IndividualOnlyRoute component={AuthenticationSettings} />,
                       },
                       {
                         path: 'config-saml',
-                        element: CONFIG.auth.skip ? (
-                          <SamlSsoConfigPage />
-                        ) : (
-                          <IndividualOnlyRoute component={SamlSsoConfigPage} />
-                        ),
+                        element: <IndividualOnlyRoute component={SamlSsoConfigPage} />,
                       },
                     ],
                   },
+
+                  // Connector Settings
                   {
                     path: 'connector',
                     children: [
                       {
-                        element: CONFIG.auth.skip ? (
-                          <ConnectorSettings />
-                        ) : (
-                          <IndividualOnlyRoute component={ConnectorSettings} />
-                        ),
                         index: true,
+                        element: <IndividualOnlyRoute component={ConnectorSettings} />,
                       },
                       {
                         path: 'registry',
-                        element: CONFIG.auth.skip ? (
-                          <ConnectorRegistry />
-                        ) : (
-                          <IndividualOnlyRoute component={ConnectorRegistry} />
-                        ),
+                        element: <IndividualOnlyRoute component={ConnectorRegistry} />,
                       },
                       {
                         path: 'oauth/callback/:connectorId',
-                        element: CONFIG.auth.skip ? (
-                          <ConnectorOAuthCallback />
-                        ) : (
-                          <IndividualOnlyRoute component={ConnectorOAuthCallback} />
-                        ),
+                        element: <IndividualOnlyRoute component={ConnectorOAuthCallback} />,
                       },
-                      // Parameterized connector management page
                       {
                         path: ':connectorId',
                         element: <IndividualOnlyRoute component={ConnectorManagementPage} />,
                       },
                     ],
                   },
+
+                  // OAuth Configuration
                   {
                     path: 'oauth-config',
-                    element: CONFIG.auth.skip ? (
-                      <OAuthConfig />
-                    ) : (
-                      <IndividualOnlyRoute component={OAuthConfig} />
-                    ),
+                    element: <IndividualOnlyRoute component={OAuthConfig} />,
                   },
+
+                  // AI Models Settings
                   {
                     path: 'ai-models',
-                    element: CONFIG.auth.skip ? (
-                      <AiModelsSettings />
-                    ) : (
-                      <IndividualOnlyRoute component={AiModelsSettings} />
-                    ),
+                    element: <IndividualOnlyRoute component={AiModelsSettings} />,
                   },
+
+                  // Platform Settings
                   {
                     path: 'platform',
-                    element: CONFIG.auth.skip ? (
-                      <PlatformSettings />
-                    ) : (
-                      <IndividualOnlyRoute component={PlatformSettings} />
-                    ),
+                    element: <IndividualOnlyRoute component={PlatformSettings} />,
                   },
+
+                  // Prompts Settings
                   {
                     path: 'prompts',
-                    element: CONFIG.auth.skip ? (
-                      <PromptsSettings />
-                    ) : (
-                      <IndividualOnlyRoute component={PromptsSettings} />
-                    ),
+                    element: <IndividualOnlyRoute component={PromptsSettings} />,
                   },
                 ],
-              },
-            ],
-          },
-        ],
-      },
-      {
-        path: 'knowledge-base',
-        children: [
-          { path: 'details', element: <ProtectedRoute component={KnowledgeBaseList} /> },
-          {
-            path: 'search',
-            children: [{ element: <ProtectedRoute component={KnowledgeSearch} />, index: true }],
-          },
-          {
-            path: 'company-settings/groups/:id',
-            element: CONFIG.auth.skip ? (
-              <GroupDetails />
-            ) : (
-              <AdminProtectedRoute component={GroupDetails} />
-            ),
-          },
-          {
-            path: 'company-settings',
-            children: [
-              {
-                path: 'users',
-                element: CONFIG.auth.skip ? (
-                  <UsersAndGroups />
-                ) : (
-                  <AdminProtectedRoute component={UsersAndGroups} />
-                ),
-              },
-              {
-                path: 'groups',
-                element: CONFIG.auth.skip ? (
-                  <UsersAndGroups />
-                ) : (
-                  <AdminProtectedRoute component={UsersAndGroups} />
-                ),
-              },
-              {
-                path: 'invites',
-                element: CONFIG.auth.skip ? (
-                  <UsersAndGroups />
-                ) : (
-                  <AdminProtectedRoute component={UsersAndGroups} />
-                ),
               },
             ],
           },

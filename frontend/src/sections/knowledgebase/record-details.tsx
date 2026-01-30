@@ -140,7 +140,7 @@ export default function RecordDetails() {
 
   const handleDeleteRecord = () => {
     // Redirect to records list page after successful deletion
-    navigate('/knowledge-base/details');
+    navigate('/collections');
   };
 
   const handleRetryIndexing = async (recId: string) => {
@@ -371,7 +371,7 @@ export default function RecordDetails() {
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 <IconButton
-                  onClick={() => navigate('/all-records')}
+                  onClick={() => navigate('/collections')}
                   size="small"
                   sx={{
                     borderRadius: 1,
