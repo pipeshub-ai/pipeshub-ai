@@ -1,4 +1,3 @@
-import re
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 from uuid import uuid4
@@ -51,7 +50,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         if virtual_record_id not in virtual_record_id_to_result:
             await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map)
-
 
 
         if virtual_record_id not in adjacent_chunks:
@@ -113,25 +111,48 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             continue
         elif block_type == GroupType.TABLE.value:
             table_data = block.get("data",{})
-            table_markdown = table_data.get("table_markdown","")
+            table_metadata = block.get("table_metadata", {})
             children = block.get("children")
-            first_block_index = children[0].get("block_index") if children and len(children) > 0 else None
+
+            # Handle both old and new children formats
+            if children:
+                if isinstance(children, dict) and 'block_ranges' in children:
+                    # New range-based format
+                    block_ranges = children.get('block_ranges', [])
+                    first_block_index = block_ranges[0].get('start') if block_ranges else None
+                    last_block_index = block_ranges[-1].get('end') if block_ranges else None
+                    # Get all block indices from ranges
+                    all_block_indices = []
+                    for range_obj in block_ranges:
+                        start = range_obj.get('start')
+                        end = range_obj.get('end')
+                        if start is not None and end is not None:
+                            all_block_indices.extend(range(start, end + 1))
+                else:
+                    # Old format (list of BlockContainerIndex)
+                    first_block_index = children[0].get("block_index") if len(children) > 0 else None
+                    last_block_index = children[-1].get("block_index") if len(children) > 0 else None
+                    all_block_indices = [child.get("block_index") for child in children if child.get("block_index") is not None]
+            else:
+                first_block_index = None
+                last_block_index = None
+                all_block_indices = []
+
             result["block_index"] = first_block_index
             if first_block_index is not None:
                 adjacent_chunks[virtual_record_id].append(first_block_index-1)
-                last_block_index = children[-1].get("block_index")
                 adjacent_chunks[virtual_record_id].append(last_block_index+1)
 
-                is_large_table = checkForLargeTable(table_markdown)
+                num_of_cells = table_metadata.get("num_of_cells", None) if isinstance(table_metadata, dict) else None
+                if num_of_cells is None:
+                    is_large_table = True
+                else:
+                    is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
                 table_summary = table_data.get("table_summary","")
 
-                if is_large_table:
-                    rows_to_be_included[f"{virtual_record_id}_{index}"]=[]
-                    continue
-                else:
+                if not is_large_table:
                     child_results=[]
-                    for child in children:
-                        child_block_index = child.get("block_index")
+                    for child_block_index in all_block_indices:
                         child_id = f"{virtual_record_id}-{child_block_index}"
                         if child_id in seen_chunks:
                             continue
@@ -161,6 +182,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         "metadata": get_enhanced_metadata(record,block,meta),
                     }
                     flattened_results.append(table_result)
+                    continue
+                else:
+                    rows_to_be_included[f"{virtual_record_id}_{index}"]=[]
                     continue
             else:
                 continue
@@ -320,7 +344,8 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 if block_type == GroupType.TABLE.value:
                     # Handle both dict and string data types
                     if isinstance(data, dict):
-                        block_text = data.get("table_markdown","")
+                        # Use table_summary instead of table_markdown, with fallback for backward compatibility
+                        block_text = data.get("table_summary", "") or data.get("table_markdown", "")
                     else:
                         block_text = str(data)
                 elif block_type == BlockType.TABLE_ROW.value:
@@ -585,22 +610,17 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
     except Exception as e:
         raise e
 
-MAX_WORDS_IN_TABLE_THRESHOLD = 700
-
-def checkForLargeTable(markdown: str) -> bool:
-    cleaned = re.sub(r'(\|)|(-{3,})|(:?-+:?)', ' ', markdown)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    words = cleaned.split(' ')
-    words = [word for word in words if word]
-    return len(words) > MAX_WORDS_IN_TABLE_THRESHOLD
+MAX_CELLS_IN_TABLE_THRESHOLD = 250  # Equivalent to ~700 words assuming ~2-3 words per cell
 
 
-def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children: List[Dict[str, Any]]) -> int | None:
+
+
+def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children) -> int | None:
     """Recursively search through the first child to find the first block_index.
 
     Args:
         block_groups: List of block groups
-        children: List of child container indices (BlockContainerIndex)
+        children: BlockGroupChildren object or List of child container indices (old format)
 
     Returns:
         First block_index found in the first child, or None if not found
@@ -608,17 +628,37 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
     if not children:
         return None
 
-    first_child = children[0]
-    block_index = first_child.get("block_index")
-    if block_index is not None:
-        return block_index
+    # Handle new range-based format
+    if isinstance(children, dict) and 'block_ranges' in children:
+        block_ranges = children.get('block_ranges', [])
+        if block_ranges:
+            # Return the first index from the first range
+            return block_ranges[0].get('start')
 
-    block_group_index = first_child.get("block_group_index")
-    if block_group_index is not None and 0 <= block_group_index < len(block_groups):
-        nested_group = block_groups[block_group_index]
-        nested_children = nested_group.get("children", [])
-        if nested_children:
-            return _find_first_block_index_recursive(block_groups, nested_children)
+        # If no block ranges, check block group ranges
+        block_group_ranges = children.get('block_group_ranges', [])
+        if block_group_ranges:
+            first_bg_index = block_group_ranges[0].get('start')
+            if first_bg_index is not None and 0 <= first_bg_index < len(block_groups):
+                nested_group = block_groups[first_bg_index]
+                nested_children = nested_group.get("children")
+                if nested_children:
+                    return _find_first_block_index_recursive(block_groups, nested_children)
+        return None
+
+    # Handle old format (list of BlockContainerIndex)
+    if isinstance(children, list) and len(children) > 0:
+        first_child = children[0]
+        block_index = first_child.get("block_index")
+        if block_index is not None:
+            return block_index
+
+        block_group_index = first_child.get("block_group_index")
+        if block_group_index is not None and 0 <= block_group_index < len(block_groups):
+            nested_group = block_groups[block_group_index]
+            nested_children = nested_group.get("children", [])
+            if nested_children:
+                return _find_first_block_index_recursive(block_groups, nested_children)
 
     return None
 
@@ -626,7 +666,7 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
 def _extract_text_content_recursive(
     block_groups: List[Dict[str, Any]],
     blocks: List[Dict[str, Any]],
-    children: List[Dict[str, Any]],
+    children,
     virtual_record_id: str = None,
     seen_chunks: set = None,
     depth: int = 0,
@@ -636,7 +676,7 @@ def _extract_text_content_recursive(
     Args:
         block_groups: List of block groups
         blocks: List of blocks
-        children: List of child container indices (BlockContainerIndex)
+        children: BlockGroupChildren object or List of child container indices (old format)
         virtual_record_id: Optional virtual record ID for tracking seen chunks
         seen_chunks: Optional set to track seen chunks
 
@@ -645,6 +685,53 @@ def _extract_text_content_recursive(
     """
     content = ""
     indent = "  " * depth
+
+    # Handle new range-based format
+    if isinstance(children, dict) and ('block_ranges' in children or 'block_group_ranges' in children):
+        # Process block ranges
+        block_ranges = children.get('block_ranges', [])
+        for range_obj in block_ranges:
+            start = range_obj.get('start')
+            end = range_obj.get('end')
+            if start is not None and end is not None:
+                for block_index in range(start, end + 1):
+                    # Track seen chunks
+                    if virtual_record_id is not None and seen_chunks is not None:
+                        child_id = f"{virtual_record_id}-{block_index}"
+                        seen_chunks.add(child_id)
+
+                    # Extract text from block
+                    if 0 <= block_index < len(blocks):
+                        child_block = blocks[block_index]
+                        if child_block.get("type") == BlockType.TEXT.value:
+                            content += f"{indent}{child_block.get('data', '')}\n"
+
+        # Process block group ranges
+        block_group_ranges = children.get('block_group_ranges', [])
+        for range_obj in block_group_ranges:
+            start = range_obj.get('start')
+            end = range_obj.get('end')
+            if start is not None and end is not None:
+                for block_group_index in range(start, end + 1):
+                    # Track seen chunks
+                    if virtual_record_id is not None and seen_chunks is not None:
+                        child_id = f"{virtual_record_id}-{block_group_index}-block_group"
+                        seen_chunks.add(child_id)
+
+                    # Recursively process nested children
+                    if 0 <= block_group_index < len(block_groups):
+                        nested_group = block_groups[block_group_index]
+                        nested_children = nested_group.get("children")
+                        if nested_children:
+                            content += _extract_text_content_recursive(
+                                block_groups, blocks, nested_children, virtual_record_id, seen_chunks, depth + 1
+                            )
+        return content
+
+    # Handle old format (list of BlockContainerIndex)
+    if not isinstance(children, list):
+        return content
+
     for child in children:
         block_index = child.get("block_index")
         block_group_index = child.get("block_group_index")
@@ -721,14 +808,31 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
         return None
     parent_block = block_groups[parent_index]
 
-    children = parent_block.get("children", [])
+    children = parent_block.get("children")
     if not children:
         return []
+
     result_blocks = []
-    for child in children:
-        block_index = child.get("block_index")
-        if block_index is not None and 0 <= block_index < len(blocks):
-            result_blocks.append(blocks[block_index])
+
+    # Handle new range-based format
+    if isinstance(children, dict) and 'block_ranges' in children:
+        block_ranges = children.get('block_ranges', [])
+        for range_obj in block_ranges:
+            start = range_obj.get('start')
+            end = range_obj.get('end')
+            if start is not None and end is not None:
+                for block_index in range(start, end + 1):
+                    if 0 <= block_index < len(blocks):
+                        result_blocks.append(blocks[block_index])
+        return result_blocks
+
+    # Handle old format (list of BlockContainerIndex)
+    if isinstance(children, list):
+        for child in children:
+            block_index = child.get("block_index")
+            if block_index is not None and 0 <= block_index < len(blocks):
+                result_blocks.append(blocks[block_index])
+
     return result_blocks
 
 
@@ -820,7 +924,22 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
                     if block_type == GroupType.TABLE.value:
                         table_summary = data.get("table_summary", "") if isinstance(data, dict) else str(data)
-                        rows_to_be_included_list = [ child.get("block_index") for child in corresponding_block_group.get("children", [])]
+
+                        # Get block indices from children (handle both old and new formats)
+                        children = corresponding_block_group.get("children")
+                        rows_to_be_included_list = []
+                        if children:
+                            if isinstance(children, dict) and 'block_ranges' in children:
+                                # New range-based format
+                                for range_obj in children.get('block_ranges', []):
+                                    start = range_obj.get('start')
+                                    end = range_obj.get('end')
+                                    if start is not None and end is not None:
+                                        rows_to_be_included_list.extend(range(start, end + 1))
+                            elif isinstance(children, list):
+                                # Old format
+                                rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
+
                         # Process table rows
                         child_results = []
                         for row_index in rows_to_be_included_list:
