@@ -46,7 +46,7 @@ class GitHubClientViaToken:
             kwargs["per_page"] = self.per_page
 
         self._sdk = Github(**kwargs)
-        return self._sdk
+
 
     def get_sdk(self) -> Github:
         if self._sdk is None:

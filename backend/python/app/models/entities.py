@@ -725,9 +725,9 @@ class TicketRecord(Record):
     assignee_source_timestamp: Optional[int] = None
     creator_source_timestamp: Optional[int] = None
     reporter_source_timestamp: Optional[int] = None
-    labels:List[str] = Field(default_factory=list),
+    labels:List[str] = Field(default_factory=list)
     is_email_hidden:bool = False # this means reporters, assignees... emails are hidden and represents connector's native id
-    assignee_source_id:List[str] = Field(default_factory=list), # this means reporters  source ids in the connector system
+    assignee_source_id:List[str] = Field(default_factory=list) # this means reporters  source ids in the connector system
     reporter_source_id:Optional[str]=None
 
     def to_arango_record(self) -> Dict:
@@ -1032,15 +1032,15 @@ class SharePointPageRecord(Record):
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: Optional[str] = None
-    assignee: List[str] = Field(default_factory=list),
-    assignee_email: List[str] = Field(default_factory=list),
+    assignee: List[str] = Field(default_factory=list)
+    assignee_email: List[str] = Field(default_factory=list)
     creator_email: Optional[str] = None
     creator_name: Optional[str] =None
-    review_email: List[str] = Field(default_factory=list),
-    review_name: List[str] = Field(default_factory=list),
+    review_email: List[str] = Field(default_factory=list)
+    review_name: List[str] = Field(default_factory=list)
     mergeable:Optional[str]=None
     merged_by:Optional[str]=None
-    labels:List[str] = Field(default_factory=list),
+    labels:List[str] = Field(default_factory=list)
 
     def to_kafka_record(self) -> Dict:
         return {

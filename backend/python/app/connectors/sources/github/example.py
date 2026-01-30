@@ -1,5 +1,5 @@
 """
-Test file for YourConnector.
+Test file for Github Connector.
 Run this to test your connector implementation before integrating with the full system.
 """
 
@@ -24,7 +24,9 @@ from app.services.kafka_consumer import KafkaConsumerManager
 from app.utils.logger import create_logger
 
 
-def _get_env(logger, primary: str, *fallbacks: str, allow_fallback: bool = True) -> Optional[str]:
+def _get_env(
+    logger, primary: str, *fallbacks: str, allow_fallback: bool = True
+) -> Optional[str]:
     """Fetch env var from primary name, otherwise try fallbacks."""
     possible_names = (primary, *(fallbacks if allow_fallback else []))
     for name in possible_names:
@@ -36,12 +38,15 @@ def _get_env(logger, primary: str, *fallbacks: str, allow_fallback: bool = True)
                 logger.warning(
                     "Using fallback env var %s for %s. "
                     "Consider defining %s to keep environments explicit.",
-                    name, primary, primary
+                    name,
+                    primary,
+                    primary,
                 )
             return value
     return None
 
-async def test_run()->None:
+
+async def test_run() -> None:
     """
     Initializes and runs the Github Individual connector sync process for testing.
     This is for individual/personal Github accounts, not team accounts.
@@ -63,7 +68,7 @@ async def test_run()->None:
         }
         await arango_service.batch_upsert_nodes([org], CollectionNames.ORGS.value)
 
-        user_email = "test_user@example.com" # Dummy user for DB record
+        user_email = "test_user@example.com"  # Dummy user for DB record
         user = {
             "_key": user_email,
             "email": user_email,
@@ -76,12 +81,19 @@ async def test_run()->None:
 
         await arango_service.batch_upsert_nodes([user], CollectionNames.USERS.value)
 
-        await arango_service.batch_create_edges([{
-            "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "_to": f"{CollectionNames.ORGS.value}/{org_id}",
-        }], CollectionNames.BELONGS_TO.value)
+        await arango_service.batch_create_edges(
+            [
+                {
+                    "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
+                    "_to": f"{CollectionNames.ORGS.value}/{org_id}",
+                }
+            ],
+            CollectionNames.BELONGS_TO.value,
+        )
 
-        arango_service.logger.info(f"Test data initialized: Org {org_id} and User {user_email} created.")
+        arango_service.logger.info(
+            f"Test data initialized: Org {org_id} and User {user_email} created."
+        )
 
     async def setup_services() -> Tuple:
         """
@@ -98,21 +110,29 @@ async def test_run()->None:
         kafka_service = KafkaConsumerManager(logger, config_service, None, None)
 
         arango_client = ArangoClient()
-        arango_service = BaseArangoService(logger, arango_client, config_service, kafka_service)
+        arango_service = BaseArangoService(
+            logger, arango_client, config_service, kafka_service
+        )
         await arango_service.connect()
 
         data_store_provider = ArangoDataStore(logger, arango_service)
 
-        logger.info("Services initialized successfully for Github Individual connector test run.")
+        logger.info(
+            "Services initialized successfully for Github Individual connector test run."
+        )
         return logger, config_service, data_store_provider, arango_service
 
-    async def configure_github_credentials(key_value_store: InMemoryKeyValueStore, logger) -> bool:
+    async def configure_github_credentials(
+        key_value_store: InMemoryKeyValueStore, logger
+    ) -> bool:
         """
         Set up Github credentials for individual account in the config store.
         Returns:
             bool: True if credentials are configured successfully
         """
-        access_token = _get_env(logger, "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_ACCESS_TOKEN")
+        access_token = _get_env(
+            logger, "GITHUB_PERSONAL_ACCESS_TOKEN", "GITHUB_ACCESS_TOKEN"
+        )
         app_key = _get_env(logger, "GITHUB_PERSONAL_APP_KEY", "GITHUB_APP_KEY")
         app_secret = _get_env(logger, "GITHUB_PERSONAL_APP_SECRET", "GITHUB_APP_SECRET")
 
@@ -157,10 +177,7 @@ async def test_run()->None:
         Handles initialization and sync execution.
         """
         github_connector = await GithubConnector.create_connector(
-            logger,
-            data_store_provider,
-            config_service,
-            "github"
+            logger, data_store_provider, config_service, "github"
         )
 
         # Temporary workaround: connector expects url_identifier for config path
@@ -176,10 +193,13 @@ async def test_run()->None:
                 logger.error("Github Individual connector initialization failed.")
         finally:
             await github_connector.cleanup()
+
     # Main execution flow
     try:
         # 1. Initialize services
-        logger, config_service, data_store_provider, arango_service = await setup_services()
+        logger, config_service, data_store_provider, arango_service = (
+            await setup_services()
+        )
 
         # 2. Create test data in database
         await create_test_users(arango_service)
@@ -187,9 +207,13 @@ async def test_run()->None:
         # 3. Configure Github credentials
         key_value_store = getattr(config_service, "store", None)
         if not key_value_store:
-            logger.error("ConfigurationService does not expose an underlying key-value store.")
+            logger.error(
+                "ConfigurationService does not expose an underlying key-value store."
+            )
             return
-        credentials_configured = await configure_github_credentials(key_value_store, logger)
+        credentials_configured = await configure_github_credentials(
+            key_value_store, logger
+        )
 
         if not credentials_configured:
             logger.error("Failed to configure Github credentials. Exiting.")
