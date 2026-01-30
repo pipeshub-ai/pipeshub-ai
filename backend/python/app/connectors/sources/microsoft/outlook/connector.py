@@ -925,29 +925,20 @@ class OutlookConnector(BaseConnector):
             self.logger.info(f"Syncing conversations for {len(user_groups)} groups")
 
             total_conversations = 0
-            all_group_mail_records = []  # Collect all group mail records for thread edges processing
+            total_conversations = 0
 
             for group in user_groups:
                 try:
                     records = await self._sync_single_group_conversations(group)
                     if isinstance(records, tuple):
-                        count, mail_records = records
+                        count, _ = records
                         total_conversations += count
-                        all_group_mail_records.extend(mail_records)
                     else:
                         # Backward compatibility if method doesn't return mail_records
                         total_conversations += records
                 except Exception as e:
                     self.logger.error(f"Error syncing conversations for group {group.name}: {e}")
                     continue
-
-            # After all groups are processed, create thread edges for group conversations
-            try:
-                group_thread_edges_created = await self._create_all_thread_edges_for_groups(all_group_mail_records)
-                if group_thread_edges_created > 0:
-                    self.logger.info(f"Created {group_thread_edges_created} thread edges for group conversations")
-            except Exception as e:
-                self.logger.error(f"Error creating thread edges for group conversations: {e}")
 
             self.logger.info(f"✅ Synced {total_conversations} group conversation posts across {len(user_groups)} groups")
 
@@ -995,7 +986,7 @@ class OutlookConnector(BaseConnector):
             stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
 
             processed_count = 0
-            all_group_mail_records = []
+
 
             # 3. Detect Gap
             # Only run if we have explicit filters for both current and stored state
@@ -1016,13 +1007,12 @@ class OutlookConnector(BaseConnector):
                 )
 
                 try:
-                    gap_count, gap_records = await self._fetch_historical_group_gap(
+                    gap_count, _ = await self._fetch_historical_group_gap(
                         group, org_id,
                         start_ts=current_filter_start_ts,
                         end_ts=stored_filter_start_ts
                     )
                     processed_count += gap_count
-                    all_group_mail_records.extend(gap_records)
                 except Exception as e:
                     self.logger.error(f"Group Gap fill failed for '{group_name}' (continuing with standard sync): {e}", exc_info=True)
                     gap_fill_failed = True
@@ -1054,11 +1044,10 @@ class OutlookConnector(BaseConnector):
                     try:
                         # Pass last_sync_timestamp to filter individual posts inside the thread
                         # If gap fill just happened, we still only want *new* posts here, so we stick to last_sync_timestamp
-                        posts_count, thread_mail_records = await self._process_group_thread(
+                        posts_count, _ = await self._process_group_thread(
                             org_id, group, thread, api_filter_timestamp
                         )
                         processed_count += posts_count
-                        all_group_mail_records.extend(thread_mail_records)
                     except Exception as e:
                         thread_id = self._safe_get_attr(thread, 'id', 'unknown')
                         self.logger.error(f"Error processing thread {thread_id}: {e}")
@@ -1096,7 +1085,7 @@ class OutlookConnector(BaseConnector):
                 sync_point_data
             )
 
-            return processed_count, all_group_mail_records
+            return processed_count, []
 
         except Exception as e:
             self.logger.error(f"Error syncing conversations for group {group.name}: {e}")
@@ -1119,7 +1108,7 @@ class OutlookConnector(BaseConnector):
 
             self.logger.info(f"Fetching historical group threads with filter: {filter_str}")
 
-            all_gap_records = []
+
             processed_count = 0
 
             # Pagination loop
@@ -1137,7 +1126,7 @@ class OutlookConnector(BaseConnector):
                     async with self.rate_limiter:
                         response = await self.external_outlook_client.groups_list_threads(
                             group_id=group_id,
-                            select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
+                            select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview', 'conversationIndex'],
                             filter=filter_str,
                             odata_next_link=next_link
                         )
@@ -1155,9 +1144,8 @@ class OutlookConnector(BaseConnector):
 
                     for thread in threads:
                          # For gap fill, pass None as last_sync_timestamp
-                         p_count, t_records = await self._process_group_thread(org_id, group, thread, last_sync_timestamp=None)
+                         p_count, _ = await self._process_group_thread(org_id, group, thread, last_sync_timestamp=None)
                          processed_count += p_count
-                         all_gap_records.extend(t_records)
 
                     # Check for next page
                     next_link = self._safe_get_attr(response.data, '@odata.nextLink')
@@ -1175,7 +1163,7 @@ class OutlookConnector(BaseConnector):
                     # to avoid creating a "Swiss cheese" data state where we think we filled the gap but missed chunks.
                     raise GapFillFailedException(f"Error processing page {page_count}: {e}") from e
 
-            return processed_count, all_gap_records
+            return processed_count, []
 
         except Exception as e:
              # Ensure any exception bubbling up wraps in GapFillFailedException so check point logic works
@@ -1197,7 +1185,7 @@ class OutlookConnector(BaseConnector):
             response = await self._retry_request(
                 self.external_outlook_client.groups_list_threads,
                 group_id=group_id,
-                select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
+                select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview', 'conversationIndex'],
                 filter=filter_str
             )
 
@@ -1341,6 +1329,12 @@ class OutlookConnector(BaseConnector):
                     # 3. Check Batch Size (Flush if needed)
                     if len(batch_records) >= self.BATCH_SIZE:
                         await self.data_entities_processor.on_new_records(batch_records)
+
+                        # Create thread edges incrementally for this batch
+                        batch_mail_records = [r for r, _ in batch_records if hasattr(r, 'record_type') and r.record_type == RecordType.GROUP_MAIL]
+                        if batch_mail_records:
+                            await self._create_group_thread_edges_incremental(org_id, batch_mail_records)
+
                         processed_count += len(batch_records)
                         batch_records = []
 
@@ -1352,6 +1346,12 @@ class OutlookConnector(BaseConnector):
         # Process remaining records
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
+
+            # Create thread edges incrementally for this batch
+            batch_mail_records = [r for r, _ in batch_records if hasattr(r, 'record_type') and r.record_type == RecordType.GROUP_MAIL]
+            if batch_mail_records:
+                await self._create_group_thread_edges_incremental(org_id, batch_mail_records)
+
             processed_count += len(batch_records)
 
         return processed_count
@@ -1422,6 +1422,61 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error creating thread edges for group conversations: {e}")
             return 0
 
+    async def _create_group_thread_edges_incremental(self, org_id: str, group_mail_records: List[Record]) -> int:
+        """Create thread edges for group records incrementally using PARENT_CHILD tree."""
+        try:
+            if not group_mail_records:
+                return 0
+
+            edges = []
+            processed_count = 0
+
+            for record in group_mail_records:
+                if (hasattr(record, 'conversation_index') and record.conversation_index and
+                    hasattr(record, 'thread_id') and record.thread_id):
+
+                    # Find parent using ArangoDB lookup (user_id=None for groups)
+                    parent_id = await self._find_parent_by_conversation_index_from_db(
+                        record.conversation_index,
+                        record.thread_id,
+                        org_id,
+                        user_id=None
+                    )
+
+                    if parent_id:
+                        edge = {
+                            "from_id": parent_id,
+                            "from_collection": CollectionNames.RECORDS.value,
+                            "to_id": record.id,
+                            "to_collection": CollectionNames.RECORDS.value,
+                            "relationType": "PARENT_CHILD"
+                        }
+                        edges.append(edge)
+                        processed_count += 1
+
+            # Create edges in batch
+            if edges:
+                try:
+                    # Deduplicate edges in memory
+                    unique_edges_map = {}
+                    for e in edges:
+                         key = f"{e['from_id']}->{e['to_id']}"
+                         unique_edges_map[key] = e
+
+                    final_edges = list(unique_edges_map.values())
+
+                    async with self.data_store_provider.transaction() as tx_store:
+                        await tx_store.batch_create_edges(final_edges, collection=CollectionNames.RECORD_RELATIONS.value)
+                except Exception as e:
+                    self.logger.error(f"Error creating group thread edges batch: {e}")
+                    processed_count = 0
+
+            return processed_count
+
+        except Exception as e:
+            self.logger.error(f"Error creating group thread edges incremental: {e}")
+            return 0
+
     async def _get_thread_posts(self, group_id: str, thread_id: str) -> List[Dict]:
         """Get all posts in a thread."""
         try:
@@ -1432,7 +1487,7 @@ class OutlookConnector(BaseConnector):
                 self.external_outlook_client.groups_threads_list_posts,
                 group_id=group_id,
                 thread_id=thread_id,
-                select=['id', 'body', 'from', 'receivedDateTime', 'hasAttachments', 'conversationId', 'conversationThreadId']
+                select=['id', 'body', 'from', 'receivedDateTime', 'hasAttachments', 'conversationId', 'conversationThreadId', 'conversationIndex']
             )
 
             if not response.success:
@@ -1514,7 +1569,7 @@ class OutlookConnector(BaseConnector):
                 thread_id=thread_id,
                 is_parent=False,
                 internet_message_id='',
-                conversation_index='',
+                conversation_index=self._safe_get_attr(post, 'conversationIndex', ''),
             )
 
             # Apply indexing filter
@@ -1774,7 +1829,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error processing all folders for user {user.email}: {e}")
             return f"Failed to process folders for {user.email}: {str(e)}"
 
-    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user: AppUser) -> Optional[str]:
+    async def _find_parent_by_conversation_index_from_db(self, conversation_index: str, thread_id: str, org_id: str, user_id: Optional[str] = None) -> Optional[str]:
         """Find parent message ID using conversation index by searching ArangoDB."""
         if not conversation_index:
             self.logger.debug(f"No conversation_index provided for thread {thread_id}")
@@ -1800,7 +1855,7 @@ class OutlookConnector(BaseConnector):
                     conversation_index=parent_index,
                     thread_id=thread_id,
                     org_id=org_id,
-                    user_id=user.user_id
+                    user_id=user_id
                 )
 
                 if parent_record:
@@ -1832,7 +1887,7 @@ class OutlookConnector(BaseConnector):
                         record.conversation_index,
                         record.thread_id,
                         org_id,
-                        user
+                        user_id=user.user_id
                     )
 
                     if parent_id:
