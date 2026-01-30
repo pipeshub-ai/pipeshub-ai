@@ -17,7 +17,6 @@ from googleapiclient.http import MediaIoBaseDownload
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
     ExtensionTypes,
     MimeTypes,
     OriginTypes,
@@ -54,7 +53,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.sources.google.common.apps import GoogleDriveApp
+from app.connectors.sources.google.common.apps import GoogleDriveTeamApp
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -181,7 +180,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         connector_id: str
     ) -> None:
         super().__init__(
-            GoogleDriveApp(connector_id),
+            GoogleDriveTeamApp(connector_id),
             logger,
             data_entities_processor,
             data_store_provider,
@@ -952,32 +951,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.info("Creating 'My Drive' record groups for users...")
             for user in self.synced_users:
                 try:
-                    # Create a record group for user's personal drive
-                    # Use user's email as external_group_id for My Drive
-                    my_drive_record_group = RecordGroup(
-                        name=f"{user.full_name}'s Drive",
-                        org_id=self.data_entities_processor.org_id,
-                        external_group_id=user.email,  # Use email as identifier for My Drive
-                        description="My Drive",
-                        connector_name=self.connector_name,
-                        connector_id=self.connector_id,
-                        group_type=RecordGroupType.DRIVE,
-                        source_created_at=user.source_created_at
-                    )
-
-                    # Create owner permission for the user
-                    owner_permission = Permission(
-                        email=user.email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-
-                    # Submit to processor
-                    await self.data_entities_processor.on_new_record_groups(
-                        [(my_drive_record_group, [owner_permission])]
-                    )
-                    self.logger.debug(f"Created 'My Drive' record group for user {user.email}")
-
+                    await self._create_personal_record_group(user)
                 except Exception as e:
                     self.logger.error(
                         f"Failed to create 'My Drive' record group for user {user.email}: {e}",
@@ -993,6 +967,67 @@ class GoogleDriveTeamConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing record groups: {e}", exc_info=True)
+            raise
+
+    async def _create_personal_record_group(self, user: AppUser) -> None:
+        """Create a personal record group for the user's My Drive."""
+        try:
+            # Create user-specific GoogleClient with impersonation
+            user_drive_client = await GoogleClient.build_from_services(
+                service_name="drive",
+                logger=self.logger,
+                config_service=self.config_service,
+                is_individual=False,  # Enterprise connector
+                version="v3",
+                user_email=user.email,  # Impersonate this user
+                connector_instance_id=self.connector_id
+            )
+
+            # Create user-specific GoogleDriveDataSource from the client
+            user_drive_data_source = GoogleDriveDataSource(
+                user_drive_client.get_client()
+            )
+
+            # Fetch root drive info to get the actual drive ID
+            drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+            drive_id = drive_info.get("id", user.email)
+
+            if not drive_id:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Failed to get drive ID for user {user.email}"
+                )
+
+            # Create a record group for user's personal drive
+            my_drive_record_group = RecordGroup(
+                name=f"{user.full_name}'s Drive",
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=drive_id,
+                description="My Drive",
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.DRIVE,
+                source_created_at=user.source_created_at
+            )
+
+            # Create owner permission for the user
+            owner_permission = Permission(
+                email=user.email,
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER
+            )
+
+            # Submit to processor
+            await self.data_entities_processor.on_new_record_groups(
+                [(my_drive_record_group, [owner_permission])]
+            )
+            self.logger.debug(f"Created 'My Drive' record group for user {user.email} with drive ID {drive_id}")
+
+        except Exception as e:
+            self.logger.error(
+                f"Failed to create 'My Drive' record group for user {user.email}: {e}",
+                exc_info=True
+            )
             raise
 
     async def _process_drive_files_batch(
@@ -1394,6 +1429,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if "." in file_name:
                     file_extension = file_name.rsplit(".", 1)[-1].lower()
 
+            parent_external_record_id = metadata.get("parents", [None])[0] if metadata.get("parents", [None]) else None
+
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -1404,10 +1441,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 external_record_group_id=record_group_id,
                 external_record_id=str(file_id),
                 external_revision_id=metadata.get("headRevisionId") or metadata.get("version", None),
-                parent_external_record_id=metadata.get("parents", [None])[0] if metadata.get("parents", [None]) else None,
+                parent_external_record_id=parent_external_record_id if parent_external_record_id != record_group_id else None,
+                parent_record_type=RecordType.FILE if parent_external_record_id != record_group_id else None,
                 version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
                 origin=OriginTypes.CONNECTOR.value,
-                connector_name=Connectors.GOOGLE_DRIVE_WORKSPACE.value,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
@@ -1590,8 +1628,17 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.error(f"Failed to get user permissionId for {user.email}")
                 return
 
+            drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+            drive_id = drive_info.get("id")
+
+            if not drive_id:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Failed to get drive ID"
+                )
+
             # Use email as record_group_id for "My Drive"
-            record_group_id = user.email
+            record_group_id = drive_id
 
             # 4-7. Sync personal drive
             await self.sync_personal_drive(
