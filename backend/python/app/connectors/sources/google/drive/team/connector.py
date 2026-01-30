@@ -1035,7 +1035,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         files: List[Dict],
         user_id: str,
         user_email: Optional[str],
-        record_group_id: str,
+        drive_id: str,
         is_shared_drive: bool,
         context_name: str,
         batch_records: List,
@@ -1050,7 +1050,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             files: List of file metadata dictionaries
             user_id: The user's account ID (empty string for shared drives)
             user_email: The user's email (None for shared drives)
-            record_group_id: ID to use as record group ID (drive_id for shared drives, user email for user drives)
+            drive_id: ID to use as drive ID (drive_id for shared drives, user email for user drives)
             is_shared_drive: Whether this is a shared drive
             context_name: Name for logging context (drive name or user email)
             batch_records: Current batch of records to process
@@ -1064,7 +1064,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             files,
             user_id=user_id,
             user_email=user_email,
-            record_group_id=record_group_id,
+            drive_id=drive_id,
             is_shared_drive=is_shared_drive,
             drive_data_source=drive_data_source
         ):
@@ -1332,7 +1332,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         metadata: dict,
         user_id: str,
         user_email: str,
-        record_group_id: str,
+        drive_id: str,
         is_shared_drive: bool = False,
         drive_data_source: Optional[GoogleDriveDataSource] = None
     ) -> Optional[RecordUpdate]:
@@ -1343,7 +1343,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             metadata: Google Drive file metadata dictionary
             user_id: The user's account ID
             user_email: The user's email
-            record_group_id: The record group ID (user's drive ID or shared drive ID)
+            drive_id: The drive ID
             is_shared_drive: Whether this file is from a shared drive
 
         Returns:
@@ -1409,9 +1409,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_shared_with_me = is_shared and user_email not in owner_emails
 
             if not is_shared_drive:
-                record_group_id = existing_record.external_record_group_id if existing_record and existing_record.external_record_group_id is not None else None if is_shared_with_me else record_group_id
 
-                if existing_record and record_group_id != existing_record.external_record_group_id:
+                if existing_record and drive_id != existing_record.external_record_group_id:
                     is_updated = True
                     metadata_changed = True
 
@@ -1438,11 +1437,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 record_name=str(metadata.get("name", "Untitled")),
                 record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.DRIVE.value,
-                external_record_group_id=record_group_id,
+                external_record_group_id=drive_id,
                 external_record_id=str(file_id),
                 external_revision_id=metadata.get("headRevisionId") or metadata.get("version", None),
-                parent_external_record_id=parent_external_record_id if parent_external_record_id != record_group_id else None,
-                parent_record_type=RecordType.FILE if parent_external_record_id != record_group_id else None,
+                parent_external_record_id=parent_external_record_id if parent_external_record_id != drive_id else None,
+                parent_record_type=RecordType.FILE if parent_external_record_id != drive_id else None,
                 version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -1525,7 +1524,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         files: List[dict],
         user_id: str,
         user_email: str,
-        record_group_id: str,
+        drive_id: str,
         is_shared_drive: bool = False,
         drive_data_source: Optional[GoogleDriveDataSource] = None
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
@@ -1537,7 +1536,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             files: List of Google Drive file metadata
             user_id: The user's account ID
             user_email: The user's email
-            record_group_id: The record group ID (user's drive ID or shared drive ID)
+            drive_id: The drive ID
             is_shared_drive: Whether these files are from a shared drive
         """
         for file_metadata in files:
@@ -1546,7 +1545,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata,
                     user_id,
                     user_email,
-                    record_group_id,
+                    drive_id,
                     is_shared_drive=is_shared_drive,
                     drive_data_source=drive_data_source
                 )
@@ -1637,15 +1636,13 @@ class GoogleDriveTeamConnector(BaseConnector):
                     detail="Failed to get drive ID"
                 )
 
-            # Use email as record_group_id for "My Drive"
-            record_group_id = drive_id
 
             # 4-7. Sync personal drive
             await self.sync_personal_drive(
                 user=user,
                 user_drive_data_source=user_drive_data_source,
                 user_permission_id=user_permission_id,
-                record_group_id=record_group_id
+                drive_id=drive_id
             )
 
             # 8. Sync shared drives that the user is a member of
@@ -1666,7 +1663,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         user: AppUser,
         user_drive_data_source: GoogleDriveDataSource,
         user_permission_id: str,
-        record_group_id: str
+        drive_id: str
     ) -> None:
         """
         Synchronizes personal "My Drive" files for a given user.
@@ -1676,7 +1673,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             user: AppUser object containing email, source_user_id, etc.
             user_drive_data_source: GoogleDriveDataSource instance for the user
             user_permission_id: User's permission ID from Google Drive
-            record_group_id: Record group ID to use (typically user.email)
+            drive_id: Drive ID
         """
         # 4. Generate sync point key
         sync_point_key = generate_record_sync_point_key(
@@ -1737,7 +1734,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     files=files,
                     user_id=user_permission_id,
                     user_email=user.email,
-                    record_group_id=record_group_id,
+                    drive_id=drive_id,
                     is_shared_drive=False,
                     context_name=f"user {user.email}",
                     batch_records=batch_records,
@@ -1819,7 +1816,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         files=files,
                         user_id=user_permission_id,
                         user_email=user.email,
-                        record_group_id=record_group_id,
+                        drive_id=drive_id,
                         is_shared_drive=False,
                         context_name=f"user {user.email}",
                         batch_records=batch_records,
@@ -1993,7 +1990,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                         files=files,
                                         user_id=user_permission_id,
                                         user_email=user.email,
-                                        record_group_id=drive_id,  # Use drive ID as record group ID
+                                        drive_id=drive_id,  # Use drive ID as external record group ID
                                         is_shared_drive=True,
                                         context_name=f"drive '{drive_name}' for user {user.email}",
                                         batch_records=batch_records,
@@ -2090,7 +2087,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                             files=files,
                                             user_id=user_permission_id,
                                             user_email=user.email,
-                                            record_group_id=drive_id,  # Use drive ID as record group ID
+                                            drive_id=drive_id,  # Use drive ID as external record group ID
                                             is_shared_drive=True,
                                             context_name=f"drive '{drive_name}' for user {user.email}",
                                             batch_records=batch_records,
@@ -2711,10 +2708,6 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Use user_email from API if available, otherwise use the one from database
             if user_email_from_api:
                 user_email = user_email_from_api
-
-            # Use record_group_id if available, otherwise use user_id (for personal drive)
-            if not record_group_id:
-                record_group_id = user_email
 
             # Fetch fresh file from Google Drive API
             try:
