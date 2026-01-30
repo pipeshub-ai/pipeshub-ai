@@ -100,7 +100,6 @@ parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
 format_instructions = parser.get_format_instructions()
 
 
-
 async def stream_content(signed_url: str, record_id: Optional[str] = None, file_name: Optional[str] = None) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
     if not isinstance(signed_url, str):
