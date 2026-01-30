@@ -1,16 +1,16 @@
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
-from typing_extensions import NotRequired, TypedDict
+from typing_extensions import TypedDict
 
 
 class ReferenceDataItem(TypedDict):
     """Schema for reference data items (IDs for follow-up queries)"""
-    name: str           # Display name shown to user
-    id: str             # Technical ID (numeric ID, UUID, etc.)
-    type: NotRequired[str]        # Item type (e.g., "jira_project", "jira_issue")
-    key: NotRequired[str]         # Short key/code (e.g., "PA" for Jira project) - CRITICAL for JQL
-    accountId: NotRequired[str]   # Jira user accountId - needed for assignee/reporter JQL
+    name: str = Field(description="Display name shown to user")
+    id: str = Field(description="Technical ID (numeric ID, UUID, etc.)")
+    type: str = Field(default="", description="Item type (e.g., 'jira_project', 'jira_issue')")
+    key: str = Field(default="", description="Short key/code (e.g., 'PA' for Jira project)")
+    accountId: str = Field(default="", description="Jira user accountId for JQL")
 
 
 class AnswerWithMetadata(BaseModel):
@@ -41,6 +41,40 @@ class AnswerWithMetadataJSON(BaseModel):
     answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Derived From Tool Execution"]
     blockNumbers: List[str]
     referenceData: Optional[List[Dict[str, Any]]] = Field(default=None, description="IDs and metadata for follow-up queries")
+
+
+# =============================================================================
+# Agent-specific schemas (for agent structured output - LLM agnostic)
+# =============================================================================
+
+class AgentReferenceDataItem(BaseModel):
+    """Schema for agent reference data items - Pydantic version for structured output.
+
+    Uses simple types with defaults for LLM-agnostic compatibility.
+    """
+    name: str = Field(description="Display name shown to user")
+    id: str = Field(description="Technical ID (numeric ID, UUID, etc.)")
+    type: str = Field(default="", description="Item type (e.g., 'jira_project', 'jira_issue')")
+    key: str = Field(default="", description="Short key/code (e.g., 'PA' for Jira project)")
+    accountId: str = Field(default="", description="Jira user accountId for JQL")
+
+
+class AgentAnswerSchema(BaseModel):
+    """Schema for agent responses - for structured output (LLM-agnostic).
+
+    Simplified schema for agent tool execution responses.
+    Uses simple types that work across all providers:
+    - OpenAI, Azure OpenAI
+    - Anthropic
+    - Google Gemini
+    - Mistral
+    """
+    answer: str = Field(description="The response to the user's query")
+    reason: str = Field(default="", description="Explanation of how the answer was derived")
+    confidence: Literal["Very High", "High", "Medium", "Low"] = Field(default="Medium")
+    answerMatchType: Literal["Exact Match", "Derived From Blocks", "Derived From User Info", "Enhanced With Full Record", "Derived From Tool Execution"] = Field(default="Derived From Tool Execution")
+    blockNumbers: List[str] = Field(default_factory=list, description="Block numbers cited (empty for agent)")
+    referenceData: List[AgentReferenceDataItem] = Field(default_factory=list, description="IDs for follow-up queries")
 
 
 qna_prompt = """
