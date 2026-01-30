@@ -367,6 +367,7 @@ export const processUploadsInBackground = async (
         externalRecordId: placeholderResult.documentId,
         recordType: RECORD_TYPE.FILE,
         origin: ORIGIN_TYPE.UPLOAD,
+        connectorId: `knowledgeBase_${orgId}`,
         createdAtTimestamp: currentTime,
         updatedAtTimestamp: currentTime,
         sourceCreatedAtTimestamp: validLastModified,
