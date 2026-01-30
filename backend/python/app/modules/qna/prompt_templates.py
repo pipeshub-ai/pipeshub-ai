@@ -1,6 +1,8 @@
-from typing import Any, Dict, List, Literal, Optional
-from pydantic import BaseModel, Field
-from typing_extensions import NotRequired, TypedDict
+from typing import List, Literal
+
+from pydantic import BaseModel
+from typing_extensions import TypedDict
+
 
 class AnswerWithMetadataDict(TypedDict):
     """Schema for the answer with metadata"""

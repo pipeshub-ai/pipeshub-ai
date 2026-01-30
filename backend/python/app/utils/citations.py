@@ -431,7 +431,6 @@ def normalize_citations_and_chunks_for_agent(
         return answer_text, []
 
     # Main citation processing logic (matches normalize_citations_and_chunks)
-    logger.info(f"📊 Found {len(unique_citations)} unique citation markers: {unique_citations[:5]}")
     citation_mapping = {}
     new_citations = []
     record_number = 0
