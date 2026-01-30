@@ -30,7 +30,6 @@ import { KnowledgeBaseAPI } from './services/api';
 import UploadManager from './upload-manager';
 import { UploadNotification } from './components/upload-notification';
 import DashboardComponent from './components/dashboard';
-import AllRecordsView from './components/all-records-view';
 import { EditFolderDialog } from './components/dialogs/edit-dialogs';
 import { CreateFolderDialog, DeleteConfirmDialog } from './components/dialogs';
 import KbPermissionsDialog from './components/dialogs/kb-permissions-dialog';
@@ -60,6 +59,7 @@ const MainContainer = styled(Box)(({ theme }) => ({
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
+  height: '100%',
 }));
 
 const ContentArea = styled(Box)({
@@ -67,6 +67,7 @@ const ContentArea = styled(Box)({
   display: 'flex',
   flexDirection: 'column',
   overflow: 'hidden',
+  height: '100%',
 });
 
 const CompactCard = styled(Card)(({ theme }) => ({
@@ -472,13 +473,6 @@ export default function KnowledgeBaseComponent() {
 
       if (stableRoute.view === 'dashboard') {
         // Reset to dashboard state
-        currentKBRef.current = null;
-        setCurrentKB(null);
-        setNavigationPath([]);
-        setCurrentUserPermission(null);
-        setPermissions([]);
-      } else if (stableRoute.view === 'all-records') {
-        // Handle all-records view - no specific KB needed
         currentKBRef.current = null;
         setCurrentKB(null);
         setNavigationPath([]);
@@ -1217,20 +1211,21 @@ export default function KnowledgeBaseComponent() {
       const response = await KnowledgeBaseAPI.reindexRecord(recordId);
       if (response.success) {
         setSuccess('File indexing started successfully');
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
       } else {
-        setError('Failed to start reindexing');
+        setError(response.reason || 'Failed to start reindexing');
       }
       handleMenuClose();
-
-      await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
+      setError(err.response?.data?.reason || err.message || 'Failed to start reindexing');
+      handleMenuClose();
     }
   };
 
-  const handleDownload = async (externalRecordId: string, recordName: string) => {
+  const handleDownload = async (recordId: string, recordName: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName, ORIGIN.UPLOAD);
+      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName);
       setSuccess('Download started successfully');
     } catch (err: any) {
       console.error('Failed to download document', err);
@@ -1240,6 +1235,10 @@ export default function KnowledgeBaseComponent() {
   const renderContextMenu = () => {
     const canModify =
       currentUserPermission?.role === 'OWNER' || currentUserPermission?.role === 'WRITER';
+    const canReindex =
+      currentUserPermission?.role === 'OWNER' ||
+      currentUserPermission?.role === 'WRITER' ||
+      currentUserPermission?.role === 'READER';
 
     const folderMenuItems = [
       {
@@ -1253,24 +1252,24 @@ export default function KnowledgeBaseComponent() {
       },
       ...(canModify
         ? [
-            {
-              key: 'edit',
-              label: 'Edit',
-              icon: editIcon,
-              onClick: handleEditMenuAction,
-            },
-          ]
+          {
+            key: 'edit',
+            label: 'Edit',
+            icon: editIcon,
+            onClick: handleEditMenuAction,
+          },
+        ]
         : []),
       ...(canModify
         ? [
-            {
-              key: 'delete',
-              label: 'Delete',
-              icon: deleteIcon,
-              onClick: handleDeleteMenuAction,
-              isDanger: true,
-            },
-          ]
+          {
+            key: 'delete',
+            label: 'Delete',
+            icon: deleteIcon,
+            onClick: handleDeleteMenuAction,
+            isDanger: true,
+          },
+        ]
         : []),
     ];
 
@@ -1289,29 +1288,33 @@ export default function KnowledgeBaseComponent() {
         label: 'Download',
         icon: downloadIcon,
         onClick: () => {
-          handleDownload(contextItem.externalRecordId, contextItem.name);
+          handleDownload(contextItem.id, contextItem.name);
           handleMenuClose();
         },
       },
+      ...(canReindex
+        ? [
+          {
+            key: 'reindex',
+            label: 'Reindex',
+            icon: refreshIcon,
+            onClick: () => {
+              handleRetryIndexing(contextItem.id);
+              handleMenuClose();
+            },
+          },
+        ]
+        : []),
       ...(canModify
         ? [
-            {
-              key: 'reindex',
-              label: 'Reindex',
-              icon: refreshIcon,
-              onClick: () => {
-                handleRetryIndexing(contextItem.id);
-                handleMenuClose();
-              },
-            },
-            {
-              key: 'delete',
-              label: 'Delete',
-              icon: deleteIcon,
-              onClick: handleDeleteMenuAction,
-              isDanger: true,
-            },
-          ]
+          {
+            key: 'delete',
+            label: 'Delete',
+            icon: deleteIcon,
+            onClick: handleDeleteMenuAction,
+            isDanger: true,
+          },
+        ]
         : []),
     ];
 
@@ -1364,21 +1367,21 @@ export default function KnowledgeBaseComponent() {
                   transition: 'all 0.15s ease',
                   ...(isDangerItem
                     ? {
-                        color: 'error.main',
-                        '&:hover': {
-                          bgcolor: 'error.lighter',
-                          transform: 'translateX(2px)',
-                        },
-                      }
+                      color: 'error.main',
+                      '&:hover': {
+                        bgcolor: 'error.lighter',
+                        transform: 'translateX(2px)',
+                      },
+                    }
                     : {
-                        '&:hover': {
-                          bgcolor: (themeVal) =>
-                            themeVal.palette.mode === 'dark'
-                              ? alpha('#fff', 0.06)
-                              : alpha('#000', 0.04),
-                          transform: 'translateX(2px)',
-                        },
-                      }),
+                      '&:hover': {
+                        bgcolor: (themeVal) =>
+                          themeVal.palette.mode === 'dark'
+                            ? alpha('#fff', 0.06)
+                            : alpha('#000', 0.04),
+                        transform: 'translateX(2px)',
+                      },
+                    }),
                 }}
               >
                 <ListItemIcon
@@ -1452,15 +1455,7 @@ export default function KnowledgeBaseComponent() {
       )}
 
       <ContentArea>
-        {stableRoute.view === 'all-records' ? (
-          <AllRecordsView
-            key="all-records"
-            onNavigateBack={navigateToDashboard}
-            onNavigateToRecord={(recordId) => {
-              window.open(`/record/${recordId}`, '_blank', 'noopener,noreferrer');
-            }}
-          />
-        ) : stableRoute.view === 'dashboard' ? (
+        {stableRoute.view === 'dashboard' ? (
           <DashboardComponent
             key="dashboard"
             theme={theme}

@@ -3,9 +3,10 @@ Migrated wrapper.py - Now uses the new factory system for cleaner code
 """
 
 import json
+import re
 from typing import Callable, Dict, List, Optional, Union
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry
@@ -18,6 +19,33 @@ RESULT_PREVIEW_MAX_LENGTH = 150
 
 # Type aliases
 ToolResult = Union[tuple, str, dict, list, int, float, bool]
+
+
+def sanitize_tool_name(tool_name: str) -> str:
+    """
+    Sanitize tool name to match the pattern: ^[a-zA-Z0-9_-]{1,128}$
+
+    Replaces dots with underscores to comply with the pattern.
+
+    Args:
+        tool_name: Original tool name (e.g., "calendar.get_calendar_events")
+
+    Returns:
+        Sanitized tool name (e.g., "calendar_get_calendar_events")
+    """
+    # Replace dots with underscores
+    sanitized = tool_name.replace(".", "_")
+
+    # Ensure it matches the pattern (only alphanumeric, underscore, hyphen)
+    # Remove any other invalid characters
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', sanitized)
+    MAX_TOOL_NAME_LENGTH = 128
+
+    # Ensure length is within limit (128 chars)
+    if len(sanitized) > MAX_TOOL_NAME_LENGTH:
+        sanitized = sanitized[:MAX_TOOL_NAME_LENGTH]
+
+    return sanitized
 
 
 class RegistryToolWrapper(BaseTool):
@@ -68,8 +96,12 @@ class RegistryToolWrapper(BaseTool):
         except Exception:
             full_description = base_description
 
+        # Store original name and create sanitized name for compatibility
+        original_name = f"{app_name}.{tool_name}"
+        sanitized_name = sanitize_tool_name(original_name)
+
         init_data: Dict[str, Union[str, object]] = {
-            'name': f"{app_name}.{tool_name}",
+            'name': sanitized_name,  # Use sanitized name for compatibility
             'description': full_description,
             'app_name': app_name,
             'tool_name': tool_name,
@@ -79,6 +111,9 @@ class RegistryToolWrapper(BaseTool):
         }
 
         super().__init__(**init_data)
+
+        # Store original name as a regular attribute (not a Pydantic field)
+        object.__setattr__(self, '_original_name', original_name)
 
     @staticmethod
     def _format_parameters(params: List[object]) -> List[str]:
@@ -116,6 +151,16 @@ class RegistryToolWrapper(BaseTool):
             Chat state object
         """
         return self.chat_state
+
+    @property
+    def original_name(self) -> str:
+        """Get the original tool name before sanitization.
+
+        Returns:
+            Original tool name in format "app_name.tool_name"
+        """
+        # Access the private attribute stored during initialization
+        return getattr(self, '_original_name', f"{self.app_name}.{self.tool_name}")
 
     def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> str:
         """Execute the registry tool directly.
@@ -181,8 +226,8 @@ class RegistryToolWrapper(BaseTool):
         self,
         tool_function: Callable,
         arguments: Dict[str, Union[str, int, bool, dict, list, None]]
-    ) -> ToolResult:
-        """Execute a class method tool.
+        ) -> ToolResult:
+        """Execute a class method tool with instance caching.
 
         Args:
             tool_function: Tool function object
@@ -190,7 +235,6 @@ class RegistryToolWrapper(BaseTool):
 
         Returns:
             Tool execution result
-
         Raises:
             RuntimeError: If instance creation fails
         """
@@ -201,7 +245,10 @@ class RegistryToolWrapper(BaseTool):
             action_module = __import__(module_name, fromlist=[class_name])
             action_class = getattr(action_module, class_name)
 
-            instance = self._create_tool_instance_with_factory(action_class)
+            # PERFORMANCE: Use cached instance instead of creating new one every time
+            cache_key = f"{module_name}.{class_name}_{self.app_name}"
+            instance = self._get_or_create_tool_instance(action_class, cache_key)
+
             bound_method = getattr(instance, self.tool_name)
             return bound_method(**arguments)
         except Exception as e:
@@ -209,17 +256,73 @@ class RegistryToolWrapper(BaseTool):
                 f"Failed to create instance for tool '{self.app_name}.{self.tool_name}': {str(e)}"
             ) from e
 
+    def _get_or_create_tool_instance(
+        self,
+        action_class: type,
+        cache_key: str
+    ) -> object:
+        """Get cached tool instance or create new one.
+        This significantly improves performance by avoiding:
+        - Module re-imports
+        - Class re-instantiation
+        - Client re-creation
+        - Background thread/event loop recreation
+
+        Args:
+            action_class: Action class to instantiate
+            cache_key: Unique key for caching
+
+        Returns:
+            Cached or new tool instance
+        """
+        # Initialize cache in state if not exists
+        if not hasattr(self.state, 'get') or not callable(self.state.get):
+            # State is not dict-like, can't cache
+            return self._create_tool_instance_with_factory(action_class)
+
+        instance_cache = self.state.setdefault("_tool_instance_cache", {})
+
+        # Return cached instance if available
+        if cache_key in instance_cache:
+            logger = self.state.get("logger")
+            if logger:
+                logger.debug(f"⚡ Using cached instance for {self.app_name}.{self.tool_name}")
+            cached_instance = instance_cache[cache_key]
+            # CRITICAL: Ensure cached instance has current state
+            # This is especially important for tools like retrieval that need state
+            if hasattr(cached_instance, 'set_state'):
+                cached_instance.set_state(self.state)
+            elif hasattr(cached_instance, 'state'):
+                # Try to set state attribute directly if it exists
+                try:
+                    cached_instance.state = self.state
+                except (AttributeError, TypeError):
+                    pass
+            return cached_instance
+
+        # Create new instance
+        logger = self.state.get("logger")
+        if logger:
+            logger.debug(f"🔨 Creating new instance for {self.app_name}.{self.tool_name}")
+
+        instance = self._create_tool_instance_with_factory(action_class)
+
+        # Cache it for future use
+        instance_cache[cache_key] = instance
+
+        if logger:
+            logger.info(f"✅ Cached instance for {self.app_name}.{self.tool_name} (total cached: {len(instance_cache)})")
+
+        return instance
+
     def _create_tool_instance_with_factory(self, action_class: type) -> object:
-        """Use factory pattern for client creation.
+        """Use factory pattern for client creation with fallback.
 
         Args:
             action_class: Action class to instantiate
 
         Returns:
             Tool instance
-
-        Raises:
-            ValueError: If factory not available
         """
         try:
             factory = ClientFactoryRegistry.get_factory(self.app_name)
@@ -230,19 +333,100 @@ class RegistryToolWrapper(BaseTool):
                     config_service = retrieval_service.config_service
                     logger = self.state.get("logger")
 
+                    # Find connector instance ID for this tool/app
+                    connector_instance_id = self._get_connector_instance_id()
+
+                    if connector_instance_id and logger:
+                        logger.info(f"Using connector instance ID {connector_instance_id} for {self.app_name}")
+                    elif logger:
+                        logger.debug(f"No connector instance ID found for {self.app_name}, using default config")
+
+                    # Pass connector instance ID in state for factory to use
+                    # The factory will use this to get the correct config from etcd
+                    # Create a copy of state to avoid mutating the original
+                    if isinstance(self.state, dict):
+                        tool_state = dict(self.state)
+                    else:
+                        tool_state = self.state
+
+                    # Add connector instance ID to state
+                    if not isinstance(tool_state, dict):
+                        tool_state = {"connector_instance_id": connector_instance_id}
+                    else:
+                        tool_state["connector_instance_id"] = connector_instance_id
+
                     # Pass chat state into factory for auth/impersonation decisions
-                    client = factory.create_client_sync(config_service, logger, self.state)
+                    client = factory.create_client_sync(config_service, logger, tool_state, connector_instance_id)
                     return action_class(client)
 
-            raise ValueError("Not able to get the client from factory")
+            # No factory available - use fallback creation (for tools like retrieval that don't need clients)
+            logger = self.state.get("logger")
+            if logger:
+                logger.debug(f"No factory for {self.app_name}, using fallback creation")
+            return self._fallback_creation(action_class)
 
-        except Exception as e:
+        except (ValueError, AttributeError, KeyError, TypeError) as e:
+            # Catch specific exceptions that can occur during factory/client creation
+            # These are expected errors that we can handle gracefully with fallback
             logger = self.state.get("logger")
             if logger:
                 logger.warning(
                     f"Factory creation failed for {self.app_name}, using fallback: {e}"
                 )
-            raise
+            # Try fallback creation instead of raising
+            return self._fallback_creation(action_class)
+        # Let other unexpected exceptions (ImportError, etc.) propagate for easier debugging
+
+    def _fallback_creation(self, action_class: type) -> object:
+        """Fallback instance creation for tools that don't need clients.
+
+        Args:
+            action_class: Action class to instantiate
+
+        Returns:
+            Tool instance
+        """
+        try:
+            # Try passing state for tools that need it (like retrieval)
+            instance = action_class(state=self.state)
+            # If instance has set_state method, also call it for compatibility
+            if hasattr(instance, 'set_state'):
+                instance.set_state(self.state)
+            return instance
+        except (TypeError, Exception):
+            try:
+                instance = action_class()
+                # Try to set state if method exists
+                if hasattr(instance, 'set_state'):
+                    instance.set_state(self.state)
+                return instance
+            except (TypeError, Exception):
+                try:
+                    instance = action_class({})
+                    if hasattr(instance, 'set_state'):
+                        instance.set_state(self.state)
+                    return instance
+                except Exception:
+                    instance = action_class(None)
+                    if hasattr(instance, 'set_state'):
+                        instance.set_state(self.state)
+                    return instance
+
+    def _get_connector_instance_id(self) -> Optional[str]:
+        """Get connector instance ID for this tool based on app_name.
+
+        Returns:
+            Connector instance ID if found, None otherwise
+        """
+        tool_to_connector_map = self.state.get("tool_to_connector_map")
+        if not tool_to_connector_map:
+            return None
+
+        # Try to find connector instance ID by app_name (normalized to uppercase)
+        app_name_normalised = self.app_name.replace(" ", "").lower()
+        connector_id = tool_to_connector_map.get(app_name_normalised) or tool_to_connector_map.get(self.app_name)
+
+        return connector_id
 
     def _format_result(self, result: ToolResult) -> str:
         """Format tool result for LLM consumption.
@@ -271,7 +455,7 @@ def _get_recently_failed_tools(state: ChatState, logger) -> dict:
         Dict mapping tool_name to failure count for blocked tools
     """
     LOOKBACK_WINDOW = 7  # Check last N tool calls
-    FAILURE_THRESHOLD = 2  # Block if failed N+ times
+    FAILURE_THRESHOLD = 3  # Block if failed N+ times (increased to give agent more chances to fix errors)
 
     all_results = state.get("all_tool_results", [])
     if not all_results or len(all_results) < FAILURE_THRESHOLD:
@@ -326,15 +510,15 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     # If cache exists and blocked tools haven't changed, return cached tools
     if cached_tools is not None and blocked_tools == cached_blocked_tools:
         if logger:
-            logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools) - significant performance boost")
+            logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools) - skipping {len(_global_tools_registry.get_all_tools())} tool loads")
         return cached_tools
 
     # Cache miss or blocked tools changed - rebuild tool list
     if logger:
         if cached_tools is not None:
-            logger.info("🔄 Blocked tools changed - rebuilding tool cache")
+            logger.warning("🔄 Blocked tools changed - rebuilding tool cache")
         else:
-            logger.info("📦 First tool load - building cache")
+            logger.warning("📦 CACHE MISS - First tool load - building cache (this should only happen once per query!)")
 
     tools: List[RegistryToolWrapper] = []
     registry_tools = _global_tools_registry.get_all_tools()
@@ -345,9 +529,9 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     user_enabled_tools = state.get("tools", None)
 
     if user_enabled_tools is not None and len(user_enabled_tools) == 0:
-        user_enabled_tools = None
+        user_enabled_tools = []
         if logger:
-            logger.info("Empty tools list detected - loading ALL available tools")
+            logger.info("Empty tools list detected - loading essential tools")
 
     for full_tool_name, registry_tool in registry_tools.items():
         try:
@@ -359,6 +543,10 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
                 app_name,
                 user_enabled_tools
             )
+
+            # Log essential tools being included
+            if should_include and _is_essential_tool(full_tool_name) and logger:
+                logger.debug(f"✅ Including essential tool: {full_tool_name}")
 
             # Exclude tools that have recently failed
             if should_include and full_tool_name in blocked_tools:
@@ -374,8 +562,7 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
                     state
                 )
                 tools.append(wrapper_tool)
-                if logger:
-                    logger.debug(f"✅ Added tool: {full_tool_name}")
+                # Removed excessive debug logging - was cluttering logs
 
         except Exception as e:
             if logger:
@@ -428,8 +615,8 @@ def _should_include_tool(
     Returns:
         True if tool should be included
     """
-    if user_enabled_tools is None:
-        return True
+    if user_enabled_tools is None or len(user_enabled_tools) == 0:
+        return _is_essential_tool(full_tool_name)
 
     if (full_tool_name in user_enabled_tools or
         tool_name in user_enabled_tools or
@@ -448,7 +635,13 @@ def _is_essential_tool(full_tool_name: str) -> bool:
     Returns:
         True if tool is essential
     """
-    essential_patterns = ["calculator.", "web_search", "get_current_datetime"]
+    essential_patterns = [
+        "calculator.",
+        "web_search",
+        "get_current_datetime",
+        "retrieval.",  # Match all retrieval tools
+        "retrieval.search_internal_knowledge",  # Specific match
+    ]
     return any(pattern in full_tool_name for pattern in essential_patterns)
 
 

@@ -1,3 +1,17 @@
+from enum import Enum
+from typing import List, Type
+
+from app.config.constants.arangodb import (
+    EntityRelations,
+    RecordRelations,
+)
+
+
+def _get_enum_values(enum_class: Type[Enum]) -> List[str]:
+    """Helper function to extract enum values from an enum class"""
+    return [item.value for item in enum_class]
+
+
 record_relations_schema = {
     "rule": {
         "type": "object",
@@ -6,15 +20,12 @@ record_relations_schema = {
             "_to": {"type": "string", "minLength": 1},
             "relationshipType": {
                 "type": "string",
-                "enum": [
-                    "PARENT_CHILD",
-                    "DUPLICATE",
-                    "ATTACHMENT",
-                    "SIBLING",
-                    "OTHERS",
-                ],
+                "enum": _get_enum_values(RecordRelations),
             },
-            "customRelationshipTag": {"type": "string"},
+            "customRelationshipTag": {
+                "type": "string",
+                "description": "Optional custom relationship tag (use relationshipType directly instead of this field)"
+            },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -22,6 +33,27 @@ record_relations_schema = {
     },
     "level": "strict",
     "message": "Document does not match the file relations schema.",
+}
+
+entity_relations_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "edgeType": {
+                "type": "string",
+                "enum": _get_enum_values(EntityRelations),
+            },
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "sourceTimestamp": {"type": "number"},
+        },
+        "required": ["edgeType", "createdAtTimestamp"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the entity relations schema.",
 }
 
 is_of_type_schema = {

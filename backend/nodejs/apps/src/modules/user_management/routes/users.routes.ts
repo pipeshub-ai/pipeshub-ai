@@ -48,6 +48,7 @@ const MultipleUserValidationSchema = z.object({
   params: z.object({}),
   headers: z.object({}),
 });
+
 const createUserBody = z.object({
   fullName: z.string().min(1, 'Full name is required'),
   email: z.string().email('Invalid email'),
@@ -59,9 +60,10 @@ const createUserBody = z.object({
     }),
   designation: z.string().optional(),
 });
+
 const updateUserBody = z.object({
   fullName: z.string().optional(),
-  email: z.string().email('Invalid email'),
+  email: z.string().email('Invalid email').optional(),
   mobile: z
     .string()
     .optional()
@@ -71,6 +73,7 @@ const updateUserBody = z.object({
   designation: z.string().optional(),
   firstName: z.string().optional(),
   lastName: z.string().optional(),
+  middleName: z.string().optional(),
   address: z
     .object({
       addressLine1: z.string().optional(),
@@ -80,8 +83,9 @@ const updateUserBody = z.object({
       country: z.string().optional(),
     })
     .optional(),
+  dataCollectionConsent: z.boolean().optional(),
   hasLoggedIn: z.boolean().optional(),
-});
+}).strict(); // Use strict mode to reject unknown fields
 
 const createUserValidationSchema = z.object({
   body: createUserBody,
@@ -186,6 +190,27 @@ export function createUserRouter(container: Container) {
       try {
         const userController = container.get<UserController>('UserController');
         await userController.getAllUsersWithGroups(req, res);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/:id/email',
+    authMiddleware.authenticate,
+    ValidationMiddleware.validate(UserIdValidationSchema),
+    metricsMiddleware(container),
+    userAdminCheck,
+    userExists,
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.getUserEmailByUserId(req, res, next);
       } catch (error) {
         next(error);
       }

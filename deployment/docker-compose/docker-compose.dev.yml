@@ -29,6 +29,7 @@ services:
       - NODE_ENV=${NODE_ENV:-development}
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - STRICT_MODE=${STRICT_MODE:-false}
 
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
@@ -42,9 +43,13 @@ services:
       - CONNECTOR_BACKEND=http://localhost:8088
       - INDEXING_BACKEND=http://localhost:8091
 
+      # Key-Value Store Configuration
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}
+
       # ETCD config
       - ETCD_URL=http://etcd:2379
       - ETCD_HOST=etcd
+      - ETCD_TIMEOUT=${ETCD_TIMEOUT:-5000}
 
       # ArangoDB config
       - ARANGO_URL=http://arango:8529
@@ -54,13 +59,20 @@ services:
       # Ensure we use the same password as configured for the ArangoDB service
 
       # Kafka config
-      - KAFKA_BROKERS=kafka-1:9092
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
+      - KAFKA_SSL=${KAFKA_SSL:-false}
+      - KAFKA_USERNAME=${KAFKA_USERNAME:-}
+      - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
+      - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
 
       # Redis config
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
       - REDIS_URL=redis://:${REDIS_PASSWORD:-}@redis:6379
+      - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv:}
+      - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
+      - REDIS_DB=${REDIS_DB:-0}
 
       # MongoDB config
       - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@mongodb:27017/?authSource=admin
@@ -73,6 +85,13 @@ services:
       - QDRANT_PORT=6333
 
       - OLLAMA_API_URL=http://host.docker.internal:11434
+
+      # Rate limit config
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
+
+      # Token config
+      - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
+      - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
     depends_on:
       qdrant:
         condition: service_healthy
@@ -85,7 +104,7 @@ services:
       etcd:
         condition: service_started
       arango:
-        condition: service_started
+        condition: service_healthy
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
@@ -93,7 +112,7 @@ services:
       - "host.docker.internal:host-gateway"
 
   mongodb:
-    image: mongo:8.0.6
+    image: mongo:8.0.17
     restart: always
     ports:
       - "27017:27017"
@@ -116,7 +135,10 @@ services:
     environment:
       - REDIS_PASSWORD=${REDIS_PASSWORD:-}
     command: >
-      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}
+      sh -c "redis-server
+      --appendonly yes
+      --appendfsync everysec
+      ${REDIS_PASSWORD:+--requirepass ${REDIS_PASSWORD}}"
     volumes:
       - redis_data:/data
 
@@ -130,7 +152,7 @@ services:
     volumes:
       - arango_data:/var/lib/arangodb3
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8529/_api/version"]
+      test: ["CMD-SHELL", "arangosh --server.endpoint tcp://localhost:8529 --server.password '${ARANGO_PASSWORD:-your_password}' --javascript.execute-string 'db._version()' || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 5

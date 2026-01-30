@@ -16,10 +16,26 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 
 const otpGenerationBody = z.object({
   email: z.string().email('Invalid email'),
+  'cf-turnstile-response': z.string().optional(), // Add Turnstile token for forgot password
 });
 
 const otpGenerationValidationSchema = z.object({
   body: otpGenerationBody,
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+const initAuthBody = z.object({
+  email: z
+    .string()
+    .min(1, 'Email is required')
+    .max(254, 'Email address is too long') // RFC 5321 limit
+    .email('Invalid email format'),
+});
+
+const initAuthValidationSchema = z.object({
+  body: initAuthBody,
   query: z.object({}),
   params: z.object({}),
   headers: z.object({}),
@@ -33,6 +49,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/initAuth',
+    ValidationMiddleware.validate(initAuthValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -44,9 +61,38 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
+  const authenticateBody = z.object({
+    method: z.string().min(1, 'Authentication method is required'),
+    credentials: z.union([
+      z.string().min(1, 'Credentials cannot be empty'), // For Google OAuth, credentials can be a string (ID token)
+      z.object({
+        password: z.string().optional(),
+        otp: z.string().optional(),
+        token: z.string().optional(),
+        code: z.string().optional(),
+        accessToken: z.string().optional(),
+        idToken: z.string().optional(),
+      }).passthrough(), // Allow additional fields for OAuth providers
+    ]),
+    email: z
+      .string()
+      .max(254, 'Email address is too long') // RFC 5321 limit
+      .email('Invalid email format')
+      .optional(),
+    'cf-turnstile-response': z.string().optional(), // Add Turnstile token
+  }).strict();
+
+  const authenticateValidationSchema = z.object({
+    body: authenticateBody,
+    query: z.object({}),
+    params: z.object({}),
+    headers: z.object({}),
+  });
+
   router.post(
     '/authenticate',
     authSessionMiddleware,
+    ValidationMiddleware.validate(authenticateValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -74,9 +120,18 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
+  const resetPasswordValidationSchema = z.object({
+    body: z.object({
+      currentPassword: z.string(),
+      newPassword: z.string(),
+      'cf-turnstile-response': z.string().optional(),
+    }),
+  });
+
   router.post(
     '/password/reset',
     userValidator,
+    ValidationMiddleware.validate(resetPasswordValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
@@ -188,7 +243,6 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
-
   // router.post('/setup', resetViaLinkValidator, userAccountSetup);
   return router;
 }

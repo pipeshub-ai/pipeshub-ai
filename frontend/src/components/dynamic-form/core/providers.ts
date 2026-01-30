@@ -43,6 +43,7 @@ export const URL_VALIDATOR = createUrlValidator(true);
 const COMMON_API_FIELDS = [
   'apiKey',
   'model',
+  { name: 'contextLength', required: false, defaultValue: undefined },
   { name: 'isMultimodal', required: false, defaultValue: true },
   { name: 'isReasoning', required: false, defaultValue: false },
 ] as const;
@@ -93,6 +94,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       'endpoint',
       'apiKey',
       'model',
+      { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
@@ -115,6 +117,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       'apiKey',
       'deploymentName',
       'model',
+      { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
@@ -138,6 +141,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
         defaultValue: 'http://host.docker.internal:11434',
         placeholder: 'e.g.http://localhost:11434',
       }, // Optional endpoint
+      { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
@@ -154,9 +158,16 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'model id/arn' },
       { name: 'provider', required: true, defaultValue: 'anthropic' },
+      { name: 'customProvider', required: false },
+      { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
+    customFields: {
+      customProvider: {
+        placeholder: 'Only needed if you selected "Other" as provider',
+      },
+    },
   },
   {
     id: 'xai',
@@ -181,6 +192,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       'apiKey',
       'model',
       'endpoint',
+      { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
@@ -220,6 +232,7 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
       'endpoint',
       'apiKey',
       'model',
+      { name: 'contextLength', required: false, defaultValue: undefined },
       { name: 'isMultimodal', required: false, defaultValue: true },
       { name: 'isReasoning', required: false, defaultValue: false },
     ],
@@ -330,8 +343,14 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'Model ID/ARN' },
       { name: 'provider', required: true, defaultValue: 'cohere' },
+      { name: 'customProvider', required: false },
       { name: 'isMultimodal', required: false, defaultValue: false },
     ],
+    customFields: {
+      customProvider: {
+        placeholder: 'Only needed if you selected "Other" as provider',
+      },
+    },
   },
   {
     id: 'jinaAI',
@@ -361,6 +380,23 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
       { name: 'apiKey', required: true },
       { name: 'isMultimodal', required: false, defaultValue: false },
     ],
+  },
+  {
+    id: 'together',
+    label: 'Together',
+    description: 'Enter your Together API credentials for embeddings.',
+    modelPlaceholder: 'e.g., togethercomputer/m2-bert-80M-32k-retrieval',
+    fields: [
+      'apiKey',
+      'model',
+      'endpoint',
+      { name: 'isMultimodal', required: false, defaultValue: false },
+    ],
+    customFields: {
+      endpoint: {
+        placeholder: 'e.g., https://api.together.xyz/v1',
+      },
+    },
   },
   {
     id: 'openAICompatible',
@@ -415,15 +451,5 @@ export const SMTP_PROVIDERS: readonly ProviderConfig[] = [
     label: 'SMTP Configuration',
     description: 'Configure SMTP settings for email notifications.',
     fields: ['host', 'port', 'fromEmail', 'username', 'password'],
-  },
-] as const;
-
-// URL PROVIDERS
-export const URL_PROVIDERS: readonly ProviderConfig[] = [
-  {
-    id: 'urls',
-    label: 'Public URLs',
-    description: 'Configure the public URLs for your services.',
-    fields: ['frontendUrl', { name: 'connectorUrl', required: false, defaultValue: '' }],
   },
 ] as const;

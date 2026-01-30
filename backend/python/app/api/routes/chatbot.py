@@ -4,7 +4,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
@@ -23,7 +23,11 @@ from app.utils.citations import process_citations
 from app.utils.fetch_full_record import create_fetch_full_record_tool
 from app.utils.query_decompose import QueryDecompositionExpansionService
 from app.utils.query_transform import setup_followup_query_transformation
-from app.utils.streaming import create_sse_event, stream_llm_response_with_tools
+from app.utils.streaming import (
+    bind_tools_for_llm,
+    create_sse_event,
+    stream_llm_response_with_tools,
+)
 
 DEFAULT_CONTEXT_LENGTH = 128000
 
@@ -106,40 +110,82 @@ def get_model_config_for_mode(chat_mode: str) -> Dict[str, Any]:
     return mode_configs.get(chat_mode, mode_configs["standard"])
 
 
-async def get_model_config(config_service: ConfigurationService, model_key: str) -> Dict[str, Any]:
-    """Get model configuration based on user selection or fallback to default"""
+async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: Optional[str] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Get model configuration based on user selection or fallback to default
+
+    Returns:
+        Tuple of (model_config, ai_models_config) where:
+        - model_config: The specific LLM configuration for the selected model
+        - ai_models_config: The full AI models configuration object
+    """
+
+    def _find_config_by_default(configs: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+        """Find config marked as default"""
+        return next((config for config in configs if config.get("isDefault", False)), None)
+
+    def _find_config_by_model_name(configs: List[Dict[str, Any]], name: str) -> Dict[str, Any] | None:
+        """Find config by model name in configuration.model field"""
+        for config in configs:
+            model_string = config.get("configuration", {}).get("model", "")
+            model_names = [n.strip() for n in model_string.split(",") if n.strip()]
+            if name in model_names:
+                return config
+        return None
+
+    def _find_config_by_key(configs: List[Dict[str, Any]], key: str) -> Dict[str, Any] | None:
+        """Find config by modelKey"""
+        return next((config for config in configs if config.get("modelKey") == key), None)
+
+    # Get initial config
     ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
     llm_configs = ai_models["llm"]
 
-    for config in llm_configs:
-        target_model_key = config.get("modelKey")
-        if target_model_key == model_key:
-            return config
+    # Search based on provided parameters
+    if model_key is None and model_name is None:
+        # Return default config
+        if default_config := _find_config_by_default(llm_configs):
+            return default_config, ai_models
+    elif model_key is None and model_name is not None:
+        # Search by model name
+        if name_config := _find_config_by_model_name(llm_configs, model_name):
+            return name_config, ai_models
+    elif model_key is not None:
+        # Search by model key
+        if key_config := _find_config_by_key(llm_configs, model_key):
+            return key_config, ai_models
 
-    # Try fresh config if not found
-    new_ai_models = await config_service.get_config(
-        config_node_constants.AI_MODELS.value,
-        use_cache=False
-    )
-    llm_configs = new_ai_models["llm"]
-
-    for config in llm_configs:
-        target_model_key = config.get("modelKey")
-        if target_model_key == model_key:
-            return config
+    # Try fresh config if not found (only for model_key searches)
+    if model_key is not None:
+        new_ai_models = await config_service.get_config(
+            config_node_constants.AI_MODELS.value,
+            use_cache=False
+        )
+        llm_configs = new_ai_models["llm"]
+        if key_config := _find_config_by_key(llm_configs, model_key):
+            return key_config, new_ai_models
 
     if not llm_configs:
         raise ValueError("No LLM configurations found")
 
-    return llm_configs
+    return llm_configs, ai_models
 
+async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict, dict]:
+    """Get LLM instance based on user selection or fallback to default
 
-async def get_llm_for_chat(config_service: ConfigurationService, model_key: str = None, model_name: str = None, chat_mode: str = "standard") -> Tuple[BaseChatModel, dict]:
-    """Get LLM instance based on user selection or fallback to default"""
+    Returns:
+        Tuple of (llm, model_config, ai_models_config) where:
+        - llm: The initialized LLM instance
+        - model_config: The specific LLM configuration for the selected model
+        - ai_models_config: The full AI models configuration object
+    """
     try:
-        llm_config = await get_model_config(config_service, model_key)
+        llm_config, ai_models_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
             raise ValueError("No LLM configurations found")
+
+        # Handle list of configs - extract first one if we got a list
+        if isinstance(llm_config, list):
+            llm_config = llm_config[0]
 
         # If user specified a model, try to find it
         if model_key and model_name:
@@ -147,7 +193,7 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             if (llm_config.get("modelKey") == model_key and model_name in model_names):
                 model_provider = llm_config.get("provider")
-                return get_generator_model(model_provider, llm_config, model_name), llm_config
+                return get_generator_model(model_provider, llm_config, model_name), llm_config, ai_models_config
 
         # If user specified only provider, find first matching model
         if model_key:
@@ -155,17 +201,15 @@ async def get_llm_for_chat(config_service: ConfigurationService, model_key: str 
             model_names = [name.strip() for name in model_string.split(",") if name.strip()]
             default_model_name = model_names[0]
             model_provider = llm_config.get("provider")
-            return get_generator_model(model_provider, llm_config, default_model_name), llm_config
+            return get_generator_model(model_provider, llm_config, default_model_name), llm_config, ai_models_config
 
         # Fallback to first available model
-        if isinstance(llm_config, list):
-            llm_config = llm_config[0]
         model_string = llm_config.get("configuration", {}).get("model")
         model_names = [name.strip() for name in model_string.split(",") if name.strip()]
         default_model_name = model_names[0]
         model_provider = llm_config.get("provider")
         llm = get_generator_model(model_provider, llm_config, default_model_name)
-        return llm, llm_config
+        return llm, llm_config, ai_models_config
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
@@ -185,7 +229,7 @@ async def process_chat_query_with_status(
     If yield_status is provided, it should be an async function that accepts (event_type, data).
     """
     # Get LLM based on user selection or fallback to default
-    llm, config = await get_llm_for_chat(
+    llm, config, _ = await get_llm_for_chat(
         config_service,
         query_info.modelKey,
         query_info.modelName,
@@ -219,7 +263,7 @@ async def process_chat_query_with_status(
     decomposed_queries = []
     if not query_info.quickMode and query_info.chatMode != "quick":
         if yield_status:
-            await yield_status("status", {"status": "analyzing", "message": "Analyzing your question..."})
+            await yield_status("status", {"status": "analyzing", "message": "Analyzing your query..."})
         decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
         decomposition_result = await decomposition_service.transform_query(query_info.query)
         decomposed_queries = decomposition_result["queries"]
@@ -344,7 +388,7 @@ async def process_chat_query(
 async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, max_hops=4) -> AIMessage:
     """Handle tool calls for non-streaming responses with reflection for invalid tool calls"""
 
-    llm_with_tools = llm.bind_tools(tools)
+    llm_with_tools = bind_tools_for_llm(llm, tools)
 
     # Initial call with provider-level error handling
     try:
@@ -458,7 +502,7 @@ async def askAIStream(
             # Process query inline with real-time status updates
             try:
                 # Get LLM based on user selection or fallback to default
-                llm, config = await get_llm_for_chat(
+                llm, config, ai_models_config = await get_llm_for_chat(
                     config_service,
                     query_info.modelKey,
                     query_info.modelName,
@@ -466,6 +510,7 @@ async def askAIStream(
                 )
                 is_multimodal_llm = config.get("isMultimodal")
                 context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+                
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -492,7 +537,7 @@ async def askAIStream(
                 # Query decomposition based on mode
                 decomposed_queries = []
                 if not query_info.quickMode and query_info.chatMode != "quick":
-                    yield create_sse_event("status", {"status": "analyzing", "message": "Analyzing your question..."})
+                    yield create_sse_event("status", {"status": "analyzing", "message": "Analyzing your query..."})
                     decomposition_service = QueryDecompositionExpansionService(llm, logger=logger)
                     decomposition_result = await decomposition_service.transform_query(query_info.query)
                     decomposed_queries = decomposition_result["queries"]
@@ -515,6 +560,7 @@ async def askAIStream(
 
                 # Process search results
                 search_results = result.get("searchResults", [])
+                virtual_to_record_map = result.get("virtual_to_record_map", {})
                 status_code = result.get("status_code", 500)
 
                 if status_code in [202, 500, 503,404]:
@@ -526,7 +572,7 @@ async def askAIStream(
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result
+                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map
                 )
 
                 # Re-rank results
@@ -571,6 +617,12 @@ async def askAIStream(
 
                 # Prepare messages
                 mode_config = get_model_config_for_mode(query_info.chatMode)
+
+                custom_system_prompt = ai_models_config.get("customSystemPrompt", "")
+                if custom_system_prompt:
+                    logger.info(f"Custom system prompt: {custom_system_prompt}")
+                    mode_config["system_prompt"] = custom_system_prompt
+
                 messages = [{"role": "system", "content": mode_config["system_prompt"]}]
 
                 # Add conversation history
@@ -607,6 +659,7 @@ async def askAIStream(
             except Exception as e:
                 logger.error(f"Exception: {str(e)}", exc_info=True)
                 yield create_sse_event("error", {"error": str(e)})
+                logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
                 return
 
             # Stream response with enhanced tool support using your existing implementation

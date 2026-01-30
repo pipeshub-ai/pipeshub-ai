@@ -8,19 +8,55 @@ import {
   Alert,
   Button,
   Dialog,
+  Switch,
   TextField,
   Typography,
   DialogTitle,
   DialogContent,
   DialogActions,
   CircularProgress,
+  FormControlLabel,
 } from '@mui/material';
+
+import { alpha, useTheme } from '@mui/material/styles';
+
+import axios from 'src/utils/axios';
+
+import { Iconify } from 'src/components/iconify';
 
 import { 
   getOAuthConfig, 
   type OAuthConfig, 
   updateOAuthConfig 
 } from '../utils/auth-configuration-service';
+
+const getRedirectUris = async () => {
+  // Get the current window URL without hash and search parameters
+  const currentRedirectUri = `${window.location.origin}/auth/oauth/callback`;
+
+  // Get the frontend URL from the backend
+  try {
+    const response = await axios.get(`/api/v1/configurationManager/frontendPublicUrl`);
+    const frontendBaseUrl = response.data.url;
+    // Ensure the URL ends with a slash if needed
+    const frontendUrl = frontendBaseUrl.endsWith('/')
+      ? `${frontendBaseUrl}auth/oauth/callback`
+      : `${frontendBaseUrl}/auth/oauth/callback`;
+
+    return {
+      currentRedirectUri,
+      recommendedRedirectUri: frontendUrl,
+      urisMismatch: currentRedirectUri !== frontendUrl,
+    };
+  } catch (error) {
+    console.error('Error fetching frontend URL:', error);
+    return {
+      currentRedirectUri,
+      recommendedRedirectUri: currentRedirectUri,
+      urisMismatch: false,
+    };
+  }
+};
 
 // Validation schema for OAuth configuration
 const OAuthConfigSchema = zod.object({
@@ -36,18 +72,15 @@ const OAuthConfigSchema = zod.object({
   authorizationUrl: zod
     .string()
     .url({ message: 'Please enter a valid authorization URL!' })
-    .optional()
-    .or(zod.literal('')),
+    .min(1, { message: 'Authorization URL is required!' }),
   tokenEndpoint: zod
     .string()
     .url({ message: 'Please enter a valid token endpoint URL!' })
-    .optional()
-    .or(zod.literal('')),
+    .min(1, { message: 'Token endpoint is required!' }),
   userInfoEndpoint: zod
     .string()
     .url({ message: 'Please enter a valid user info endpoint URL!' })
-    .optional()
-    .or(zod.literal('')),
+    .min(1, { message: 'User info endpoint is required!' }),
   scope: zod
     .string()
     .optional(),
@@ -56,6 +89,10 @@ const OAuthConfigSchema = zod.object({
     .url({ message: 'Please enter a valid redirect URI!' })
     .optional()
     .or(zod.literal('')),
+  enableJit: zod
+    .boolean()
+    .optional()
+    .default(false),
 });
 
 type OAuthConfigFormData = zod.infer<typeof OAuthConfigSchema>;
@@ -67,10 +104,17 @@ interface OAuthAuthFormProps {
 }
 
 export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFormProps) {
+  const theme = useTheme();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const [enableJit, setEnableJit] = useState(false);
+  const [redirectUris, setRedirectUris] = useState<{
+    currentRedirectUri: string;
+    recommendedRedirectUri: string;
+    urisMismatch: boolean;
+  } | null>(null);
 
   const {
     register,
@@ -90,6 +134,7 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
       userInfoEndpoint: '',
       scope: 'openid email profile',
       redirectUri: '',
+      enableJit: true,
     },
   });
 
@@ -100,8 +145,18 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
       setError(null);
       setSuccess(false);
 
-      getOAuthConfig()
-        .then((config: OAuthConfig) => {
+      // Parallelize API calls for better performance
+      Promise.all([
+        getRedirectUris(),
+        getOAuthConfig(),
+      ])
+        .then(([uris, config]) => {
+          setRedirectUris(uris);
+
+          // Set default redirectUri from uris immediately (not from state)
+          const recommendedUri =
+            uris?.recommendedRedirectUri || `${window.location.origin}/auth/oauth/callback`;
+
           if (config) {
             setValue('providerName', config.providerName || '');
             setValue('clientId', config.clientId || '');
@@ -110,7 +165,11 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
             setValue('tokenEndpoint', config.tokenEndpoint || '');
             setValue('userInfoEndpoint', config.userInfoEndpoint || '');
             setValue('scope', config.scope || 'openid email profile');
-            setValue('redirectUri', config.redirectUri || '');
+            setValue('redirectUri', config.redirectUri || recommendedUri);
+            setValue('enableJit', config.enableJit ?? true);
+            setEnableJit(config.enableJit ?? true);
+          } else {
+            setValue('redirectUri', recommendedUri);
           }
         })
         .catch((err) => {
@@ -137,6 +196,7 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
         userInfoEndpoint: data.userInfoEndpoint || undefined,
         scope: data.scope || 'openid email profile',
         redirectUri: data.redirectUri || undefined,
+        enableJit,
       };
 
       await updateOAuthConfig(configData);
@@ -162,6 +222,7 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
       reset();
       setError(null);
       setSuccess(false);
+      setEnableJit(false);
       onClose();
     }
   };
@@ -169,10 +230,18 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth>
       <DialogTitle>
-        <Typography variant="h6" component="div">
-          OAuth Provider Configuration
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+          <Iconify
+            icon="mdi:shield-key-outline"
+            width={28}
+            height={28}
+            color={theme.palette.primary.main}
+          />
+          <Typography variant="h6" component="div">
+            OAuth Provider Configuration
+          </Typography>
+        </Box>
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 1, ml: 5 }}>
           Configure your OAuth 2.0 provider settings for user authentication
         </Typography>
       </DialogTitle>
@@ -196,6 +265,69 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
               </Alert>
             )}
 
+            {redirectUris?.urisMismatch && (
+              <Alert
+                severity="warning"
+                sx={{
+                  mb: 3,
+                  borderRadius: 1,
+                }}
+              >
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  Redirect URI mismatch detected! Using the recommended URI from backend
+                  configuration.
+                </Typography>
+                <Typography variant="caption" component="div">
+                  Current redirect Uri: {redirectUris.currentRedirectUri}
+                </Typography>
+                <Typography variant="caption" component="div">
+                  Recommended redirect URI: {redirectUris.recommendedRedirectUri}
+                </Typography>
+              </Alert>
+            )}
+
+            <Box
+              sx={{
+                mb: 3,
+                p: 2,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.info.main, 0.04),
+                border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 1,
+              }}
+            >
+              <Iconify
+                icon="eva:info-outline"
+                width={20}
+                height={20}
+                color={theme.palette.info.main}
+                style={{ marginTop: 2 }}
+              />
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  Redirect URI (add to your OAuth provider settings):
+                  <Box
+                    component="code"
+                    sx={{
+                      display: 'block',
+                      p: 1.5,
+                      mt: 1,
+                      bgcolor: alpha(theme.palette.background.default, 0.7),
+                      borderRadius: 1,
+                      fontSize: '0.8rem',
+                      fontFamily: 'monospace',
+                      wordBreak: 'break-all',
+                      border: `1px solid ${theme.palette.divider}`,
+                    }}
+                  >
+                    {redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/oauth/callback`}
+                  </Box>
+                </Typography>
+              </Box>
+            </Box>
+
             <Box sx={{ display: 'grid', gap: 3 }}>
               <TextField
                 {...register('providerName')}
@@ -205,6 +337,7 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
                 helperText={errors.providerName?.message || 'A friendly name for your OAuth provider'}
                 fullWidth
                 required
+                InputLabelProps={{ required: true }}
               />
 
               <TextField
@@ -215,6 +348,7 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
                 helperText={errors.clientId?.message || 'The client ID from your OAuth provider'}
                 fullWidth
                 required
+                InputLabelProps={{ required: true }}
               />
 
               <TextField
@@ -234,6 +368,8 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
                 error={!!errors.authorizationUrl}
                 helperText={errors.authorizationUrl?.message || 'The OAuth authorization endpoint URL'}
                 fullWidth
+                required
+                InputLabelProps={{ required: true }}
               />
 
               <TextField
@@ -241,8 +377,10 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
                 label="Token Endpoint"
                 placeholder="https://provider.com/oauth/token"
                 error={!!errors.tokenEndpoint}
-                helperText={errors.tokenEndpoint?.message || 'Optional: URL to exchange authorization code for tokens'}
+                helperText={errors.tokenEndpoint?.message || 'URL to exchange authorization code for tokens'}
                 fullWidth
+                required
+                InputLabelProps={{ required: true }}
               />
 
               <TextField
@@ -250,8 +388,10 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
                 label="User Info Endpoint"
                 placeholder="https://provider.com/oauth/userinfo"
                 error={!!errors.userInfoEndpoint}
-                helperText={errors.userInfoEndpoint?.message || 'Optional: URL to fetch user information with access token'}
+                helperText={errors.userInfoEndpoint?.message || 'URL to fetch user information with access token'}
                 fullWidth
+                required
+                InputLabelProps={{ required: true }}
               />
 
               <TextField
@@ -266,11 +406,52 @@ export default function OAuthAuthForm({ open, onClose, onSuccess }: OAuthAuthFor
               <TextField
                 {...register('redirectUri')}
                 label="Redirect URI"
-                placeholder="https://yourapp.com/auth/oauth/callback"
+                placeholder={redirectUris?.recommendedRedirectUri || 'https://yourapp.com/auth/oauth/callback'}
                 error={!!errors.redirectUri}
-                helperText={errors.redirectUri?.message || 'Optional: Custom redirect URI for OAuth callback'}
+                helperText={errors.redirectUri?.message || 'This value is automatically configured and cannot be changed'}
                 fullWidth
+                disabled
+                InputProps={{
+                  readOnly: true,
+                  sx: {
+                    bgcolor: alpha(theme.palette.action.disabledBackground, 0.4),
+                  },
+                }}
               />
+
+              <Box
+                sx={{
+                  p: 2,
+                  borderRadius: 1,
+                  bgcolor: alpha(theme.palette.primary.main, 0.04),
+                  border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+                }}
+              >
+                <FormControlLabel
+                  control={
+                    <Switch
+                      checked={enableJit}
+                      onChange={(e) => {
+                        setEnableJit(e.target.checked);
+                        setValue('enableJit', e.target.checked);
+                      }}
+                      color="primary"
+                    />
+                  }
+                  label={
+                    <Box>
+                      <Typography variant="subtitle2">
+                        Enable Just-In-Time (JIT) Provisioning
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Automatically create user accounts when they sign in with OAuth for the first
+                        time
+                      </Typography>
+                    </Box>
+                  }
+                  sx={{ alignItems: 'flex-start', ml: 0 }}
+                />
+              </Box>
             </Box>
           </Box>
         )}

@@ -1,4 +1,6 @@
+import asyncio
 import json
+import ssl
 from typing import Dict
 
 from aiokafka import AIOKafkaProducer
@@ -14,10 +16,19 @@ class KafkaService:
         self.config_service = config_service
         self.producer = None
         self.logger = logger
+        self._producer_lock = asyncio.Lock()  # ✅ Add lock
 
     async def _ensure_producer(self) -> None:
         """Ensure producer is initialized and started"""
-        if self.producer is None:
+        if self.producer is not None:
+            return  # Fast path: already initialized
+
+        async with self._producer_lock:  # ✅ Serialize initialization
+            # Double-check after acquiring lock
+            if self.producer is not None:
+                return
+
+            producer = None
             try:
                 kafka_config = await self.config_service.get_config(
                     config_node_constants.KAFKA.value
@@ -36,18 +47,39 @@ class KafkaService:
                     brokers = brokers.strip("[]").replace("'", "").replace('"', "").strip()
 
                 producer_config = {
-                    "bootstrap_servers": brokers,  # aiokafka uses bootstrap_servers
+                    "bootstrap_servers": brokers,
                     "client_id": kafka_config.get("client_id", "file-processor"),
                     "request_timeout_ms": 30000,
                     "retry_backoff_ms": 100,
                     "enable_idempotence": True
                 }
 
-                self.producer = AIOKafkaProducer(**producer_config)
-                await self.producer.start()
+                # Add SSL/SASL configuration for AWS MSK
+                if kafka_config.get("ssl"):
+                    producer_config["ssl_context"] = ssl.create_default_context()
+                    sasl_config = kafka_config.get("sasl", {})
+                    if sasl_config.get("username"):
+                        producer_config["security_protocol"] = "SASL_SSL"
+                        producer_config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                        producer_config["sasl_plain_username"] = sasl_config["username"]
+                        producer_config["sasl_plain_password"] = sasl_config["password"]
+                    else:
+                        producer_config["security_protocol"] = "SSL"
+
+                producer = AIOKafkaProducer(**producer_config)
+                await producer.start()
+
+                # ✅ Only assign after successful start
+                self.producer = producer
                 self.logger.info("✅ Kafka producer initialized and started")
 
             except Exception as e:
+                if producer is not None:
+                    try:
+                        await producer.stop()
+                    except Exception as e:
+                        self.logger.info(f"⚠️ Failed to stop Kafka producer during error handling: {str(e)}")
+                self.producer = None
                 self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
                 raise
 
@@ -152,13 +184,14 @@ class KafkaService:
 
     async def stop_producer(self) -> None:
         """Stop the Kafka producer and clean up resources"""
-        if self.producer:
-            try:
-                await self.producer.stop()
-                self.producer = None
-                self.logger.info("✅ Kafka producer stopped successfully")
-            except Exception as e:
-                self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+        async with self._producer_lock:
+            if self.producer:
+                try:
+                    await self.producer.stop()
+                    self.producer = None
+                    self.logger.info("✅ Kafka producer stopped successfully")
+                except Exception as e:
+                    self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
 
     async def __aenter__(self) -> "KafkaService":
         """Async context manager entry"""

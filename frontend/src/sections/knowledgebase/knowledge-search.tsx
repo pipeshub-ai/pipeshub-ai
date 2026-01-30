@@ -295,6 +295,9 @@ const KnowledgeSearch = ({
 
     if (!recordMeta?.webUrl) return;
 
+    const hideWeburl = recordMeta.hideWeburl ?? false;
+    if (hideWeburl) return;
+
     let { webUrl } = recordMeta;
 
     if (recordMeta.origin === 'UPLOAD' && !webUrl.startsWith('http')) {
@@ -304,7 +307,7 @@ const KnowledgeSearch = ({
 
     const content = record.content;
     if (content && typeof content === 'string' && content.trim().length > 0) {
-      const textFragment = extractCleanTextFragment(content, 5);
+      const textFragment = extractCleanTextFragment(content);
       if (textFragment) {
         webUrl = addTextFragmentToUrl(webUrl, textFragment);
       }

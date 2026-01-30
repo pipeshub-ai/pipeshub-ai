@@ -1,5 +1,6 @@
 import type { Theme, SxProps } from '@mui/material';
 import type { Icon as IconifyIcon } from '@iconify/react';
+import type { Connector } from '../../accountdetails/connectors/types/types';
 
 export interface Department {
   _id: string;
@@ -47,6 +48,7 @@ export interface Pagination {
 }
 
 export interface Filters {
+  nodeTypes?: string[];
   recordTypes?: string[];
   origin?: string[];
   indexingStatus?: string[];
@@ -58,7 +60,7 @@ export interface Filters {
   connectors?: string[];
   app?: string[];
   permissions?: string[];
-  kb?:string[];
+  kb?: string[];
 }
 
 export interface FilterHeaderProps {
@@ -127,4 +129,5 @@ export interface KnowledgeSearchSideBarProps {
   sx: SxProps<Theme>;
   openSidebar: boolean;
   onToggleSidebar: () => void;
+  activeConnectors: Connector[];
 }

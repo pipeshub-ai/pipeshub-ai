@@ -7,13 +7,14 @@ from typing import Any, Dict, Optional, Union
 from app.sources.client.http.http_request import HTTPRequest
 
 try:
+    from box_sdk_gen import BoxCCGAuth as BoxSDKCCGAuth
     from box_sdk_gen import BoxClient as BoxSDKClient  # type: ignore
     from box_sdk_gen import BoxDeveloperTokenAuth, BoxJWTAuth, BoxOAuth  # type: ignore
+    from box_sdk_gen import CCGConfig as BoxSDKCCGConfig
 except ImportError:
     raise ImportError("box_sdk_gen is not installed. Please install it with `pip install box-sdk-gen`")
 
 from app.config.configuration_service import ConfigurationService
-from app.services.graph_db.interface.graph_db import IGraphService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
@@ -216,6 +217,49 @@ class BoxRESTClientWithOAuthCode:
         self.refresh_token = token_data.get("refresh_token")
 
 
+class BoxRESTClientWithCCG:
+    """
+    Box client via Client Credentials Grant (CCG) authentication.
+    This is the recommended approach for server-to-server applications.
+    The Box SDK automatically handles token refresh when tokens expire (60 min default).
+
+    Args:
+        client_id: Box app client ID
+        client_secret: Box app client secret
+        enterprise_id: Box enterprise ID (for service account)
+        user_id: Optional Box user ID (for user account)
+    """
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        enterprise_id: str,
+        user_id: Optional[str] = None,
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.enterprise_id = enterprise_id
+        self.user_id = user_id
+        self.box_client = None
+
+    async def create_client(self) -> BoxSDKClient:  # type: ignore[valid-type]
+        """Create Box client using CCG authentication."""
+        ccg_config = BoxSDKCCGConfig(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            enterprise_id=self.enterprise_id,
+            user_id=self.user_id,
+        )
+        auth = BoxSDKCCGAuth(config=ccg_config)
+        self.box_client = BoxSDKClient(auth=auth)
+        return self.box_client
+
+    def get_box_client(self) -> BoxSDKClient:  # type: ignore[valid-type]
+        if self.box_client is None:
+            raise RuntimeError("Client not initialized. Call create_client() first.")
+        return self.box_client
+
+
 @dataclass
 class BoxTokenConfig:
     """
@@ -343,6 +387,40 @@ class BoxOAuthCodeConfig:
         return asdict(self)
 
 
+@dataclass
+class BoxCCGConfig:
+    """
+    Configuration for Box client via Client Credentials Grant (CCG).
+    This is the recommended approach for server-to-server Box applications.
+
+    Args:
+        client_id: Box app client ID
+        client_secret: Box app client secret
+        enterprise_id: Box enterprise ID
+        user_id: Optional Box user ID (for user-level access)
+        base_url: Present for parity; not used by Box SDK
+        ssl: Unused; kept for interface parity
+    """
+    client_id: str
+    client_secret: str
+    enterprise_id: str
+    user_id: Optional[str] = None
+    base_url: str = "https://api.box.com"   # not used by SDK
+    ssl: bool = True
+
+    async def create_client(self) -> BoxRESTClientWithCCG:
+        """Create a Box client."""
+        return BoxRESTClientWithCCG(
+            client_id=self.client_id,
+            client_secret=self.client_secret,
+            enterprise_id=self.enterprise_id,
+            user_id=self.user_id,
+        )
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+
 class BoxClient(IClient):
     """
     Builder class for Box clients with multiple construction methods.
@@ -352,18 +430,18 @@ class BoxClient(IClient):
 
     def __init__(
         self,
-        client: Union[BoxRESTClientViaToken, BoxRESTClientWithJWT, BoxRESTClientWithOAuth2, BoxRESTClientWithOAuthCode],
+        client: Union[BoxRESTClientViaToken, BoxRESTClientWithJWT, BoxRESTClientWithOAuth2, BoxRESTClientWithOAuthCode, BoxRESTClientWithCCG],
         ) -> None:
         self.client = client
 
-    def get_client(self) -> Union[BoxRESTClientViaToken, BoxRESTClientWithJWT, BoxRESTClientWithOAuth2, BoxRESTClientWithOAuthCode]:
+    def get_client(self) -> Union[BoxRESTClientViaToken, BoxRESTClientWithJWT, BoxRESTClientWithOAuth2, BoxRESTClientWithOAuthCode, BoxRESTClientWithCCG]:
         """Return the underlying auth-holder client object (call `.create_client()` to get SDK)."""
         return self.client
 
     @classmethod
     async def build_with_config(
         cls,
-        config: Union[BoxTokenConfig, BoxJWTConfig, BoxOAuth2Config, BoxOAuthCodeConfig],
+        config: Union[BoxTokenConfig, BoxJWTConfig, BoxOAuth2Config, BoxOAuthCodeConfig, BoxCCGConfig],
     ) -> "BoxClient":
         """Build BoxClient using one of the config dataclasses."""
         client = await config.create_client()
@@ -374,18 +452,18 @@ class BoxClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
-        arango_service: IGraphService,
+        connector_instance_id: Optional[str] = None,
     ) -> "BoxClient":
         """
         Build BoxClient using your configuration service & org/user context.
         """
         try:
             # Get Box configuration from config service
-            config_data = await cls._get_connector_config(config_service, "box")
+            config_data = await cls._get_connector_config(config_service, connector_instance_id)
 
             # Extract configuration parameters
-            auth_type = config_data.get("authType", "OAUTH")
             auth_config = config_data.get("auth", {})
+            auth_type = auth_config.get("authType", "OAUTH")
 
             if auth_type == "API_TOKEN":
                 access_token = auth_config.get("access_token")
@@ -459,11 +537,13 @@ class BoxClient(IClient):
             raise ValueError(f"Failed to build Box client: {str(e)}")
 
     @staticmethod
-    async def _get_connector_config(config_service: ConfigurationService, connector_name: str) -> Dict[str, Any]:
+    async def _get_connector_config(config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Get connector configuration from config service"""
         try:
-            config_path = f"/services/connectors/{connector_name}/config"
+            config_path = f"/services/connectors/{connector_instance_id}/config"
             config_data = await config_service.get_config(config_path)
+            if not config_data:
+                raise ValueError(f"Failed to get Box connector configuration for instance {connector_instance_id}")
             return config_data
         except Exception as e:
-            raise ValueError(f"Failed to get {connector_name} configuration: {str(e)}")
+            raise ValueError(f"Failed to get {connector_instance_id} configuration: {str(e)}")

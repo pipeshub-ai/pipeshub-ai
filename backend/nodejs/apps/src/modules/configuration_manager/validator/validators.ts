@@ -90,6 +90,7 @@ export const azureAdConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Azure client ID is required' }),
     tenantId: z.string().optional().default('common'),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
@@ -98,12 +99,14 @@ export const ssoConfigSchema = z.object({
     entryPoint: z.string().min(1, { message: 'SSO entry point is required' }),
     certificate: z.string().min(1, { message: 'SSO certificate is required' }),
     emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
 export const googleAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Google client ID is required' }),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
@@ -117,12 +120,14 @@ export const oauthConfigSchema = z.object({
     userInfoEndpoint: z.string().url().optional().or(z.literal('')),
     scope: z.string().optional(),
     redirectUri: z.string().url().optional().or(z.literal('')),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
 export const microsoftConfigSchema = z.object({
   clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
   tenantId: z.string().optional().default('common'),
+  enableJit: z.boolean().optional().default(false),
 });
 
 export const mongoDBConfigSchema = z.object({
@@ -466,7 +471,8 @@ export const modelConfigurationSchema = z.object({
   configuration: configurationSchema,
   isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
   isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-  isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+  isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
+  contextLength: z.number().optional().nullable().describe("Context length for the model")
 });
 
 export const updateProviderRequestSchema = z.object({
@@ -479,7 +485,8 @@ export const updateProviderRequestSchema = z.object({
     configuration: configurationSchema,
     isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
     isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-    isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+    isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
+    contextLength: z.number().optional().nullable().describe("Context length for the model")
   }),
 });
 
@@ -490,7 +497,8 @@ export const addProviderRequestSchema = z.object({
     configuration: configurationSchema,
     isMultimodal: z.boolean().default(false).describe("Whether the model supports multimodal input"),
     isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
-    isDefault: z.boolean().default(false).describe("Whether this should be the default model")
+    isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
+    contextLength: z.number().optional().nullable().describe("Context length for the model")
   }),
 });
 
@@ -504,9 +512,10 @@ export const aiModelsConfigSchema = z.object({
       llm: z.array(modelConfigurationSchema).optional(),
       reasoning: z.array(modelConfigurationSchema).optional(),
       multiModal: z.array(modelConfigurationSchema).optional(),
+      custom_system_prompt: z.string().optional().nullable(),
     })
     .strict({
-      message: 'ai models can be ocr, embedding, llm, slm, reasoning, multimodal',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, and custom_system_prompt',
     })
     .refine(
       (data) => {

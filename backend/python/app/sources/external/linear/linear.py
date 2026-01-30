@@ -1,4 +1,6 @@
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
+
+import httpx
 
 from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.client.linear.graphql_op import LinearGraphQLOperations
@@ -211,13 +213,13 @@ class LinearDataSource:
 
     # PROJECT QUERIES
     async def project(self, id: str) -> GraphQLResponse:
-        """Get project by ID"""
+        """Get single project with all nested data"""
         query = LinearGraphQLOperations.get_operation_with_fragments("query", "project")
         variables = {"id": id}
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="project"
+                query=query, variables=variables, operation_name="Project"
             )
             return response
         except Exception as e:
@@ -228,9 +230,10 @@ class LinearDataSource:
         first: Optional[int] = None,
         after: Optional[str] = None,
         filter: Optional[Dict[str, Any]] = None,
-        orderBy: Optional[Dict[str, Any]] = None
+        orderBy: Optional[Dict[str, Any]] = None,
+        includeArchived: Optional[bool] = None
     ) -> GraphQLResponse:
-        """Get projects with issues"""
+        """Get projects with all nested data for sync"""
         query = LinearGraphQLOperations.get_operation_with_fragments("query", "projects")
         variables = {}
         if first is not None:
@@ -241,14 +244,64 @@ class LinearDataSource:
             variables["filter"] = filter
         if orderBy is not None:
             variables["orderBy"] = orderBy
+        if includeArchived is not None:
+            variables["includeArchived"] = includeArchived
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="projects"
+                query=query, variables=variables, operation_name="Projects"
             )
             return response
         except Exception as e:
             return GraphQLResponse(success=False, message=f"Failed to execute query projects: {str(e)}")
+
+    async def trashed_issues(
+        self,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None
+    ) -> GraphQLResponse:
+        """Get trashed issues for deletion sync."""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "trashedIssues")
+        variables = {}
+        if first is not None:
+            variables["first"] = first
+        if after is not None:
+            variables["after"] = after
+        if filter is not None:
+            variables["filter"] = filter
+
+        try:
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables, operation_name="TrashedIssues"
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to fetch trashed issues: {str(e)}")
+
+    async def trashed_projects(
+        self,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None
+    ) -> GraphQLResponse:
+        """Get trashed projects for deletion sync."""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "trashedProjects")
+        variables = {}
+        if first is not None:
+            variables["first"] = first
+        if after is not None:
+            variables["after"] = after
+        if filter is not None:
+            variables["filter"] = filter
+
+        try:
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables, operation_name="TrashedProjects"
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to fetch trashed projects: {str(e)}")
 
     # COMMENT QUERIES
     async def comment(self, id: str) -> GraphQLResponse:
@@ -489,12 +542,51 @@ class LinearDataSource:
             variables["orderBy"] = orderBy
 
         try:
+            # operation_name is optional - Postman query works without it
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="attachments"
+                query=query, variables=variables
             )
             return response
         except Exception as e:
             return GraphQLResponse(success=False, message=f"Failed to execute query attachments: {str(e)}")
+
+    async def document(self, id: str) -> GraphQLResponse:
+        """Get document by ID"""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "document")
+        variables = {"id": id}
+
+        try:
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables, operation_name="document"
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to execute query document: {str(e)}")
+
+    async def documents(
+        self,
+        first: Optional[int] = None,
+        after: Optional[str] = None,
+        filter: Optional[Dict[str, Any]] = None
+    ) -> GraphQLResponse:
+        """Get documents"""
+        query = LinearGraphQLOperations.get_operation_with_fragments("query", "documents")
+        variables = {}
+        if first is not None:
+            variables["first"] = first
+        if after is not None:
+            variables["after"] = after
+        if filter is not None:
+            variables["filter"] = filter
+
+        try:
+            # operation_name is optional - Postman query works without it
+            response = await self._linear_client.get_client().execute(
+                query=query, variables=variables
+            )
+            return response
+        except Exception as e:
+            return GraphQLResponse(success=False, message=f"Failed to execute query documents: {str(e)}")
 
     # NOTIFICATION QUERIES
     async def notification(self, id: str) -> GraphQLResponse:
@@ -981,11 +1073,11 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="issueCreate"
+                query=query, variables=variables, operation_name="IssueCreate"
             )
             return response
         except Exception as e:
-            return GraphQLResponse(success=False, message=f"Failed to execute mutation issueCreate: {str(e)}")
+            return GraphQLResponse(success=False, message=f"Failed to execute mutation IssueCreate: {str(e)}")
 
     async def issueUpdate(
         self,
@@ -998,11 +1090,11 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="issueUpdate"
+                query=query, variables=variables, operation_name="IssueUpdate"
             )
             return response
         except Exception as e:
-            return GraphQLResponse(success=False, message=f"Failed to execute mutation issueUpdate: {str(e)}")
+            return GraphQLResponse(success=False, message=f"Failed to execute mutation IssueUpdate: {str(e)}")
 
     async def issueDelete(
         self,
@@ -1014,11 +1106,11 @@ class LinearDataSource:
 
         try:
             response = await self._linear_client.get_client().execute(
-                query=query, variables=variables, operation_name="issueDelete"
+                query=query, variables=variables, operation_name="IssueDelete"
             )
             return response
         except Exception as e:
-            return GraphQLResponse(success=False, message=f"Failed to execute mutation issueDelete: {str(e)}")
+            return GraphQLResponse(success=False, message=f"Failed to execute mutation IssueDelete: {str(e)}")
 
     async def issueArchive(
         self,
@@ -1996,3 +2088,88 @@ class LinearDataSource:
                     })
 
         return team_response
+
+    # =============================================================================
+    # FILE OPERATIONS
+    # =============================================================================
+
+    def _get_auth_header(self) -> Optional[str]:
+        """
+        Get authentication header from Linear client.
+
+        Returns:
+            Authorization header value or None if not available
+        """
+        linear_client = self._linear_client.get_client()
+        return linear_client.get_auth_header()
+
+    async def download_file(self, file_url: str) -> AsyncGenerator[bytes, None]:
+        """
+        Download file from Linear upload URL with authentication.
+
+        Args:
+            file_url: URL of the file to download (e.g., from uploads.linear.app)
+
+        Yields:
+            File content as bytes in chunks
+
+        Raises:
+            ValueError: If file download fails
+        """
+        try:
+            auth_header = self._get_auth_header()
+
+            headers = {}
+            if auth_header:
+                headers["Authorization"] = auth_header
+
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                async with client.stream("GET", file_url, headers=headers) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        yield chunk
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"Failed to fetch file content: HTTP {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise ValueError(f"Failed to fetch file content: {str(e)}")
+        except Exception as e:
+            raise ValueError(f"Failed to fetch file content: {str(e)}")
+
+    async def get_file_size(self, file_url: str) -> Optional[int]:
+        """
+        Get file size from Linear upload URL using HEAD request.
+
+        Args:
+            file_url: URL of the file (e.g., from uploads.linear.app)
+
+        Returns:
+            File size in bytes, or None if size cannot be determined
+
+        Raises:
+            ValueError: If file request fails
+        """
+        try:
+            auth_header = self._get_auth_header()
+
+            headers = {}
+            if auth_header:
+                headers["Authorization"] = auth_header
+
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                response = await client.head(file_url, headers=headers)
+                response.raise_for_status()
+
+                # Get Content-Length header
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    return int(content_length)
+                return None
+        except httpx.HTTPStatusError as e:
+            raise ValueError(f"Failed to fetch file size: HTTP {e.response.status_code}")
+        except httpx.RequestError as e:
+            raise ValueError(f"Failed to fetch file size: {str(e)}")
+        except (ValueError, TypeError):
+            # Content-Length header might be invalid or missing
+            return None
+        except Exception as e:
+            raise ValueError(f"Failed to fetch file size: {str(e)}")

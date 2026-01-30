@@ -56,32 +56,43 @@ async def create_team(request: Request) -> JSONResponse:
         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
     }
 
-    user_ids = body_dict.get("userIds", [])
-    role = body_dict.get("role", "READER")
+    # Support both new format (userRoles) and legacy format (userIds + role)
+    user_roles = body_dict.get("userRoles", [])  # Array of {userId, role}
+    if not user_roles and body_dict.get("userIds"):
+        # Legacy format: single role for all users
+        role = body_dict.get("role", "READER")
+        user_roles = [{"userId": uid, "role": role} for uid in body_dict.get("userIds", [])]
+
     logger.info(f"Creating team with users: body_dict: {body_dict}")
     user_team_edges = []
-    for user_id in user_ids:
-        user_team_edges.append({
-            "_from": f"{CollectionNames.USERS.value}/{user_id}",
-            "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
-            "type": "USER",
-            "role": role,
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-        })
+    creator_key = user['_key']
 
-    if user['_key'] not in user_ids:
-        # Add creator to team permissions
-        creator_permission = {
-            "_from": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
-            "type": "USER",
-            "role": "OWNER",
-            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-        }
+    # First, ensure creator always gets OWNER role
+    creator_permission = {
+        "_from": f"{CollectionNames.USERS.value}/{creator_key}",
+        "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+        "type": "USER",
+        "role": "OWNER",
+        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+    }
+    user_team_edges.append(creator_permission)
 
-        user_team_edges.append(creator_permission)
+    # Add other users (excluding creator to avoid duplicate)
+    for user_role in user_roles:
+        user_id = user_role.get("userId")
+        role = user_role.get("role", "READER")
+        if not user_id:
+            continue
+        if user_id != creator_key:  # Skip creator as they already have OWNER role
+            user_team_edges.append({
+                "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            })
     logger.info(f"User team edges: {user_team_edges}")
     transaction = None
     try:
@@ -354,7 +365,7 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
 
 @router.put("/team/{team_id}")
 async def update_team(request: Request, team_id: str) -> JSONResponse:
-    """Update a team -  OWNER role"""
+    """Update a team - OWNER role. Supports updating name, description, and managing members"""
     services = await get_services(request)
     arango_service = services["arango_service"]
     logger = services["logger"]
@@ -394,9 +405,105 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         updates["description"] = body_dict.get("description")
 
     try:
+        # Update team basic info (always update timestamp)
         result = await arango_service.update_node(team_id, updates, CollectionNames.TEAMS.value)
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
+
+        # Handle member additions and removals
+        add_user_roles = body_dict.get("addUserRoles", [])  # Array of {userId, role}
+        remove_user_ids = body_dict.get("removeUserIds", [])
+        # Support legacy format for backward compatibility
+        if not add_user_roles and body_dict.get("addUserIds"):
+            default_role = body_dict.get("role", "READER")
+            add_user_roles = [{"userId": uid, "role": default_role} for uid in body_dict.get("addUserIds", [])]
+
+        # Prevent removing the team owner
+        if remove_user_ids and user['_key'] in remove_user_ids:
+            raise HTTPException(status_code=400, detail="Cannot remove team owner from team")
+
+        # Remove users if specified
+        if remove_user_ids:
+            delete_query = f"""
+            FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER SPLIT(permission._from, '/')[1] IN @userIds
+            REMOVE permission IN {CollectionNames.PERMISSION.value}
+            RETURN OLD
+            """
+            deleted_permissions = arango_service.db.aql.execute(
+                delete_query,
+                bind_vars={
+                    "userIds": remove_user_ids,
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+                }
+            )
+            deleted_list = list(deleted_permissions)
+            if deleted_list:
+                logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
+
+        # Update individual user roles if specified (batch update)
+        update_user_roles = body_dict.get("updateUserRoles", [])  # Array of {userId, role}
+        if update_user_roles:
+            # Filter out invalid entries and owner
+            owner_key = user['_key']
+            valid_user_roles = [
+                user_role for user_role in update_user_roles
+                if user_role.get("userId") and user_role.get("role") and user_role.get("userId") != owner_key
+            ]
+
+            if valid_user_roles:
+                # Batch update all user roles in a single query
+                batch_update_query = f"""
+                FOR user_role IN @update_user_roles
+                    LET user_id = user_role.userId
+                    LET new_role = user_role.role
+                    FOR permission IN {CollectionNames.PERMISSION.value}
+                        FILTER permission._to == @teamId
+                        FILTER SPLIT(permission._from, '/')[1] == user_id
+                        UPDATE permission WITH {{
+                            role: new_role,
+                            updatedAtTimestamp: @timestamp
+                        }} IN {CollectionNames.PERMISSION.value}
+                        RETURN NEW
+                """
+                try:
+                    cursor = arango_service.db.aql.execute(
+                        batch_update_query,
+                        bind_vars={
+                            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+                            "update_user_roles": valid_user_roles,
+                            "timestamp": get_epoch_timestamp_in_ms()
+                        }
+                    )
+                    updated_permissions = list(cursor)
+                    logger.info(f"Updated {len(updated_permissions)} user roles in batch")
+                except Exception as e:
+                    logger.error(f"Error updating user roles in batch: {str(e)}")
+
+        # Add users if specified (excluding creator to preserve OWNER role)
+        if add_user_roles:
+            user_team_edges = []
+            for user_role in add_user_roles:
+                user_id = user_role.get("userId")
+                role = user_role.get("role", "READER")
+                if not user_id:
+                    continue
+                # Skip if trying to add creator - they already have OWNER role
+                if user_id != user['_key']:
+                    user_team_edges.append({
+                        "_from": f"{CollectionNames.USERS.value}/{user_id}",
+                        "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                        "type": "USER",
+                        "role": role,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    })
+
+            if user_team_edges:
+                result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
+                if result:
+                    logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
         updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
@@ -443,14 +550,29 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
     body_dict = json.loads(body.decode('utf-8'))
     logger.info(f"Adding users to team: {body_dict}")
 
-    user_ids = body_dict.get("userIds", [])
-    role = body_dict.get("role", "READER")
+    # Support both new format (userRoles) and legacy format (userIds + role)
+    user_roles = body_dict.get("userRoles", [])  # Array of {userId, role}
+    if not user_roles and body_dict.get("userIds"):
+        # Legacy format: single role for all users
+        role = body_dict.get("role", "READER")
+        user_roles = [{"userId": uid, "role": role} for uid in body_dict.get("userIds", [])]
 
-    if not user_ids:
-        raise HTTPException(status_code=400, detail="No user IDs provided")
+    if not user_roles:
+        raise HTTPException(status_code=400, detail="No users provided")
 
     user_team_edges = []
-    for user_id in user_ids:
+    creator_key = user['_key']
+
+    # Prevent adding creator with non-OWNER role - they should always be OWNER
+    for user_role in user_roles:
+        user_id = user_role.get("userId")
+        role = user_role.get("role", "READER")
+        if not user_id:
+            continue
+        if user_id == creator_key:
+            # Skip creator - they already have OWNER role
+            logger.info(f"Skipping creator {creator_key} - they already have OWNER role")
+            continue
         user_team_edges.append({
             "_from": f"{CollectionNames.USERS.value}/{user_id}",
             "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
@@ -460,20 +582,32 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
             "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
         })
 
+    if not user_team_edges:
+        # If only creator was in the list, just return the team
+        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "No users to add (creator already has OWNER role)",
+                "team": updated_team
+            }
+        )
+
     try:
         result = await arango_service.batch_create_edges(user_team_edges, CollectionNames.PERMISSION.value)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to add users to team")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(arango_service, team_id,user['_key'])
+        updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
 
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "Users added to team successfully",
-                "team" : updated_team
+                "team": updated_team
             }
         )
     except HTTPException:
@@ -599,48 +733,68 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
     body_dict = json.loads(body.decode('utf-8'))
     logger.info(f"Updating user permissions: {body_dict}")
 
-    user_ids = body_dict.get("userIds", [])
-    role = body_dict.get("role", "READER")
+    # Support both new format (userRoles) and legacy format (userIds + role)
+    user_roles = body_dict.get("userRoles", [])  # Array of {userId, role}
+    if not user_roles and body_dict.get("userIds"):
+        # Legacy format: single role for all users
+        role = body_dict.get("role", "READER")
+        user_roles = [{"userId": uid, "role": role} for uid in body_dict.get("userIds", [])]
 
-    if not user_ids:
-        raise HTTPException(status_code=400, detail="No user IDs provided")
+    if not user_roles:
+        raise HTTPException(status_code=400, detail="No users provided")
 
-    # Prevent changing the team owner's role
+    # Prevent changing team owner's role
+    user_ids = [ur.get("userId") for ur in user_roles if ur.get("userId")]
     if user['_key'] in user_ids:
         raise HTTPException(status_code=400, detail="Cannot change team owner's role")
 
     try:
-        # Batch update permissions using a single query
+        timestamp = get_epoch_timestamp_in_ms()
+        owner_key = user['_key']
+
+        # Filter out invalid entries and owner
+        valid_user_roles = [
+            user_role for user_role in user_roles
+            if user_role.get("userId") and user_role.get("userId") != owner_key
+        ]
+
+        if not valid_user_roles:
+            raise HTTPException(status_code=404, detail="No user permissions found to update")
+
+        # Batch update all user roles in a single query
         batch_update_query = f"""
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == @team_id
-        FILTER SPLIT(permission._from, '/')[1] IN @user_ids
-        UPDATE permission WITH {{
-            role: @role,
-            updatedAtTimestamp: @timestamp
-        }} IN {CollectionNames.PERMISSION.value}
-        RETURN {{
-            _key: NEW._key,
-            _from: NEW._from,
-            role: NEW.role,
-            updatedAt: NEW.updatedAtTimestamp
-        }}
+        FOR user_role IN @user_roles
+            LET user_id = user_role.userId
+            LET new_role = user_role.role
+            FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == @team_id
+                FILTER SPLIT(permission._from, '/')[1] == user_id
+                UPDATE permission WITH {{
+                    role: new_role,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.PERMISSION.value}
+                RETURN {{
+                    _key: NEW._key,
+                    _from: NEW._from,
+                    role: NEW.role,
+                    updatedAt: NEW.updatedAtTimestamp
+                }}
         """
 
-        bind_vars = {
-            "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-            "user_ids": user_ids,
-            "role": role,
-            "timestamp": get_epoch_timestamp_in_ms()
-        }
-
-        cursor = arango_service.db.aql.execute(batch_update_query, bind_vars=bind_vars)
+        cursor = arango_service.db.aql.execute(
+            batch_update_query,
+            bind_vars={
+                "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+                "user_roles": valid_user_roles,
+                "timestamp": timestamp
+            }
+        )
         updated_permissions = list(cursor)
 
         if not updated_permissions:
             raise HTTPException(status_code=404, detail="No user permissions found to update")
 
-        logger.info(f"Updated {len(updated_permissions)} user permissions to role {role}")
+        logger.info(f"Updated {len(updated_permissions)} user permissions")
 
         # Return updated team with users
         updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
@@ -725,7 +879,12 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
 
 
 @router.get("/user/teams")
-async def get_user_teams(request: Request) -> JSONResponse:
+async def get_user_teams(
+    request: Request,
+    search: Optional[str] = Query(None, description="Search teams by name"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+) -> JSONResponse:
     """Get all teams that the current user is a member of"""
     services = await get_services(request)
     arango_service = services["arango_service"]
@@ -740,18 +899,29 @@ async def get_user_teams(request: Request) -> JSONResponse:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Fixed query - use @@collection syntax for dynamic collection names
-    user_teams_query = """
+    # Calculate offset
+    offset = (page - 1) * limit
+
+    # Build search filter
+    search_filter = ""
+    if search:
+        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
+
+    # Query to get all teams user is a member of with pagination
+    user_teams_query = f"""
     FOR permission IN @@permission_collection
     FILTER permission._from == @userId
     LET team = DOCUMENT(permission._to)
     FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+    {search_filter}
+    SORT team.createdAtTimestamp DESC
+    LIMIT @offset, @limit
     LET team_members = (
         FOR member_permission IN @@permission_collection
         FILTER member_permission._to == team._id
         LET member_user = DOCUMENT(member_permission._from)
         FILTER member_user != null
-        RETURN {
+        RETURN {{
             "id": member_user._key,
             "userId": member_user.userId,
             "userName": member_user.fullName,
@@ -759,10 +929,10 @@ async def get_user_teams(request: Request) -> JSONResponse:
             "role": member_permission.role,
             "joinedAt": member_permission.createdAtTimestamp,
             "isOwner": member_permission.role == "OWNER"
-        }
+        }}
     )
     LET member_count = LENGTH(team_members)
-    RETURN {
+    RETURN {{
         "id": team._key,
         "name": team.name,
         "description": team.description,
@@ -776,39 +946,273 @@ async def get_user_teams(request: Request) -> JSONResponse:
         "canEdit": permission.role IN ["OWNER"],
         "canDelete": permission.role == "OWNER",
         "canManageMembers": permission.role IN ["OWNER"]
-    }
+    }}
+    """
+
+    # Count query for pagination
+    count_query = f"""
+    FOR permission IN @@permission_collection
+    FILTER permission._from == @userId
+    LET team = DOCUMENT(permission._to)
+    FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+    {search_filter}
+    COLLECT WITH COUNT INTO total_count
+    RETURN total_count
     """
 
     try:
-        result = arango_service.db.aql.execute(
-            user_teams_query,
-            bind_vars={
-                "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
-                "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
-            }
-        )
+        # Get total count
+        count_params = {
+            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            "@permission_collection": CollectionNames.PERMISSION.value,
+            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+        }
+        if search:
+            count_params["search"] = search
+
+        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
+        count_list = list(count_result)
+        total_count = count_list[0] if count_list else 0
+
+        # Get teams with pagination
+        teams_params = {
+            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            "@permission_collection": CollectionNames.PERMISSION.value,
+            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+            "offset": offset,
+            "limit": limit
+        }
+        if search:
+            teams_params["search"] = search
+
+        result = arango_service.db.aql.execute(user_teams_query, bind_vars=teams_params)
         result_list = list(result)
+
         if not result_list:
             return JSONResponse(
                 status_code=200,
                 content={
                     "status": "success",
                     "message": "No teams found",
-                    "teams": []
+                    "teams": [],
+                    "pagination": {
+                        "page": page,
+                        "limit": limit,
+                        "total": total_count,
+                        "pages": 0
+                    }
                 }
             )
+
+        # Calculate total pages
+        total_pages = (total_count + limit - 1) // limit
+
         return JSONResponse(
             status_code=200,
             content={
                 "status": "success",
                 "message": "User teams fetched successfully",
-                "teams": result_list
+                "teams": result_list,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_count,
+                    "pages": total_pages,
+                    "hasNext": page < total_pages,
+                    "hasPrev": page > 1
+                }
             }
         )
     except Exception as e:
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
+
+@router.get("/user/teams/created")
+async def get_user_created_teams(
+    request: Request,
+    search: Optional[str] = Query(None, description="Search teams by name"),
+    page: int = Query(1, ge=1, description="Page number"),
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+) -> JSONResponse:
+    """Get all teams created by the current user"""
+    services = await get_services(request)
+    arango_service = services["arango_service"]
+    logger = services["logger"]
+
+    user_info = {
+        "userId": request.state.user.get("userId"),
+        "orgId": request.state.user.get("orgId"),
+    }
+
+    user = await arango_service.get_user_by_user_id(user_info.get("userId"))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Calculate offset
+    offset = (page - 1) * limit
+
+    # Build search filter
+    search_filter = ""
+    if search:
+        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
+
+    # Optimized query: Batch fetch team members instead of per-team DOCUMENT() calls
+    # Recommended indexes:
+    # - teams collection: [ "orgId", "createdBy" ] (persistent index)
+    # - permission collection: [ "_to" ] (persistent index)
+    # - permission collection: [ "_from", "_to" ] (persistent index)
+    created_teams_query = f"""
+    // Get teams first
+    LET teams = (
+        FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            FILTER team.createdBy == @userKey
+            {search_filter}
+            SORT team.createdAtTimestamp DESC
+            LIMIT @offset, @limit
+            RETURN team
+    )
+
+    // Batch fetch all team IDs
+    LET team_ids = teams[*]._id
+
+    // Batch fetch all permissions for these teams
+    LET all_permissions = (
+        FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to IN team_ids
+            RETURN permission
+    )
+
+    // Batch fetch all user IDs from permissions
+    LET user_ids = UNIQUE(all_permissions[* FILTER STARTS_WITH(CURRENT._from, "users/")]._from)
+
+    // Batch fetch all users
+    LET all_users = (
+        FOR user_id IN user_ids
+            LET user = DOCUMENT(user_id)
+            FILTER user != null
+            RETURN {{
+                _id: user._id,
+                _key: user._key,
+                userId: user.userId,
+                fullName: user.fullName,
+                email: user.email
+            }}
+    )
+
+    // Build result with members grouped by team
+    FOR team IN teams
+        LET current_user_permission = FIRST(
+            FOR perm IN all_permissions
+                FILTER perm._from == @currentUserId AND perm._to == team._id
+                RETURN perm
+        )
+        LET team_members = (
+            FOR permission IN all_permissions
+                FILTER permission._to == team._id
+                LET user = FIRST(FOR u IN all_users FILTER u._id == permission._from RETURN u)
+                FILTER user != null
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+        )
+        RETURN {{
+            "id": team._key,
+            "name": team.name,
+            "description": team.description,
+            "createdBy": team.createdBy,
+            "orgId": team.orgId,
+            "createdAtTimestamp": team.createdAtTimestamp,
+            "updatedAtTimestamp": team.updatedAtTimestamp,
+            "currentUserPermission": current_user_permission,
+            "members": team_members,
+            "memberCount": LENGTH(team_members),
+            "canEdit": true,
+            "canDelete": true,
+            "canManageMembers": true
+        }}
+    """
+
+    # Count total teams for pagination
+    count_query = f"""
+    FOR team IN {CollectionNames.TEAMS.value}
+    FILTER team.orgId == @orgId
+    FILTER team.createdBy == @userKey
+    {search_filter}
+    COLLECT WITH COUNT INTO total_count
+    RETURN total_count
+    """
+
+    try:
+        count_params = {
+            "orgId": user_info.get("orgId"),
+            "userKey": user['_key']
+        }
+        if search:
+            count_params["search"] = search
+
+        count_result = arango_service.db.aql.execute(count_query, bind_vars=count_params)
+        count_list = list(count_result)
+        total_count = count_list[0] if count_list else 0
+
+        # Get teams with pagination
+        teams_params = {
+            "orgId": user_info.get("orgId"),
+            "userKey": user['_key'],
+            "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
+            "offset": offset,
+            "limit": limit
+        }
+        if search:
+            teams_params["search"] = search
+
+        result = arango_service.db.aql.execute(created_teams_query, bind_vars=teams_params)
+        result_list = list(result)
+
+        if not result_list:
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "message": "No teams found",
+                    "teams": [],
+                    "pagination": {
+                        "page": page,
+                        "limit": limit,
+                        "total": total_count,
+                        "pages": 0
+                    }
+                }
+            )
+
+        # Calculate total pages
+        total_pages = (total_count + limit - 1) // limit
+
+        return JSONResponse(
+            status_code=200,
+            content={
+                "status": "success",
+                "message": "User created teams fetched successfully",
+                "teams": result_list,
+                "pagination": {
+                    "page": page,
+                    "limit": limit,
+                    "total": total_count,
+                    "pages": total_pages,
+                    "hasNext": page < total_pages,
+                    "hasPrev": page > 1
+                }
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch user created teams")
 
 @router.get("/user/list")
 async def get_users(

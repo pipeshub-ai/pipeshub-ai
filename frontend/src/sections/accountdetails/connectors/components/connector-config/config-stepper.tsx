@@ -17,14 +17,15 @@ interface ConfigStepperProps {
 
 const ConfigStepper: React.FC<ConfigStepperProps> = ({ activeStep, steps }) => {
   const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
 
   return (
     <Stepper
       activeStep={activeStep}
       sx={{
-        mb: 3,
+        mb: 2,
         '& .MuiStepLabel-root': {
-          padding: '6px 0',
+          padding: '4px 0',
         },
         '& .MuiStepLabel-label': {
           fontSize: '0.8125rem',
@@ -47,7 +48,7 @@ const ConfigStepper: React.FC<ConfigStepperProps> = ({ activeStep, steps }) => {
           },
         },
         '& .MuiStepConnector-line': {
-          borderColor: alpha(theme.palette.divider, 0.4),
+          borderColor: alpha(theme.palette.divider, isDark ? 0.2 : 0.4),
         },
       }}
     >
@@ -66,22 +67,26 @@ const ConfigStepper: React.FC<ConfigStepperProps> = ({ activeStep, steps }) => {
                   bgcolor:
                     active || completed
                       ? theme.palette.primary.main
-                      : alpha(theme.palette.grey[500], 0.15),
+                      : isDark
+                        ? alpha(theme.palette.grey[500], 0.2)
+                        : alpha(theme.palette.grey[500], 0.15),
                   color:
                     active || completed
                       ? theme.palette.primary.contrastText
                       : theme.palette.text.secondary,
                   fontWeight: 600,
-                  fontSize: '0.8125rem',
-                  transition: 'all 0.2s ease-in-out',
-                  border: `2px solid ${
+                  fontSize: '0.75rem',
+                  transition: 'all 0.2s ease',
+                  border: `1.5px solid ${
                     active || completed
                       ? theme.palette.primary.main
-                      : alpha(theme.palette.grey[500], 0.15)
+                      : isDark
+                        ? alpha(theme.palette.grey[500], 0.3)
+                        : alpha(theme.palette.grey[500], 0.2)
                   }`,
                 }}
               >
-                {completed ? <Iconify icon={checkIcon} width={14} height={14} /> : index + 1}
+                {completed ? <Iconify icon={checkIcon} width={12} height={12} /> : index + 1}
               </Box>
             )}
           >

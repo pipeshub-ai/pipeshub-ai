@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from logging import Logger
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
@@ -7,19 +8,16 @@ from aiokafka import AIOKafkaConsumer, TopicPartition  # type: ignore
 
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
-from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 
 # Concurrency control settings
 MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
-RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 class KafkaMessagingConsumer(IMessagingConsumer):
     """Kafka implementation of messaging consumer"""
 
     def __init__(self,
                 logger: Logger,
-                kafka_config: KafkaConsumerConfig,
-                rate_limiter: Optional[RateLimiter] = None) -> None:
+                kafka_config: KafkaConsumerConfig) -> None:
         self.logger = logger
         self.consumer: Optional[AIOKafkaConsumer] = None
         self.running = False
@@ -28,14 +26,13 @@ class KafkaMessagingConsumer(IMessagingConsumer):
         self.consume_task = None
         self.semaphore = asyncio.Semaphore(MAX_CONCURRENT_TASKS)
         self.message_handler = None
-        self.rate_limiter = rate_limiter
         self.active_tasks: Set[asyncio.Task] = set()
         self.max_concurrent_tasks = MAX_CONCURRENT_TASKS
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaConsumerConfig) -> Dict[str, Any]:
         """Convert KafkaConsumerConfig dataclass to dictionary format for aiokafka consumer"""
-        return {
+        config: Dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
@@ -43,6 +40,20 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             'client_id': kafka_config.client_id,
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
+
+        # Add SSL/SASL configuration
+        if kafka_config.ssl:
+            config["ssl_context"] = ssl.create_default_context()
+            sasl_config = kafka_config.sasl or {}
+            if sasl_config.get("username"):
+                config["security_protocol"] = "SASL_SSL"
+                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                config["sasl_plain_username"] = sasl_config["username"]
+                config["sasl_plain_password"] = sasl_config["password"]
+            else:
+                config["security_protocol"] = "SSL"
+
+        return config
 
     # implementing abstract methods from IMessagingConsumer
     async def initialize(self) -> None:
@@ -214,20 +225,16 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                         for message in messages:
                             try:
                                 self.logger.info(f"Received message: topic={message.topic}, partition={message.partition}, offset={message.offset}")
-                                # TODO: Remove this not needed
-                                if self.rate_limiter:
-                                    await self.__start_processing_task(message, topic_partition)
+                                success = await self.__process_message(message)
+                                if success:
+                                    # Commit the offset for this message
+                                    # Tells Kafka that this message has been successfully processed
+                                    await self.consumer.commit({topic_partition: message.offset + 1}) # type: ignore
+                                    self.logger.info(
+                                        f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
+                                    )
                                 else:
-                                    success = await self.__process_message(message)
-                                    if success:
-                                        # Commit the offset for this message
-                                        # Tells Kafka that this message has been successfully processed
-                                        await self.consumer.commit({topic_partition: message.offset + 1}) # type: ignore
-                                        self.logger.info(
-                                            f"Committed offset for topic-partition {message.topic}-{message.partition} at offset {message.offset}"
-                                        )
-                                    else:
-                                        self.logger.warning(f"Failed to process message at offset {message.offset}")
+                                    self.logger.warning(f"Failed to process message at offset {message.offset}")
 
                             except Exception as e:
                                 self.logger.error(f"Error processing individual message: {e}")
@@ -262,25 +269,6 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             self.processed_messages[topic_partition] = []
         self.processed_messages[topic_partition].append(offset)
 
-    async def __start_processing_task(self, message, topic_partition: TopicPartition) -> None:
-        """Start a new task for processing a message with semaphore control"""
-        # Wait for the rate limiter
-        await self.rate_limiter.wait() # type: ignore
-
-        # Wait for a semaphore slot to become available
-        await self.semaphore.acquire()
-
-        # Create and start a new task
-        task = asyncio.create_task(self.__process_message_wrapper(message, topic_partition))
-        self.active_tasks.add(task)
-
-        # Clean up completed tasks
-        self.__cleanup_completed_tasks()
-
-        # Log current task count
-        self.logger.debug(
-            f"Active tasks: {len(self.active_tasks)}/{self.max_concurrent_tasks}"
-        )
 
     async def __process_message_wrapper(self, message, topic_partition: TopicPartition) -> None:
         """Wrapper to handle async task cleanup and semaphore release"""

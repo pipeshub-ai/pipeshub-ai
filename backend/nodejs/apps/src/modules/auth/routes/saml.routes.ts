@@ -27,13 +27,13 @@ import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { UserAccountController } from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
 import { ConfigurationManagerService } from '../services/cm.service';
-import { UserController } from '../../user_management/controller/users.controller';
+import { JitProvisioningService } from '../services/jit-provisioning.service';
 
 const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
 };
 
-export function createSamlRouter(container: Container, userManagerContainer: Container) {
+export function createSamlRouter(container: Container) {
   const router = Router();
 
   let config = container.get<AppConfig>('AppConfig');
@@ -41,7 +41,7 @@ export function createSamlRouter(container: Container, userManagerContainer: Con
   const sessionService = container.get<SessionService>('SessionService');
   const iamService = container.get<IamService>('IamService');
   const samlController = container.get<SamlController>('SamlController');
-  const userController = userManagerContainer.get<UserController>('UserController');
+  const jitProvisioningService = container.get<JitProvisioningService>('JitProvisioningService');
   const logger = container.get<Logger>('Logger');
   router.use(attachContainerMiddleware(container));
   router.use(
@@ -173,11 +173,15 @@ export function createSamlRouter(container: Container, userManagerContainer: Con
         } catch (error: any) {
           if (error instanceof NotFoundError) {
             // JIT Provisioning: Auto-create user from SAML assertion
-            user = await userController.provisionSamlUser(
-              req.user.email,
+            const userDetails = jitProvisioningService.extractSamlUserDetails(
               req.user,
+              req.user.email,
+            );
+            user = await jitProvisioningService.provisionUser(
+              req.user.email,
+              userDetails,
               orgId,
-              logger,
+              'saml',
             );
           } else {
             // For errors other than NotFound, re-throw to be handled by the generic error handler
@@ -250,6 +254,7 @@ export function createSamlRouter(container: Container, userManagerContainer: Con
                 'ConfigurationManagerService',
               ),
               logger,
+              container.get<JitProvisioningService>('JitProvisioningService'),
             );
           });
         container

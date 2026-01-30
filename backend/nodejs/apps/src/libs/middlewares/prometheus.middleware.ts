@@ -17,6 +17,7 @@ export function metricsMiddleware(container: Container) {
     const userId = req.user?.userId || 'anonymous';
     const orgId = req.user?.orgId || 'unknown';
     const email = req.user?.email || 'unknown';
+    const fullName = req.user?.fullName || 'unknown';
     const requestId = req.context?.requestId;
     const reqContext = req.context;
 
@@ -30,6 +31,7 @@ export function metricsMiddleware(container: Container) {
           userId,
           orgId,
           email,
+          fullName,
           requestId,
           req.method,
           req.path,
@@ -37,7 +39,7 @@ export function metricsMiddleware(container: Container) {
           res.statusCode,
         );
       } else if (res.statusCode >= 200 && res.statusCode < 400) {
-        logger.info(
+        logger.debug(
           `Request success: RequestId: ${requestId} StatusCode: ${res.statusCode} Method: ${req.method} Path: ${req.path} (User: ${userId}, Org: ${orgId})`,
         );
         prometheusService.recordActivity(
@@ -45,6 +47,7 @@ export function metricsMiddleware(container: Container) {
           userId,
           orgId,
           email,
+          fullName,
           requestId,
           req.method,
           req.path,

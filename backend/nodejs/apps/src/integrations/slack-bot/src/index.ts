@@ -248,7 +248,7 @@ receiver.router.post("slack/command", (req: Request, res: Response) => {
     
 //     if (!question) {
 //       await respond({
-//         text: "Please provide a question. Usage: `/pipeshub qna <your question>`",
+//         text: "Please provide a question. Usage: `/pipeshub qna <your query>`",
 //         response_type: 'ephemeral'
 //       });
 //       return;

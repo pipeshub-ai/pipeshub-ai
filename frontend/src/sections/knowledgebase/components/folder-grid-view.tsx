@@ -393,6 +393,8 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'info';
       case 'ENABLE_MULTIMODAL_MODELS':
         return 'info';
+      case 'CONNECTOR_DISABLED':
+        return 'warning';
       default:
         return 'default';
     }
@@ -405,7 +407,7 @@ export const GridView: React.FC<GridViewProps> = ({
       case 'FILE_TYPE_NOT_SUPPORTED':
         return 'Not Supported';
       case 'AUTO_INDEX_OFF':
-        return 'Manual Sync';
+        return 'Manual Indexing';
       case 'EMPTY':
         return 'Empty';
       case 'ENABLE_MULTIMODAL_MODELS':
@@ -420,6 +422,8 @@ export const GridView: React.FC<GridViewProps> = ({
         return 'Paused';
       case 'QUEUED':
         return 'Queued';
+      case 'CONNECTOR_DISABLED':
+        return 'Connector Disabled';
       default:
         return status
           .replace(/_/g, ' ')
@@ -441,7 +445,8 @@ export const GridView: React.FC<GridViewProps> = ({
       type: isFolder ? 'folder' : 'file',
       extension: item.extension || item.fileRecord?.extension,
       mimeType: item.fileRecord?.mimeType,
-      sizeInBytes: item.sizeInBytes || item.fileRecord?.sizeInBytes,
+      // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+      sizeInBytes: item.sizeInBytes ?? item.fileRecord?.sizeInBytes,
       updatedAt: item.updatedAtTimestamp || item.updatedAt || item.sourceLastModifiedTimestamp,
       createdAt: item.createdAtTimestamp || item.createdAt || item.sourceCreatedAtTimestamp,
       indexingStatus: item.indexingStatus,

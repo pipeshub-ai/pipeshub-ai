@@ -194,7 +194,10 @@ Beyond search, our platform allows enterprises to create custom apps and AI agen
 
 ## 🚀 Deployment Guide
 
-PipesHub — the Workplace AI Platform — can be run locally or deployed on the cloud using Docker Compose.
+PipesHub (the Workplace AI Platform) can be run locally or deployed on the cloud using Docker Compose.
+**Note**: If you are deploying PipesHub on a cloud server, make sure you are using an HTTPS endpoint. PipesHub enforces stricter security checks, and browsers will block certain requests when the application is served over HTTP.
+You can use a reverse proxy like Cloudflare, Nginx, or Traefik to terminate SSL/TLS and provide a valid HTTPS certificate.
+If you see a white screen after deploying PipesHub while accessing it over HTTP, this is likely the cause. The frontend will refuse to load due to stricter security checks.
 
 ---
 

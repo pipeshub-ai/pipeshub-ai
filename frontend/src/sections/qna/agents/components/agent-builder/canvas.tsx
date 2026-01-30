@@ -1,5 +1,5 @@
 // src/sections/agents/components/flow-builder-canvas.tsx
-import React, { useRef, useCallback } from 'react';
+import React, { useRef, useCallback, useMemo, memo, useEffect, useState } from 'react';
 import {
   ReactFlow,
   MiniMap,
@@ -34,7 +34,21 @@ import playIcon from '@iconify-icons/mdi/play';
 
 // Import the enhanced FlowNode component
 import FlowNode from './flow-node';
+import CustomEdge from './custom-edge';
 import { normalizeDisplayName } from '../../utils/agent';
+import type { AgentBuilderError, NodeTemplate } from '../../types/agent';
+
+// Define nodeTypes OUTSIDE component to prevent re-creation
+// This is critical for ReactFlow performance
+const createNodeTypes = (onDelete?: (nodeId: string) => void): NodeTypes => ({
+  flowNode: (props: any) => <FlowNode {...props} onDelete={onDelete} />,
+});
+
+// Define edgeTypes for custom edge styling
+const edgeTypes = {
+  default: CustomEdge,
+  smoothstep: CustomEdge,
+};
  
 interface FlowNodeData extends Record<string, unknown> {
   id: string;
@@ -46,17 +60,6 @@ interface FlowNodeData extends Record<string, unknown> {
   inputs?: string[];
   outputs?: string[];
   isConfigured?: boolean;
-}
-
-interface NodeTemplate {
-  type: string;
-  label: string;
-  description: string;
-  icon: any;
-  defaultConfig: Record<string, any>;
-  inputs: string[];
-  outputs: string[];
-  category: 'inputs' | 'llm' | 'tools' | 'knowledge' | 'outputs' | 'agent';
 }
 
 interface FlowBuilderCanvasProps {
@@ -73,8 +76,11 @@ interface FlowBuilderCanvasProps {
   setNodes: React.Dispatch<React.SetStateAction<Node<FlowNodeData>[]>>;
   sidebarOpen: boolean;
   sidebarWidth: number;
+  configuredConnectors?: any[];
+  activeAgentConnectors?: any[];
   onNodeEdit?: (nodeId: string, data: any) => void;
   onNodeDelete?: (nodeId: string) => void;
+  onError?: (error: string | import('../../types/agent').AgentBuilderError) => void;
 }
 
 // Enhanced Controls Component that uses ReactFlow context
@@ -102,21 +108,20 @@ const EnhancedControls: React.FC<{ colors: any }> = ({ colors }) => {
           size="small"
           onClick={() => zoomIn()}
           sx={{
-            width: 32,
-            height: 32,
-            margin: '2px',
+            width: 28,
+            height: 28,
+            margin: '1px',
             backgroundColor: 'transparent',
             color: colors.text.secondary,
-            borderRadius: 1.5,
-            transition: 'all 0.2s ease',
+            borderRadius: 0.5,
+            transition: 'all 0.15s ease',
             '&:hover': {
-              backgroundColor: alpha(colors.primary, 0.1),
-              color: colors.primary,
-              transform: 'scale(1.1)',
+              backgroundColor: colors.background.elevated,
+              color: colors.text.primary,
             },
           }}
         >
-          <Icon icon={zoomInIcon} width={16} height={16} />
+          <Icon icon={zoomInIcon} width={14} height={14} />
         </IconButton>
       </Tooltip>
       
@@ -125,21 +130,20 @@ const EnhancedControls: React.FC<{ colors: any }> = ({ colors }) => {
           size="small"
           onClick={() => zoomOut()}
           sx={{
-            width: 32,
-            height: 32,
-            margin: '2px',
+            width: 28,
+            height: 28,
+            margin: '1px',
             backgroundColor: 'transparent',
             color: colors.text.secondary,
-            borderRadius: 1.5,
-            transition: 'all 0.2s ease',
+            borderRadius: 0.5,
+            transition: 'all 0.15s ease',
             '&:hover': {
-              backgroundColor: alpha(colors.primary, 0.1),
-              color: colors.primary,
-              transform: 'scale(1.1)',
+              backgroundColor: colors.background.elevated,
+              color: colors.text.primary,
             },
           }}
         >
-          <Icon icon={zoomOutIcon} width={16} height={16} />
+          <Icon icon={zoomOutIcon} width={14} height={14} />
         </IconButton>
       </Tooltip>
 
@@ -148,21 +152,20 @@ const EnhancedControls: React.FC<{ colors: any }> = ({ colors }) => {
           size="small"
           onClick={() => fitView({ padding: 0.2 })}
           sx={{
-            width: 32,
-            height: 32,
-            margin: '2px',
+            width: 28,
+            height: 28,
+            margin: '1px',
             backgroundColor: 'transparent',
             color: colors.text.secondary,
-            borderRadius: 1.5,
-            transition: 'all 0.2s ease',
+            borderRadius: 0.5,
+            transition: 'all 0.15s ease',
             '&:hover': {
-              backgroundColor: alpha(colors.primary, 0.1),
-              color: colors.primary,
-              transform: 'scale(1.1)',
+              backgroundColor: colors.background.elevated,
+              color: colors.text.primary,
             },
           }}
         >
-          <Icon icon={fitScreenIcon} width={16} height={16} />
+          <Icon icon={fitScreenIcon} width={14} height={14} />
         </IconButton>
       </Tooltip>
 
@@ -171,21 +174,20 @@ const EnhancedControls: React.FC<{ colors: any }> = ({ colors }) => {
           size="small"
           onClick={() => fitView({ padding: 0.1, includeHiddenNodes: false })}
           sx={{
-            width: 32,
-            height: 32,
-            margin: '2px',
+            width: 28,
+            height: 28,
+            margin: '1px',
             backgroundColor: 'transparent',
             color: colors.text.secondary,
-            borderRadius: 1.5,
-            transition: 'all 0.2s ease',
+            borderRadius: 0.5,
+            transition: 'all 0.15s ease',
             '&:hover': {
-              backgroundColor: alpha(colors.primary, 0.1),
-              color: colors.primary,
-              transform: 'scale(1.1)',
+              backgroundColor: colors.background.elevated,
+              color: colors.text.primary,
             },
           }}
         >
-          <Icon icon={centerFocusIcon} width={16} height={16} />
+          <Icon icon={centerFocusIcon} width={14} height={14} />
         </IconButton>
       </Tooltip>
     </Controls>
@@ -206,39 +208,39 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
   setNodes,
   sidebarOpen,
   sidebarWidth,
+  configuredConnectors = [],
+  activeAgentConnectors = [],
   onNodeEdit,
   onNodeDelete,
+  onError,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
 
-  // Professional color scheme
-  const colors = {
-    primary: isDark ? '#6366f1' : '#4f46e5',
-    secondary: isDark ? '#8b5cf6' : '#7c3aed',
-    success: isDark ? '#10b981' : '#059669',
+  // Professional minimal color scheme - using theme colors
+  const colors = useMemo(() => ({
+    primary: theme.palette.text.secondary,
+    secondary: theme.palette.text.secondary,
+    success: theme.palette.text.secondary,
     background: {
-      main: isDark ? '#1a1a1a' : '#fafbfc', // Lighter dark background for better node visibility
-      paper: isDark ? '#262626' : '#ffffff', // Adjusted paper color
-      elevated: isDark ? '#333333' : '#f8fafc',
+      main: theme.palette.background.default,
+      paper: theme.palette.background.paper,
+      elevated: theme.palette.background.paper,
     },
     border: {
-      main: isDark ? '#404040' : '#e2e8f0',
-      subtle: isDark ? '#2a2a2a' : '#f1f5f9',
+      main: theme.palette.divider,
+      subtle: theme.palette.divider,
     },
     text: {
-      primary: isDark ? '#f8fafc' : '#0f172a',
-      secondary: isDark ? '#cbd5e1' : '#64748b',
+      primary: theme.palette.text.primary,
+      secondary: theme.palette.text.secondary,
     },
     isDark,
-  };
+  }), [isDark, theme]);
 
-  const FlowNodeWrapper = useCallback((props: any) => <FlowNode {...props} />, []);
-
-  const nodeTypes: NodeTypes = {
-    flowNode: FlowNodeWrapper,
-  };
+  // Create stable nodeTypes object - use useState with initializer to ensure it's only created once
+  const [nodeTypes] = useState<NodeTypes>(() => createNodeTypes(onNodeDelete));
 
   const handleDrop = useCallback(
     (event: React.DragEvent) => {
@@ -248,15 +250,189 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
 
       const reactFlowBounds = reactFlowWrapper.current.getBoundingClientRect();
       const type = event.dataTransfer.getData('application/reactflow');
+      const connectorId = event.dataTransfer.getData('connectorId');
+      const connectorType = event.dataTransfer.getData('connectorType');
+      const connectorScope = event.dataTransfer.getData('scope');
+      const toolAppName = event.dataTransfer.getData('toolAppName'); // Tool's parent app
+      const connectorName = event.dataTransfer.getData('connectorName');
+      const connectorIconPath = event.dataTransfer.getData('connectorIconPath'); // Connector icon
+      const allToolsStr = event.dataTransfer.getData('allTools');
+      const toolCount = event.dataTransfer.getData('toolCount');
+      
       const template = nodeTemplates.find((t) => t.type === type);
-
       if (!template) return;
+
+      // Validate tools: Check if parent connector is configured and agent-active
+      // Get validation data from drag event
+      const isConnectorConfigured = event.dataTransfer.getData('isConfigured') === 'true';
+      const isConnectorAgentActive = event.dataTransfer.getData('isAgentActive') === 'true';
+      
+      // Find connector from drag data - prioritize the specific connectorId from drag event
+      const findConnector = (): { id: string; name: string } | null => {
+        // If we have connectorId from drag data, use it directly (this is the specific instance being dragged)
+        if (connectorId) {
+          // Try to find the connector object to get the name, searching in both lists
+          const connector = 
+            configuredConnectors.find((c: any) => c._key === connectorId || (c as any).id === connectorId) ||
+            activeAgentConnectors.find((c: any) => c._key === connectorId || (c as any).id === connectorId);
+          
+          // Always return the connectorId from drag data (the specific instance the user dragged)
+          // This ensures we navigate to the correct connector instance, not just the first match
+          return {
+            id: connectorId, // Use the specific connectorId from drag data - this is the instance the user selected
+            name: connector?.name || connectorName || connectorType || template.defaultConfig?.appName || toolAppName || 'Connector'
+          };
+        }
+        
+        // Fallback: If no connectorId in drag data, try to find by connectorType/appName
+        // This should rarely happen if drag data is set correctly
+        const appName = template.defaultConfig?.appName || toolAppName || connectorType;
+        if (appName) {
+          const connector = configuredConnectors.find((c: any) => 
+            c.name?.toUpperCase() === appName.toUpperCase() || 
+            c.type?.toUpperCase() === appName.toUpperCase()
+          ) || activeAgentConnectors.find((c: any) => 
+            c.name?.toUpperCase() === appName.toUpperCase() || 
+            c.type?.toUpperCase() === appName.toUpperCase()
+          );
+          if (connector) {
+            return { id: connector._key || (connector as any).id, name: connector.name || appName };
+          }
+        }
+        
+        return null;
+      };
+      
+      if (template.type.startsWith('tool-') && !template.type.startsWith('tool-group-')) {
+        const appName = template.defaultConfig?.appName || toolAppName;
+        
+        if (!isConnectorConfigured || !isConnectorAgentActive) {
+          // Prevent the drop and show error with link to configure
+          const connector = findConnector();
+          
+          if (onError) {
+            const connectorDisplayName = connector?.name || appName;
+            let message = '';
+            let actionLink: string | undefined;
+            
+            if (connector) {
+              if (!isConnectorConfigured) {
+                message = `The "${connectorDisplayName}" connector needs to be configured first.`;
+                actionLink = 'Configure Connector →';
+              } else if (!isConnectorAgentActive) {
+                message = `The "${connectorDisplayName}" connector needs to be enabled for agents to use this tool.`;
+                actionLink = 'Enable Connector for Agents →';
+              } else {
+                message = `The "${connectorDisplayName}" connector needs to be configured and enabled for agents.`;
+                actionLink = 'Configure & Enable Connector →';
+              }
+            } else {
+              message = `The "${appName}" connector must be configured and enabled for agents before you can use this tool.`;
+            }
+            
+            const errorMessage: AgentBuilderError = {
+              message,
+              connectorId: connector?.id,
+              connectorName: connectorDisplayName,
+              actionLink: connector ? actionLink : undefined,
+            };
+            onError(errorMessage);
+          }
+          
+          // Return early - do not add the node to the canvas
+          return;
+        }
+      }
+
+      // Validate tool-group drops: Check if connector is agent-active
+      if (template.type.startsWith('tool-group-')) {
+        // Check if the connector instance is agent-active
+        if (!isConnectorAgentActive) {
+          const connector = findConnector();
+          
+          if (onError) {
+            const connectorDisplayName = connector?.name || connectorType || template.defaultConfig?.appName || 'Connector';
+            const errorMessage: import('../../types/agent').AgentBuilderError = {
+              message: connector
+                ? `The "${connectorDisplayName}" connector needs to be enabled for agents to use this tool group.`
+                : `The connector must be enabled for agents before you can use this tool group.`,
+              connectorId: connector?.id,
+              connectorName: connectorDisplayName,
+              actionLink: connector ? 'Enable Connector for Agents →' : undefined,
+            };
+            onError(errorMessage);
+          }
+          
+          // Return early - do not add the node to the canvas
+          return;
+        }
+
+        // Validate: Only one tool-group (connector instance) per connector type
+        // This ensures we only have one active agent instance per type
+        const connectorAppType = connectorType || template.defaultConfig?.appName || template.defaultConfig?.connectorType;
+        if (connectorAppType) {
+          // Check if a tool-group with the same connector type already exists
+          const existingToolGroups = nodes.filter(
+            (n) => n.data.type.startsWith('tool-group-') &&
+            (n.data.config?.connectorType === connectorAppType || 
+             n.data.config?.appName === connectorAppType ||
+             n.data.type === template.type)
+          );
+
+          if (existingToolGroups.length > 0) {
+            if (onError) {
+              onError(`Only one ${connectorAppType} connector instance can be added as a Tool. Remove the existing one first.`);
+            }
+            return;
+          }
+        }
+      }
 
       const position = {
         x: event.clientX - reactFlowBounds.left - 130,
         y: event.clientY - reactFlowBounds.top - 40,
       };
 
+      // Handle tool-group drops (connector with all its tools)
+      if (template.type.startsWith('tool-group-') && allToolsStr && connectorId) {
+        try {
+          const allTools = JSON.parse(allToolsStr);
+          const newNode: Node<FlowNodeData> = {
+            id: `${type}-${Date.now()}`,
+            type: 'flowNode',
+            position,
+            data: {
+              id: `${type}-${Date.now()}`,
+              type: template.type,
+              label: normalizeDisplayName(connectorName || template.label),
+              description: `${connectorType} with ${toolCount} tools`,
+              icon: template.icon,
+              config: {
+                ...template.defaultConfig,
+                connectorInstanceId: connectorId,
+                connectorType,
+                connectorName,
+                iconPath: connectorIconPath || template.defaultConfig?.iconPath, // Store connector icon for visual distinction
+                tools: allTools,
+                selectedTools: allTools.map((t: any) => t.toolId), // All tools selected by default
+                appName: connectorType,
+                appDisplayName: connectorName || connectorType,
+                scope: connectorScope,
+              },
+              inputs: template.inputs || ['input'],
+              outputs: template.outputs || ['output'],
+              isConfigured: true, // Tool groups are pre-configured
+            },
+          };
+          setNodes((nds) => [...nds, newNode]);
+          return;
+        } catch (e) {
+          console.error('Failed to parse tools data:', e);
+          return;
+        }
+      }
+
+      // Handle regular node drops
       const newNode: Node<FlowNodeData> = {
         id: `${type}-${Date.now()}`,
         type: 'flowNode',
@@ -269,8 +445,18 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           icon: template.icon,
           config: {
             ...template.defaultConfig,
-            // Add default approval config for tool nodes
+            // Store the connector ID if this is a connector instance
+            ...(connectorId && { connectorInstanceId: connectorId }),
+            // Store connectorType for app nodes and tools
+            ...(connectorType && { connectorType }),
+            // For individual tools, store connector instance info
             ...(template.type.startsWith('tool-') && !template.type.startsWith('tool-group-') && {
+              // Get connector instance info from drag data or infer from app name
+              connectorInstanceId: connectorId || template.defaultConfig?.connectorInstanceId,
+              connectorType: connectorType || template.defaultConfig?.appName,
+              connectorName: connectorName || connectorType || template.defaultConfig?.appName,
+              iconPath: connectorIconPath || template.defaultConfig?.iconPath,
+              scope: connectorScope || template.defaultConfig?.scope,
               approvalConfig: {
                 requiresApproval: false,
                 approvers: { users: [], groups: [] },
@@ -281,13 +467,13 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           },
           inputs: template.inputs,
           outputs: template.outputs,
-          isConfigured: false,
+          isConfigured: template.type.startsWith('app-') || template.type.startsWith('tool-group-'),
         },
       };
 
       setNodes((nds) => [...nds, newNode]);
     },
-    [setNodes, nodeTemplates]
+    [setNodes, nodeTemplates, nodes, onError, configuredConnectors, activeAgentConnectors]
   );
 
   return (
@@ -303,7 +489,6 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
         }),
         width: sidebarOpen ? `calc(100% - ${sidebarWidth}px)` : '100%',
         height: '100%',
-        // backgroundColor: colors.background.main,
       }}
     >
       {/* Enhanced React Flow Canvas */}
@@ -360,6 +545,7 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           onNodeClick={onNodeClick}
           onEdgeClick={onEdgeClick}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
           fitView
           fitViewOptions={{
             padding: 0.1,
@@ -374,18 +560,15 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           snapGrid={[25, 25]}
           defaultEdgeOptions={{
             style: {
-              strokeWidth: 3,
-              stroke: colors.primary,
+              strokeWidth: 1.5,
+              stroke: isDark ? '#4a4a4a' : '#d0d0d0',
               cursor: 'pointer',
-              filter: 'drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15))',
             },
             type: 'smoothstep',
             animated: false,
             interactionWidth: 30,
-            // Remove arrowheads for cleaner tree appearance
           }}
           style={{
-            // backgroundColor: colors.background.main,
             width: '100%',
             height: '100%',
           }}
@@ -398,67 +581,24 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
           {/* Enhanced Controls */}
           <EnhancedControls colors={colors} />
 
-          {/* Enhanced Background */}
+          {/* Professional Background Pattern */}
           <Background 
             variant={BackgroundVariant.Dots} 
-            size={2}
-            gap={20}
+            size={0.8}
+            gap={24}
             style={{
               opacity: isDark ? 0.3 : 0.5,
             }}
           />
-
-
-          {/* Status Panel */}
-          <Panel position="top-left">
-            <Paper
-              sx={{
-                px: 2,
-                py: 1,
-                backdropFilter: 'blur(10px)',
-                border: `1px solid ${colors.border.main}`,
-                borderRadius: 2,
-                boxShadow: isDark 
-                  ? `0 4px 16px rgba(0, 0, 0, 0.3)`
-                  : `0 4px 16px rgba(15, 23, 42, 0.06)`,
-                display: 'flex',
-                alignItems: 'center',
-                gap: 1.5,
-              }}
-            >
-              <Box
-                sx={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  backgroundColor: colors.success,
-                  boxShadow: `0 0 8px ${alpha(colors.success, 0.6)}`,
-                }}
-              />
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: '0.75rem',
-                  fontWeight: 600,
-                  color: colors.text.primary,
-                  textTransform: 'uppercase',
-                  letterSpacing: '0.05em',
-                }}
-              >
-                Agent Builder
-              </Typography>
-              <Typography
-                variant="caption"
-                sx={{
-                  fontSize: '0.7rem',
-                  color: colors.text.secondary,
-                  ml: 0.5,
-                }}
-              >
-                {nodes.length} nodes, {edges.length} connections
-              </Typography>
-            </Paper>
-          </Panel>
+          <Background 
+            variant={BackgroundVariant.Lines} 
+            gap={100}
+            size={1}
+            color={isDark ? alpha(theme.palette.text.secondary, 0.03) : alpha(theme.palette.text.secondary, 0.05)}
+            style={{
+              opacity: 1,
+            }}
+          />
         </ReactFlow>
       </Box>
     </Box>

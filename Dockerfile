@@ -1,84 +1,164 @@
-# Stage 1: Base dependencies
-FROM python:3.10-slim AS base
+# -----------------------------------------------------------------------------
+# Stage 1: Build Base - Contains all build tools (NOT in final image)
+# -----------------------------------------------------------------------------
+FROM python:3.10-slim AS build-base
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
 
-WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    build-essential \
+    gnupg \
+    wget \
+    librocksdb-dev \
+    libgflags-dev \
+    libsnappy-dev \
+    zlib1g-dev \
+    libbz2-dev \
+    liblz4-dev \
+    libzstd-dev \
+    libssl-dev \
+    libspatialindex-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-RUN pip install uv
-
-# Install system dependencies and necessary runtime libraries
-RUN apt-get update && apt-get install -y \
-    curl build-essential gnupg iputils-ping telnet traceroute dnsutils net-tools wget \
-    librocksdb-dev libgflags-dev libsnappy-dev zlib1g-dev \
-    libbz2-dev liblz4-dev libzstd-dev libssl-dev ca-certificates libspatialindex-dev libpq5 && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
-    apt-get install -y libreoffice && \
-    apt-get install -y ocrmypdf tesseract-ocr ghostscript unpaper qpdf && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
-
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
+# Install Rust with minimal profile (only needed for building certain pip packages)
+RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Stage 2: Python dependencies
-FROM base AS python-deps
-COPY ./backend/python/pyproject.toml /app/python/
-WORKDIR /app/python
-RUN uv pip install --system -e .
-# Download NLTK and spaCy models
-RUN python -m spacy download en_core_web_sm && \
-    python -m nltk.downloader punkt && \
-    python -c "from sentence_transformers import CrossEncoder; model = CrossEncoder(model_name='BAAI/bge-reranker-base')"
+# Install uv for faster pip operations
+RUN pip install --no-cache-dir uv
 
-# Stage 3: Node.js backend
-FROM base AS nodejs-backend
+# -----------------------------------------------------------------------------
+# Stage 2: Python Dependencies Build
+# -----------------------------------------------------------------------------
+FROM build-base AS python-deps
+WORKDIR /app/python
+
+COPY ./backend/python/pyproject.toml ./
+
+# Install Python dependencies
+RUN uv pip install --system -e . && \
+    # Download ML models
+    python -m spacy download en_core_web_sm && \
+    python -c "import nltk; nltk.download('punkt', quiet=True)" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    # Clean up caches to save space
+    rm -rf /root/.cache/pip /root/.cache/uv /tmp/*
+
+# -----------------------------------------------------------------------------
+# Stage 3: Node.js Backend Build
+# -----------------------------------------------------------------------------
+FROM node:20-slim AS nodejs-backend
 WORKDIR /app/backend
 
 COPY backend/nodejs/apps/package*.json ./
 COPY backend/nodejs/apps/tsconfig.json ./
 
-# Set up architecture detection and conditional handling
+# Install dependencies with architecture handling
 RUN set -e; \
-    # Detect architecture
     ARCH=$(uname -m); \
     echo "Building for architecture: $ARCH"; \
-    # Platform-specific handling
     if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
-        echo "Detected ARM architecture (M1/Apple Silicon)"; \
-        # ARM-specific handling: Skip problematic binary or use alternative
-        npm install --prefix ./ --ignore-scripts && \
-	npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true; \
-        # Install Sharp AS a better alternative for ARM64
-        npm install sharp --save || echo "Sharp install failed, continuing without image optimization"; \
+        echo "Detected ARM architecture"; \
+        npm install --ignore-scripts && \
+        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
+        npm install sharp --save || true; \
     else \
         echo "Detected x86 architecture"; \
-        # Standard install for x86 platforms
-        apt-get update && apt-get install -y libc6-dev-i386 && npm install --prefix ./; \
+        npm install; \
     fi
 
 COPY backend/nodejs/apps/src ./src
-RUN npm run build
+RUN npm run build && \
+    # Prune dev dependencies after build
+    npm prune --production && \
+    # Clean npm cache
+    npm cache clean --force
 
-# Stage 4: Frontend build
-FROM base AS frontend-build
+# -----------------------------------------------------------------------------
+# Stage 4: Frontend Build
+# -----------------------------------------------------------------------------
+FROM node:20-slim AS frontend-build
 WORKDIR /app/frontend
+
 RUN mkdir -p packages
 COPY frontend/package*.json ./
 COPY frontend/packages ./packages/
-RUN npm config set legacy-peer-deps true && npm install
+
+RUN npm config set legacy-peer-deps true && \
+    npm install && \
+    npm cache clean --force
+
 COPY frontend/ ./
 RUN npm run build
 
-# Stage 5: Final runtime
-FROM python-deps AS runtime
+# -----------------------------------------------------------------------------
+# Stage 5: Runtime Base - Minimal runtime dependencies only
+# -----------------------------------------------------------------------------
+FROM python:3.10-slim AS runtime-base
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+
+# Install ONLY runtime dependencies (no build tools!)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    # Basic utilities
+    curl \
+    ca-certificates \
+    # Network debugging (optional - remove if not needed)
+    iputils-ping \
+    dnsutils \
+    # Runtime libraries for RocksDB
+    libsnappy1v5 \
+    zlib1g \
+    liblz4-1 \
+    libzstd1 \
+    # Other runtime deps
+    libpq5 \
+    # OpenGL library (required by Docling for PDF processing)
+    libgl1 \
+    libglib2.0-0 \
+    # OCR tools
+    ocrmypdf \
+    tesseract-ocr \
+    ghostscript \
+    unpaper \
+    qpdf \
+    # LibreOffice - MINIMAL install (only writer and calc, headless)
+    # Comment out if not needed - this is still ~300-400MB
+    libreoffice-writer-nogui \
+    libreoffice-calc-nogui \
+    libreoffice-impress-nogui \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
+# Install Node.js runtime only (not full dev environment)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y --no-install-recommends nodejs && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# -----------------------------------------------------------------------------
+# Stage 6: Final Runtime Image
+# -----------------------------------------------------------------------------
+FROM runtime-base AS runtime
 WORKDIR /app
 
+# Copy Python site-packages from build stage
+COPY --from=python-deps /usr/local/lib/python3.10/site-packages /usr/local/lib/python3.10/site-packages
+COPY --from=python-deps /usr/local/bin /usr/local/bin
+
+# Copy ML model data
+COPY --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
+COPY --from=python-deps /root/nltk_data /root/nltk_data
+
+# Copy Node.js backend (already pruned)
 COPY --from=nodejs-backend /app/backend/dist ./backend/dist
 COPY --from=nodejs-backend /app/backend/src/modules/mail ./backend/src/modules/mail
-COPY --from=nodejs-backend /app/backend/src/modules/storage/docs/swagger.yaml ./backend/src/modules/storage/docs/swagger.yaml
+COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
 COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
+
+# Copy frontend build
 COPY --from=frontend-build /app/frontend/dist ./backend/dist/public
+
+# Copy Python application code
 COPY backend/python/app/ /app/python/app/
 
 # Copy the process monitor script
@@ -89,7 +169,8 @@ COPY <<'EOF' /app/process_monitor.sh
 set -e
 
 LOG_FILE="/app/process_monitor.log"
-CHECK_INTERVAL=10
+CHECK_INTERVAL=${CHECK_INTERVAL:-20}
+NODEJS_PORT=${NODEJS_PORT:-3000}
 
 # PIDs of child processes
 NODEJS_PID=""
@@ -108,6 +189,26 @@ start_nodejs() {
     node dist/index.js &
     NODEJS_PID=$!
     log "Node.js started with PID: $NODEJS_PID"
+    
+    log "Waiting for Node.js health check..."
+    local MAX_RETRIES=30
+    local RETRY_COUNT=0
+    local HEALTH_CHECK_URL="http://localhost:${NODEJS_PORT}/api/v1/health"
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
+            log "Node.js health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+    
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Node.js health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
 }
 
 start_docling() {
@@ -132,6 +233,26 @@ start_connector() {
     python -m app.connectors_main &
     CONNECTOR_PID=$!
     log "Connector started with PID: $CONNECTOR_PID"
+    
+    log "Waiting for Connector health check..."
+    local MAX_RETRIES=30
+    local RETRY_COUNT=0
+    local HEALTH_CHECK_URL="http://localhost:8088/health"
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+        if curl -s -f "$HEALTH_CHECK_URL" > /dev/null 2>&1; then
+            log "Connector health check passed!"
+            break
+        fi
+        RETRY_COUNT=$((RETRY_COUNT + 1))
+        log "Health check attempt $RETRY_COUNT/$MAX_RETRIES failed, retrying in 2 seconds..."
+        sleep 2
+    done
+    
+    if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
+        log "ERROR: Connector health check failed after $MAX_RETRIES attempts"
+        return 1
+    fi
 }
 
 start_query() {
@@ -167,10 +288,8 @@ cleanup() {
     exit 0
 }
 
-# Trap signals for graceful shutdown
 trap cleanup SIGTERM SIGINT SIGQUIT
 
-# Start all services
 log "=== Process Monitor Starting ==="
 start_nodejs
 start_connector
@@ -180,31 +299,25 @@ start_docling
 
 log "All services started. Beginning monitoring cycle (checking every ${CHECK_INTERVAL}s)..."
 
-# Monitor loop
 while true; do
     sleep "$CHECK_INTERVAL"
     
-    # Check and restart Node.js
     if ! check_process "$NODEJS_PID" "Node.js"; then
         start_nodejs
     fi
     
-    # Check and restart Docling
     if ! check_process "$DOCLING_PID" "Docling"; then
         start_docling
     fi
     
-    # Check and restart Indexing
     if ! check_process "$INDEXING_PID" "Indexing"; then
         start_indexing
     fi
     
-    # Check and restart Connector
     if ! check_process "$CONNECTOR_PID" "Connector"; then
         start_connector
     fi
     
-    # Check and restart Query
     if ! check_process "$QUERY_PID" "Query"; then
         start_query
     fi
@@ -213,8 +326,6 @@ EOF
 
 RUN chmod +x /app/process_monitor.sh
 
-# Expose necessary ports
 EXPOSE 3000 8000 8088 8091 8081
 
-# Use the process monitor as the main process
 CMD ["/app/process_monitor.sh"]

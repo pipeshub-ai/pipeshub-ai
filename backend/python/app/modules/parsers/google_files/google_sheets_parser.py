@@ -23,13 +23,14 @@ class GoogleSheetsParser:
         logger,
         admin_service: Optional[GoogleAdminService] = None,
         user_service: Optional[ParserUserService] = None,
+        connector_id: str = None,
     ) -> None:
         """Initialize with either admin or user service"""
         self.logger = logger
         self.admin_service = admin_service
         self.user_service = user_service
         self.service = None
-
+        self.connector_id = connector_id
         self.table_summary_prompt = table_summary_prompt
         self.row_text_prompt = row_text_prompt
 
@@ -39,10 +40,13 @@ class GoogleSheetsParser:
         self.max_wait = 10  # seconds
 
     async def connect_service(
-        self, user_email: str = None, org_id: str = None, user_id: str = None, app_name: str = "drive"
+        self, user_email: str = None, org_id: str = None, user_id: str = None, connector_id: str = None
     ) -> None:
+        if connector_id:
+            self.connector_id = connector_id
+
         if self.user_service:
-            if not await self.user_service.connect_individual_user(org_id, user_id,app_name=app_name):
+            if not await self.user_service.connect_individual_user(org_id, user_id,self.connector_id):
                 self.logger.error("❌ Failed to connect to Google Sheets service")
                 return None
 
@@ -50,7 +54,7 @@ class GoogleSheetsParser:
             self.logger.info("🚀 Connected to Google Sheets service: %s", self.service)
         elif self.admin_service:
             user_service = await self.admin_service.create_parser_user_service(
-                user_email
+                user_email, self.connector_id
             )
             self.service = user_service.sheets_service
             self.logger.info("🚀 Connected to Google Sheets service: %s", self.service)
@@ -458,56 +462,6 @@ class GoogleSheetsParser:
             return processed_tables
 
         except Exception:
-            raise
-
-    @exponential_backoff()
-    async def process_sheet_with_summaries(
-        self, llm, sheet_name: str, spreadsheet_id: str
-    ) -> Dict[str, Any]:
-        """Process a sheet and generate all summaries and row texts"""
-        try:
-            self.llm = llm
-            # Get tables in the sheet
-            tables = await self.get_tables_in_sheet(sheet_name, spreadsheet_id)
-            # Process each table
-            processed_tables = []
-            for table in tables:
-                # Get table summary
-                table_summary = await self.get_table_summary(table)
-                # Process rows in batches of 20
-                processed_rows = []
-                batch_size = 20
-                for i in range(0, len(table["data"]), batch_size):
-                    batch = table["data"][i : i + batch_size]
-                    row_texts = await self.get_rows_text(batch, table_summary)
-                    # Add processed rows to results
-                    for row, row_text in zip(batch, row_texts):
-                        processed_rows.append(
-                            {
-                                "raw_data": {
-                                    cell["header"]: cell["value"] for cell in row
-                                },
-                                "natural_language_text": row_text,
-                                "row_num": row[0]["row"],
-                            }
-                        )
-                processed_tables.append(
-                    {
-                        "headers": table["headers"],
-                        "summary": table_summary,
-                        "rows": processed_rows,
-                        "location": {
-                            "start_row": table["start_row"],
-                            "start_col": table["start_col"],
-                            "end_row": table["end_row"],
-                            "end_col": table["end_col"],
-                        },
-                    }
-                )
-            return {"sheet_name": sheet_name, "tables": processed_tables}
-
-        except Exception as e:
-            self.logger.error(f"❌ Error processing sheet with summaries: {str(e)}")
             raise
 
     @exponential_backoff()

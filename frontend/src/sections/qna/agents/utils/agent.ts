@@ -4,6 +4,7 @@ import type {
   AgentFormData,
   AgentTemplateFormData,
   AgentFilterOptions,
+  ConnectorInstance,
 } from 'src/types/agent';
 
 import chatIcon from '@iconify-icons/mdi/chat';
@@ -94,8 +95,8 @@ export const getInitialAgentFormData = (): AgentFormData => ({
   systemPrompt: '',
   tools: [],
   models: [],
-  apps: [],
   kb: [],
+  connectors: [], // Unified array with category field
   vectorDBs: [],
   tags: [],
 });
@@ -462,49 +463,158 @@ export const extractAgentConfigFromFlow = (
   currentAgent?: Agent | null
 ) => {
   const tools: string[] = [];
-  const models: { provider: string; modelName: string; isReasoning: boolean }[] = [];
+  const models: { provider: string; modelName: string; isReasoning: boolean, modelKey: string }[] = [];
   const kb: string[] = [];
-  const apps: string[] = [];
+  const connectors: ConnectorInstance[] = [];
+  
+  // Helper function to add or update connector instance with category
+  const addConnectorInstance = (
+    id: string,
+    name: string,
+    type: string,
+    scope: string,
+    category: 'knowledge' | 'action'
+  ) => {
+    if (!id || !type) return;
+    
+    // Check if connector instance with same id and category already exists
+    const existingIndex = connectors.findIndex(
+      (ci) => ci.id === id && ci.category === category
+    );
+    
+    if (existingIndex >= 0) {
+      // Update existing entry
+      connectors[existingIndex] = {
+        id,
+        name,
+        type,
+        scope: scope as 'personal' | 'team',
+        category,
+      };
+    } else {
+      // Add new entry
+      connectors.push({
+        id,
+        name,
+        type,
+        scope: scope as 'personal' | 'team',
+        category,
+      });
+    }
+  };
+
+  // Extract tool connector instances from tool-group nodes (category: 'action')
+  nodes.forEach((node) => {
+    if (node.data.type.startsWith('tool-group-')) {
+      const connectorInstanceId = node.data.config?.connectorInstanceId || node.data.config?.id || node.id;
+      const connectorName = node.data.config?.connectorName || node.data.config?.name || node.data.label;
+      const connectorType = node.data.config?.connectorType || node.data.config?.type;
+      const scope = node.data.config?.scope || 'personal';
+      
+      addConnectorInstance(connectorInstanceId, connectorName, connectorType, scope, 'action');
+    }
+  });
+
+  // Extract tools connected directly to agent or through other nodes
+  // New flow: Tools can connect directly to agent's action handle
+  edges.forEach((edge) => {
+    const sourceNode = nodes.find((n) => n.id === edge.source);
+    const targetNode = nodes.find((n) => n.id === edge.target);
+
+    // If a tool is connected to the agent directly
+    if (sourceNode?.data.type.startsWith('tool-') && targetNode?.data.type === 'agent-core') {
+      const toolName = sourceNode.data.config?.fullName || sourceNode.data.config?.toolId;
+      if (toolName && !tools.includes(toolName)) {
+        tools.push(toolName);
+      }
+    }
+  });
 
   nodes.forEach((node) => {
     if (node.data.type.startsWith('tool-group-')) {
       // Handle tool group nodes - extract all tools from the group
       if (node.data.config?.tools && Array.isArray(node.data.config.tools)) {
         node.data.config.tools.forEach((tool: any) => {
-          if (tool.fullName) {
+          if (tool.fullName && !tools.includes(tool.fullName)) {
             tools.push(tool.fullName);
           }
         });
       }
-    } else if (node.data.type.startsWith('tool-')) {
-      // Handle individual tool nodes
+      // Also extract from selectedTools if present
+      if (node.data.config?.selectedTools && Array.isArray(node.data.config.selectedTools)) {
+        node.data.config.selectedTools.forEach((toolId: string) => {
+          // Find the tool in the tools array
+          const tool = node.data.config?.tools?.find((t: any) => t.toolId === toolId);
+          if (tool && tool.fullName && !tools.includes(tool.fullName)) {
+            tools.push(tool.fullName);
+          }
+        });
+      }
+    } else if (node.data.type.startsWith('tool-') && !node.data.type.startsWith('tool-group-')) {
+      // Handle individual tool nodes - can now connect directly to agent
       const toolName = node.data.config?.fullName || node.data.config?.toolId;
-      if (toolName) {
+      if (toolName && !tools.includes(toolName)) {
         tools.push(toolName);
+      }
+      
+      // Extract connector instance for this individual tool if present (category: 'action')
+      if (node.data.config?.connectorInstanceId && node.data.config?.connectorType) {
+        const connectorInstanceId = node.data.config.connectorInstanceId;
+        const connectorName = node.data.config.connectorName || node.data.config.connectorType;
+        const connectorType = node.data.config.connectorType;
+        const scope = node.data.config.scope || 'personal';
+        
+        addConnectorInstance(connectorInstanceId, connectorName, connectorType, scope, 'action');
       }
     } else if (node.data.type.startsWith('llm-')) {
       models.push({
         provider: node.data.config.provider || 'azureOpenAI',
         modelName: node.data.config.modelName || node.data.config.model,
         isReasoning: node.data.config.isReasoning || false,
+        modelKey: node.data.config.modelKey || '',
       });
     } else if (node.data.type.startsWith('kb-') && node.data.type !== 'kb-group') {
       // Individual knowledge base nodes
       kb.push(node.data.config.kbId);
     } else if (node.data.type.startsWith('app-') && node.data.type !== 'app-group') {
-      // Individual app knowledge nodes (not group node)
-      if (node.data.config?.appName && !apps.includes(node.data.config.appName)) {
-        apps.push(node.data.config.appName);
-      }
+      // Individual app knowledge nodes (connector instances from Knowledge section)
+      // Extract connector instance with category: 'knowledge'
+      const connectorInstanceId = node.data.config?.connectorInstanceId || node.data.config?.id || node.id;
+      const connectorName = node.data.config?.appDisplayName || node.data.config?.appName || node.data.label;
+      const connectorType = node.data.config?.connectorType || node.data.config?.appName || node.data.label;
+      const scope = node.data.config?.scope || 'personal';
+      
+      addConnectorInstance(connectorInstanceId, connectorName, connectorType, scope, 'knowledge');
     }
   });
 
-  // Handle app-group and kb-group nodes
+  // Handle app-group nodes - extract connector instances from selectedApps
   const appKnowledgeGroupNode = nodes.find((node) => node.data.type === 'app-group');
   if (appKnowledgeGroupNode && appKnowledgeGroupNode.data.config?.selectedApps) {
-    appKnowledgeGroupNode.data.config.selectedApps.forEach((app: string) => {
-      if (!apps.includes(app)) {
-        apps.push(app);
+    // Note: app-group nodes store connector instance IDs in selectedApps
+    appKnowledgeGroupNode.data.config.selectedApps.forEach((connectorInstanceId: string) => {
+      // Try to find the connector instance details from the node config
+      const connectorInfo = appKnowledgeGroupNode.data.config?.apps?.find(
+        (app: any) => app.id === connectorInstanceId
+      );
+      
+      if (connectorInfo) {
+        addConnectorInstance(
+          connectorInstanceId,
+          connectorInfo.name || connectorInfo.displayName || connectorInstanceId,
+          connectorInfo.type || connectorInfo.name || connectorInstanceId,
+          connectorInfo.scope || 'personal',
+          'knowledge'
+        );
+      } else {
+        // Fallback: use the ID as name and type
+        addConnectorInstance(
+          connectorInstanceId,
+          connectorInstanceId,
+          connectorInstanceId,
+          'personal',
+          'knowledge'
+        );
       }
     });
   }
@@ -535,14 +645,10 @@ export const extractAgentConfigFromFlow = (
       'You are a sophisticated flow-based AI agent that processes information through a visual workflow.',
     tools,
     models,
-    apps,
     kb,
+    connectors, // Unified array with category field
     vectorDBs: [],
-    tags: currentAgent?.tags || ['flow-based', 'visual-workflow'],
-    flow: {
-      nodes,
-      edges,
-    },
+    tags: currentAgent?.tags || ['flow-based', 'visual-workflow']
   };
 };
 

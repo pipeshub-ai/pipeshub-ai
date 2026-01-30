@@ -26,7 +26,7 @@ export const jwtGeneratorForForgotPasswordLink = (
       scopes: [TokenScopes.PASSWORD_RESET],
     },
     scopedJwtSecret,
-    { expiresIn: '1h' },
+    { expiresIn: '20m' },
   );
   const mailAuthToken = jwt.sign(
     {
@@ -78,10 +78,13 @@ export const refreshTokenJwtGenerator = (
   orgId: string,
   scopedJwtSecret: string,
 ) => {
+  // Read expiry time from environment variable, default to 720h (30 days) if not set
+  const expiryTime = (process.env.REFRESH_TOKEN_EXPIRY || '720h') as string;
+  
   return jwt.sign(
     { userId: userId, orgId: orgId, scopes: [TokenScopes.TOKEN_REFRESH] },
     scopedJwtSecret,
-    { expiresIn: '720h' },
+    { expiresIn: expiryTime } as jwt.SignOptions,
   );
 };
 
@@ -121,12 +124,15 @@ export const authJwtGenerator = (
   fullName?: string | null,
   accountType?: string | null,
 ) => {
+  // Read expiry time from environment variable, default to 24h if not set
+  const expiryTime = (process.env.ACCESS_TOKEN_EXPIRY || '24h') as string;
+  
   return jwt.sign(
     { userId, orgId, email, fullName, accountType },
     scopedJwtSecret,
     {
-      expiresIn: '24h',
-    },
+      expiresIn: expiryTime,
+    } as jwt.SignOptions,
   );
 };
 

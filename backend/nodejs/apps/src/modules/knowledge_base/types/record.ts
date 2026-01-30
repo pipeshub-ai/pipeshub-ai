@@ -8,7 +8,8 @@ export type ConnectorName =
   | 'JIRA'
   | 'SLACK'
   | 'SHAREPOINT ONLINE'
-  | 'GMAIL';
+  | 'GMAIL'
+  | 'NOTION';
 export type IndexingStatus =
   | 'NOT_STARTED'
   | 'PAUSED'
@@ -26,7 +27,8 @@ export interface IRecordDocument {
   _key: string;
   // Optional properties can be omitted on document creation
   orgId: string;
-
+  sizeInBytes?: number;
+  
   // Required fields
   recordName: string;
   externalRecordId: string;
@@ -40,6 +42,7 @@ export interface IRecordDocument {
   connectorName?: ConnectorName;
   updatedAtTimestamp?: number;
   lastSyncTimestamp?: number;
+  connectorId: string;
 
   // Flags and timestamps
   isDeletedAtSource?: boolean; // default: false
@@ -50,6 +53,7 @@ export interface IRecordDocument {
   isDeleted?: boolean; // default: false
   isArchived?: boolean; // default: false
   deletedByUserId?: string;
+  isVLMOcrProcessed?: boolean; // default: false
 
   lastIndexTimestamp?: number;
   lastExtractionTimestamp?: number;

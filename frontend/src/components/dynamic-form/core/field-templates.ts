@@ -38,7 +38,7 @@ export const FIELD_TEMPLATES = {
     required: true,
     validation: z.string().min(1, 'API Key is required'),
   },
-  
+
   clientId: {
     name: 'clientId',
     label: 'Client ID',
@@ -174,25 +174,20 @@ export const FIELD_TEMPLATES = {
     gridSize: { xs: 12, sm: 6 },
   },
 
-  // URL FIELDS
-  frontendUrl: {
-    name: 'frontendUrl',
-    label: 'Frontend URL',
-    type: 'url' as const,
-    placeholder: 'https://yourdomain.com',
-    icon: linkIcon,
-    required: true,
-    validation: z.string().refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
-  },
-
-  connectorUrl: {
-    name: 'connectorUrl',
-    label: 'Connector URL',
-    type: 'url' as const,
-    placeholder: 'https://connector.yourdomain.com',
-    icon: linkIcon,
-    required: true,
-    validation: z.string().refine((val) => val === '' || /^https?:\/\/.+/.test(val), 'Please enter a valid URL'),
+  contextLength: {
+    name: 'contextLength',
+    label: 'Context Length',
+    type: 'number' as const,
+    placeholder: 'Context length e.g. 128000 (128K)',
+    icon: cubeIcon,
+    validation: z
+      .number()
+      .min(1, 'Context length must be at least 1')
+      .max(1000000, 'Context length must be at most 1,000,000')
+      .optional()
+      .nullable(),
+    required: false,
+    gridSize: { xs: 12, sm: 6 },
   },
 
   // STORAGE FIELDS - S3
@@ -277,7 +272,7 @@ export const FIELD_TEMPLATES = {
     options: [
       { value: 'https', label: 'HTTPS' },
       { value: 'http', label: 'HTTP' },
-    ]as { value: string; label: string }[],
+    ] as { value: string; label: string }[],
   },
 
   endpointSuffix: {
@@ -308,18 +303,22 @@ export const FIELD_TEMPLATES = {
     placeholder: 'http://localhost:3000/files',
     icon: linkIcon,
     required: false,
-    validation: z.string().optional().or(z.literal('')).refine(
-      (val) => {
-        if (!val || val.trim() === '') return true;
-        try {
-          const url = new URL(val);
-          return !!url;
-        } catch {
-          return false;
-        }
-      },
-      { message: 'Must be a valid URL' }
-    ),
+    validation: z
+      .string()
+      .optional()
+      .or(z.literal(''))
+      .refine(
+        (val) => {
+          if (!val || val.trim() === '') return true;
+          try {
+            const url = new URL(val);
+            return !!url;
+          } catch {
+            return false;
+          }
+        },
+        { message: 'Must be a valid URL' }
+      ),
     gridSize: { xs: 12, sm: 6 },
   },
 
@@ -395,8 +394,30 @@ export const FIELD_TEMPLATES = {
   provider: {
     name: 'provider',
     label: 'Provider',
+    type: 'select' as const,
     placeholder: 'anthropic',
     icon: serverIcon,
+    required: true,
+    validation: z.string().min(1, 'Provider is required'),
+    options: [
+      { value: 'anthropic', label: 'Anthropic (Claude)' },
+      { value: 'mistral', label: 'Mistral' },
+      { value: 'qwen', label: 'Qwen' },
+      { value: 'deepseek', label: 'DeepSeek' },
+      { value: 'cohere', label: 'Cohere' },
+      { value: 'amazon', label: 'Amazon (Titan)' },
+      { value: 'ai21', label: 'AI21 Labs' },
+      { value: 'other', label: 'Other (Custom)' },
+    ],
+  },
+
+  customProvider: {
+    name: 'customProvider',
+    label: 'Custom Provider Name',
+    placeholder: 'e.g., custom-provider-name',
+    icon: serverIcon,
+    required: false,
+    validation: z.string().optional(),
   },
 } as const;
 

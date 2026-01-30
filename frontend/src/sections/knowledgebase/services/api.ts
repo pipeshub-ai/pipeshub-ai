@@ -4,7 +4,7 @@ import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
 import { UnifiedPermission } from 'src/components/permissions/UnifiedPermissionsDialog';
 
-import { getConnectorPublicUrl } from 'src/sections/accountdetails/account-settings/services/utils/services-configuration-service';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import type {
   Item,
   KBPermission,
@@ -21,134 +21,56 @@ import { SearchFilters, SearchResponse } from '../types/search-response';
 const API_BASE = '/api/v1/knowledgeBase';
 
 export class KnowledgeBaseAPI {
-  private static async downloadUploadDocument(
-    externalRecordId: string,
-    fileName: string
-  ): Promise<void> {
-    const response = await axios.get(
-      `${CONFIG.backendUrl}/api/v1/document/${externalRecordId}/download`,
-      { responseType: 'blob' } // Set response type to blob to handle binary data
-    );
-    // Read the blob response as text to check if it's JSON with signedUrl
-    const reader = new FileReader();
-    const textPromise = new Promise<string>((resolve) => {
-      reader.onload = () => {
-        resolve(reader.result?.toString() || '');
-      };
-    });
-
-    reader.readAsText(response.data);
-    const text = await textPromise;
-
-    let downloadUrl;
-    // Determine filename: prefer Content-Disposition, then provided fileName, then fallback
-    let filename: string | undefined;
-    const contentDisposition = response.headers['content-disposition'];
-    if (contentDisposition) {
-      // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
-      const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
-      if (filenameStarMatch && filenameStarMatch[1]) {
-        // Decode the percent-encoded UTF-8 filename
-        try {
-          filename = decodeURIComponent(filenameStarMatch[1]);
-        } catch (e) {
-          console.error('Failed to decode UTF-8 filename', e);
-        }
-      }
-      
-      // Fallback to basic filename="..." format if filename* not found
-      if (!filename) {
-        const filenameMatch = contentDisposition.match(/filename="?([^";\n]*)"?/i);
-        if (filenameMatch && filenameMatch[1]) {
-          filename = filenameMatch[1];
-        }
-      }
-    }
-    if (!filename) {
-      filename = fileName || `document-${externalRecordId}`;
-    }
-
-    // Try to parse as JSON to check for signedUrl property
-    try {
-      const jsonData = JSON.parse(text);
-      if (jsonData && jsonData.signedUrl) {
-        // Create a hidden link with download attribute
-        const downloadLink = document.createElement('a');
-        downloadLink.href = jsonData.signedUrl;
-        downloadLink.setAttribute('download', filename); // Use provided filename
-        downloadLink.setAttribute('target', '_blank');
-        downloadLink.style.display = 'none';
-
-        document.body.appendChild(downloadLink);
-        downloadLink.click();
-        document.body.removeChild(downloadLink);
-      }
-    } catch (e) {
-      // Case 2: Response is binary data
-      const contentType = response.headers['content-type'] || 'application/octet-stream';
-      const blob = new Blob([response.data], { type: contentType });
-      downloadUrl = URL.createObjectURL(blob);
-
-      // Create a temporary anchor element for download of binary data
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.setAttribute('download', filename); // Use resolved filename
-
-      // Append to the document, trigger click, and then remove
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-
-      // Clean up the blob URL we created
-      URL.revokeObjectURL(downloadUrl);
-    }
-  }
-
-  private static async downloadConnectorDocument(
-    externalRecordId: string,
+  /**
+   * Unified method to stream/download a document using the stream/record API.
+   * Works for both KB records (UPLOAD origin) and connector records.
+   * The backend handles permission checks and fetches content from appropriate source.
+   */
+  private static async streamDocument(
+    recordId: string,
     fileName: string
   ): Promise<void> {
     try {
-      const publicConnectorUrlResponse = await getConnectorPublicUrl();
-      let connectorResponse;
-
-      if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-        const CONNECTOR_URL = publicConnectorUrlResponse.url;
-        connectorResponse = await axios.get(
-          `${CONNECTOR_URL}/api/v1/stream/record/${externalRecordId}`,
+      const response = await axios.get(
+          `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
           {
             responseType: 'blob',
           }
         );
-      } else {
-        connectorResponse = await axios.get(
-          `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${externalRecordId}`,
-          {
-            responseType: 'blob',
-          }
-        );
-      }
 
-      if (!connectorResponse) return;
+      if (!response) return;
 
       // Extract filename from response headers or use fallback
-      let filename = fileName || `document-${externalRecordId}`;
-      const contentDisposition = connectorResponse.headers['content-disposition'];
+      let filename = fileName || `document-${recordId}`;
+      const contentDisposition = response.headers['content-disposition'];
       if (contentDisposition) {
-        const filenameMatch = contentDisposition.match(
-          /filename[*]?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"]?;?/
-        );
-        if (filenameMatch && filenameMatch[1]) {
-          filename = decodeURIComponent(filenameMatch[1]);
+        // First try to parse filename*=UTF-8'' format (RFC 5987) for Unicode support
+        const filenameStarMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+        if (filenameStarMatch && filenameStarMatch[1]) {
+          try {
+            filename = decodeURIComponent(filenameStarMatch[1]);
+          } catch (e) {
+            console.error('Failed to decode UTF-8 filename', e);
+          }
+        }
+        
+        // Fallback to basic filename="..." format if filename* not found
+        if (!filename || filename === fileName) {
+          const filenameMatch = contentDisposition.match(
+            /filename[*]?=['"]?(?:UTF-\d['"]*)?([^;\r\n"']*)['"']?;?/
+          );
+          if (filenameMatch && filenameMatch[1]) {
+            filename = decodeURIComponent(filenameMatch[1]);
+          }
         }
       }
 
-      if(!filename && fileName) {
+      if (!filename && fileName) {
         filename = fileName;
       }
 
       // Get the blob data directly
-      const blob = connectorResponse.data;
+      const blob = response.data;
 
       // Create download link and trigger download
       const url = window.URL.createObjectURL(blob);
@@ -163,8 +85,6 @@ export class KnowledgeBaseAPI {
 
       // Clean up the blob URL
       window.URL.revokeObjectURL(url);
-
-      console.log(`File "${filename}" downloaded successfully`);
     } catch (err) {
       console.error('Error downloading document:', err);
       throw new Error('Failed to download document');
@@ -349,9 +269,15 @@ export class KnowledgeBaseAPI {
   }
 
   // Reindexing operations
-  static async reindexRecord(recordId: string): Promise<any> {
-    const response = await axios.post(`${API_BASE}/reindex/record/${recordId}`);
+  static async reindexRecord(recordId: string, force: boolean = false, depth: number = 0): Promise<any> {
+    const response = await axios.post(`${API_BASE}/reindex/record/${recordId}`, { force, depth });
     if (response.status !== 200) throw new Error('Failed to reindex record');
+    return response.data;
+  }
+
+  static async reindexRecordGroup(recordGroupId: string, force: boolean = false, depth: number = 0): Promise<any> {
+    const response = await axios.post(`${API_BASE}/reindex/record-group/${recordGroupId}`, { force, depth });
+    if (response.status !== 200) throw new Error('Failed to reindex record group');
     return response.data;
   }
 
@@ -430,17 +356,18 @@ export class KnowledgeBaseAPI {
     return response.data;
   }
 
+  /**
+   * Download a document using the unified stream/record API.
+   * Works for both KB records (UPLOAD origin) and connector records.
+   * @param recordId - The record ID (_key) to download
+   * @param fileName - The filename for the downloaded file
+   */
   static async handleDownloadDocument(
-    externalRecordId: string,
-    fileName: string,
-    origin: string
+    recordId: string,
+    fileName: string
   ): Promise<void> {
     try {
-      if (origin === ORIGIN.UPLOAD) {
-        await this.downloadUploadDocument(externalRecordId, fileName);
-      } else if (origin === ORIGIN.CONNECTOR) {
-        await this.downloadConnectorDocument(externalRecordId, fileName);
-      }
+      await this.streamDocument(recordId, fileName);
     } catch (error) {
       throw new Error('Failed to download document');
     }
@@ -479,5 +406,40 @@ export class KnowledgeBaseAPI {
     } catch (error) {
       throw new Error('Error searching knowledge base ');
     }
+  }
+
+  // Knowledge Hub API - Hierarchical navigation for all records
+  // Get top-level nodes (KBs and Connectors)
+  static async getKnowledgeHubNodes(params?: {
+    page?: number;
+    limit?: number;
+    include?: string;
+    sortBy?: string;
+    sortOrder?: 'asc' | 'desc';
+    q?: string;
+    nodeTypes?: string;
+    recordTypes?: string;
+    origins?: string;
+    connectors?: string;
+    kbs?: string;
+    indexingStatus?: string;
+  }): Promise<any> {
+    const response = await axios.get(`${API_BASE}/knowledge-hub/nodes`, { params });
+    if (!response.data) throw new Error('Failed to fetch knowledge hub nodes');
+    return response.data;
+  }
+
+  // Get children of a specific node
+  static async getKnowledgeHubNodeChildren(
+    nodeType: string,
+    nodeId: string,
+    params?: any
+  ): Promise<any> {
+    const response = await axios.get(
+      `${API_BASE}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
+      { params }
+    );
+    if (!response.data) throw new Error('Failed to fetch node children');
+    return response.data;
   }
 }

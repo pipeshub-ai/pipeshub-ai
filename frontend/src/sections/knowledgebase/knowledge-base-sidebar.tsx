@@ -8,6 +8,8 @@ import downIcon from '@iconify-icons/mdi/chevron-down';
 import fileIcon from '@iconify-icons/mdi/file-outline';
 import rightIcon from '@iconify-icons/mdi/chevron-right';
 import emailIcon from '@iconify-icons/mdi/email-outline';
+import websiteIcon from '@iconify-icons/mdi/web';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
 import { useLocation, useNavigate } from 'react-router-dom';
 import filterMenuIcon from '@iconify-icons/mdi/filter-menu';
 import filterRemoveIcon from '@iconify-icons/mdi/filter-remove';
@@ -368,6 +370,7 @@ const statusIcons: Record<string, React.ComponentProps<typeof IconifyIcon>['icon
   EMPTY: fileAlertIcon,
   ENABLE_MULTIMODAL_MODELS: alertCircleOutlineIcon,
   QUEUED: progressClockIcon,
+  CONNECTOR_DISABLED: closeCircleIcon,
 };
 
 // Helper function to format labels
@@ -458,6 +461,7 @@ export default function KnowledgeBaseSideBar({
       EMPTY: theme.palette.grey[500],
       ENABLE_MULTIMODAL_MODELS: theme.palette.info.main,
       QUEUED: theme.palette.info.main,
+      CONNECTOR_DISABLED: theme.palette.warning.main,
     }),
     [
       theme.palette.grey,
@@ -475,6 +479,8 @@ export default function KnowledgeBaseSideBar({
     () => ({
       FILE: fileIcon,
       MAIL: emailIcon,
+      WEBPAGE: websiteIcon,
+      TICKET: ticketIcon,
     }),
     []
   );
@@ -541,6 +547,7 @@ export default function KnowledgeBaseSideBar({
       app: 0,
       permissions: 0,
       kb: 0,
+      nodeTypes: 0,
     };
 
     // Calculate counts from local filters to prevent UI flicker
@@ -714,6 +721,7 @@ export default function KnowledgeBaseSideBar({
       case 'recordTypes':
       case 'origin':
       case 'connectors':
+        return activeConnectors.find((c) => c._key === id)?.name || id;
       case 'permissions':
         return formatLabel(id);
       default:
@@ -883,7 +891,7 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.recordType || false}>
           <FormGroup>
-            {['FILE', 'MAIL'].map((type) => {
+            {['FILE', 'MAIL', 'WEBPAGE', 'TICKET'].map((type) => {
               const isChecked = (localFilters.recordTypes || []).includes(type);
 
               return (
@@ -1047,15 +1055,15 @@ export default function KnowledgeBaseSideBar({
               </Box>
             ) : (
               activeConnectors?.map((connector) => {
-                const isChecked = (localFilters.connectors || []).includes(connector.name);
+                const isChecked = (localFilters.connectors || []).includes(connector._key || '');
 
                 return (
                   <FormControlLabelStyled
-                    key={connector.name}
+                    key={connector._key}
                     control={
                       <FilterCheckbox
                         checked={isChecked}
-                        onClick={() => handleFilterChange('connectors', connector.name)}
+                        onClick={() => handleFilterChange('connectors', connector._key || '')}
                         size="small"
                         disableRipple
                       />
@@ -1129,7 +1137,7 @@ export default function KnowledgeBaseSideBar({
         </FilterHeader>
         <FilterContent in={expandedSections.permissions || false}>
           <FormGroup>
-            {['READER', 'WRITER', 'OWNER', 'COMMENTER', 'ORGANIZER', 'FILEORGANIZER'].map(
+            {['READER', 'WRITER', 'OWNER'].map(
               (permission) => {
                 const isChecked = (localFilters.permissions || []).includes(permission);
 
@@ -1362,6 +1370,7 @@ export default function KnowledgeBaseSideBar({
               'EMPTY',
               'ENABLE_MULTIMODAL_MODELS',
               'QUEUED',
+              'CONNECTOR_DISABLED',
             ].map((status) => {
               const isChecked = (localFilters.indexingStatus || []).includes(status);
 
@@ -1384,7 +1393,7 @@ export default function KnowledgeBaseSideBar({
                         width={16}
                         height={16}
                       />
-                      {status === 'AUTO_INDEX_OFF' ? 'Manual Sync' : formatLabel(status)}
+                      {status === 'AUTO_INDEX_OFF' ? 'Manual Indexing' : status === 'CONNECTOR_DISABLED' ? 'Connector Disabled' : formatLabel(status)}
                     </Box>
                   }
                 />

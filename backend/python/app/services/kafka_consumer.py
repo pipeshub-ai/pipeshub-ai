@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set
 
@@ -113,13 +114,27 @@ class KafkaConsumerManager:
                 )
                 brokers = kafka_config["brokers"]
 
-                return {
+                config = {
                     "bootstrap_servers": ",".join(brokers),  # aiokafka uses bootstrap_servers
                     "group_id": "record_consumer_group",
                     "auto_offset_reset": "earliest",
                     "enable_auto_commit": True,
                     "client_id": KafkaConfig.CLIENT_ID_MAIN.value,
                 }
+
+                # Add SSL/SASL configuration for AWS MSK
+                if kafka_config.get("ssl"):
+                    config["ssl_context"] = ssl.create_default_context()
+                    sasl_config = kafka_config.get("sasl", {})
+                    if sasl_config.get("username"):
+                        config["security_protocol"] = "SASL_SSL"
+                        config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                        config["sasl_plain_username"] = sasl_config["username"]
+                        config["sasl_plain_password"] = sasl_config["password"]
+                    else:
+                        config["security_protocol"] = "SSL"
+
+                return config
 
             kafka_config = await get_kafka_config()
 
@@ -222,6 +237,13 @@ class KafkaConsumerManager:
                 return True
 
             if event_type == EventTypes.UPDATE_RECORD.value:
+                content_changed = payload_data.get("contentChanged", True)
+
+                if not content_changed:
+                    # Only metadata (like name) changed, no need to reindex
+                    self.logger.info(f"📝 Metadata-only update for record {record_id}, skipping reindex")
+                    return True
+
                 await self.redis_scheduler.schedule_update(data)
                 self.logger.info(f"Scheduled update for record {record_id}")
                 record = await self.event_processor.arango_service.get_document(
@@ -349,7 +371,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = str(e)
                     raise
             elif payload_data and payload_data.get("signedUrl"):
                 try:
@@ -368,7 +390,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL: {str(e)}"
+                    error_msg = str(e)
                     raise
             else:
                 try:
@@ -402,7 +424,7 @@ class KafkaConsumerManager:
                     return True
                 except Exception as e:
                     error_occurred = True
-                    error_msg = f"Failed to process signed URL route: {str(e)}"
+                    error_msg = str(e)
                     raise
 
         except IndexingError as e:

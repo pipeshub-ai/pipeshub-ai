@@ -32,6 +32,10 @@ import {
   useTheme,
 } from '@mui/material';
 
+import {
+  getWebUrlWithFragment,
+} from 'src/sections/knowledgebase/utils/utils';
+
 import RecordDetails from './record-details';
 import MessageFeedback from './message-feedback';
 import CitationHoverCard from './citations-hover-card';
@@ -84,6 +88,144 @@ const formatDate = (createdAt: Date) => {
     month: 'short',
     day: 'numeric',
   }).format(date);
+};
+
+// Citation sizing constants
+const CITATION_SIZE_CONFIG = {
+  // Scale factors for dynamic sizing
+  NUM_DIGITS_SCALE: 0.15,
+  GROUP_SIZE_SCALE: 0.05,
+  GROUP_DIGITS_SCALE: 0.1,
+  GROUP_SIZE_SCALE_ALT: 0.08,
+  
+  // Base and minimum sizes
+  BASE_SIZE: 20,
+  MIN_SIZE: 16,
+  BASE_FONT_SIZE: 0.7,
+  MIN_FONT_SIZE: 0.55,
+  BASE_PADDING: 0.75,
+  MIN_PADDING: 0.3,
+  BASE_BORDER_RADIUS: 10,
+  MIN_BORDER_RADIUS: 8,
+  BASE_GAP: 0.3,
+  MIN_GAP: 0.2,
+  
+  // Group citation sizing
+  BASE_FILENAME_LENGTH: 50,
+  MIN_FILENAME_LENGTH: 20,
+  BASE_GROUP_FONT_SIZE: 0.7,
+  MIN_GROUP_FONT_SIZE: 0.6,
+} as const;
+
+// Scrollable table wrapper with auto-scroll during streaming
+const ScrollableTableWrapper = ({ 
+  children, 
+  isStreaming = false 
+}: { 
+  children: React.ReactNode;
+  isStreaming?: boolean;
+}) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom when streaming and content changes
+  React.useLayoutEffect(() => {
+    if (isStreaming && scrollRef.current) {
+      // Scroll to bottom to show latest content
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [children, isStreaming]);
+
+  return (
+    <Box
+      ref={scrollRef}
+      sx={{
+        my: 2,
+        width: '100%',
+        maxHeight: '50vh',
+        overflow: 'auto',
+        WebkitOverflowScrolling: 'touch',
+        borderRadius: 1,
+        border: (themeVal) =>
+          `1px solid ${
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.08)'
+              : 'rgba(0, 0, 0, 0.08)'
+          }`,
+        '&::-webkit-scrollbar': {
+          width: 6,
+          height: 6,
+        },
+        '&::-webkit-scrollbar-track': {
+          bgcolor: (themeVal) =>
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.05)'
+              : 'rgba(0, 0, 0, 0.05)',
+          borderRadius: 3,
+        },
+        '&::-webkit-scrollbar-thumb': {
+          bgcolor: (themeVal) =>
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.2)'
+              : 'rgba(0, 0, 0, 0.2)',
+          borderRadius: 3,
+          '&:hover': {
+            bgcolor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? 'rgba(255, 255, 255, 0.3)'
+                : 'rgba(0, 0, 0, 0.3)',
+          },
+        },
+        '&::-webkit-scrollbar-corner': {
+          bgcolor: (themeVal) =>
+            themeVal.palette.mode === 'dark'
+              ? 'rgba(255, 255, 255, 0.05)'
+              : 'rgba(0, 0, 0, 0.05)',
+        },
+      }}
+    >
+      <Box
+        component="table"
+        sx={{
+          minWidth: 'max-content',
+          width: '100%',
+          borderCollapse: 'collapse',
+          '& th, & td': {
+            border: (themeVal) =>
+              `1px solid ${
+                themeVal.palette.mode === 'dark'
+                  ? 'rgba(255, 255, 255, 0.12)'
+                  : 'rgba(0, 0, 0, 0.12)'
+              }`,
+            padding: '10px 14px',
+            textAlign: 'left',
+            minWidth: 100,
+            maxWidth: 280,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            verticalAlign: 'top',
+            whiteSpace: 'normal',
+            wordBreak: 'break-word',
+          },
+          '& th': {
+            fontWeight: 600,
+            bgcolor: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? '#2a2a2a'
+                : '#f5f5f5',
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            boxShadow: (themeVal) =>
+              themeVal.palette.mode === 'dark'
+                ? '0 2px 4px rgba(0, 0, 0, 0.3)'
+                : '0 2px 4px rgba(0, 0, 0, 0.1)',
+          },
+        }}
+      >
+        {children}
+      </Box>
+    </Box>
+  );
 };
 
 // StreamingContent component
@@ -201,6 +343,7 @@ const StreamingContent = React.memo(
       if (hoverTimeoutRef.current) clearTimeout(hoverTimeoutRef.current);
     }, []);
 
+
     const handleClick = useCallback(
       (event: React.MouseEvent, citationRef: string) => {
         event.stopPropagation();
@@ -208,15 +351,28 @@ const StreamingContent = React.memo(
         const citationNumber = parseInt(citationRef.replace(/[[\]]/g, ''), 10);
         const citation = citationMap[citationNumber];
 
+        // Check if previewRenderable is false - if so, open webUrl instead of viewer
+        if (citation?.metadata?.previewRenderable === false) {
+          const webUrl = getWebUrlWithFragment(citation);
+          if (webUrl) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          }
+          handleCloseHoverCard();
+          return;
+        }
+
         if (!citation?.metadata?.extension) {
-          window.open(citation?.metadata?.webUrl, '_blank');
+          const webUrl = getWebUrlWithFragment(citation);
+          if (webUrl) {
+            window.open(webUrl, '_blank', 'noopener,noreferrer');
+          }
           return;
         }
 
         if (citation?.metadata?.recordId) {
           try {
             const recordCitations = aggregatedCitations[citation.metadata.recordId] || [];
-            const isExcelOrCSV = ['csv', 'xlsx', 'xls'].includes(citation.metadata?.extension);
+            const isExcelOrCSV = ['csv', 'xlsx', 'xls', 'tsv'].includes(citation.metadata?.extension);
             onViewPdf('', citation, recordCitations, isExcelOrCSV);
           } catch (err) {
             console.error('Failed to fetch document:', err);
@@ -227,101 +383,320 @@ const StreamingContent = React.memo(
       [citationMap, handleCloseHoverCard, aggregatedCitations, onViewPdf]
     );
 
+    // Helper function to truncate filename
+    const truncateFilename = useCallback((filename: string, maxLength: number = 50): string => {
+      if (!filename || filename.length <= maxLength) return filename;
+      return `${filename.substring(0, maxLength - 3)}...`;
+    }, []);
+
+    // Calculate citation size dynamically based on number length and group size
+    const getCitationSize = useCallback((citationNumber: number, groupSize: number = 1) => {
+      const numDigits = citationNumber.toString().length;
+      const scaleFactor = Math.min(
+        1,
+        1 / (1 + (numDigits - 1) * CITATION_SIZE_CONFIG.NUM_DIGITS_SCALE + (groupSize - 1) * CITATION_SIZE_CONFIG.GROUP_SIZE_SCALE)
+      );
+      
+      return {
+        size: Math.max(CITATION_SIZE_CONFIG.MIN_SIZE, CITATION_SIZE_CONFIG.BASE_SIZE * scaleFactor),
+        fontSize: Math.max(CITATION_SIZE_CONFIG.MIN_FONT_SIZE, CITATION_SIZE_CONFIG.BASE_FONT_SIZE * scaleFactor),
+        padding: Math.max(CITATION_SIZE_CONFIG.MIN_PADDING, CITATION_SIZE_CONFIG.BASE_PADDING * scaleFactor),
+        borderRadius: Math.max(CITATION_SIZE_CONFIG.MIN_BORDER_RADIUS, CITATION_SIZE_CONFIG.BASE_BORDER_RADIUS * scaleFactor),
+        gap: Math.max(CITATION_SIZE_CONFIG.MIN_GAP, CITATION_SIZE_CONFIG.BASE_GAP * scaleFactor),
+      };
+    }, []);
+
+    // Render a single citation number (hoverable)
+    const renderCitationNumber = useCallback(
+      (
+        citationNumber: number,
+        citationId: string,
+        isHovered: boolean,
+        groupSize: number = 1
+      ): React.ReactElement | null => {
+        const citation = citationMap[citationNumber];
+        if (!citation) return null;
+
+        const size = getCitationSize(citationNumber, groupSize);
+
+        return (
+          <Box
+            component="span"
+            className={`citation-number citation-number-${citationId}`}
+            onMouseEnter={(e) => {
+              e.stopPropagation();
+              handleMouseEnter(e, `[${citationNumber}]`, citationId);
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleClick(e, `[${citationNumber}]`);
+            }}
+            onMouseLeave={handleMouseLeave}
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: `${size.size}px`,
+              height: `${size.size}px`,
+              px: size.padding,
+              borderRadius: `${size.borderRadius}px`,
+              bgcolor: isHovered
+                ? 'primary.main'
+                : 'rgba(25, 118, 210, 0.08)',
+              color: isHovered ? 'white' : 'primary.main',
+              fontSize: `${size.fontSize}rem`,
+              fontWeight: 600,
+              transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
+              textDecoration: 'none',
+              boxShadow: isHovered
+                ? '0 3px 8px rgba(25, 118, 210, 0.3)'
+                : '0 1px 3px rgba(0,0,0,0.06)',
+              border: '1px solid',
+              borderColor: isHovered
+                ? 'primary.main'
+                : 'rgba(25, 118, 210, 0.12)',
+              position: 'relative',
+              zIndex: 2,
+              cursor: 'pointer',
+              transform: isHovered ? 'scale(1.1) translateY(-1px)' : 'scale(1)',
+              ml: 0,
+              flexShrink: 0,
+              lineHeight: 1,
+            }}
+          >
+            {citationNumber}
+          </Box>
+        );
+      },
+      [citationMap, handleMouseEnter, handleClick, handleMouseLeave, getCitationSize]
+    );
+
+    // Render a grouped citation (filename [1, 2, 3])
+    const renderGroupedCitation = useCallback(
+      (
+        group: { citations: number[]; recordName: string; recordId?: string },
+        lineIndex: number,
+        groupIndex: number
+      ) => {
+        const groupId = `citation-group-${lineIndex}-${groupIndex}-${messageId}`;
+        const groupSize = group.citations.length;
+        
+        const hoveredCitationIds = group.citations.map((num, idx) => 
+          `citation-${num}-${groupId}-${idx}`
+        );
+        const isGroupHovered = hoveredCitationIds.some(id => hoveredCitationId === id);
+
+        // Calculate dynamic sizes based on group size
+        const maxCitationDigits = Math.max(...group.citations.map(n => n.toString().length));
+        const sizeScale = Math.min(
+          1,
+          1 / (1 + (maxCitationDigits - 1) * CITATION_SIZE_CONFIG.GROUP_DIGITS_SCALE + (groupSize - 1) * CITATION_SIZE_CONFIG.GROUP_SIZE_SCALE_ALT)
+        );
+        const filenameMaxLength = Math.max(
+          CITATION_SIZE_CONFIG.MIN_FILENAME_LENGTH,
+          Math.floor(CITATION_SIZE_CONFIG.BASE_FILENAME_LENGTH * sizeScale)
+        );
+        const fontSize = Math.max(CITATION_SIZE_CONFIG.MIN_GROUP_FONT_SIZE, CITATION_SIZE_CONFIG.BASE_GROUP_FONT_SIZE * sizeScale);
+        const maxWidth = `${filenameMaxLength}ch`;
+        const gap = Math.max(CITATION_SIZE_CONFIG.MIN_GAP, CITATION_SIZE_CONFIG.BASE_GAP * sizeScale);
+
+        const truncatedName = truncateFilename(group.recordName, filenameMaxLength);
+
+        return (
+          <Box
+            key={groupId}
+            component="span"
+            sx={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              ml: 0.5,
+              mr: 0.25,
+              mb: 0.25,
+              position: 'relative',
+              gap: 0.5,
+              maxWidth: '100%',
+              overflowWrap: 'break-word',
+            }}
+          >
+            {truncatedName && (
+              <Typography
+                component="span"
+                className={`citation-record-name citation-record-name-${groupId}`}
+                sx={{
+                  fontSize: `${fontSize}rem`,
+                  fontWeight: isGroupHovered ? 600 : 500,
+                  color: isGroupHovered ? 'primary.main' : 'text.secondary',
+                  transition: 'all 0.2s ease',
+                  lineHeight: 1.2,
+                  maxWidth,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                  position: 'relative',
+                  zIndex: 1,
+                  pointerEvents: 'none',
+                  flexShrink: 1,
+                }}
+              >
+                {truncatedName}
+              </Typography>
+            )}
+            <Box
+              component="span"
+              sx={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                flexWrap: 'wrap',
+                gap,
+                maxWidth: '100%',
+              }}
+            >
+              {group.citations.map((citationNumber, idx) => {
+                const citationId = `citation-${citationNumber}-${groupId}-${idx}`;
+                const isHovered = hoveredCitationId === citationId;
+                return (
+                  <Fragment key={citationId}>
+                    {renderCitationNumber(citationNumber, citationId, isHovered, groupSize)}
+                  </Fragment>
+                );
+              })}
+            </Box>
+          </Box>
+        );
+      },
+      [hoveredCitationId, messageId, truncateFilename, renderCitationNumber]
+    );
+
     const renderContentPart = useCallback(
       (part: string, index: number) => {
         const citationMatch = part.match(/\[(\d+)\]/);
         if (citationMatch) {
+          // This should not be reached in normal flow since we process groups
+          // But keep as fallback - create a unique ID that includes index to ensure uniqueness
           const citationNumber = parseInt(citationMatch[1], 10);
           const citation = citationMap[citationNumber];
-          const citationId = `citation-${citationNumber}-${index}-${messageId}`;
+          // Use a unique fallback ID that includes index to ensure uniqueness across different instances
+          const fallbackGroupId = `fallback-group-${index}-${messageId}`;
+          const citationId = `citation-${citationNumber}-${fallbackGroupId}-0`;
 
           if (!citation) {
             return <Fragment key={index}>{part}</Fragment>;
           }
 
           return (
-            <Box
-              key={citationId}
-              component="span"
-              onMouseEnter={(e) => handleMouseEnter(e, part, citationId)}
-              onClick={(e) => handleClick(e, part)}
-              onMouseLeave={handleMouseLeave}
-              sx={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                ml: 0.5,
-                mr: 0.25,
-                cursor: 'pointer',
-                position: 'relative',
-                // Create a larger hover area with invisible padding
-                '&::before': {
-                  content: '""',
-                  position: 'absolute',
-                  top: -12,
-                  right: -12,
-                  bottom: -12,
-                  left: -12,
-                  zIndex: 1,
-                  // This creates an invisible larger hover area
-                },
-                '&:hover': {
-                  '& .citation-number': {
-                    transform: 'scale(1.15) translateY(-1px)',
-                    bgcolor: 'primary.main',
-                    color: 'white',
-                    boxShadow: '0 3px 8px rgba(25, 118, 210, 0.3)',
-                  },
-                },
-              }}
-            >
-              <Box
-                component="span"
-                className={`citation-number citation-number-${citationId}`}
-                sx={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  width: '18px',
-                  height: '18px',
-                  borderRadius: '50%',
-                  bgcolor: 'rgba(25, 118, 210, 0.08)',
-                  color: 'primary.main',
-                  fontSize: '0.65rem',
-                  fontWeight: 600,
-                  transition: 'all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1)',
-                  textDecoration: 'none',
-                  boxShadow: '0 1px 3px rgba(0,0,0,0.06)',
-                  border: '1px solid',
-                  borderColor: 'rgba(25, 118, 210, 0.12)',
-                  position: 'relative',
-                  zIndex: 2,
-                }}
-              >
-                {citationNumber}
-              </Box>
-            </Box>
+            <Fragment key={citationId}>
+              {renderCitationNumber(citationNumber, citationId, hoveredCitationId === citationId, 1)}
+            </Fragment>
           );
         }
         return <Fragment key={index}>{part}</Fragment>;
       },
-      [citationMap, handleMouseEnter, handleClick, handleMouseLeave, messageId]
+      [citationMap, messageId, hoveredCitationId, renderCitationNumber]
+    );
+
+    // Process text to group consecutive citations by filename on the same line
+    const processTextWithGroupedCitations = useCallback(
+      (text: string, lineIndex: number): React.ReactNode[] => {
+        if (!text) return [text];
+
+        // Split by citations while keeping the citations
+        const parts = text.split(/(\[\d+\])/g);
+        const result: React.ReactNode[] = [];
+        let currentGroup: { citations: number[]; recordName: string; recordId?: string } | null = null;
+        let groupIndex = 0;
+
+        for (let i = 0; i < parts.length; i += 1) {
+          const part = parts[i];
+          const citationMatch = part.match(/\[(\d+)\]/);
+
+          if (citationMatch) {
+            const citationNumber = parseInt(citationMatch[1], 10);
+            const citation = citationMap[citationNumber];
+
+            if (citation) {
+              const recordName = citation.metadata?.recordName || '';
+              const recordId = citation.metadata?.recordId;
+
+              // Check if this citation belongs to the current group
+              if (
+                currentGroup &&
+                currentGroup.recordName === recordName &&
+                currentGroup.recordId === recordId
+              ) {
+                // Add to existing group
+                currentGroup.citations.push(citationNumber);
+              } else {
+                // Start a new group
+                if (currentGroup) {
+                  // Render the previous group
+                  result.push(
+                    renderGroupedCitation(currentGroup, lineIndex, groupIndex)
+                  );
+                  groupIndex += 1;
+                }
+                currentGroup = {
+                  citations: [citationNumber],
+                  recordName,
+                  recordId,
+                };
+              }
+            } else {
+              // Citation not found, render as-is
+              if (currentGroup) {
+                result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
+                currentGroup = null;
+                groupIndex += 1;
+              }
+              result.push(renderContentPart(part, lineIndex * 1000 + i));
+            }
+          } else {
+            // Non-citation text - break the group if there's actual content
+            // (empty strings between adjacent citations are fine and won't break grouping)
+            if (currentGroup && part.trim().length > 0) {
+              // Render the current group before non-whitespace text
+              result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
+              currentGroup = null;
+              groupIndex += 1;
+            }
+            // Add whitespace or text (whitespace between citations is preserved but doesn't break grouping)
+            if (part) {
+              result.push(part);
+            }
+          }
+        }
+
+        // Render any remaining group
+        if (currentGroup) {
+          result.push(renderGroupedCitation(currentGroup, lineIndex, groupIndex));
+        }
+
+        return result;
+      },
+      [citationMap, renderGroupedCitation, renderContentPart]
     );
 
     const processChildrenForCitations = useCallback(
       (children: React.ReactNode): React.ReactNode =>
         React.Children.toArray(children).flatMap((child, childIndex) => {
           if (typeof child === 'string') {
-            return child
-              .split(/(\[\d+\])/g)
-              .map((part, partIndex) => renderContentPart(part, childIndex * 1000 + partIndex));
+            return processTextWithGroupedCitations(child, childIndex);
           }
           return child;
         }),
-      [renderContentPart]
+      [processTextWithGroupedCitations]
     );
 
     return (
-      <Box sx={{ position: 'relative' }}>
+      <Box 
+        sx={{ 
+          position: 'relative',
+          width: '100%',
+          maxWidth: '100%',
+          overflow: 'hidden', // Prevent overflow
+          overflowWrap: 'break-word', // Break long words
+        }}
+      >
         {/* Streaming indicator */}
         {showStreamingIndicator && (
           <Box
@@ -402,7 +777,19 @@ const StreamingContent = React.memo(
           </Box>
         )} */}
 
-       
+        <Box
+          sx={{
+            width: '100%',
+            maxWidth: '100%',
+            overflow: 'hidden',
+            overflowWrap: 'break-word',
+            // Target specific elements that can cause overflow
+            '& p, & li, & span, & strong, & em, & code': {
+              maxWidth: '100%',
+              overflowWrap: 'break-word',
+            },
+          }}
+        >
           <ReactMarkdown
           remarkPlugins={[remarkGfm]}
           components={{
@@ -417,9 +804,13 @@ const StreamingContent = React.memo(
                     fontSize: '0.90rem',
                     lineHeight: 1.6,
                     letterSpacing: '0.01em',
-                    wordBreak: 'break-word',
+                    overflowWrap: 'break-word',
                     color: 'text.primary',
                     fontWeight: 400,
+                    // Ensure citations don't overflow
+                    '& .citation-number, & .citation-record-name': {
+                      maxWidth: '100%',
+                    },
                   }}
                 >
                   {processedChildren}
@@ -442,19 +833,48 @@ const StreamingContent = React.memo(
               </Typography>
             ),
             ul: ({ children }) => (
-              <Box component="ul" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 } }}>
+              <Box 
+                component="ul" 
+                sx={{ 
+                  pl: 2.5, 
+                  mb: 1.5, 
+                  '& li': { mb: 0.5 },
+                  overflowWrap: 'break-word',
+                  maxWidth: '100%',
+                }}
+              >
                 {children}
               </Box>
             ),
             ol: ({ children }) => (
-              <Box component="ol" sx={{ pl: 2.5, mb: 1.5, '& li': { mb: 0.5 } }}>
+              <Box 
+                component="ol" 
+                sx={{ 
+                  pl: 2.5, 
+                  mb: 1.5, 
+                  '& li': { mb: 0.5 },
+                  overflowWrap: 'break-word',
+                  maxWidth: '100%',
+                }}
+              >
                 {children}
               </Box>
             ),
             li: ({ children }) => {
               const processedChildren = processChildrenForCitations(children);
               return (
-                <Typography component="li" sx={{ mb: 0.5, lineHeight: 1.6 }}>
+                <Typography 
+                  component="li" 
+                  sx={{ 
+                    mb: 0.5, 
+                    lineHeight: 1.6,
+                    overflowWrap: 'break-word',
+                    maxWidth: '100%',
+                    '& .citation-number, & .citation-record-name': {
+                      maxWidth: '100%',
+                    },
+                  }}
+                >
                   {processedChildren}
                 </Typography>
               );
@@ -525,7 +945,7 @@ const StreamingContent = React.memo(
                       : {},
                   }}
                 >
-                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
+                  <pre style={{ margin: 0, whiteSpace: 'pre-wrap', overflowWrap: 'break-word' }}>
                     <code style={{ color: 'inherit' }}>{children}</code>
                   </pre>
                 </Box>
@@ -568,49 +988,30 @@ const StreamingContent = React.memo(
               </Box>
             ),
             strong: ({ children }) => (
-              <Box component="strong" sx={{ fontWeight: 600 }}>
+              <Box 
+                component="strong" 
+                sx={{ 
+                  fontWeight: 600,
+                  overflowWrap: 'break-word',
+                }}
+              >
                 {processChildrenForCitations(children)}
               </Box>
             ),
             em: ({ children }) => (
-              <Box component="em" sx={{ fontStyle: 'italic' }}>
+              <Box 
+                component="em" 
+                sx={{ 
+                  fontStyle: 'italic',
+                  overflowWrap: 'break-word',
+                }}
+              >
                 {processChildrenForCitations(children)}
               </Box>
             ),
             hr: () => <Divider sx={{ my: 3 }} />,
             table: ({ children }) => (
-              <Box
-                sx={{
-                  my: 2,
-                }}
-              >
-                <Box
-                  component="table"
-                  sx={{
-                    width: '100%',
-                    borderCollapse: 'collapse',
-                    '& th, & td': {
-                      border: (theme) =>
-                        `1px solid ${
-                          theme.palette.mode === 'dark'
-                            ? 'rgba(255, 255, 255, 0.12)'
-                            : 'rgba(0, 0, 0, 0.12)'
-                        }`,
-                      padding: '8px 12px',
-                      textAlign: 'left',
-                    },
-                    '& th': {
-                      fontWeight: 600,
-                      bgcolor: (theme) =>
-                        theme.palette.mode === 'dark'
-                          ? 'rgba(255, 255, 255, 0.05)'
-                          : 'rgba(0, 0, 0, 0.03)',
-                    },
-                  }}
-                >
-                  {children}
-                </Box>
-              </Box>
+              <ScrollableTableWrapper isStreaming={isStreaming}>{children}</ScrollableTableWrapper>
             ),
             thead: ({ children }) => (
               <Box component="thead" sx={{ display: 'table-header-group' }}>
@@ -629,13 +1030,21 @@ const StreamingContent = React.memo(
             ),
             th: ({ children }) => {
               const processedChildren = processChildrenForCitations(children);
+              // Extract text content for title attribute
+              const textContent = typeof children === 'string' 
+                ? children 
+                : Array.isArray(children) 
+                  ? children.filter(c => typeof c === 'string').join('') 
+                  : '';
               return (
                 <Box
                   component="th"
+                  title={textContent.length > 30 ? textContent : undefined}
                   sx={{
                     display: 'table-cell',
                     fontWeight: 600,
                     fontSize: '0.875rem',
+                    cursor: textContent.length > 30 ? 'help' : 'default',
                   }}
                 >
                   {processedChildren}
@@ -644,12 +1053,20 @@ const StreamingContent = React.memo(
             },
             td: ({ children }) => {
               const processedChildren = processChildrenForCitations(children);
+              // Extract text content for title attribute
+              const textContent = typeof children === 'string' 
+                ? children 
+                : Array.isArray(children) 
+                  ? children.filter(c => typeof c === 'string').join('') 
+                  : '';
               return (
                 <Box
                   component="td"
+                  title={textContent.length > 30 ? textContent : undefined}
                   sx={{
                     display: 'table-cell',
                     fontSize: '0.875rem',
+                    cursor: textContent.length > 30 ? 'help' : 'default',
                   }}
                 >
                   {processedChildren}
@@ -657,10 +1074,10 @@ const StreamingContent = React.memo(
               );
             },
           }}
-          className="markdown-body"
         >
           {processedContent}
         </ReactMarkdown>
+        </Box>
 
         <Popper
           open={Boolean(popperAnchor && hoveredCitationId)}
@@ -976,6 +1393,8 @@ const ChatMessage = React.memo(
                 themeVal.palette.mode === 'dark'
                   ? '0 4px 20px rgba(0, 0, 0, 0.15)'
                   : '0 2px 12px rgba(0, 0, 0, 0.08)',
+              overflow: 'hidden', // Prevent content overflow
+              overflowWrap: 'break-word', // Break long words
               '&:hover': {
                 borderColor: (themeVal) => {
                   if (message.type === 'user') {
@@ -1009,7 +1428,7 @@ const ChatMessage = React.memo(
                   fontSize: '14px',
                   lineHeight: 1.6,
                   letterSpacing: '0.1px',
-                  wordBreak: 'break-word',
+                  overflowWrap: 'break-word',
                   fontFamily:
                     '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
                   color: (themeVal) =>

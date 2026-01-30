@@ -58,7 +58,6 @@ async def _fetch_full_record_using_vrid(vrid: str, blob_store: BlobStorage,org_i
     else:
         return {"ok": False, "error": f"Record with vrid '{vrid}' not found in blob store."}
 
-
 async def _fetch_multiple_records_impl(
     record_ids: List[str],
     virtual_record_id_to_result: Dict[str, Any]

@@ -2,7 +2,7 @@ from dependency_injector import containers, providers  # type: ignore
 from dotenv import load_dotenv  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
-from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
@@ -20,7 +20,7 @@ class IndexingAppContainer(BaseAppContainer):
     logger = providers.Singleton(create_logger, "indexing_service")
     container_utils = ContainerUtils()
     # Override config_service to use the service-specific logger
-    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    key_value_store = providers.Singleton(EncryptedKeyValueStore, logger=logger)
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
     # Override arango_client and redis_client to use the service-specific config_service
@@ -92,8 +92,8 @@ class IndexingAppContainer(BaseAppContainer):
 
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
-    domain_extractor = providers.Resource(container_utils.create_domain_extractor, logger=logger, arango_service=arango_service, config_service=config_service)
-    # Processor - depends on domain_extractor, indexing_pipeline, and arango_service
+
+    # Processor - depends on indexing_pipeline, and arango_service
     processor = providers.Resource(
         container_utils.create_processor,
         logger=logger,
@@ -103,7 +103,6 @@ class IndexingAppContainer(BaseAppContainer):
         parsers=parsers,
         document_extractor=document_extractor,
         sink_orchestrator=sink_orchestrator,
-        domain_extractor=domain_extractor,
     )
 
     event_processor = providers.Resource(
@@ -123,8 +122,7 @@ class IndexingAppContainer(BaseAppContainer):
     # Indexing-specific wiring configuration
     wiring_config = containers.WiringConfiguration(
         modules=[
-            "app.indexing_main",
-            "app.modules.extraction.domain_extraction",
+            "app.indexing_main"
         ]
     )
 
@@ -134,16 +132,16 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
     logger.info("🚀 Initializing application resources")
 
     try:
-        # Connect to ArangoDB and Redis
-        logger.info("Connecting to ArangoDB")
+        # Ensure connector service is healthy before starting indexing service
+        logger.info("Checking Connector service health before startup")
+        await Health.health_check_connector_service(container)
+
+        # Ensure ArangoDB service is initialized (connection is handled in the resource factory)
+        logger.info("Ensuring ArangoDB service is initialized")
         arango_service = await container.arango_service()
-        if arango_service:
-            arango_connected = await arango_service.connect()
-            if not arango_connected:
-                raise Exception("Failed to connect to ArangoDB")
-            logger.info("✅ Connected to ArangoDB")
-        else:
-            raise Exception("Failed to connect to ArangoDB")
+        if not arango_service:
+            raise Exception("Failed to initialize ArangoDB service")
+        logger.info("✅ ArangoDB service initialized")
 
         await Health.system_health_check(container)
         return True

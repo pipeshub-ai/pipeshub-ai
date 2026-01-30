@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Union
+from typing import Any, Dict, Optional, Union
 
 from pydantic import BaseModel, Field  #type: ignore
 
@@ -12,6 +12,10 @@ class LinearGraphQLClientViaToken(GraphQLClient):
     """Linear GraphQL client via API token."""
 
     def __init__(self, token: str, timeout: int = 30) -> None:
+        token = token.strip() if token else ""
+        if not token:
+            raise ValueError("Linear API token cannot be empty")
+
         headers = {
             "Authorization": token,
             "Content-Type": "application/json",
@@ -27,13 +31,32 @@ class LinearGraphQLClientViaToken(GraphQLClient):
         """Get the GraphQL endpoint."""
         return self.endpoint
 
+    def get_auth_header(self) -> Optional[str]:
+        """Get the authorization header value."""
+        return self.token
+
+    def get_token(self) -> str:
+        """Get the token."""
+        return self.token
+
+    def set_token(self, token: str) -> None:
+        """Set the token and update Authorization header."""
+        self.token = token
+        self.headers["Authorization"] = token
+
 
 class LinearGraphQLClientViaOAuth(GraphQLClient):
     """Linear GraphQL client via OAuth token."""
 
     def __init__(self, oauth_token: str, timeout: int = 30) -> None:
+        # Format token as Bearer token if not already formatted
+        if oauth_token and not oauth_token.startswith("Bearer "):
+            auth_header = f"Bearer {oauth_token}"
+        else:
+            auth_header = oauth_token
+
         headers = {
-            "Authorization": oauth_token,
+            "Authorization": auth_header,
             "Content-Type": "application/json",
         }
         super().__init__(
@@ -46,6 +69,26 @@ class LinearGraphQLClientViaOAuth(GraphQLClient):
     def get_endpoint(self) -> str:
         """Get the GraphQL endpoint."""
         return self.endpoint
+
+    def get_auth_header(self) -> Optional[str]:
+        """Get the authorization header value."""
+        oauth_token = self.oauth_token
+        if oauth_token and not oauth_token.startswith("Bearer "):
+            return f"Bearer {oauth_token}"
+        return oauth_token
+
+    def get_token(self) -> str:
+        """Get the OAuth token."""
+        return self.oauth_token
+
+    def set_token(self, token: str) -> None:
+        """Set the OAuth token and update Authorization header."""
+        self.oauth_token = token
+        # Format token as Bearer token if not already formatted
+        if token and not token.startswith("Bearer "):
+            self.headers["Authorization"] = f"Bearer {token}"
+        else:
+            self.headers["Authorization"] = token
 
 class LinearTokenConfig(BaseModel):
     """Configuration for Linear GraphQL client via API token.
@@ -112,6 +155,7 @@ class LinearClient(IClient):
         cls,
         logger: logging.Logger,
         config_service: ConfigurationService,
+        connector_instance_id: Optional[str] = None,
     ) -> "LinearClient":
         """Build LinearClient using configuration service
         Args:
@@ -122,13 +166,14 @@ class LinearClient(IClient):
         """
         try:
             # Get Linear configuration from the configuration service
-            config = await cls._get_connector_config(logger, config_service)
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
 
             if not config:
                 raise ValueError("Failed to get Linear connector configuration")
 
             # Extract configuration values
-            auth_type = config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            auth_config = config.get("auth", {})
+            auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
             timeout = config.get("timeout", 30)
 
             # Create appropriate client based on auth type
@@ -140,7 +185,6 @@ class LinearClient(IClient):
                 client = LinearGraphQLClientViaOAuth(oauth_token, timeout)
 
             elif auth_type == "API_TOKEN":
-                auth_config = config.get("auth", {})
                 token = auth_config.get("apiToken", "")
                 if not token:
                     raise ValueError("Token required for token auth type")
@@ -153,12 +197,14 @@ class LinearClient(IClient):
             raise
 
     @staticmethod
-    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService) -> Dict[str, Any]:
+    async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Linear."""
         try:
-            config = await config_service.get_config("/services/connectors/linear/config")
-            return config or {}
+            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
+            if not config:
+                raise ValueError(f"Failed to get Linear connector configuration for instance {connector_instance_id}")
+            return config
         except Exception as e:
             logger.error(f"Failed to get Linear connector config: {e}")
-            return {}
+            raise ValueError(f"Failed to get Linear connector configuration for instance {connector_instance_id}")
 

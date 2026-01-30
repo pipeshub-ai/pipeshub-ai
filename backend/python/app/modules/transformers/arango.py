@@ -23,10 +23,11 @@ class Arango(Transformer):
             return
         record_id = record.id
         virtual_record_id = record.virtual_record_id
-        await self.save_metadata_to_db( record_id, metadata, virtual_record_id)
+        is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
+        await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
 
     async def save_metadata_to_db(
-        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str
+        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
     ) -> None:
         """
         Extract metadata from a document in ArangoDB and create department relationships
@@ -304,20 +305,28 @@ class Arango(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                record.update(
-                    {
-                        "extractionStatus": "COMPLETED",
-                        "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                )
-                docs = [record]
+                # Update extraction status for the record in ArangoDB
+                timestamp = get_epoch_timestamp_in_ms()
+                status_doc = {
+                    "_key": record_id,
+                    "extractionStatus": "COMPLETED",
+                    "lastExtractionTimestamp": timestamp,
+                    "indexingStatus": "COMPLETED",
+                    "isDirty": False,
+                    "virtualRecordId": virtual_record_id,
+                    "lastIndexTimestamp": timestamp,
+                }
+
+                if is_vlm_ocr_processed:
+                    status_doc["isVLMOcrProcessed"] = True
 
                 self.logger.info(
-                    "🎯 Upserting domain metadata for document"
+                    "🎯 Upserting extraction status metadata for document"
                 )
                 await tx_store.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
+                    [status_doc], CollectionNames.RECORDS.value
                 )
+
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")

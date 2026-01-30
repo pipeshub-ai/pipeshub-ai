@@ -1,4 +1,8 @@
-from app.config.constants.arangodb import Connectors, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    ConnectorScopes,
+    OriginTypes,
+)
 from app.models.entities import RecordGroupType, RecordType
 
 # User schema for ArangoDB
@@ -64,6 +68,7 @@ user_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": "string"},
             "mail": {"type": ["string", "null"]},
             "mailEnabled": {"type": "boolean", "default": False},
             # Arango collection entry
@@ -101,6 +106,7 @@ app_role_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": "string"},
             # Arango collection entry
             "createdAtTimestamp": {"type": "number"},
             # Arango collection entry
@@ -115,6 +121,7 @@ app_role_schema = {
             "name",
             "externalRoleId",
             "connectorName",
+            "connectorId",
             "createdAtTimestamp",
         ],
         "additionalProperties": False,
@@ -131,11 +138,14 @@ app_schema = {
             "name": {"type": "string"},
             "type": {"type": "string"},
             "appGroup": {"type": "string"},
-            "appGroupId": {"type": "string"},
             "authType": {"type": "string"},
+            "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
             "isActive": {"type": "boolean", "default": True},
+            "isAgentActive": {"type": "boolean", "default": False},
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
+            "createdBy": {"type": ["string", "null"]},
+            "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -143,10 +153,9 @@ app_schema = {
             "name",
             "type",
             "appGroup",
-            "appGroupId",
+            "scope",
             "isActive",
-            "createdAtTimestamp",
-            "updatedAtTimestamp",
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
@@ -163,10 +172,12 @@ record_schema = {
             "recordName": {"type": "string", "minLength": 1},
             # should be a uuid
             "externalRecordId": {"type": "string", "minLength": 1},
+            "connectorId": {"type": ["string", "null"]},
             "externalGroupId": {"type": ["string", "null"]},
             "externalParentId": {"type": ["string", "null"]},
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
+            "recordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -188,6 +199,7 @@ record_schema = {
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
             "isDeleted": {"type": "boolean", "default": False},
             "isArchived": {"type": "boolean", "default": False},
+            "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
             "indexingStatus": {
                 "type": "string",
@@ -201,7 +213,8 @@ record_schema = {
                     "AUTO_INDEX_OFF",
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
-                    "QUEUED"
+                    "QUEUED",
+                    "CONNECTOR_DISABLED"
                 ],
             },
             "extractionStatus": {
@@ -226,13 +239,20 @@ record_schema = {
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
             "isShared": {"type": ["boolean", "null"], "default": False},
+            "isDependentNode": {"type": "boolean", "default": False},
+            "parentNodeId": {"type": ["string", "null"], "default": None},
+            "hideWeburl": {"type": "boolean", "default": False},
+            "isInternal": {"type": "boolean", "default": False},
+            "md5Checksum": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
             "externalRecordId",
             "recordType",
             "origin",
-            "createdAtTimestamp"
+            "createdAtTimestamp",
+            "connectorId"
         ],
         "additionalProperties": False,
     },
@@ -246,13 +266,9 @@ file_record_schema = {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "recordGroupId": {"type":"string"},  # kb id
             "name": {"type": "string", "minLength": 1},
             "isFile": {"type": "boolean"},
             "extension": {"type": ["string", "null"]},
-            "mimeType": {"type": ["string", "null"]},
-            "sizeInBytes": {"type": "number"},
-            "webUrl": {"type": "string"},
             "etag": {"type": ["string", "null"]},
             "ctag": {"type": ["string", "null"]},
             "md5Checksum": {"type": ["string", "null"]},
@@ -261,6 +277,9 @@ file_record_schema = {
             "sha1Hash": {"type": ["string", "null"]},
             "sha256Hash": {"type": ["string", "null"]},
             "path": {"type": ["string", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]}, # deprecated
+            "webUrl": {"type": ["string", "null"]}, # deprecated
+            "mimeType": {"type": ["string", "null"]}, # deprecated
         },
         "required": ["name"],
         "additionalProperties": False,
@@ -344,20 +363,58 @@ comment_record_schema = {
     "message": "Document does not match the comment record schema.",
 }
 
+link_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "url": {"type": "string"},
+            "title": {"type": ["string", "null"]},
+            "isPublic": {
+                "type": "string",
+                "enum": ["true", "false", "unknown"]
+            },
+            "linkedRecordId": {"type": ["string", "null"]},
+        },
+        "required": ["orgId", "url", "isPublic"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the link record schema.",
+}
+
 ticket_record_schema = {
     "rule": {
         "type": "object",
         "properties": {
             "orgId": {"type": "string"},
-            "summary": {"type": ["string", "null"]},
-            "description": {"type": ["string", "null"]},
             "status": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
+            "type": {"type": ["string", "null"]},
+            "deliveryStatus": {"type": ["string", "null"]},
             "assignee": {"type": ["string", "null"]},
             "reporterEmail": {"type": ["string", "null"]},
             "assigneeEmail": {"type": ["string", "null"]},
             "creatorEmail": {"type": ["string", "null"]},
             "creatorName": {"type": ["string", "null"]},
+            "reporterName": {"type": ["string", "null"]},
+            "assigneeSourceTimestamp": {"type": ["number", "null"]},
+            "creatorSourceTimestamp": {"type": ["number", "null"]},
+            "reporterSourceTimestamp": {"type": ["number", "null"]},
+        },
+    },
+}
+
+project_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "status": {"type": ["string", "null"]},
+            "priority": {"type": ["string", "null"]},
+            "leadId": {"type": ["string", "null"]},
+            "leadName": {"type": ["string", "null"]},
+            "leadEmail": {"type": ["string", "null"]},
         },
     },
 }
@@ -381,6 +438,7 @@ record_group_schema = {
                 "type": "string",
                 "enum": [connector.value for connector in Connectors],
             },
+            "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
             "createdBy":{"type": ["string", "null"]},
@@ -398,7 +456,7 @@ record_group_schema = {
             # "externalGroupId",
             "groupType",
             "connectorName",
-            "createdAtTimestamp",
+            "createdAtTimestamp"
         ],
         "additionalProperties": False,
     },
@@ -515,20 +573,30 @@ agent_schema = {
                     "provider": {"type": "string"},
                     "modelName": {"type": "string"},
                     "isReasoning": {"type": "boolean", "default": False},
+                    "modelKey": {"type": "string"},
                 },
-                "required": ["provider", "modelName", "isReasoning"],
+                "required": ["provider", "modelName", "isReasoning", "modelKey"],
                 "additionalProperties": True,
                 },
-                "default": [],
-            },
-            "apps": {
-                "type": "array",
-                "items": {"type": "string"},
                 "default": [],
             },
             "kb": {
                 "type": "array",
                 "items": {"type": "string"},
+                "default": [],
+            },
+            "connectors": {
+                "type": "array",
+                "items": {"type": "object", "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "category": {"type": "string", "enum": ["knowledge", "action"]},
+                    "scope": {"type": "string", "enum": [scope.value for scope in ConnectorScopes]},
+                    "type": {"type": "string"},
+                    },
+                    "required": ["id", "name", "category", "scope", "type"],
+                    "additionalProperties": True,
+                },
                 "default": [],
             },
             "vectorDBs": {
@@ -563,7 +631,7 @@ team_schema = {
         "type": "object",
         "properties": {
             "name": {"type": "string", "minLength": 1},
-            "description": {"type": "string", "minLength": 1},
+            "description": {"type": ["string", "null"]},
             "orgId": {"type": ["string", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedByUserId": {"type": ["string", "null"]},
@@ -573,7 +641,7 @@ team_schema = {
             "deletedAtTimestamp": {"type": "number"},
             "isDeleted": {"type": "boolean", "default": False},
         },
-        "required": ["name", "description"],
+        "required": ["name"],
         "additionalProperties": True,
     },
     "level": "strict",
@@ -848,3 +916,20 @@ team_schema = {
 #     "level": "strict",
 #     "message": "Document does not match the workflow schema.",
 # }
+
+# people schema - for external email addresses (not organization members)
+people_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_key": {"type": "string"},  # deterministic UUID based on email
+            "email": {"type": "string", "format": "email"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["email", "createdAtTimestamp", "updatedAtTimestamp"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the people schema.",
+}

@@ -5,7 +5,7 @@ Enhanced wrapper to adapt registry tools to LangChain format with proper client 
 import json
 from typing import Callable, Dict, List, Union
 
-from langchain.tools import BaseTool
+from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
 
 from app.agents.tools.factories.registry import ClientFactoryRegistry
@@ -102,12 +102,30 @@ class ToolInstanceCreator:
             Instance of action_class
         """
         try:
-            return action_class()
-        except TypeError:
+            # Try passing state for tools that need it (like retrieval)
+            instance = action_class(state=self.state)
+            # If instance has set_state method, also call it for compatibility
+            if hasattr(instance, 'set_state'):
+                instance.set_state(self.state)
+            return instance
+        except (TypeError, Exception):
             try:
-                return action_class({})
-            except Exception:
-                return action_class(None)
+                instance = action_class()
+                # Try to set state if method exists
+                if hasattr(instance, 'set_state'):
+                    instance.set_state(self.state)
+                return instance
+            except (TypeError, Exception):
+                try:
+                    instance = action_class({})
+                    if hasattr(instance, 'set_state'):
+                        instance.set_state(self.state)
+                    return instance
+                except Exception:
+                    instance = action_class(None)
+                    if hasattr(instance, 'set_state'):
+                        instance.set_state(self.state)
+                    return instance
 
 
 class RegistryToolWrapper(BaseTool):

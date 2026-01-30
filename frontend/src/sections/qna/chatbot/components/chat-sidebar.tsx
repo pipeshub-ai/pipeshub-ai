@@ -41,6 +41,7 @@ import {
 } from '@mui/material';
 
 import axiosInstance from 'src/utils/axios';
+import { useWhiteLabel } from 'src/context/WhiteLabelContext';
 
 import ArchivedChatsDialog from './dialogs/archieve-chat-dialog';
 import ShareConversationDialog from './dialogs/share-conversation-dialog';
@@ -80,6 +81,7 @@ const ChatSidebar = ({
   const [archiveDialogOpen, setArchiveDialogOpen] = useState<boolean>(false);
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const { displayName } = useWhiteLabel();
   const scrollableStyles = createScrollableContainerStyle(theme);
   // Memoize fetch function to prevent recreation on each render
   const fetchConversations = useCallback(
@@ -447,7 +449,7 @@ const ChatSidebar = ({
           }}
         >
           {activeTab === 'my'
-            ? 'Start a new conversation to begin chatting with PipesHub Agent'
+            ? `Start a new conversation to begin chatting with ${displayName} Agent`
             : 'When someone shares a conversation with you, it will appear here'}
         </Typography>
         {activeTab === 'my' && (
@@ -628,7 +630,7 @@ const ChatSidebar = ({
           <Icon icon={menuIcon} />
         </IconButton>
         <Typography variant="h6" sx={{ flex: 1 }}>
-          PipesHub Agent
+          {displayName} Agent
         </Typography>
         <>
           <Tooltip title="Archived Chats">

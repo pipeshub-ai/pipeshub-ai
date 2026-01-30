@@ -12,6 +12,7 @@ import type { AppUser, GroupUser, AppUserGroup } from './types/group-details';
 interface PasswordChangeRequest {
   currentPassword: string;
   newPassword: string;
+  'cf-turnstile-response'?: string;
 }
 
 interface AddUsersToGroupsRequest {
@@ -122,7 +123,7 @@ export const updateOrg = async (orgId: string, orgData: any) => {
   }
 };
 
-export const changePassword = async ({ currentPassword, newPassword }: PasswordChangeRequest) => {
+export const changePassword = async ({ currentPassword, newPassword, 'cf-turnstile-response': turnstileToken }: PasswordChangeRequest) => {
   try {
     const accessToken = localStorage.getItem(STORAGE_KEY);
     const response = await axios.post(
@@ -130,6 +131,7 @@ export const changePassword = async ({ currentPassword, newPassword }: PasswordC
       {
         currentPassword,
         newPassword,
+        ...(turnstileToken && { 'cf-turnstile-response': turnstileToken })
       },
       {
         headers: {
@@ -323,6 +325,13 @@ export const getUserIdFromToken = (): string => {
   const decodedToken = jwtDecode(accessToken);
   const { userId } = decodedToken;
   return userId;
+};
+
+export const getUserEmailFromToken = (): string => {
+  const accessToken = localStorage.getItem(STORAGE_KEY);
+  const decodedToken = jwtDecode(accessToken);
+  const { email } = decodedToken;
+  return email;
 };
 
 export const logout = async (): Promise<void> => {

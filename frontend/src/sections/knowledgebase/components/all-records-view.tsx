@@ -1,43 +1,58 @@
-// components/all-records-view.tsx
+// components/all-records-view.tsx - Hierarchical All Records View
 import type { GridColDef, GridRowParams } from '@mui/x-data-grid';
 
 import { Icon } from '@iconify/react';
 import clearIcon from '@iconify-icons/mdi/close';
-// Import icons
 import searchIcon from '@iconify-icons/mdi/magnify';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import eyeIcon from '@iconify-icons/mdi/eye-outline';
 import databaseIcon from '@iconify-icons/mdi/database';
 import dotsIcon from '@iconify-icons/mdi/dots-vertical';
-import codeJsonIcon from '@iconify-icons/mdi/code-json';
-import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
-import languageCIcon from '@iconify-icons/mdi/language-c';
 import folderIcon from '@iconify-icons/mdi/folder-outline';
-import languageGoIcon from '@iconify-icons/mdi/language-go';
-// File type icons (reusing from knowledge-base-details)
+import chevronRightIcon from '@iconify-icons/mdi/chevron-right';
+import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
+import homeIcon from '@iconify-icons/mdi/home';
+import languageCIcon from '@iconify-icons/vscode-icons/file-type-c3';
 import filePdfBoxIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
-import languagePhpIcon from '@iconify-icons/mdi/language-php';
+import languagePhpIcon from '@iconify-icons/vscode-icons/file-type-php3';
 import downloadIcon from '@iconify-icons/mdi/download-outline';
 import fileWordBoxIcon from '@iconify-icons/vscode-icons/file-type-word';
 import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
-import languageCss3Icon from '@iconify-icons/mdi/language-css3';
-import languageJavaIcon from '@iconify-icons/mdi/language-java';
-import languageRubyIcon from '@iconify-icons/mdi/language-ruby';
-import emailOutlineIcon from '@iconify-icons/mdi/email-outline';
+import languageCss3Icon from '@iconify-icons/vscode-icons/file-type-css';
+import languageJavaIcon from '@iconify-icons/vscode-icons/file-type-java';
+import languageRubyIcon from '@iconify-icons/vscode-icons/file-type-ruby';
+import emailOutlineIcon from '@iconify-icons/vscode-icons/file-type-outlook';
 import fileExcelBoxIcon from '@iconify-icons/vscode-icons/file-type-excel';
 import fileImageBoxIcon from '@iconify-icons/vscode-icons/file-type-image';
-import languageHtml5Icon from '@iconify-icons/mdi/language-html5';
-import fileArchiveBoxIcon from '@iconify-icons/mdi/archive-outline';
-import languagePythonIcon from '@iconify-icons/mdi/language-python';
+import languageHtml5Icon from '@iconify-icons/vscode-icons/file-type-html';
+import fileArchiveBoxIcon from '@iconify-icons/vscode-icons/file-type-zip2';
+import languagePythonIcon from '@iconify-icons/vscode-icons/file-type-python';
 import noteTextOutlineIcon from '@iconify-icons/vscode-icons/file-type-text';
-import fileCodeOutlineIcon from '@iconify-icons/mdi/file-code-outline';
+import fileCodeOutlineIcon from '@iconify-icons/vscode-icons/file-type-source';
+import cloudIcon from '@iconify-icons/mdi/cloud-outline';
+import libraryIcon from '@iconify-icons/mdi/library';
 import React, { useRef, useState, useEffect, useCallback } from 'react';
 import languageMarkdownIcon from '@iconify-icons/vscode-icons/file-type-markdown';
-import fileMusicOutlineIcon from '@iconify-icons/mdi/file-music-outline';
-import fileVideoOutlineIcon from '@iconify-icons/mdi/file-video-outline';
+import fileMusicOutlineIcon from '@iconify-icons/vscode-icons/file-type-audio';
+import fileVideoOutlineIcon from '@iconify-icons/vscode-icons/file-type-video';
 import filePowerpointBoxIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
-import languageJavascriptIcon from '@iconify-icons/mdi/language-javascript';
+import languageJavascriptIcon from '@iconify-icons/vscode-icons/file-type-js-official';
 import fileDocumentOutlineIcon from '@iconify-icons/mdi/file-document-outline';
+// Additional premium file type icons
+import fileSvgIcon from '@iconify-icons/vscode-icons/file-type-svg';
+import fileJsonIcon from '@iconify-icons/vscode-icons/file-type-json';
+import fileYamlIcon from '@iconify-icons/vscode-icons/file-type-yaml';
+import fileTypescriptIcon from '@iconify-icons/vscode-icons/file-type-typescript-official';
+import fileGoIcon from '@iconify-icons/vscode-icons/file-type-go-gopher';
+import fileSqlIcon from '@iconify-icons/vscode-icons/file-type-sql';
+// Premium image icons
+import imageIcon from '@iconify-icons/mdi/image';
+import panoramaIcon from '@iconify-icons/mdi/panorama';
+import gifIcon from '@iconify-icons/mdi/file-gif-box';
+// Node type icons
+import bookOpenVariantIcon from '@iconify-icons/mdi/book-open-variant';
+import folderOpenIcon from '@iconify-icons/mdi/folder-open';
+import appsIcon from '@iconify-icons/mdi/apps';
 
 import { DataGrid } from '@mui/x-data-grid';
 import {
@@ -58,51 +73,70 @@ import {
   Typography,
   IconButton,
   Pagination,
+  Breadcrumbs,
+  Link,
+  Chip,
   ListItemIcon,
   ListItemText,
   InputAdornment,
   LinearProgress,
   CircularProgress,
+  Dialog,
+  Button
 } from '@mui/material';
 
 import { KnowledgeBaseAPI } from '../services/api';
 import DeleteRecordDialog from '../delete-record-dialog';
-import KnowledgeBaseSideBar from '../knowledge-base-sidebar';
-import { Filters } from '../types/knowledge-base';
+import DynamicFilterSidebar, { AppliedFilters, AvailableFilters } from './dynamic-filter-sidebar';
 import { ORIGIN } from '../constants/knowledge-search';
+import { getExtensionFromMimeType, getFileIcon, getFileIconColor } from '../utils/utils';
 
-// Import the Filters type from the sidebar to ensure compatibility
-
+// New Props Interface - receives state from URL via parent
 interface AllRecordsViewProps {
-  onNavigateBack: () => void;
-  onNavigateToRecord?: (recordId: string) => void;
+  // Current navigation state from URL
+  nodeType?: string;
+  nodeId?: string;
+  page: number;
+  limit: number;
+  q?: string;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+  filters: AppliedFilters;
+  // Callbacks
+  onUpdateUrl: (params: Record<string, string | undefined>) => void;
+  onNavigateToRecord: (recordId: string) => void;
 }
 
-interface Record {
+// Hub Node interface for hierarchical data
+interface HubNode {
   id: string;
-  recordName: string;
-  recordType: string;
-  indexingStatus: string;
-  origin: string;
-  connectorName: string;
-  webUrl: string;
+  name: string;
+  nodeType: 'app' | 'kb' | 'folder' | 'record' | 'recordGroup';
+  parentId: string | null;
+  origin: 'KB' | 'CONNECTOR';
+  connector: string;
+  recordType?: string;
+  indexingStatus?: string;
+  hasChildren: boolean;
+  createdAt?: number;
+  updatedAt?: number;
+  sizeInBytes?: number;
+  mimeType?: string;
+  extension?: string;
+  webUrl?: string;
   externalRecordId?: string;
-  fileRecord?: {
-    extension?: string;
-    sizeInBytes?: number;
-    mimeType?: string;
-  };
-  sourceCreatedAtTimestamp?: number;
-  sourceLastModifiedTimestamp?: number;
-  version?: string;
-  kb?: {
-    id: string;
-    name: string;
-  };
   permission?: {
-    role: 'OWNER' | 'WRITER' | 'READER' | 'COMMENTER' | string;
-    type: string;
+    role: string;
+    canEdit: boolean;
+    canDelete: boolean;
   };
+}
+
+interface Breadcrumb {
+  id: string;
+  name: string;
+  nodeType: string;
+  subType?: string;
 }
 
 interface ActionMenuItem {
@@ -113,48 +147,28 @@ interface ActionMenuItem {
   isDanger?: boolean;
 }
 
-// Helper function to create empty filters object
-const createEmptyFilters = (): Filters => ({
-  indexingStatus: [],
-  department: [],
-  moduleId: [],
-  searchTags: [],
-  appSpecificRecordType: [],
-  recordTypes: [],
-  origin: [],
-  status: [],
-  connectors: [],
-  app: [],
-  permissions: [],
-});
-
 // Styled components
-// The improved component definition
 const ModernToolbar = ({ theme, ...props }: any) => (
   <Box
     sx={{
-      // Add sticky positioning
       position: 'sticky',
       top: 0,
-      zIndex: theme.zIndex.appBar, // Make sure it stays on top
-
-      // Existing styles
-      padding: theme.spacing(1.5, 3),
-      borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`, // Slightly more visible border
-      backdropFilter: 'saturate(180%) blur(10px)', // A more refined blur effect
-
-      // Layout
+      zIndex: theme.zIndex.appBar,
+      padding: theme.spacing(2, 3),
+      borderBottom: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
+      backdropFilter: 'saturate(180%) blur(12px)',
+      backgroundColor: alpha(theme.palette.background.paper, 0.8),
       display: 'flex',
-      alignItems: 'center',
+      alignItems: 'flex-start',
       justifyContent: 'space-between',
-
-      // Other
-      borderRadius: 0,
-      boxShadow: 'none',
-      minHeight: 64, // A bit more vertical space is common (e.g., 64px)
-
-      // Smooth transitions for theme changes
-      transition: theme.transitions.create(['background-color', 'border-color']),
+      gap: 3,
+      borderTopLeftRadius: 12,
+      borderTopRightRadius: 12,
+      boxShadow: `0 1px 3px ${alpha(theme.palette.common.black, 0.02)}`,
+      minHeight: 64,
+      transition: theme.transitions.create(['background-color', 'border-color', 'box-shadow'], {
+        duration: 200,
+      }),
     }}
     {...props}
   />
@@ -182,7 +196,7 @@ const CompactIconButton = ({ theme, ...props }: any) => (
 const MainContentContainer = ({ theme, sidebarOpen, ...props }: any) => (
   <Box
     sx={{
-      flexGrow: 1, // Let it grow to fill space
+      flexGrow: 1,
       minWidth: 0,
       transition: theme.transitions.create(['margin-left', 'width'], {
         easing: theme.transitions.easing.sharp,
@@ -197,22 +211,33 @@ const MainContentContainer = ({ theme, sidebarOpen, ...props }: any) => (
   />
 );
 
-const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavigateToRecord }) => {
+const AllRecordsView: React.FC<AllRecordsViewProps> = ({
+  nodeType,
+  nodeId,
+  page,
+  limit,
+  q,
+  sortBy,
+  sortOrder,
+  filters,
+  onUpdateUrl,
+  onNavigateToRecord,
+}) => {
   const theme = useTheme();
-  const [records, setRecords] = useState<Record[]>([]);
+
+  // Data state
+  const [items, setItems] = useState<HubNode[]>([]);
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [activeSearchQuery, setActiveSearchQuery] = useState('');
-  const [page, setPage] = useState(0);
-  const [limit, setLimit] = useState(20);
+  const [isRefreshing, setIsRefreshing] = useState(false); // For filter/refresh operations
   const [totalCount, setTotalCount] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
+  const [counts, setCounts] = useState<any>(null);
+  const [availableFilters, setAvailableFilters] = useState<AvailableFilters>({});
+  const [permissions, setPermissions] = useState<any>(null);
 
-  // Sidebar state
+  // UI state
   const [sidebarOpen, setSidebarOpen] = useState(true);
-  const [filters, setFilters] = useState<Filters>(createEmptyFilters());
-
-  // Action menu state
+  const [searchQueryLocal, setSearchQueryLocal] = useState(q || '');
   const [menuAnchorEl, setMenuAnchorEl] = useState<HTMLElement | null>(null);
   const [menuItems, setMenuItems] = useState<ActionMenuItem[]>([]);
 
@@ -223,6 +248,14 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
     recordName: '',
   });
 
+  // Force reindex dialog state
+  const [forceReindexDialog, setForceReindexDialog] = useState({
+    open: false,
+    id: '',
+    name: '',
+    type: 'record' as 'record' | 'recordGroup',
+  });
+
   // Snackbar state
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -230,430 +263,295 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
     severity: 'success' as 'success' | 'error' | 'warning',
   });
 
-  // Refs to prevent re-renders
+  // Refs
   const loadingRef = useRef(false);
-  const searchTimeoutRef = useRef<NodeJS.Timeout>();
 
-  // Action menu handlers
-  const showActionMenu = (anchorElement: HTMLElement, items: ActionMenuItem[]) => {
-    setMenuItems(items);
-    setMenuAnchorEl(anchorElement);
-  };
+  // Sync search input with URL param
+  useEffect(() => {
+    setSearchQueryLocal(q || '');
+  }, [q]);
 
-  const closeActionMenu = () => {
-    setMenuAnchorEl(null);
-  };
+  // Load data based on current URL state
+  const loadData = useCallback(async (isRefresh: boolean = false) => {
+    if (loadingRef.current) return;
 
-  // Sidebar handlers
-  const handleToggleSidebar = () => {
-    setSidebarOpen((prev) => !prev);
-  };
-
-  const handleFilterChange = (newFilters: Filters) => {
-    // Ensure all filter properties are arrays to prevent undefined errors
-    const normalizedFilters: Filters = {
-      indexingStatus: newFilters.indexingStatus || [],
-      department: newFilters.department || [],
-      moduleId: newFilters.moduleId || [],
-      searchTags: newFilters.searchTags || [],
-      appSpecificRecordType: newFilters.appSpecificRecordType || [],
-      recordTypes: newFilters.recordTypes || [],
-      origin: newFilters.origin || [],
-      status: newFilters.status || [],
-      connectors: newFilters.connectors || [],
-      app: newFilters.app || [],
-      permissions: newFilters.permissions || [],
-    };
-
-    setFilters(normalizedFilters);
-    setPage(0); // Reset to first page when filters change
-  };
-
-  // Convert filters to API params
-  const buildApiParams = useCallback(() => {
-    const params: any = {
-      page: page + 1,
-      limit,
-      search: activeSearchQuery,
-    };
-
-    // Add filters to params - convert arrays to comma-separated strings for the API
-    if (filters.indexingStatus && filters.indexingStatus.length > 0) {
-      params.indexingStatus = filters.indexingStatus.join(',');
-    }
-    if (filters.recordTypes && filters.recordTypes.length > 0) {
-      params.recordTypes = filters.recordTypes.join(',');
-    }
-    if (filters.origin && filters.origin.length > 0) {
-      params.origins = filters.origin.join(','); // Note: API expects 'origins' not 'origin'
-    }
-    if (filters.connectors && filters.connectors.length > 0) {
-      params.connectors = filters.connectors.join(',').toUpperCase();
-    }
-    if (filters.permissions && filters.permissions.length > 0) {
-      params.permissions = filters.permissions.join(',');
-    }
-    if (filters.department && filters.department.length > 0) {
-      params.department = filters.department.join(',');
-    }
-    if (filters.moduleId && filters.moduleId.length > 0) {
-      params.moduleId = filters.moduleId.join(',');
-    }
-    if (filters.searchTags && filters.searchTags.length > 0) {
-      params.searchTags = filters.searchTags.join(',');
-    }
-    if (filters.appSpecificRecordType && filters.appSpecificRecordType.length > 0) {
-      params.appSpecificRecordType = filters.appSpecificRecordType.join(',');
+    loadingRef.current = true;
+    
+    // Show different loading states based on context
+    if (isRefresh || items.length > 0) {
+      setIsRefreshing(true);
+    } else {
+      setLoading(true);
     }
 
-    return params;
-  }, [page, limit, activeSearchQuery, filters]);
+    try {
+      const params: any = {
+        page,
+        limit,
+        include: 'counts,permissions,breadcrumbs,availableFilters',
+        q: q || undefined,
+      };
 
-  // Get file icon based on extension
-  const getFileIcon = (extension: string, mimeType?: string) => {
-    if ((!extension || extension === '') && mimeType) {
-      // Google Workspace mime types
-      switch (mimeType) {
-        case 'application/vnd.google-apps.document':
-          return fileWordBoxIcon;
-        case 'application/vnd.google-apps.spreadsheet':
-          return fileExcelBoxIcon;
-        case 'application/vnd.google-apps.presentation':
-          return filePowerpointBoxIcon;
-        case 'application/vnd.google-apps.form':
-          return noteTextOutlineIcon;
-        case 'application/vnd.google-apps.drawing':
-          return fileImageBoxIcon;
-        case 'application/vnd.google-apps.folder':
-          return folderIcon;
-        case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-        case 'application/vnd.microsoft.word.document.macroEnabled.12':
-        case 'application/vnd.ms-word.document.macroEnabled.12':
-        case 'application/vnd.ms-word.document':
-          return fileWordBoxIcon;
-        case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-        case 'application/vnd.microsoft.excel.sheet.macroEnabled.12':
-        case 'application/vnd.ms-excel.sheet.macroEnabled.12':
-        case 'application/vnd.ms-excel':
-          return fileExcelBoxIcon;
-        case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
-        case 'application/vnd.microsoft.powerpoint.presentation.macroEnabled.12':
-        case 'application/vnd.ms-powerpoint.presentation.macroEnabled.12':
-        case 'application/vnd.ms-powerpoint':
-          return filePowerpointBoxIcon;
-        case 'application/vnd.microsoft.onedrive.document':
-          return fileWordBoxIcon;
-        case 'application/vnd.microsoft.onedrive.spreadsheet':
-          return fileExcelBoxIcon;
-        case 'application/vnd.microsoft.onedrive.presentation':
-          return filePowerpointBoxIcon;
-        case 'application/vnd.microsoft.onedrive.drawing':
-          return fileImageBoxIcon;
-        case 'application/vnd.microsoft.onedrive.folder':
-          return folderIcon;
-        default:
-          return fileDocumentOutlineIcon;
+      // Add sort params if they exist
+      if (sortBy) {
+        params.sortBy = sortBy;
       }
-    }
-
-    const ext = extension?.toLowerCase() || '';
-    switch (ext) {
-      case 'pdf':
-        return filePdfBoxIcon;
-      case 'doc':
-      case 'docx':
-        return fileWordBoxIcon;
-      case 'xls':
-      case 'xlsx':
-      case 'csv':
-        return fileExcelBoxIcon;
-      case 'ppt':
-      case 'pptx':
-        return filePowerpointBoxIcon;
-      case 'jpg':
-      case 'jpeg':
-      case 'png':
-      case 'gif':
-      case 'svg':
-      case 'webp':
-        return fileImageBoxIcon;
-      case 'zip':
-      case 'rar':
-      case '7z':
-      case 'tar':
-      case 'gz':
-        return fileArchiveBoxIcon;
-      case 'txt':
-        return noteTextOutlineIcon;
-      case 'rtf':
-        return fileDocumentOutlineIcon;
-      case 'md':
-      case 'mdx':
-        return languageMarkdownIcon;
-      case 'html':
-      case 'htm':
-        return languageHtml5Icon;
-      case 'css':
-        return languageCss3Icon;
-      case 'js':
-      case 'ts':
-      case 'jsx':
-      case 'tsx':
-        return languageJavascriptIcon;
-      case 'json':
-        return codeJsonIcon;
-      case 'xml':
-        return fileCodeOutlineIcon;
-      case 'py':
-        return languagePythonIcon;
-      case 'java':
-        return languageJavaIcon;
-      case 'c':
-      case 'cpp':
-      case 'cs':
-        return languageCIcon;
-      case 'php':
-        return languagePhpIcon;
-      case 'rb':
-        return languageRubyIcon;
-      case 'go':
-        return languageGoIcon;
-      case 'sql':
-        return databaseIcon;
-      case 'mp3':
-      case 'wav':
-      case 'ogg':
-      case 'flac':
-        return fileMusicOutlineIcon;
-      case 'mp4':
-      case 'avi':
-      case 'mov':
-      case 'wmv':
-      case 'mkv':
-        return fileVideoOutlineIcon;
-      case 'eml':
-      case 'msg':
-        return emailOutlineIcon;
-      default:
-        return fileDocumentOutlineIcon;
-    }
-  };
-
-  // Get file icon color based on extension
-  const getFileIconColor = (extension: string, mimeType?: string): string => {
-    if ((!extension || extension === '') && mimeType) {
-      switch (mimeType) {
-        case 'application/vnd.google-apps.document':
-          return '#4285F4';
-        case 'application/vnd.google-apps.spreadsheet':
-          return '#0F9D58';
-        case 'application/vnd.google-apps.presentation':
-          return '#F4B400';
-        case 'application/vnd.google-apps.form':
-          return '#673AB7';
-        case 'application/vnd.google-apps.drawing':
-          return '#DB4437';
-        case 'application/vnd.google-apps.folder':
-          return '#5F6368';
-        case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
-        case 'application/vnd.microsoft.word.document.macroEnabled.12':
-        case 'application/vnd.ms-word.document.macroEnabled.12':
-        case 'application/vnd.ms-word.document':
-        case 'application/vnd.microsoft.onedrive.document':
-          return '#2B579A';
-        case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
-        case 'application/vnd.microsoft.excel.sheet.macroEnabled.12':
-        case 'application/vnd.ms-excel.sheet.macroEnabled.12':
-        case 'application/vnd.ms-excel':
-        case 'application/vnd.microsoft.onedrive.spreadsheet':
-          return '#217346';
-        case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
-        case 'application/vnd.microsoft.powerpoint.presentation.macroEnabled.12':
-        case 'application/vnd.ms-powerpoint.presentation.macroEnabled.12':
-        case 'application/vnd.ms-powerpoint':
-        case 'application/vnd.microsoft.onedrive.presentation':
-          return '#B7472A';
-        case 'application/vnd.microsoft.onedrive.drawing':
-          return '#8C6A4F';
-        case 'application/vnd.microsoft.onedrive.folder':
-          return '#0078D4';
-        default:
-          return '#1976d2';
+      if (sortOrder) {
+        params.sortOrder = sortOrder;
       }
-    }
 
-    const ext = extension?.toLowerCase() || '';
-    switch (ext) {
-      case 'pdf':
-        return '#f44336';
-      case 'doc':
-      case 'docx':
-        return '#2196f3';
-      case 'xls':
-      case 'xlsx':
-      case 'csv':
-        return '#4caf50';
-      case 'ppt':
-      case 'pptx':
-        return '#ff9800';
-      case 'jpg':
-      case 'jpeg':
-      case 'png':
-      case 'gif':
-      case 'svg':
-      case 'webp':
-        return '#9c27b0';
-      case 'zip':
-      case 'rar':
-      case '7z':
-      case 'tar':
-      case 'gz':
-        return '#795548';
-      case 'txt':
-      case 'rtf':
-      case 'md':
-        return '#607d8b';
-      case 'html':
-      case 'htm':
-        return '#e65100';
-      case 'css':
-        return '#0277bd';
-      case 'js':
-      case 'ts':
-      case 'jsx':
-      case 'tsx':
-        return '#ffd600';
-      case 'json':
-        return '#616161';
-      case 'xml':
-        return '#00838f';
-      case 'py':
-        return '#1976d2';
-      case 'java':
-        return '#b71c1c';
-      case 'c':
-      case 'cpp':
-      case 'cs':
-        return '#3949ab';
-      case 'php':
-        return '#6a1b9a';
-      case 'rb':
-        return '#c62828';
-      case 'go':
-        return '#00acc1';
-      case 'sql':
-        return '#00695c';
-      case 'mp3':
-      case 'wav':
-      case 'ogg':
-      case 'flac':
-        return '#283593';
-      case 'mp4':
-      case 'avi':
-      case 'mov':
-      case 'wmv':
-      case 'mkv':
-        return '#d81b60';
-      case 'eml':
-      case 'msg':
-        return '#6a1b9a';
-      default:
-        return '#1976d2';
+      // Add filters if they exist and have values
+      if (filters.recordTypes && filters.recordTypes.length > 0) {
+        params.recordTypes = filters.recordTypes.join(',');
+      }
+      if (filters.origins && filters.origins.length > 0) {
+        params.origins = filters.origins.join(',');
+      }
+      if (filters.connectorIds && filters.connectorIds.length > 0) {
+        params.connectorIds = filters.connectorIds.join(',');
+      }
+      if (filters.kbIds && filters.kbIds.length > 0) {
+        params.kbIds = filters.kbIds.join(',');
+      }
+      if (filters.indexingStatus && filters.indexingStatus.length > 0) {
+        params.indexingStatus = filters.indexingStatus.join(',');
+      }
+
+      let data;
+      if (!nodeType || !nodeId) {
+        // Load root level nodes
+        data = await KnowledgeBaseAPI.getKnowledgeHubNodes(params);
+      } else {
+        // Load specific node children
+        data = await KnowledgeBaseAPI.getKnowledgeHubNodeChildren(nodeType, nodeId, params);
+      }
+
+      // Update state only after successful fetch to prevent flickering
+      setItems(data.items || []);
+      setTotalCount(data.pagination?.totalItems || 0);
+      setBreadcrumbs(data.breadcrumbs || []);
+      setCounts(data.counts);
+      setAvailableFilters(data.filters?.available || {});
+      setPermissions(data.permissions || null);
+    } catch (error) {
+      console.error('Failed to load data:', error);
+      // Only clear items on initial load failure, not on refresh
+      if (!isRefresh && items.length === 0) {
+        setItems([]);
+        setTotalCount(0);
+      }
+      setSnackbar({
+        open: true,
+        message: 'Failed to load data. Please try again.',
+        severity: 'error',
+      });
+    } finally {
+      setLoading(false);
+      setIsRefreshing(false);
+      loadingRef.current = false;
+    }
+  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, items.length]);
+
+  // Load data when dependencies change
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Navigation handlers
+  const handleRowClick = (node: HubNode) => {
+    if (node.hasChildren) {
+      // Navigate into node
+      onUpdateUrl({
+        nodeType: node.nodeType,
+        nodeId: node.id,
+        page: '1',
+        limit: limit.toString(),
+        sortBy,
+        sortOrder,
+        q: q || undefined,
+        // Preserve filters
+        recordTypes: filters.recordTypes?.join(',') || undefined,
+        origins: filters.origins?.join(',') || undefined,
+        connectorIds: filters.connectorIds?.join(',') || undefined,
+        kbIds: filters.kbIds?.join(',') || undefined,
+        indexingStatus: filters.indexingStatus?.join(',') || undefined,
+      });
+    } else if (node.nodeType === 'record') {
+      onNavigateToRecord(node.id);
     }
   };
+
+  const handleBreadcrumbClick = (breadcrumb: Breadcrumb | null, index: number) => {
+    if (index === 0 || breadcrumb === null) {
+      // Navigate to root
+      onUpdateUrl({
+        page: '1',
+        limit: limit.toString(),
+        sortBy,
+        sortOrder,
+        q: q || undefined,
+        // Keep filters, remove nodeType/nodeId
+        recordTypes: filters.recordTypes?.join(',') || undefined,
+        origins: filters.origins?.join(',') || undefined,
+        connectorIds: filters.connectorIds?.join(',') || undefined,
+        kbIds: filters.kbIds?.join(',') || undefined,
+        indexingStatus: filters.indexingStatus?.join(',') || undefined,
+      });
+    } else {
+      // Navigate to specific breadcrumb
+      onUpdateUrl({
+        nodeType: breadcrumb.nodeType,
+        nodeId: breadcrumb.id,
+        page: '1',
+        limit: limit.toString(),
+        sortBy,
+        sortOrder,
+        q: q || undefined,
+        // Keep filters
+        recordTypes: filters.recordTypes?.join(',') || undefined,
+        origins: filters.origins?.join(',') || undefined,
+        connectorIds: filters.connectorIds?.join(',') || undefined,
+        kbIds: filters.kbIds?.join(',') || undefined,
+        indexingStatus: filters.indexingStatus?.join(',') || undefined,
+      });
+    }
+  };
+
+  const handlePageChange = (event: unknown, newPage: number) => {
+    onUpdateUrl({
+      nodeType,
+      nodeId,
+      page: newPage.toString(), // 1-indexed page
+      limit: limit.toString(),
+      sortBy,
+      sortOrder,
+      q: q || undefined,
+      recordTypes: filters.recordTypes?.join(',') || undefined,
+      origins: filters.origins?.join(',') || undefined,
+      connectorIds: filters.connectorIds?.join(',') || undefined,
+      kbIds: filters.kbIds?.join(',') || undefined,
+      indexingStatus: filters.indexingStatus?.join(',') || undefined,
+    });
+  };
+
+  const handleLimitChange = (event: any) => {
+    onUpdateUrl({
+      nodeType,
+      nodeId,
+      page: '1', // Reset to page 1 when changing limit
+      limit: event.target.value,
+      sortBy,
+      sortOrder,
+      q: q || undefined,
+      recordTypes: filters.recordTypes?.join(',') || undefined,
+      origins: filters.origins?.join(',') || undefined,
+      connectorIds: filters.connectorIds?.join(',') || undefined,
+      kbIds: filters.kbIds?.join(',') || undefined,
+      indexingStatus: filters.indexingStatus?.join(',') || undefined,
+    });
+  };
+
+  const handleSearchSubmit = () => {
+    onUpdateUrl({
+      nodeType,
+      nodeId,
+      page: '1',
+      limit: limit.toString(),
+      sortBy,
+      sortOrder,
+      q: searchQueryLocal || undefined,
+      recordTypes: filters.recordTypes?.join(',') || undefined,
+      origins: filters.origins?.join(',') || undefined,
+      connectorIds: filters.connectorIds?.join(',') || undefined,
+      kbIds: filters.kbIds?.join(',') || undefined,
+      indexingStatus: filters.indexingStatus?.join(',') || undefined,
+    });
+  };
+
+  const handleClearSearch = () => {
+    setSearchQueryLocal('');
+    onUpdateUrl({
+      nodeType,
+      nodeId,
+      page: '1',
+      limit: limit.toString(),
+      sortBy,
+      sortOrder,
+      recordTypes: filters.recordTypes?.join(',') || undefined,
+      origins: filters.origins?.join(',') || undefined,
+      connectorIds: filters.connectorIds?.join(',') || undefined,
+      kbIds: filters.kbIds?.join(',') || undefined,
+      indexingStatus: filters.indexingStatus?.join(',') || undefined,
+    });
+  };
+
+  const handleRefresh = () => {
+    loadData(true);
+  };
+
+  const handleFilterChange = (newFilters: AppliedFilters) => {
+    onUpdateUrl({
+      nodeType,
+      nodeId,
+      page: '1', // Reset to page 1 when filters change
+      limit: limit.toString(),
+      sortBy: newFilters.sortBy || undefined,
+      sortOrder: newFilters.sortOrder || undefined,
+      q: q || undefined,
+      recordTypes: newFilters.recordTypes?.join(',') || undefined,
+      origins: newFilters.origins?.join(',') || undefined,
+      connectorIds: newFilters.connectorIds?.join(',') || undefined,
+      kbIds: newFilters.kbIds?.join(',') || undefined,
+      indexingStatus: newFilters.indexingStatus?.join(',') || undefined,
+    });
+  };
+
+  // Helper functions
+  const getConnectorIconPath = (connectorType?: string): string => {
+    if (!connectorType) return '/assets/icons/connectors/default.svg';
+
+    return `/assets/icons/connectors/${connectorType.toLowerCase()}.svg`;
+  };
+
+  // Get MDI icon and color for node types (kb, folder, recordGroup)
+  const getNodeTypeIcon = (type: string, hasChildren: boolean): { icon: any; color: string } => {
+    switch (type) {
+      case 'kb':
+        return { icon: bookOpenVariantIcon, color: theme.palette.success.main };
+      case 'folder':
+        return hasChildren
+          ? { icon: folderOpenIcon, color: theme.palette.warning.main }
+          : { icon: folderIcon, color: theme.palette.text.secondary };
+      case 'recordGroup':
+        return { icon: folderOpenIcon, color: theme.palette.info.main };
+      case 'app':
+        return { icon: appsIcon, color: theme.palette.primary.main };
+      default:
+        return { icon: folderIcon, color: theme.palette.text.secondary };
+    }
+  };
+
+  const getNodeIcon = (node: HubNode) => {
+    if (node.hasChildren) {
+      if (node.nodeType === 'app') return cloudIcon;
+      if (node.nodeType === 'kb') return libraryIcon;
+      if (node.nodeType === 'folder' || node.nodeType === 'recordGroup') return folderIcon;
+    }
+
+    // For records, use file type icon
+    return getFileIcon(node.extension || '', node.mimeType);
+  };
+
 
   const formatFileSize = (bytes: number): string => {
-    if (bytes === 0) return '0 Bytes';
+    if (!bytes || bytes === 0) return '—';
     const k = 1024;
     const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
   };
 
-  // Load all records
-  const loadAllRecords = useCallback(async () => {
-    if (loadingRef.current) return;
-
-    loadingRef.current = true;
-    setLoading(true);
-
-    try {
-      const params = buildApiParams();
-      const data = await KnowledgeBaseAPI.getAllRecords(params);
-
-      if (data.records && data.pagination) {
-        setRecords(data.records);
-        setTotalCount(data.pagination.totalCount || 0);
-      } else if (Array.isArray(data)) {
-        setRecords(data);
-        setTotalCount(data.length);
-      } else {
-        setRecords([]);
-        setTotalCount(0);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to fetch records');
-      setRecords([]);
-      setTotalCount(0);
-    } finally {
-      setLoading(false);
-      loadingRef.current = false;
-    }
-  }, [buildApiParams]);
-
-  // Load records on page/limit change or filter change
-  useEffect(() => {
-    loadAllRecords();
-  }, [loadAllRecords]);
-
-  // Initial load
-  useEffect(() => {
-    loadAllRecords();
-  }, [loadAllRecords]);
-
-  useEffect(() => {
-    setPage(0);
-  }, [filters]);
-
-  const handleSearchChange = (event: React.ChangeEvent<HTMLInputElement>) => {
-    setSearchQuery(event.target.value);
-  };
-
-  const handleSearchSubmit = () => {
-    // Only trigger a new search if the query has actually changed
-    if (searchQuery !== activeSearchQuery) {
-      setActiveSearchQuery(searchQuery);
-      setPage(0); // Reset to the first page for the new search
-    }
-  };
-
-  const handleClearSearch = () => {
-    setSearchQuery('');
-    setActiveSearchQuery(''); // Immediately clear the active search
-    setPage(0);
-  };
-
-  const handlePageChange = (event: unknown, newPage: number) => {
-    setPage(newPage - 1); // MUI Pagination is 1-indexed, our state is 0-indexed
-  };
-
-  const handleLimitChange = (event: any) => {
-    setLimit(parseInt(event.target.value as string, 10));
-    setPage(0); // Reset to first page when changing limit
-  };
-
-  const handleRowClick = (params: GridRowParams, event: React.MouseEvent): void => {
-    const isCheckboxClick = (event.target as HTMLElement).closest('.MuiDataGrid-cellCheckbox');
-    if (!isCheckboxClick && onNavigateToRecord) {
-      onNavigateToRecord(params.id as string);
-    }
-  };
-
-  const handleRefresh = () => {
-    loadAllRecords();
-  };
-
-  // Handle retry indexing
+  // Action handlers
   const handleRetryIndexing = async (recordId: string) => {
     try {
       const response = await KnowledgeBaseAPI.reindexRecord(recordId);
@@ -661,20 +559,94 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
         open: true,
         message: response.success
           ? 'File indexing started successfully'
-          : 'Failed to start reindexing',
+          : response.reason || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      // Refresh the records to show updated status
-      loadAllRecords();
+      loadData(true);
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.reason || err.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
+    }
+  };
+
+  const handleRetryIndexingFolder = async (folderId: string) => {
+    try {
+      const response = await KnowledgeBaseAPI.reindexRecord(folderId, false, 100);
+      setSnackbar({
+        open: true,
+        message: response.success
+          ? 'Folder indexing started successfully'
+          : response.reason || 'Failed to start reindexing',
+        severity: response.success ? 'success' : 'error',
+      });
+      loadData(true);
+    } catch (err: any) {
+      console.error('Failed to reindex folder', err);
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.reason || err.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
+    }
+  };
+
+  const handleRetryIndexingRecordGroup = async (recordGroupId: string) => {
+    try {
+      const response = await KnowledgeBaseAPI.reindexRecordGroup(recordGroupId, false, 100);
+      setSnackbar({
+        open: true,
+        message: response.success
+          ? 'Record group indexing started successfully'
+          : response.message || 'Failed to start reindexing',
+        severity: response.success ? 'success' : 'error',
+      });
+      loadData(true);
+    } catch (err: any) {
+      console.error('Failed to reindex record group', err);
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.message || err.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
+    }
+  };
+
+  const handleForceReindex = async () => {
+    try {
+      const { id, type } = forceReindexDialog;
+      let response;
+      if (type === 'record') {
+        response = await KnowledgeBaseAPI.reindexRecord(id, true);
+      } else {
+        response = await KnowledgeBaseAPI.reindexRecordGroup(id, true);
+      }
+      setSnackbar({
+        open: true,
+        message: response.success
+          ? `${type === 'record' ? 'Record' : 'Record group'} force reindex started successfully`
+          : response.message || 'Failed to start force reindexing',
+        severity: response.success ? 'success' : 'error',
+      });
+      setForceReindexDialog({ open: false, id: '', name: '', type: 'record' });
+      loadData(true);
+    } catch (err: any) {
+      console.error('Failed to force reindex', err);
+      setSnackbar({
+        open: true,
+        message: err.response?.data?.message || err.message || 'Failed to start force reindexing',
+        severity: 'error',
+      });
     }
   };
 
   // Handle download document
-  const handleDownload = async (externalRecordId: string, recordName: string, origin: string) => {
+  const handleDownload = async (recordId: string, recordName: string) => {
     try {
-      await KnowledgeBaseAPI.handleDownloadDocument(externalRecordId, recordName, origin);
+      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName);
       setSnackbar({
         open: true,
         message: 'Download started successfully',
@@ -685,61 +657,64 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
     }
   };
 
-  // Handle delete success
   const handleDeleteSuccess = () => {
     setSnackbar({
       open: true,
       message: 'Record deleted successfully',
       severity: 'success',
     });
-    loadAllRecords(); // Refresh the records
+    loadData(true);
   };
 
-  // Close the delete dialog
-  const handleCloseDeleteDialog = () => {
-    setDeleteDialogData({
-      open: false,
-      recordId: '',
-      recordName: '',
-    });
+  const closeActionMenu = () => {
+    setMenuAnchorEl(null);
+  };
+
+  const showActionMenu = (anchorElement: HTMLElement, menuActions: ActionMenuItem[]) => {
+    setMenuItems(menuActions);
+    setMenuAnchorEl(anchorElement);
   };
 
   // DataGrid columns
-  const columns: GridColDef<Record>[] = [
+  const columns: GridColDef<HubNode>[] = [
     {
       field: '#',
       headerName: '#',
-      width: 60, // Adjust width as needed
+      width: 60,
       align: 'center',
       headerAlign: 'center',
       sortable: false,
       renderCell: (params) => {
-        // Calculate the row number based on the current page and limit
         const rowIndex = params.api.getRowIndexRelativeToVisibleRows(params.row.id);
-        const rowNumber = page * limit + rowIndex + 1;
+        const rowNumber = (page - 1) * limit + rowIndex + 1;
         return (
-          <Typography
-            variant="body2"
-            sx={{
-              color: 'text.secondary',
-              fontWeight: 500,
-              mt: 2,
-            }}
-          >
+          <Typography variant="caption" sx={{ color: 'text.disabled', fontWeight: 500 }}>
             {rowNumber}
           </Typography>
         );
       },
     },
     {
-      field: 'recordName',
+      field: 'name',
       headerName: 'Name',
       flex: 1,
       minWidth: 200,
       renderCell: (params) => {
-        const extension = params.row.fileRecord?.extension || '';
-        const mimeType = params.row.fileRecord?.mimeType || '';
-        return (
+        const node = params.row;
+        const isNonClickable = !node.hasChildren && node.nodeType !== 'record';
+
+        // Determine icon rendering strategy based on node type
+        const isRecord = node.nodeType === 'record';
+        const isApp = node.nodeType === 'app';
+        const isNodeTypeWithIcon = node.nodeType === 'kb' || node.nodeType === 'folder' || node.nodeType === 'recordGroup';
+
+        // For connectors (app), use SVG path
+        const connectorIconPath = isApp ? getConnectorIconPath(node.connector) : null;
+
+        // Get MDI icon and color for node types (kb, folder, recordGroup)
+        const nodeTypeDisplay = isNodeTypeWithIcon ? getNodeTypeIcon(node.nodeType, node.hasChildren) : null;
+
+        const content = (
           <Box
             sx={{
               display: 'flex',
@@ -749,65 +724,171 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
               pl: 0.5,
             }}
           >
-            <Icon
-              icon={
-                extension
-                  ? getFileIcon(extension, mimeType)
-                  : params.row.recordType === 'MAIL'
-                    ? getFileIcon('eml')
-                    : getFileIcon('', mimeType)
-              }
-              style={{
-                fontSize: '24px',
-                color: getFileIconColor(extension, mimeType),
-                marginRight: '10px',
-                flexShrink: 0,
-                opacity: 0.85,
+            {/* Use connector icon path for app nodes */}
+            {connectorIconPath ? (
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mr: 1.5,
+                  flexShrink: 0,
+                  width: 28,
+                  height: 28,
+                }}
+              >
+                <Box
+                  component="img"
+                  src={connectorIconPath}
+                  alt={node.name}
+                  sx={{
+                    width: 26,
+                    height: 26,
+                    flexShrink: 0,
+                  }}
+                />
+              </Box>
+            ) : nodeTypeDisplay ? (
+              /* Use MDI icons for kb, folder, recordGroup */
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  mr: 1.5,
+                  flexShrink: 0,
+                  width: 28,
+                  height: 28,
+                }}
+              >
+                <Icon
+                  icon={nodeTypeDisplay.icon}
+                  style={{
+                    fontSize: '26px',
+                    color: nodeTypeDisplay.color,
+                    flexShrink: 0,
+                  }}
+                />
+              </Box>
+            ) : (
+              /* For record nodes, use premium file type icons based on extension/mimeType */
+                  <Box
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      mr: 1.5,
+                      flexShrink: 0,
+                      width: 28,
+                      height: 28,
+                    }}
+                  >
+                    <Icon
+                      icon={getFileIcon(node.extension || '', node.mimeType)}
+                      style={{
+                        fontSize: '28px',
+                        flexShrink: 0,
+                        color: getFileIconColor(node.extension || '', node.mimeType),
+                      }}
+                    />
+                  </Box>
+                )}
+            <Typography
+              variant="body2"
+              noWrap
+              sx={{
+                fontWeight: node.hasChildren ? 600 : 400,
+                fontSize: '0.875rem',
+                color: 'text.primary',
               }}
-            />
-            <Typography variant="body2" noWrap sx={{ fontWeight: 500 }}>
-              {params.value}
+            >
+              {node.name}
             </Typography>
+            {isNonClickable && (
+              <Chip
+                label="empty"
+                size="small"
+                sx={{
+                  ml: 1,
+                  height: 18,
+                  fontSize: '0.65rem',
+                  fontWeight: 500,
+                  backgroundColor: theme.palette.mode === 'dark' ? alpha(theme.palette.divider, 0.4) : 'transparent',
+                  border: `1px solid ${alpha(theme.palette.divider, 0.4)}`,
+                  color: 'text.disabled',
+                  '& .MuiChip-label': {
+                    px: 0.75,
+                    py: 0,
+                  },
+                }}
+              />
+            )}
           </Box>
+        );
+
+        return isNonClickable ? (
+          <Tooltip title="This folder is empty" arrow placement="right">
+            {content}
+          </Tooltip>
+        ) : (
+          content
         );
       },
     },
     {
-      field: 'recordType',
+      field: 'nodeType',
       headerName: 'Type',
-      width: 100,
+      width: 130,
       align: 'center',
       headerAlign: 'center',
-      renderCell: (params) => (
-        <Typography
-          variant="caption"
-          sx={{
-            fontWeight: 500,
-          }}
-        >
-          {params.value}
-        </Typography>
-      ),
+      renderCell: (params) => {
+        const typeLabels: Record<string, string> = {
+          app: 'Connector',
+          kb: 'Knowledge Base',
+          folder: 'Folder',
+          recordGroup: 'Folder',
+          record: params.row.recordType?.split('_').join(' ') || 'File',
+        };
+        return (
+          <Chip
+            label={typeLabels[params.value] || params.value}
+            size="small"
+            variant="outlined"
+            sx={{
+              fontSize: '0.7rem',
+              height: 24,
+              borderRadius: 1,
+              borderColor: 'divider',
+              color: 'text.secondary',
+            }}
+          />
+        );
+      },
     },
     {
       field: 'indexingStatus',
       headerName: 'Status',
-      width: 180,
+      width: 130,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
+        if (params.row.nodeType !== 'record')           return (
+          <Typography variant="caption" color="text.secondary">
+            —
+          </Typography>
+        );
+
         const status = params.value || 'NOT_STARTED';
         let displayLabel = '';
         let color = theme.palette.text.secondary;
 
-        // Map the indexing status to appropriate display values
         switch (status) {
           case 'COMPLETED':
-            displayLabel = 'COMPLETED';
+            displayLabel = 'Completed';
             color = theme.palette.success.main;
             break;
           case 'IN_PROGRESS':
-            displayLabel = 'IN PROGRESS';
+            displayLabel = 'In Progress';
             color = theme.palette.info.main;
             break;
           case 'PROCESSING':
@@ -815,27 +896,27 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             color = theme.palette.info.main;
             break;
           case 'FAILED':
-            displayLabel = 'FAILED';
+            displayLabel = 'Failed';
             color = theme.palette.error.main;
             break;
           case 'NOT_STARTED':
-            displayLabel = 'NOT STARTED';
+            displayLabel = 'Not Started';
             color = theme.palette.warning.main;
             break;
           case 'PAUSED':
-            displayLabel = 'PAUSED';
+            displayLabel = 'Paused';
             color = theme.palette.warning.main;
             break;
           case 'QUEUED':
-            displayLabel = 'QUEUED';
+            displayLabel = 'Queued';
             color = theme.palette.info.main;
             break;
           case 'FILE_TYPE_NOT_SUPPORTED':
-            displayLabel = 'FILE TYPE NOT SUPPORTED';
+            displayLabel = 'Not Supported';
             color = theme.palette.text.secondary;
             break;
           case 'AUTO_INDEX_OFF':
-            displayLabel = 'MANUAL SYNC';
+            displayLabel = 'MANUAL INDEXING';
             color = theme.palette.primary.main;
             break;
           case 'EMPTY':
@@ -846,17 +927,18 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             displayLabel = 'ENABLE MULTIMODAL MODELS';
             color = theme.palette.text.secondary;
             break;
+          case 'CONNECTOR_DISABLED':
+            displayLabel = 'CONNECTOR DISABLED';
+            color = theme.palette.warning.main;
+            break;
           default:
-            displayLabel = status.replace(/_/g, ' ').toLowerCase();
-            color = theme.palette.text.secondary;
+            displayLabel = status.replace(/_/g, ' ');
         }
 
-        // Capitalize first letter of each word
         displayLabel = displayLabel
-          .split(' ')
-          .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
-          .join(' ');
-
+        .split(' ')
+        .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
         const isProcessing = status === 'PROCESSING';
 
         return (
@@ -887,296 +969,295 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
     },
     {
       field: 'origin',
-      headerName: 'Origin',
-      width: 180,
+      headerName: 'Source',
+      width: 170,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
-        // Show KB name if origin is UPLOAD and KB info is available
+        const node = params.row;
+        
         if (params.value === 'CONNECTOR') {
+          // Show connector icon + connector name with premium styling
           return (
-            <Typography
-              variant="caption"
-              sx={{
-                fontWeight: 500,
-                color: theme.palette.primary.main,
+            <Box sx={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: 1, 
+              justifyContent: 'center',
+              height: '100%',
+              width: '100%'
+            }}>
+              <Box
+                component="img"
+                src={getConnectorIconPath(node.connector)}
+                alt={node.connector}
+                sx={{
+                  width: 20,
+                  height: 20,
+                  flexShrink: 0,
+                }}
+              />
+              <Typography variant="caption" sx={{ fontWeight: 600, color: theme.palette.primary.main }}>
+                {node.connector}
+              </Typography>
+            </Box>
+          );
+        }
+        
+        // Show KB icon + "Knowledge Base" text with premium styling
+        return (
+          <Box sx={{ 
+            display: 'flex', 
+            alignItems: 'center', 
+            gap: 1, 
+            justifyContent: 'center',
+            height: '100%',
+            width: '100%'
+          }}>
+            <Icon
+              icon={bookOpenVariantIcon}
+              style={{
+                fontSize: '20px',
+                color: theme.palette.success.main,
+                flexShrink: 0,
               }}
-            >
-              {params.row.connectorName}
+            />
+            <Typography variant="caption" sx={{ fontWeight: 600, color: theme.palette.primary.main }}>
+              Knowledge Base
             </Typography>
-          );
-        }
-
-        return (
-          <Typography
-            variant="caption"
-            sx={{
-              fontWeight: 500,
-            }}
-          >
-            KNOWLEDGE BASE
-          </Typography>
+          </Box>
         );
       },
     },
     {
-      field: 'fileRecord',
+      field: 'sizeInBytes',
       headerName: 'Size',
-      width: 100,
-      align: 'left',
-      headerAlign: 'left',
-      renderCell: (params) => {
-        // Handle undefined, NaN, or invalid size values
-        const size = params.value?.sizeInBytes;
-        const formattedSize =
-          size !== undefined && !Number.isNaN(size) && size > 0 ? formatFileSize(size) : '—';
-
-        return (
-          <Typography
-            variant="caption"
-            color="text.secondary"
-            sx={{
-              pr: 2,
-              fontFamily: theme.typography.fontFamily,
-            }}
-          >
-            {formattedSize}
-          </Typography>
-        );
-      },
-    },
-    {
-      field: 'sourceCreatedAtTimestamp',
-      headerName: 'Created',
-      width: 160,
-      align: 'left',
-      headerAlign: 'left',
-      renderCell: (params) => {
-        const timestamp = params.value;
-
-        if (!timestamp) {
-          return (
-            <Typography variant="caption" color="text.secondary">
-              —
-            </Typography>
-          );
-        }
-
-        try {
-          const date = new Date(timestamp);
-
-          if (Number.isNaN(date.getTime())) {
-            return (
-              <Typography variant="caption" color="text.secondary">
-                —
-              </Typography>
-            );
-          }
-
-          return (
-            <Box sx={{ pl: 0.5, mt: 1.5 }}>
-              <Typography
-                variant="caption"
-                display="block"
-                color="text.primary"
-                sx={{ fontWeight: 500 }}
-              >
-                {date.toLocaleDateString(undefined, {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                })}
-              </Typography>
-              <Typography variant="caption" display="block" color="text.secondary">
-                {date.toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Typography>
-            </Box>
-          );
-        } catch (e) {
-          return (
-            <Typography variant="caption" color="text.secondary">
-              —
-            </Typography>
-          );
-        }
-      },
-    },
-    {
-      field: 'sourceLastModifiedTimestamp',
-      headerName: 'Updated',
-      width: 160,
-      align: 'left',
-      headerAlign: 'left',
-      renderCell: (params) => {
-        const timestamp = params.value;
-
-        if (!timestamp) {
-          return (
-            <Typography variant="caption" color="text.secondary">
-              —
-            </Typography>
-          );
-        }
-
-        try {
-          const date = new Date(timestamp);
-
-          if (Number.isNaN(date.getTime())) {
-            return (
-              <Typography variant="caption" color="text.secondary">
-                —
-              </Typography>
-            );
-          }
-
-          return (
-            <Box sx={{ pl: 0.5, mt: 1.5 }}>
-              <Typography
-                variant="caption"
-                display="block"
-                color="text.primary"
-                sx={{ fontWeight: 500 }}
-              >
-                {date.toLocaleDateString(undefined, {
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                })}
-              </Typography>
-              <Typography variant="caption" display="block" color="text.secondary">
-                {date.toLocaleTimeString([], {
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Typography>
-            </Box>
-          );
-        } catch (e) {
-          return (
-            <Typography variant="caption" color="text.secondary">
-              —
-            </Typography>
-          );
-        }
-      },
-    },
-    {
-      field: 'version',
-      headerName: 'Version',
-      width: 70,
+      width: 90,
       align: 'center',
       headerAlign: 'center',
-      renderCell: (params) => (
-        <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
-          {params.value || '1.0'}
-        </Typography>
-      ),
+      renderCell: (params) => {
+        if (params.row.nodeType !== 'record' || !params.value)            return (
+          <Typography variant="caption" color="text.secondary">
+            —
+          </Typography>
+        );
+        return (
+          <Typography variant="caption" color="text.secondary" sx={{ pr: 1.5 }}>
+            {formatFileSize(params.value)}
+          </Typography>
+        );
+      },
+    },
+    {
+      field: 'createdAt',
+      headerName: 'Created',
+      width: 140,
+      align: 'left',
+      headerAlign: 'left',
+      renderCell: (params) => {
+        const timestamp = params.value;
+
+        if (!timestamp) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+
+        try {
+          const date = new Date(timestamp);
+
+          if (Number.isNaN(date.getTime())) {
+            return (
+              <Typography variant="caption" color="text.secondary">
+                —
+              </Typography>
+            );
+          }
+
+          return (
+            <Box sx={{ pl: 0.5, mt: 1.5 }}>
+              <Typography
+                variant="caption"
+                display="block"
+                color="text.primary"
+                sx={{ fontWeight: 500 }}
+              >
+                {date.toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </Typography>
+              <Typography variant="caption" display="block" color="text.secondary">
+                {date.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Typography>
+            </Box>
+          );
+        } catch (e) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+      },
+    },
+    {
+      field: 'updatedAt',
+      headerName: 'Updated',
+      width: 140,
+      align: 'left',
+      headerAlign: 'left',
+      renderCell: (params) => {
+        const timestamp = params.value;
+
+        if (!timestamp) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+
+        try {
+          const date = new Date(timestamp);
+
+          if (Number.isNaN(date.getTime())) {
+            return (
+              <Typography variant="caption" color="text.secondary">
+                —
+              </Typography>
+            );
+          }
+
+          return (
+            <Box sx={{ pl: 0.5, mt: 1.5 }}>
+              <Typography
+                variant="caption"
+                display="block"
+                color="text.primary"
+                sx={{ fontWeight: 500 }}
+              >
+                {date.toLocaleDateString(undefined, {
+                  year: 'numeric',
+                  month: 'short',
+                  day: 'numeric',
+                })}
+              </Typography>
+              <Typography variant="caption" display="block" color="text.secondary">
+                {date.toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })}
+              </Typography>
+            </Box>
+          );
+        } catch (e) {
+          return (
+            <Typography variant="caption" color="text.secondary">
+              —
+            </Typography>
+          );
+        }
+      },
     },
     {
       field: 'actions',
       headerName: 'Actions',
-      width: 70,
+      width: 80,
       sortable: false,
       align: 'center',
       headerAlign: 'center',
       renderCell: (params) => {
-        // Get file extension for dynamic tooltips
-        const fileExt = params.row.fileRecord?.extension || '';
-        const recordPermission = params.row.permission;
-        const canReindex =
-          recordPermission?.role === 'OWNER' ||
-          recordPermission?.role === 'WRITER' ||
-          recordPermission?.role === 'READER';
-        const canModify = recordPermission?.role === 'OWNER' || recordPermission?.role === 'WRITER';
-        const canDownload =
-          params.row.recordType === 'FILE';
-        // Get descriptive action based on file type
-        const getDownloadLabel = () => {
-          if (fileExt.toLowerCase().includes('pdf')) return 'Download PDF';
-          if (fileExt.toLowerCase().includes('doc')) return 'Download Document';
-          if (fileExt.toLowerCase().includes('xls')) return 'Download Spreadsheet';
-          return 'Download File';
-        };
+        const node = params.row;
 
         const handleActionsClick = (event: React.MouseEvent<HTMLButtonElement>) => {
           event.stopPropagation();
 
-          // Create menu items dynamically
-          const items: ActionMenuItem[] = [
+          const menuActions: ActionMenuItem[] = [
             {
-              label: 'View Details',
+              label: node.hasChildren ? 'Open' : 'View Details',
               icon: eyeIcon,
               color: theme.palette.primary.main,
               onClick: () => {
-                if (onNavigateToRecord) {
-                  onNavigateToRecord(params.row.id);
+                if (node.hasChildren) {
+                  handleRowClick(node);
+                } else {
+                  onNavigateToRecord(node.id);
                 }
               },
             },
-            ...(canDownload
-              ? [
-                  {
-                    label: getDownloadLabel(),
-                    icon: downloadIcon,
-                    color: theme.palette.primary.main,
-                    onClick: () =>
-                      handleDownload(
-                        params.row.origin === ORIGIN.UPLOAD
-                          ? params.row.externalRecordId!
-                          : params.row.id,
-                        params.row.recordName,
-                        params.row.origin
-                      ),
-                  },
-                ]
-              : []),
-            // Only show reindex options for OWNER and WRITER of this specific record
-            ...(canReindex &&
-            (params.row.indexingStatus === 'FAILED' || params.row.indexingStatus === 'NOT_STARTED')
-              ? [
-                  {
-                    label: 'Retry Indexing',
-                    icon: refreshIcon,
-                    color: theme.palette.warning.main,
-                    onClick: () => handleRetryIndexing(params.row.id),
-                  },
-                ]
-              : []),
-            // Only show manual indexing for OWNER and WRITER of this specific record
-            ...(canReindex && params.row.indexingStatus === 'AUTO_INDEX_OFF'
-              ? [
-                  {
-                    label: 'Start Manual Indexing',
-                    icon: refreshIcon,
-                    color: theme.palette.success.main,
-                    onClick: () => handleRetryIndexing(params.row.id),
-                  },
-                ]
-              : []),
-            // Only show delete option for OWNER and WRITER of this specific record
-            ...(canModify
-              ? [
-                  {
-                    label: 'Delete Record',
-                    icon: trashCanIcon,
-                    color: theme.palette.error.main,
-                    onClick: () =>
-                      setDeleteDialogData({
-                        open: true,
-                        recordId: params.row.id,
-                        recordName: params.row.recordName,
-                      }),
-                    isDanger: true,
-                  },
-                ]
-              : []),
           ];
 
-          // Show the menu
-          showActionMenu(event.currentTarget, items);
+          // Add download option for records
+          if (node.nodeType === 'record' && node.recordType === 'FILE') {
+            menuActions.push({
+              label: 'Download',
+              icon: downloadIcon,
+              color: theme.palette.primary.main,
+              onClick: () =>
+                handleDownload(
+                  node.origin === ORIGIN.UPLOAD ? node.externalRecordId ?? node.id : node.id,
+                  node.name
+                ),
+            });
+          }
+
+          // Add reindex options
+          if (node.nodeType === 'record') {
+            // For records
+            if (node.indexingStatus === 'FAILED' || node.indexingStatus === 'NOT_STARTED') {
+              menuActions.push({
+                label: 'Retry Indexing',
+                icon: refreshIcon,
+                color: theme.palette.warning.main,
+                onClick: () => handleRetryIndexing(node.id),
+              });
+            }
+            // Force reindex for completed records only
+            if (node.indexingStatus === 'COMPLETED') {
+              menuActions.push({
+                label: 'Force Reindex',
+                icon: refreshIcon,
+                color: theme.palette.info.main,
+                onClick: () =>
+                  setForceReindexDialog({ open: true, id: node.id, name: node.name, type: 'record' }),
+              });
+            }
+          } 
+          else if (node.nodeType === 'recordGroup') {
+            // For recordGroups (with depth: 100, uses reindexRecordGroup API)
+              menuActions.push({
+                label: 'Manual index',
+                icon: refreshIcon,
+                color: theme.palette.warning.main,
+                onClick: () => handleRetryIndexingRecordGroup(node.id),
+              });
+            
+          }
+
+          // Add delete option for records with permissions
+          if (
+            node.nodeType === 'record' &&
+            node.permission?.canDelete &&
+            node.origin !== ORIGIN.CONNECTOR
+          ) {
+            menuActions.push({
+              label: 'Delete Record',
+              icon: trashCanIcon,
+              color: theme.palette.error.main,
+              onClick: () =>
+                setDeleteDialogData({ open: true, recordId: node.id, recordName: node.name }),
+              isDanger: true,
+            });
+          }
+
+          showActionMenu(event.currentTarget, menuActions);
         };
 
         return (
@@ -1184,16 +1265,18 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             size="small"
             onClick={handleActionsClick}
             sx={{
-              width: 28,
-              height: 28,
-              color: alpha(theme.palette.text.primary, 0.6),
+              width: 32,
+              height: 32,
+              color: alpha(theme.palette.text.secondary, 0.5),
+              transition: 'all 0.2s',
               '&:hover': {
-                backgroundColor: alpha(theme.palette.primary.main, 0.04),
+                backgroundColor: alpha(theme.palette.primary.main, 0.08),
                 color: theme.palette.primary.main,
+                transform: 'scale(1.1)',
               },
             }}
           >
-            <Icon icon={dotsIcon} fontSize={16} />
+            <Icon icon={dotsIcon} fontSize={18} />
           </IconButton>
         );
       },
@@ -1202,19 +1285,21 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
 
   return (
     <Box sx={{ display: 'flex', maxHeight: '90vh', width: '100vw', overflow: 'hidden' }}>
-      {/* Sidebar */}
-      <KnowledgeBaseSideBar
-        filters={filters}
+      {/* Dynamic Filter Sidebar */}
+      <DynamicFilterSidebar
+        availableFilters={availableFilters}
+        appliedFilters={filters}
         onFilterChange={handleFilterChange}
-        openSidebar={sidebarOpen}
-        onToggleSidebar={handleToggleSidebar}
+        open={sidebarOpen}
+        onToggle={() => setSidebarOpen(!sidebarOpen)}
+        isLoading={isRefreshing}
       />
 
       {/* Main Content */}
       <MainContentContainer theme={theme} sidebarOpen={sidebarOpen}>
         <Fade in timeout={300}>
           <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            {loading && (
+            {(loading || isRefreshing) && (
               <LinearProgress
                 sx={{
                   position: 'absolute',
@@ -1227,81 +1312,261 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             )}
 
             <ModernToolbar theme={theme} elevation={0}>
-              <Stack
-                direction="row"
-                alignItems="center"
-                spacing={3}
-                sx={{ flexGrow: 1, minWidth: 0 }}
-              >
-                <CompactIconButton theme={theme} onClick={onNavigateBack} size="small">
-                  <Icon icon={arrowLeftIcon} fontSize={16} />
-                </CompactIconButton>
-
-                <Stack direction="row" alignItems="center" spacing={1.5}>
-                  <Icon icon={databaseIcon} fontSize={24} color={theme.palette.primary.main} />
-                  <Typography variant="h6" fontWeight={600}>
+              <Box sx={{ flexGrow: 1, minWidth: 0, display: 'flex', flexDirection: 'row', gap: 0.5, flexWrap: 'wrap' }}>
+                {/* Title Row */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Icon icon={databaseIcon} fontSize={22} color={theme.palette.primary.main} />
+                  <Typography variant="h6" fontWeight={600} sx={{ fontSize: '1.125rem', whiteSpace: 'nowrap' }}>
                     All Records
                   </Typography>
-                </Stack>
-              </Stack>
+                  {counts && (
+                    <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem', whiteSpace: 'nowrap' }}>
+                      {counts.total} items
+                    </Typography>
+                  )}
+                   {/* Breadcrumbs Row - Only shown when navigating into folders */}
+                </Box>
+                {breadcrumbs && breadcrumbs.length > 0 && (() => {
+                    // Truncate breadcrumbs if too many (show first 1, ..., last 2)
+                    const MAX_VISIBLE_ITEMS = 3;
+                    const showEllipsis = breadcrumbs.length > MAX_VISIBLE_ITEMS;
+                    let visibleBreadcrumbs: (Breadcrumb | 'ellipsis')[] = [];
+                    
+                    if (showEllipsis) {
+                      visibleBreadcrumbs = [
+                        ...breadcrumbs.slice(0, 0),
+                        'ellipsis',
+                        ...breadcrumbs.slice(-2),
+                      ];
+                    } else {
+                      visibleBreadcrumbs = [...breadcrumbs];
+                    }
 
-              <Stack direction="row" spacing={1} alignItems="center">
+                    return (
+                      <Box
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 0.75,
+                          pl: 4.75, // Align with title (icon width + gap)
+                          flexWrap: 'wrap',
+                        }}
+                      >
+                       {/* Compact Back Button */}
+                       <Box
+                         component="button"
+                         onClick={() => {
+                           if (breadcrumbs.length > 1) {
+                             const previousBreadcrumb = breadcrumbs[breadcrumbs.length - 2];
+                             handleBreadcrumbClick(previousBreadcrumb, breadcrumbs.length - 1);
+                           } else {
+                             handleBreadcrumbClick(null, 0);
+                           }
+                         }}
+                         sx={{
+                           width: 32,
+                           height: 32,
+                           borderRadius: 1,
+                           border: `1px solid ${theme.palette.divider}`,
+                           backgroundColor: 'transparent',
+                           color: 'text.secondary',
+                           display: 'flex',
+                           alignItems: 'center',
+                           justifyContent: 'center',
+                           cursor: 'pointer',
+                           transition: 'all 0.2s ease',
+                           flexShrink: 0,
+                           '&:hover': {
+                             borderColor: 'action.active',
+                             color: 'text.primary',
+                             backgroundColor: 'action.hover',
+                           },
+                         }}
+                       >
+                         <Icon icon={arrowLeftIcon} fontSize={16} />
+                       </Box>
+
+                       {/* Compact Breadcrumb Navigation */}
+                       <Breadcrumbs
+                         separator={
+                           <Icon
+                             icon={chevronRightIcon}
+                             fontSize={14}
+                             color={theme.palette.text.disabled}
+                           />
+                         }
+                         sx={{
+                           flex: 1,
+                           minWidth: 0,
+                           '& .MuiBreadcrumbs-separator': {
+                             mx: 0.5,
+                           },
+                           '& .MuiBreadcrumbs-ol': {
+                             flexWrap: 'nowrap',
+                             alignItems: 'center',
+                             overflow: 'hidden',
+                           },
+                           '& .MuiBreadcrumbs-li': {
+                             minWidth: 0,
+                           },
+                         }}
+                       >
+                         {/* Home/All Records - Compact Link */}
+                         <Box
+                           component="button"
+                           onClick={() => handleBreadcrumbClick(null, 0)}
+                           sx={{
+                             display: 'flex',
+                             alignItems: 'center',
+                             padding: '4px 6px',
+                             borderRadius: '4px',
+                             fontSize: '0.8125rem',
+                             fontWeight: 500,
+                             color: 'text.secondary',
+                             backgroundColor: 'transparent',
+                             border: 'none',
+                             cursor: 'pointer',
+                             transition: 'all 0.2s ease',
+                             minWidth: 0,
+                             '&:hover': {
+                               backgroundColor: 'action.hover',
+                               color: 'text.primary',
+                             },
+                           }}
+                         >
+                           <Icon icon={homeIcon} fontSize={14} />
+                           <Typography
+                             sx={{
+                               display: { xs: 'none', sm: 'inline' },
+                               ml: 0.5,
+                               fontSize: '0.8125rem',
+                             }}
+                           >
+                             All Records
+                           </Typography>
+                         </Box>
+
+                         {/* Breadcrumb Items - Compact Links */}
+                         {visibleBreadcrumbs.map((item, displayIndex) => {
+                           if (item === 'ellipsis') {
+                             return (
+                               <Box
+                                 key="ellipsis"
+                                 component="button"
+                                 sx={{
+                                   display: 'flex',
+                                   alignItems: 'center',
+                                   justifyContent: 'center',
+                                   minWidth: 24,
+                                   height: 24,
+                                   borderRadius: 0.5,
+                                   backgroundColor: 'transparent',
+                                   border: 'none',
+                                   color: 'text.secondary',
+                                   cursor: 'default',
+                                   fontSize: '0.8125rem',
+                                   fontWeight: 600,
+                                 }}
+                               >
+                                 ...
+                               </Box>
+                             );
+                           }
+
+                           const actualIndex = breadcrumbs.findIndex((b) => b.id === item.id);
+                           const isLast = actualIndex === breadcrumbs.length - 1;
+                           
+                           return (
+                             <Box
+                               key={item.id}
+                               component={isLast ? 'span' : 'button'}
+                               onClick={isLast ? undefined : () => handleBreadcrumbClick(item, actualIndex + 1)}
+                               sx={{
+                                 display: 'flex',
+                                 alignItems: 'center',
+                                 padding: '4px 6px',
+                                 borderRadius: '4px',
+                                 fontSize: '0.8125rem',
+                                 fontWeight: 500,
+                                 color: isLast ? 'text.primary' : 'text.secondary',
+                                 backgroundColor: 'transparent',
+                                 border: 'none',
+                                 cursor: isLast ? 'default' : 'pointer',
+                                 transition: 'all 0.2s ease',
+                                 minWidth: 0,
+                                 ...(!isLast && {
+                                   '&:hover': {
+                                     backgroundColor: 'action.hover',
+                                     color: 'text.primary',
+                                   },
+                                 }),
+                               }}
+                             >
+                               <Icon icon={folderIcon} fontSize={14} />
+                               <Typography
+                                 sx={{
+                                   ml: 0.5,
+                                   fontSize: '0.8125rem',
+                                   maxWidth: { xs: 80, sm: 120 },
+                                   overflow: 'hidden',
+                                   textOverflow: 'ellipsis',
+                                   whiteSpace: 'nowrap',
+                                 }}
+                               >
+                                 {item.name}
+                               </Typography>
+                             </Box>
+                           );
+                         })}
+                       </Breadcrumbs>
+                      </Box>
+                    );
+                  })()}
+              </Box>
+
+              <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ flexShrink: 0, pt: 0.25 }}>
                 <TextField
-                  placeholder="Search records ..."
+                  placeholder="Search records..."
                   variant="outlined"
                   size="small"
-                  value={searchQuery}
-                  onChange={handleSearchChange}
+                  value={searchQueryLocal}
+                  onChange={(e) => setSearchQueryLocal(e.target.value)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       handleSearchSubmit();
                     }
                   }}
                   InputProps={{
-                    // ... same InputProps as before
                     startAdornment: (
                       <InputAdornment position="start">
                         <Icon icon={searchIcon} style={{ color: theme.palette.text.secondary }} />
                       </InputAdornment>
                     ),
-                    endAdornment: searchQuery && (
-                      // Show either a clear button or a search button
+                    endAdornment: searchQueryLocal && (
                       <InputAdornment position="end">
-                        {searchQuery ? (
-                          <IconButton size="small" onClick={handleClearSearch}>
-                            <Icon icon={clearIcon} fontSize={16} />
-                          </IconButton>
-                        ) : (
-                          <Tooltip title="Search">
-                            <IconButton size="small" onClick={handleSearchSubmit}>
-                              <Icon icon={searchIcon} fontSize={16} />
-                            </IconButton>
-                          </Tooltip>
-                        )}
+                        <IconButton size="small" onClick={handleClearSearch}>
+                          <Icon icon={clearIcon} fontSize={16} />
+                        </IconButton>
                       </InputAdornment>
                     ),
                   }}
                   sx={{
-                    width: '100%',
-                    minWidth: '320px',
-
+                    width: 320,
                     '& .MuiOutlinedInput-root': {
                       borderRadius: '10px',
                       backgroundColor: theme.palette.background.paper,
                       transition: theme.transitions.create(['background-color', 'box-shadow']),
-                      border: `1px solid ${theme.palette.divider}`, // ✅ Add visible border
+                      border: `1px solid ${theme.palette.divider}`,
 
                       '&.Mui-focused': {
                         boxShadow: `0 0 0 2px ${theme.palette.primary.main}`,
-                        borderColor: theme.palette.primary.main, // Optional: change border color on focus
+                        borderColor: theme.palette.primary.main,
                       },
-
                       '&:hover': {
-                        borderColor: theme.palette.text.primary, // Optional: border on hover
+                        borderColor: theme.palette.text.primary,
                       },
-
                       '& .MuiOutlinedInput-notchedOutline': {
-                        border: 'none', // Keep this disabled since we use custom border
+                        border: 'none',
                       },
                     },
 
@@ -1319,14 +1584,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                 </Tooltip>
               </Stack>
             </ModernToolbar>
-            <Box
-              sx={{
-                flexGrow: 1,
-                m: 2, // Margin is here
-                minHeight: 0, // Crucial flexbox property for children to size correctly
-                display: 'flex', // Make it a flex container for the Paper inside
-              }}
-            >
+
+            <Box sx={{ flexGrow: 1, m: 2.5, minHeight: 0, display: 'flex' }}>
               <Paper
                 elevation={0}
                 sx={{
@@ -1339,7 +1598,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                   minHeight: '80vh',
                 }}
               >
-                {loading && records.length === 0 ? (
+                {loading && items.length === 0 ? (
                   <Box
                     sx={{
                       display: 'flex',
@@ -1352,31 +1611,66 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                   >
                     <CircularProgress size={36} thickness={4} />
                     <Typography variant="body1" color="text.secondary">
-                      Loading all records...
+                      Loading records...
                     </Typography>
                   </Box>
                 ) : (
                   <>
-                    <Box sx={{ flexGrow: 1, height: 'calc(100% - 64px)', minHeight: 0 }}>
-                      <DataGrid<Record>
-                        rows={records}
+                    <Box sx={{ flexGrow: 1, height: 'calc(100% - 64px)', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
+                      {/* Loading overlay during refresh */}
+                      {isRefreshing && (
+                        <Box
+                          sx={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            bottom: 0,
+                            backgroundColor: alpha(theme.palette.background.paper, 0.7),
+                            backdropFilter: 'blur(2px)',
+                            zIndex: 10,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexDirection: 'column',
+                            gap: 2,
+                          }}
+                        >
+                          <CircularProgress size={32} thickness={4} />
+                          <Typography variant="body2" color="text.secondary">
+                            Loading...
+                          </Typography>
+                        </Box>
+                      )}
+                      <DataGrid<HubNode>
+                        rows={items}
                         columns={columns}
                         hideFooterPagination
                         disableRowSelectionOnClick
-                        onRowClick={handleRowClick}
+                        onRowClick={(params, event) => {
+                          const isCheckboxClick = (event.target as HTMLElement).closest(
+                            '.MuiDataGrid-cellCheckbox'
+                          );
+                          if (
+                            !isCheckboxClick &&
+                            (params.row.hasChildren || params.row.nodeType === 'record')
+                          ) {
+                            handleRowClick(params.row);
+                          }
+                        }}
                         getRowId={(row) => row.id}
                         rowHeight={56}
+                        getRowClassName={(params) =>
+                          !params.row.hasChildren && params.row.nodeType !== 'record'
+                            ? 'row-non-clickable'
+                            : ''
+                        }
                         localeText={{
                           noRowsLabel: 'No records found',
                         }}
                         sx={{
                           border: 'none',
                           height: '100%',
-                          minWidth: 0,
-                          '& .MuiDataGrid-main': {
-                            minWidth: 0,
-                            overflow: 'hidden',
-                          },
                           '& .MuiDataGrid-columnHeaders': {
                             backgroundColor: alpha('#000', 0.02),
                             borderBottom: '1px solid',
@@ -1394,7 +1688,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                           '& .MuiDataGrid-columnHeaderTitle': {
                             fontWeight: 600,
                             fontSize: '0.875rem',
-                            color: 'text.primary',
+                            color: theme.palette.text.primary,
+                            letterSpacing: '0.02em',
                           },
                           '& .MuiDataGrid-cell': {
                             border: 'none',
@@ -1431,9 +1726,23 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                             outline: 'none',
                           },
                           '& .MuiDataGrid-columnHeader:focus, .MuiDataGrid-columnHeader:focus-within':
-                            {
-                              outline: 'none',
+                          {
+                            outline: 'none',
+                          },
+                        }}
+                        slotProps={{
+                          cell: {
+                            onMouseEnter: (e: any) => {
+                              const rowId = e.currentTarget.parentElement?.dataset.id;
+                              const row = items.find((item) => item.id === rowId);
+                              if (row && !row.hasChildren && row.nodeType !== 'record') {
+                                e.currentTarget.parentElement?.setAttribute(
+                                  'title',
+                                  'This item is empty and cannot be opened'
+                                );
+                              }
                             },
+                          },
                         }}
                       />
                     </Box>
@@ -1446,30 +1755,36 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                         justifyContent: 'space-between',
                         alignItems: 'center',
                         px: 3,
-                        py: 2,
-                        borderTop: '1px solid',
-                        borderColor: alpha('#000', 0.05),
-                        bgcolor: alpha('#000', 0.01),
-                        height: '54px',
+                        py: 2.5,
+                        borderTop: `1px solid ${alpha(theme.palette.divider, 0.08)}`,
+                        bgcolor: alpha(theme.palette.background.neutral, 0.3),
+                        backdropFilter: 'blur(8px)',
+                        borderBottomLeftRadius: 12,
+                        borderBottomRightRadius: 12,
+                        minHeight: '72px',
                       }}
                     >
-                      <Typography variant="body2" color="text.secondary">
+                      <Typography variant="body2" color="text.secondary" fontWeight={500}>
                         {totalCount === 0
                           ? 'No records found'
-                          : `Showing ${page * limit + 1}-${Math.min((page + 1) * limit, totalCount)} of ${totalCount} records`}
+                          : `Showing ${(page - 1) * limit + 1}-${Math.min(page * limit, totalCount)} of ${totalCount} records`}
                       </Typography>
 
                       <Stack direction="row" spacing={2} alignItems="center">
                         <Pagination
                           count={Math.ceil(totalCount / limit)}
-                          page={page + 1} // MUI Pagination is 1-indexed
+                          page={page}
                           onChange={handlePageChange}
                           color="primary"
-                          size="small"
+                          size="medium"
                           shape="rounded"
                           sx={{
                             '& .MuiPaginationItem-root': {
-                              borderRadius: '6px',
+                              fontWeight: 500,
+                              borderRadius: 2,
+                            },
+                            '& .Mui-selected': {
+                              fontWeight: 700,
                             },
                           }}
                         />
@@ -1478,9 +1793,14 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                           onChange={handleLimitChange}
                           size="small"
                           sx={{
-                            minWidth: 100,
-                            '& .MuiOutlinedInput-root': {
-                              borderRadius: '8px',
+                            minWidth: 120,
+                            borderRadius: 2,
+                            fontWeight: 500,
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: alpha(theme.palette.divider, 0.2),
+                            },
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: theme.palette.primary.main,
                             },
                           }}
                         >
@@ -1496,7 +1816,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
               </Paper>
             </Box>
 
-            {/* Actions menu for table rows */}
+            {/* Actions menu */}
             <Menu
               anchorEl={menuAnchorEl}
               open={Boolean(menuAnchorEl)}
@@ -1508,18 +1828,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                   overflow: 'hidden',
                   borderRadius: 2,
                   mt: 1,
-                  boxShadow: '0 6px 16px rgba(0,0,0,0.08)',
-                  border: '1px solid',
-                  borderColor: 'rgba(0,0,0,0.04)',
-                  backdropFilter: 'blur(8px)',
-                  '.MuiList-root': {
-                    py: 0.75,
-                  },
                 },
               }}
-              transformOrigin={{ horizontal: 'right', vertical: 'top' }}
-              anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
-              transitionDuration={200}
             >
               {menuItems.map((item, index) => {
                 const isDangerItem = item.isDanger;
@@ -1527,14 +1837,12 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
 
                 return (
                   <React.Fragment key={index}>
-                    {/* Add divider before danger items */}
-                    {showDivider && <Divider sx={{ my: 0.75, opacity: 0.6 }} />}
-
+                    {showDivider && <Divider sx={{ my: 0.75 }} />}
                     <MenuItem
                       onClick={(e) => {
                         e.stopPropagation();
-                        closeActionMenu(); // Explicitly close the menu
-                        item.onClick(); // Then execute the action
+                        closeActionMenu();
+                        item.onClick();
                       }}
                       sx={{
                         py: 0.75,
@@ -1542,31 +1850,14 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                         my: 0.25,
                         px: 1.5,
                         borderRadius: 1.5,
-                        transition: 'all 0.15s ease',
-                        ...(isDangerItem
-                          ? {
-                              color: 'error.main',
-                              '&:hover': {
-                                bgcolor: 'error.lighter',
-                                transform: 'translateX(2px)',
-                              },
-                            }
-                          : {
-                              '&:hover': {
-                                bgcolor: (theme1) =>
-                                  theme1.palette.mode === 'dark'
-                                    ? alpha('#fff', 0.06)
-                                    : alpha('#000', 0.04),
-                                transform: 'translateX(2px)',
-                              },
-                            }),
+                        ...(isDangerItem && {
+                          color: 'error.main',
+                          '&:hover': { bgcolor: 'error.lighter' },
+                        }),
                       }}
                     >
                       <ListItemIcon
-                        sx={{
-                          minWidth: 30,
-                          color: isDangerItem ? 'error.main' : item.color,
-                        }}
+                        sx={{ minWidth: 30, color: isDangerItem ? 'error.main' : item.color }}
                       >
                         <Icon icon={item.icon} width={18} height={18} />
                       </ListItemIcon>
@@ -1576,7 +1867,6 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
                           variant: 'body2',
                           fontWeight: 500,
                           fontSize: '0.875rem',
-                          letterSpacing: '0.01em',
                         }}
                       />
                     </MenuItem>
@@ -1588,33 +1878,103 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             {/* Delete Record Dialog */}
             <DeleteRecordDialog
               open={deleteDialogData.open}
-              onClose={handleCloseDeleteDialog}
+              onClose={() => setDeleteDialogData({ open: false, recordId: '', recordName: '' })}
               onRecordDeleted={handleDeleteSuccess}
               recordId={deleteDialogData.recordId}
               recordName={deleteDialogData.recordName}
             />
 
-            {/* Snackbars */}
-            {/* <Snackbar
-              open={!!error}
-              autoHideDuration={5000}
-              onClose={() => setError(null)}
-              anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-              sx={{ mt: 7 }}
-            >
-              <Alert
-                severity="error"
-                onClose={() => setError(null)}
-                sx={{
+            {/* Force Reindex Dialog */}
+            <Dialog
+              open={forceReindexDialog.open}
+              onClose={() => setForceReindexDialog({ open: false, id: '', name: '', type: 'record' })}
+              maxWidth="sm"
+              fullWidth
+              PaperProps={{
+                sx: {
                   borderRadius: 2,
-                  fontSize: '0.85rem',
-                  fontWeight: 500,
+                  boxShadow: theme.shadows[24],
+                },
+              }}
+            >
+              <Box
+                sx={{
+                  p: 3,
+                  pb: 2,
+                  borderBottom: `1px solid ${theme.palette.divider}`,
                 }}
               >
-                {error}
-              </Alert>
-            </Snackbar> */}
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                  <Icon
+                    icon={refreshIcon}
+                    fontSize={24}
+                    color={theme.palette.warning.main}
+                  />
+                  <Typography variant="h6" sx={{ fontWeight: 600 }}>
+                    Force Reindex Confirmation
+                  </Typography>
+                </Box>
+              </Box>
 
+              <Box sx={{ p: 3 }}>
+                <Alert severity="warning" sx={{ mb: 2 }}>
+                  <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>
+                    ⚠️ Extra charges may apply
+                  </Typography>
+                  <Typography variant="body2">
+                    Force reindexing will reprocess this {forceReindexDialog.type === 'record' ? 'record' : 'record group'} even though it&apos;s already completed. This action may incur additional processing charges.
+                  </Typography>
+                </Alert>
+
+                <Typography variant="body2" color="text.secondary">
+                  Are you sure you want to force reindex <strong>&quot;{forceReindexDialog.name}&quot;</strong>?
+                </Typography>
+              </Box>
+
+              <Box
+                sx={{
+                  p: 2,
+                  px: 3,
+                  borderTop: `1px solid ${theme.palette.divider}`,
+                  display: 'flex',
+                  justifyContent: 'flex-end',
+                  gap: 1,
+                }}
+              >
+                <Button
+                  variant="outlined"
+                  onClick={() =>
+                    setForceReindexDialog({ open: false, id: '', name: '', type: 'record' })
+                  }
+                  sx={{
+                    borderRadius: 1.5,
+                    textTransform: 'none',
+                    px: 3,
+                  }}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="contained"
+                  color="warning"
+                  onClick={handleForceReindex}
+                  startIcon={<Icon icon={refreshIcon} fontSize={18} />}
+                  sx={{
+                    borderRadius: 1.5,
+                    textTransform: 'none',
+                    px: 3,
+                    boxShadow: 'none',
+                    '&:hover': {
+                      boxShadow: theme.shadows[4],
+                    },
+                  }}
+                >
+                  Force Reindex
+                </Button>
+              </Box>
+            </Dialog>
+
+            {/* Snackbar */}
             <Snackbar
               open={snackbar.open}
               autoHideDuration={3000}
@@ -1624,13 +1984,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({ onNavigateBack, onNavig
             >
               <Alert
                 severity={snackbar.severity}
-                sx={{
-                  width: '100%',
-                  ...(snackbar.severity === 'success' && {
-                    bgcolor: theme.palette.success.main,
-                    color: theme.palette.success.contrastText,
-                  }),
-                }}
+                sx={{ width: '100%' }}
                 onClose={() => setSnackbar((prev) => ({ ...prev, open: false }))}
               >
                 {snackbar.message}

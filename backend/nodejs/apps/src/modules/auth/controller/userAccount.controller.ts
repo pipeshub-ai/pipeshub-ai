@@ -55,6 +55,8 @@ import {
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
+import { JitProvisioningService } from '../services/jit-provisioning.service';
 
 const {
   LOGIN,
@@ -63,6 +65,7 @@ const {
   WRONG_OTP,
   WRONG_PASSWORD,
   REFRESH_TOKEN,
+  PASSWORD_CHANGED,
 } = userActivitiesType;
 export const SALT_ROUNDS = 10;
 
@@ -76,6 +79,7 @@ export class UserAccountController {
     @inject('ConfigurationManagerService')
     private configurationManagerService: ConfigurationManagerService,
     @inject('Logger') private logger: Logger,
+    @inject('JitProvisioningService') private jitProvisioningService: JitProvisioningService,
   ) {}
   async generateHashedOTP() {
     const otp = generateOtp();
@@ -111,8 +115,10 @@ export class UserAccountController {
       throw new GoneError('OTP has expired. Please request a new one.');
     }
 
+    // Ensure OTP is a string for bcrypt.compare (bcrypt requires both arguments to be strings)
+    const otpString = String(inputOTP);
     const isMatching = await bcrypt.compare(
-      inputOTP,
+      otpString,
       userCredentials.hashedOTP,
     );
     this.logger.debug('isMatching', isMatching);
@@ -202,14 +208,146 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { email } = req.body;
-      if (!email) {
-        throw new BadRequestError('Email is required');
-      }
+
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
-
+      
       if (result.statusCode !== 200) {
-        throw new NotFoundError(result.data);
+        // User not found - check if JIT provisioning is available for this email domain
+        const domain = this.getDomainFromEmail(email);
+        let org: InstanceType<typeof Org> | null = null;
+        org = domain ? await Org.findOne({
+          domain,
+          isDeleted: false,
+        }) : null;
+        
+
+        const orgAuthConfig = domain ? await OrgAuthConfig.findOne({
+          orgId: org?._id,
+          isDeleted: false,
+        }) : null;
+
+        // Check for JIT-enabled auth methods
+        const jitEnabledMethods: string[] = [];
+        const authProviders: Record<string, any> = {};
+        const jitConfig: Record<string, boolean> = {};
+
+        if (orgAuthConfig) {
+          const allowedMethods = orgAuthConfig.authSteps[0]?.allowedMethods.map((m: any) => m.type) || [];
+          
+          // Create a new user object for fetching configs (using orgId from config)
+          const newUser = { orgId: orgAuthConfig.orgId, email };
+
+          // Check each JIT-capable method
+          if (allowedMethods.includes('google')) {
+            try {
+              const configManagerResponse = await this.configurationManagerService.getConfig(
+                this.config.cmBackend,
+                GOOGLE_AUTH_CONFIG_PATH,
+                newUser,
+                this.config.scopedJwtSecret,
+              );
+              if (configManagerResponse.data?.enableJit) {
+                jitEnabledMethods.push('google');
+                jitConfig.google = true;
+                authProviders.google = configManagerResponse.data;
+              }
+            } catch (e) {
+              this.logger.debug('Google auth config not available for JIT');
+            }
+          }
+
+          if (allowedMethods.includes('microsoft')) {
+            try {
+              const configManagerResponse = await this.configurationManagerService.getConfig(
+                this.config.cmBackend,
+                MICROSOFT_AUTH_CONFIG_PATH,
+                newUser,
+                this.config.scopedJwtSecret,
+              );
+              if (configManagerResponse.data?.enableJit) {
+                jitEnabledMethods.push('microsoft');
+                jitConfig.microsoft = true;
+                authProviders.microsoft = configManagerResponse.data;
+              }
+            } catch (e) {
+              this.logger.debug('Microsoft auth config not available for JIT');
+            }
+          }
+
+          if (allowedMethods.includes(AuthMethodType.AZURE_AD)) {
+            try {
+              const configManagerResponse = await this.configurationManagerService.getConfig(
+                this.config.cmBackend,
+                AZURE_AD_AUTH_CONFIG_PATH,
+                newUser,
+                this.config.scopedJwtSecret,
+              );
+              if (configManagerResponse.data?.enableJit) {
+                jitEnabledMethods.push(AuthMethodType.AZURE_AD);
+                jitConfig.azureAd = true;
+                authProviders.azuread = configManagerResponse.data;
+              }
+            } catch (e) {
+              this.logger.debug('Azure AD auth config not available for JIT');
+            }
+          }
+
+          if (allowedMethods.includes(AuthMethodType.OAUTH)) {
+            try {
+              const configManagerResponse = await this.configurationManagerService.getConfig(
+                this.config.cmBackend,
+                OAUTH_AUTH_CONFIG_PATH,
+                newUser,
+                this.config.scopedJwtSecret,
+              );
+              if (configManagerResponse.data?.enableJit) {
+                jitEnabledMethods.push(AuthMethodType.OAUTH);
+                jitConfig.oauth = true;
+                const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configManagerResponse.data;
+                authProviders.oauth = publicConfig;
+              }
+            } catch (e) {
+              this.logger.debug('OAuth auth config not available for JIT');
+            }
+          }
+        }
+
+        // Create session with JIT info if available
+        // Always provide a valid authConfig structure - use org's authSteps if JIT is enabled,
+        // otherwise create a default structure with password method (for consistent error handling)
+        const defaultAuthSteps = [
+          {
+            order: 1,
+            allowedMethods: [{ type: 'password' }],
+          },
+        ];
+        const session = await this.sessionService.createSession({
+          userId: "NOT_FOUND",
+          email: email,
+          orgId: orgAuthConfig ? orgAuthConfig.orgId.toString() : "",
+          authConfig: orgAuthConfig && jitEnabledMethods.length > 0 
+            ? orgAuthConfig.authSteps 
+            : defaultAuthSteps,
+          currentStep: 0,
+          jitConfig: jitEnabledMethods.length > 0 ? jitConfig : undefined,
+        });
+        if (!session) {
+          throw new InternalServerError('Failed to create session');
+        }
+        if (session.token) {
+          res.setHeader('x-session-token', session.token);
+        }
+
+        // If JIT is enabled, return those methods; otherwise, return password for error display
+        res.json({
+          currentStep: 0,
+          allowedMethods: jitEnabledMethods.length > 0 ? jitEnabledMethods : ['password'],
+          message: 'Authentication initialized',
+          authProviders,
+          jitEnabled: jitEnabledMethods.length > 0,
+        });
+        return;
       }
       const user = result.data;
       // const domain = getDomainFromEmail(email);
@@ -389,6 +527,14 @@ export class UserAccountController {
         userCredentialData.ipAddress = ipAddress;
       }
       await userCredentialData.save();
+
+      await UserActivities.create({
+        orgId: orgId,
+        userId: userId,
+        activityType: PASSWORD_CHANGED,
+        ipAddress: ipAddress,
+      });
+
       return { statusCode: 200, data: 'password updated' };
     } catch (error) {
       throw error;
@@ -401,10 +547,25 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { email } = req.body;
+      const { email, 'cf-turnstile-response': turnstileToken } = req.body;
       if (!email) {
         throw new BadRequestError('Email is required');
       }
+      
+      // Verify Turnstile token
+      const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+      if (turnstileSecretKey) { // Only verify if secret key is configured
+        const isValid = await verifyTurnstileToken(
+          turnstileToken,
+          turnstileSecretKey,
+          req.ip,
+          this.logger,
+        );
+        if (!isValid) {
+          throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+        }
+      }
+      
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       const user = await this.iamService.getUserByEmail(email, authToken);
 
@@ -615,13 +776,25 @@ export class UserAccountController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { newPassword } = req.body;
-      const { currentPassword } = req.body;
+      const { newPassword, currentPassword, 'cf-turnstile-response': turnstileToken } = req.body;
+      
       if (!currentPassword) {
         throw new BadRequestError('currentPassword is required');
       }
       if (!newPassword) {
         throw new BadRequestError('newPassword is required');
+      }
+
+      // Verify Turnstile token if secret key is configured
+      const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+      if (turnstileSecretKey) {
+        const isTurnstileValid = await verifyTurnstileToken(
+          turnstileToken,
+          turnstileSecretKey
+        );
+        if (!isTurnstileValid) {
+          throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+        }
       }
 
       const userCredentialData = await UserCredentials.findOne({
@@ -650,7 +823,27 @@ export class UserAccountController {
         newPassword,
         req.ip || ' ',
       );
-      res.status(200).send({ data: 'password reset' });
+
+      const userFindResult = await this.iamService.getUserById(
+        req.user?.userId,
+        iamUserLookupJwtGenerator(
+          req.user?.userId,
+          req.user?.orgId,
+          this.config.scopedJwtSecret,
+        ),
+      );
+
+      if (userFindResult.statusCode !== 200) {
+        throw new NotFoundError(userFindResult.data);
+      }
+
+      const user = userFindResult.data;
+      const accessToken = await generateAuthToken(user, this.config.jwtSecret);
+
+      res.status(200).send({
+        data: 'password reset',
+        accessToken
+      });
       return;
     } catch (error) {
       next(error);
@@ -913,12 +1106,9 @@ export class UserAccountController {
           },
         });
       }
-
       throw new BadRequestError(
-        `Password incorrect. Attempts remaining: ${
-          5 - userCredentials.wrongCredentialCount
-        }`,
-      );
+        "Incorrect password, please try again."
+      )
     } else {
       userCredentials.wrongCredentialCount = 0;
       await userCredentials.save();
@@ -938,7 +1128,7 @@ export class UserAccountController {
 
   async authenticateWithOtp(
     user: Record<string, any>,
-    otp: Number,
+    otp: string,
     ip: string,
   ) {
     const result = await this.verifyOTP(
@@ -994,7 +1184,7 @@ export class UserAccountController {
     this.logger.debug('entered email', user.email);
     this.logger.debug('authenticated email', payload?.email);
     const email = payload?.email;
-    if (email !== user.email) {
+    if (email?.toLowerCase() !== user.email?.toLowerCase()) {
       throw new BadRequestError(
         'Email mismatch: Token email does not match session email.',
       );
@@ -1070,23 +1260,21 @@ export class UserAccountController {
     const { 
       userInfoEndpoint
     } = configManagerResponse.data;
+    const { accessToken } = credentials;
 
-    const { accessToken, idToken } = credentials;
+    if (!accessToken) {
+      throw new BadRequestError('Access token is required for OAuth authentication');
+    }
 
-    if (!accessToken && !idToken) {
-      throw new BadRequestError('Access token or ID token is required for OAuth authentication');
+    if (!userInfoEndpoint) {
+      throw new BadRequestError('User info endpoint is required for OAuth authentication');
     }
 
     try {
       // Verify token and get user info from OAuth provider
       let userInfo;
       
-      if (idToken) {
-        // For ID tokens, we need proper JWT verification
-        // Since this is a generic OAuth implementation, we'll use the userInfo endpoint approach
-        // ID token verification requires provider-specific JWKS endpoints and is complex for generic OAuth
-        throw new BadRequestError('ID token verification not supported for generic OAuth. Please use access token flow.');
-      } else if (accessToken && userInfoEndpoint) {
+      if (accessToken && userInfoEndpoint) {
         // If access token is provided, fetch user info from the provider
         const userInfoResponse = await fetch(userInfoEndpoint, {
           headers: {
@@ -1105,7 +1293,7 @@ export class UserAccountController {
 
         userInfo = await userInfoResponse.json();
       } else {
-        throw new BadRequestError('Cannot verify user information: missing user info endpoint or ID token');
+        throw new BadRequestError('Cannot verify user information: missing user info endpoint or access token');
       }
 
       // Verify email matches
@@ -1117,7 +1305,7 @@ export class UserAccountController {
       this.logger.debug('entered email', user.email);
       this.logger.debug('authenticated email', providerEmail);
 
-      if (providerEmail !== user.email) {
+      if (providerEmail?.toLowerCase() !== user.email?.toLowerCase()) {
         throw new BadRequestError(
           'Email mismatch: OAuth provider email does not match session email.',
         );
@@ -1145,8 +1333,25 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       this.logger.info('running authenticate');
-      const { method, credentials } = req.body;
+      const { method, credentials, 'cf-turnstile-response': turnstileToken } = req.body;
       const { sessionInfo } = req;
+      
+      // Verify Turnstile token for password authentication
+      if (method === AuthMethodType.PASSWORD) {
+        const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
+        if (turnstileSecretKey) { // Only verify if secret key is configured
+          const isValid = await verifyTurnstileToken(
+            turnstileToken,
+            turnstileSecretKey,
+            req.ip,
+            this.logger,
+          );
+          if (!isValid) {
+            throw new UnauthorizedError('Invalid CAPTCHA verification. Please try again.');
+          }
+        }
+      }
+      
       if (!method) {
         throw new BadRequestError('method is required');
       }
@@ -1154,61 +1359,208 @@ export class UserAccountController {
         throw new NotFoundError('SessionInfo not found');
       }
 
-      const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];
-      this.logger.info('currentStepConfig', currentStepConfig);
+      let user: Record<string, any>;
 
-      if (
-        !currentStepConfig.allowedMethods.find((m: any) => m.type === method)
-      ) {
-        throw new BadRequestError(
-          'Invalid authentication method for this step',
+      // Handle JIT provisioning for new users
+      if (sessionInfo.userId === "NOT_FOUND") {
+        // Check if JIT is enabled for this auth method
+        const jitConfig = sessionInfo.jitConfig as Record<string, boolean> | undefined;
+        const methodKey = method === AuthMethodType.AZURE_AD ? 'azureAd' : method;
+        
+        if (!jitConfig || !jitConfig[methodKey]) {
+          // JIT not enabled - return generic error
+          throw new BadRequestError(
+            "Incorrect password, please try again.",
+          );
+        }
+
+        // JIT is enabled - validate credentials and provision user
+        const orgId = sessionInfo.orgId;
+        if (!orgId) {
+          throw new BadRequestError('Organization not found for JIT provisioning');
+        }
+
+        // Create mock user for fetching config
+        const newUser = { orgId, email: sessionInfo.email };
+        
+        // Authenticate and provision based on method
+        let userDetails: { firstName?: string; lastName?: string; fullName: string };
+        
+        switch (method) {
+          case AuthMethodType.GOOGLE: {
+            const configManagerResponse = await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              GOOGLE_AUTH_CONFIG_PATH,
+              newUser,
+              this.config.scopedJwtSecret,
+            );
+            const { clientId } = configManagerResponse.data;
+            const client = new OAuth2Client(clientId);
+            const ticket = await client.verifyIdToken({
+              idToken: credentials.credential || credentials,
+              audience: clientId,
+            });
+            const payload = ticket.getPayload();
+            if (!payload) {
+              throw new UnauthorizedError('Error authorizing user through Google');
+            }
+            if (payload.email?.toLowerCase() !== sessionInfo.email?.toLowerCase()) {
+              throw new BadRequestError('Email mismatch: Token email does not match session email.');
+            }
+            userDetails = this.jitProvisioningService.extractGoogleUserDetails(payload, sessionInfo.email);
+            break;
+          }
+
+          case AuthMethodType.MICROSOFT: {
+            const configManagerResponse = await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              MICROSOFT_AUTH_CONFIG_PATH,
+              newUser,
+              this.config.scopedJwtSecret,
+            );
+            const { tenantId } = configManagerResponse.data;
+            const decodedToken = await validateAzureAdUser(credentials, tenantId);
+            userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, sessionInfo.email);
+            break;
+          }
+
+          case AuthMethodType.AZURE_AD: {
+            const configManagerResponse = await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              AZURE_AD_AUTH_CONFIG_PATH,
+              newUser,
+              this.config.scopedJwtSecret,
+            );
+            const { tenantId } = configManagerResponse.data;
+            const decodedToken = await validateAzureAdUser(credentials, tenantId);
+            userDetails = this.jitProvisioningService.extractMicrosoftUserDetails(decodedToken, sessionInfo.email);
+            break;
+          }
+
+          case AuthMethodType.OAUTH: {
+            const configManagerResponse = await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              OAUTH_AUTH_CONFIG_PATH,
+              newUser,
+              this.config.scopedJwtSecret,
+            );
+            const { userInfoEndpoint } = configManagerResponse.data;
+            const { accessToken } = credentials;
+
+            if (!accessToken) {
+              throw new BadRequestError('Access token is required for OAuth authentication');
+            }
+
+            let userInfo;
+            if (accessToken && userInfoEndpoint) {
+              const userInfoResponse = await fetch(userInfoEndpoint, {
+                headers: {
+                  'Authorization': `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+              });
+              if (!userInfoResponse.ok) {
+                throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
+              }
+              userInfo = await userInfoResponse.json();
+            } else {
+              throw new BadRequestError('Cannot verify user information: missing user info endpoint or access token');
+            }
+
+            const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
+            if (providerEmail?.toLowerCase() !== sessionInfo.email?.toLowerCase()) {
+              throw new BadRequestError('Email mismatch: OAuth provider email does not match session email.');
+            }
+            userDetails = this.jitProvisioningService.extractOAuthUserDetails(userInfo, sessionInfo.email);
+            break;
+          }
+
+          default:
+            throw new BadRequestError('Unsupported authentication method for JIT provisioning');
+        }
+
+        // Provision the user using the JIT provisioning service
+        user = await this.jitProvisioningService.provisionUser(
+          sessionInfo.email,
+          userDetails,
+          orgId,
+          method === AuthMethodType.AZURE_AD ? 'azureAd' : method as 'google' | 'microsoft' | 'oauth',
         );
-      }
-      const authToken = iamJwtGenerator(
-        sessionInfo.email,
-        this.config.scopedJwtSecret,
-      );
-      const userFindResult = await this.iamService.getUserByEmail(
-        sessionInfo.email,
-        authToken,
-      );
-      if (!userFindResult) {
-        throw new NotFoundError('User not found');
-      }
-      const user = userFindResult.data;
 
-      this.logger.debug('method', method);
-      switch (method) {
-        case AuthMethodType.PASSWORD:
-          await this.authenticateWithPassword(
-            user,
-            credentials.password,
-            req.ip!,
+        // Log the login activity - map JIT method to valid loginMode enum
+        const loginModeMap: Record<string, string> = {
+          [AuthMethodType.GOOGLE]: 'GOOGLE OAUTH',
+          [AuthMethodType.MICROSOFT]: 'MICROSOFT OAUTH',
+          [AuthMethodType.AZURE_AD]: 'AZUREAD OAUTH',
+          [AuthMethodType.OAUTH]: 'OAUTH',
+        };
+        await UserActivities.create({
+          email: sessionInfo.email,
+          activityType: LOGIN,
+          ipAddress: req.ip,
+          loginMode: loginModeMap[method] || 'OAUTH',
+        });
+
+        this.logger.info('JIT provisioning completed', { email: sessionInfo.email, method });
+      } else {
+        // Existing user flow
+        const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];
+        this.logger.info('currentStepConfig', currentStepConfig);
+
+        if (
+          !currentStepConfig.allowedMethods.find((m: any) => m.type === method)
+        ) {
+          throw new BadRequestError(
+            'Invalid authentication method for this step',
           );
-          break;
-        case AuthMethodType.OTP:
-          await this.authenticateWithOtp(user, credentials.otp, req.ip!);
-          break;
-        case AuthMethodType.GOOGLE:
-          await this.authenticateWithGoogle(user, credentials, req.ip!);
-          break;
-        case AuthMethodType.AZURE_AD:
-          await this.authenticateWithAzureAd(user, credentials, req.ip!);
-          break;
-        case AuthMethodType.MICROSOFT:
-          await this.authenticateWithMicrosoft(
-            user,
-            credentials,
-            req.ip || ' ',
-          );
-          break;
-        case AuthMethodType.OAUTH:
-          await this.authenticateWithOAuth(user, credentials, req.ip!);
-          break;
-        case AuthMethodType.SAML_SSO:
-          break;
-        default:
-          throw new BadRequestError('Unsupported authentication method');
+        }
+        const authToken = iamJwtGenerator(
+          sessionInfo.email,
+          this.config.scopedJwtSecret,
+        );
+        const userFindResult = await this.iamService.getUserByEmail(
+          sessionInfo.email,
+          authToken,
+        );
+
+        if (!userFindResult || userFindResult.statusCode !== 200) {
+          throw new NotFoundError('User not found');
+        }
+        user = userFindResult.data;
+
+        this.logger.debug('method', method);
+        switch (method) {
+          case AuthMethodType.PASSWORD:
+            await this.authenticateWithPassword(
+              user,
+              credentials.password,
+              req.ip!,
+            );
+            break;
+          case AuthMethodType.OTP:
+            await this.authenticateWithOtp(user, credentials.otp, req.ip!);
+            break;
+          case AuthMethodType.GOOGLE:
+            await this.authenticateWithGoogle(user, credentials, req.ip!);
+            break;
+          case AuthMethodType.AZURE_AD:
+            await this.authenticateWithAzureAd(user, credentials, req.ip!);
+            break;
+          case AuthMethodType.MICROSOFT:
+            await this.authenticateWithMicrosoft(
+              user,
+              credentials,
+              req.ip || ' ',
+            );
+            break;
+          case AuthMethodType.OAUTH:
+            await this.authenticateWithOAuth(user, credentials, req.ip!);
+            break;
+          case AuthMethodType.SAML_SSO:
+            break;
+          default:
+            throw new BadRequestError('Unsupported authentication method');
+        }
       }
 
       if (sessionInfo.currentStep < sessionInfo.authConfig.length - 1) {
@@ -1289,7 +1641,7 @@ export class UserAccountController {
 
         if (!user.hasLoggedIn) {
           const userInfo = {
-            ...user,
+            email: user.email,
             hasLoggedIn: true,
           };
           await this.iamService.updateUser(user._id, userInfo, accessToken);

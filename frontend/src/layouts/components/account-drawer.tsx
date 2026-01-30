@@ -1,6 +1,6 @@
 import type { IconButtonProps } from '@mui/material/IconButton';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import closeIcon from '@iconify-icons/mingcute/close-line';
 import settingsIcon from '@iconify-icons/solar/settings-bold-duotone';
 
@@ -22,7 +22,7 @@ import { Iconify } from 'src/components/iconify';
 import { Scrollbar } from 'src/components/scrollbar';
 import { AnimateAvatar } from 'src/components/animate';
 
-import { getOrgLogo, getOrgIdFromToken } from 'src/sections/accountdetails/utils';
+import { getOrgIdFromToken, getUserEmailFromToken } from 'src/sections/accountdetails/utils';
 
 import { useAuthContext } from 'src/auth/hooks';
 
@@ -169,26 +169,12 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
 
   const [open, setOpen] = useState(false);
   const [menuItems, setMenuItems] = useState(data);
-  const [customLogo, setCustomLogo] = useState<string | null>('');
   const isBusiness =
     user?.accountType === 'business' ||
     user?.accountType === 'organization' ||
     user?.role === 'business';
-    
-  useEffect(() => {
-    const fetchLogo = async () => {
-      try {
-        const orgId = await getOrgIdFromToken();
-        if (isBusiness) {
-          const logoUrl = await getOrgLogo(orgId);
-          setCustomLogo(logoUrl);
-        }
-      } catch (err) {
-        console.error(err, 'error in fetching logo');
-      }
-    };
-    fetchLogo();
-  }, [isBusiness]);
+
+  const email = useMemo(() => getUserEmailFromToken(), []);
 
   // Build menu items when user data changes
   useEffect(() => {
@@ -247,7 +233,7 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
     <>
       <AccountButton
         onClick={handleOpenDrawer}
-        photoURL={customLogo || user?.photoURL}
+        photoURL={user?.photoURL}
         displayName={user?.fullName}
         sx={sx}
         {...other}
@@ -312,7 +298,7 @@ export function AccountDrawer({ data = [], sx, ...other }: AccountDrawerProps) {
               }} 
               noWrap
             >
-              {user?.email}
+              {user?.email || email}
             </Typography>
 
             {/* Show account type if available */}

@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-arango
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: arango
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: arango
+  template:
+    metadata:
+      labels:
+        {{- include "pipeshub-ai.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: arango
+    spec:
+      securityContext:
+        {{- toYaml .Values.arango.podSecurityContext | nindent 8 }}
+      containers:
+        - name: arango
+          image: "{{ .Values.arango.image.repository }}:{{ .Values.arango.image.tag }}"
+          imagePullPolicy: {{ .Values.arango.image.pullPolicy }}
+          ports:
+            - containerPort: 8529
+              name: arango
+          env:
+            - name: ARANGO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "pipeshub-ai.fullname" . }}-secrets
+                  key: arango-password
+          volumeMounts:
+            - name: arango-data
+              mountPath: /var/lib/arangodb3
+          resources:
+            {{- toYaml .Values.arango.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.arango.securityContext | nindent 12 }}
+      volumes:
+        - name: arango-data
+        {{- if .Values.arango.persistence.enabled }}
+          persistentVolumeClaim:
+            claimName: {{ include "pipeshub-ai.fullname" . }}-arango
+        {{- else }}
+          emptyDir: {}
+        {{- end }}
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-arango
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: arango
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8529
+      targetPort: arango
+      protocol: TCP
+      name: arango
+  selector:
+    {{- include "pipeshub-ai.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: arango
+
+---
+
+{{- if .Values.arango.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-arango
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+    app.kubernetes.io/component: arango
+spec:
+  accessModes:
+    {{- toYaml .Values.arango.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.arango.persistence.size }}
+  {{- if .Values.arango.persistence.storageClass }}
+  storageClassName: {{ .Values.arango.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

@@ -42,4 +42,53 @@ export class InMemoryKeyValueStore<T> implements DistributedKeyValueStore<T> {
     const keys = Array.from(this.store.keys());
     return keys.filter((key) => key.startsWith(directory));
   }
+
+  async compareAndSet(key: string, expectedValue: T | null, newValue: T): Promise<boolean> {
+    const currentValue = this.store.get(key) ?? null;
+
+    // Compare current value with expected value
+    // For null comparison, check if both are null
+    if (expectedValue === null && currentValue === null) {
+      this.store.set(key, newValue);
+      return true;
+    }
+
+    // For non-null values, perform comparison
+    // Use JSON.stringify for deep equality of objects/arrays,
+    // or strict equality for primitives
+    let valuesMatch = false;
+    if (currentValue === expectedValue) {
+      // Strict equality works for primitives and same object references
+      valuesMatch = true;
+    } else if (
+      typeof currentValue === 'object' &&
+      typeof expectedValue === 'object' &&
+      currentValue !== null &&
+      expectedValue !== null
+    ) {
+      // Deep equality check for objects using JSON.stringify
+      try {
+        valuesMatch = JSON.stringify(currentValue) === JSON.stringify(expectedValue);
+      } catch {
+        // If JSON.stringify fails, fall back to strict equality
+        valuesMatch = false;
+      }
+    }
+
+    if (valuesMatch) {
+      this.store.set(key, newValue);
+      return true;
+    }
+
+    // Values don't match, CAS failed
+    return false;
+  }
+
+  /**
+   * Health check for in-memory store.
+   * Always returns true since the store is in-memory and always available.
+   */
+  async healthCheck(): Promise<boolean> {
+    return true;
+  }
 }

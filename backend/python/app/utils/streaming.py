@@ -1,17 +1,38 @@
 import asyncio
 import json
 import logging
+import os
 import re
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, Union
+from typing import (
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
 import aiohttp
 from fastapi import HTTPException
-from langchain.chat_models.base import BaseChatModel
-from langchain.output_parsers import PydanticOutputParser
+from fastapi.responses import StreamingResponse
+from langchain_anthropic import ChatAnthropic
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_mistralai import ChatMistralAI
+from langchain_openai import AzureChatOpenAI, ChatOpenAI
+from pydantic import BaseModel
 
 from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.qna.prompt_templates import AnswerWithMetadata
+from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.modules.qna.prompt_templates import (
+    AnswerWithMetadataDict,
+    AnswerWithMetadataJSON,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
@@ -24,32 +45,197 @@ from app.utils.citations import (
     normalize_citations_and_chunks,
     normalize_citations_and_chunks_for_agent,
 )
+from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.logger import create_logger
+
+logger = create_logger("streaming")
+
+opik_tracer = None
+api_key = os.getenv("OPIK_API_KEY")
+workspace = os.getenv("OPIK_WORKSPACE")
+if api_key and workspace:
+    try:
+        from opik import configure
+        from opik.integrations.langchain import OpikTracer
+        configure(use_local=False, api_key=api_key, workspace=workspace)
+        opik_tracer = OpikTracer()
+    except Exception as e:
+        logger.warning(f"Error configuring Opik: {e}")
+else:
+    logger.info("OPIK_API_KEY and/or OPIK_WORKSPACE not set. Skipping Opik configuration.")
 
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
+MAX_REFLECTION_RETRIES_DEFAULT = 2
+
+# TypeVar for generic schema types in structured output functions
+SchemaT = TypeVar('SchemaT', bound=BaseModel)
+
+# Legacy Anthropic models that don't support structured output
+# New models (claude-4+) support it by default, so only list older ones here
+ANTHROPIC_LEGACY_MODEL_PATTERNS = [
+    "claude-3",
+    "claude-sonnet-4-20250514",
+    "claude-opus-4-20250514",
+    "claude-2",
+    "claude-1",
+    "claude-instant",
+]
+
+
+def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
+    """
+    Check if the LLM provider supports adding a HumanMessage after ToolMessages.
+
+    Some providers (e.g., MistralAI) do not support this message ordering pattern.
+    """
+    # MistralAI does not support Human message after Tool message
+    if isinstance(llm, ChatMistralAI):
+        return False
+    return True
+
 
 # Create a logger for this module
-logger = create_logger("streaming")
+parser = PydanticOutputParser(pydantic_object=AnswerWithMetadataJSON)
+format_instructions = parser.get_format_instructions()
 
 
 
-async def stream_content(signed_url: str) -> AsyncGenerator[bytes, None]:
+async def stream_content(signed_url: str, record_id: Optional[str] = None, file_name: Optional[str] = None) -> AsyncGenerator[bytes, None]:
+    # Validate that signed_url is actually a string, not a coroutine
+    if not isinstance(signed_url, str):
+        error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
+        logger.error(f"❌ {error_msg} | Record ID: {record_id}")
+        raise TypeError(error_msg)
+    MAX_FILE_NAME_LEN = 200
+    # Extract file path from signed URL for logging (remove query parameters for security)
+    file_path_info = signed_url[:200] if len(signed_url) > MAX_FILE_NAME_LEN else signed_url  # Default fallback
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(signed_url) as response:
+        from urllib.parse import urlparse
+        parsed_url = urlparse(signed_url)
+        # Extract path without query parameters to avoid logging sensitive tokens
+        file_path_info = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}"
+    except Exception:
+        # If parsing fails, use truncated URL
+        file_path_info = signed_url[:200] if len(signed_url) > MAX_FILE_NAME_LEN else signed_url
+
+    # Build log message parts with available information
+    log_parts = []
+    if record_id:
+        log_parts.append(f"Record ID: {record_id}")
+    if file_name:
+        log_parts.append(f"File name: {file_name}")
+    log_parts.append(f"File path: {file_path_info}")
+    log_prefix = " | ".join(log_parts)
+
+    # Log truncated presigned URL for debugging (first 150 chars to see structure)
+    logger.debug(f"Fetching presigned URL (truncated): {signed_url[:150]}...")
+
+    try:
+        # Use a timeout to prevent hanging requests
+        timeout = aiohttp.ClientTimeout(total=300, connect=10)
+
+        # Create session - AWS presigned URLs must be used exactly as generated
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Make request - presigned URLs include all necessary authentication in the URL itself
+            # We don't modify headers to avoid breaking the signature
+            async with session.get(
+                signed_url,
+                allow_redirects=True
+            ) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
+                    # Try to get error details from response body for better debugging
+                    error_details = ""
+                    try:
+                        error_body = await response.text()
+                        if error_body:
+                            # Truncate long error messages
+                            error_details = f" | Error details: {error_body[:500]}"
+                    except Exception:
+                        pass
+
+                    # Distinguish between different error types
+                    if response.status == HttpStatusCode.BAD_REQUEST.value:
+                        logger.error(
+                            f"❌ BAD REQUEST (400): The presigned URL may be malformed or the request is invalid. "
+                            f"This could be: URL encoding issue, malformed query parameters, or invalid signature. "
+                            f"{log_prefix}{error_details}"
+                        )
+                    elif response.status == HttpStatusCode.FORBIDDEN.value:
+                        logger.error(
+                            f"❌ ACCESS DENIED (403): Failed to fetch file content due to permissions issue. "
+                            f"This could be: expired presigned URL, insufficient IAM permissions (s3:GetObject), "
+                            f"or bucket policy restrictions. {log_prefix}{error_details}"
+                        )
+                    elif response.status == HttpStatusCode.NOT_FOUND.value:
+                        logger.error(
+                            f"❌ FILE NOT FOUND (404): The file may not exist or the key may be incorrect "
+                            f"(possibly encoding issue with special characters). {log_prefix}{error_details}"
+                        )
+                    else:
+                        logger.error(
+                            f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
+                        )
                     raise HTTPException(
                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status}"
+                        detail=f"Failed to fetch file content: {response.status}{error_details}"
                     )
                 async for chunk in response.content.iter_chunked(8192):
                     yield chunk
     except aiohttp.ClientError as e:
+        logger.error(
+            f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
+        )
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to fetch file content from signed URL {str(e)}"
         )
+
+
+def create_stream_record_response(
+    content_stream: AsyncGenerator[bytes, None],
+    filename: Optional[str],
+    mime_type: Optional[str] = None,
+    fallback_filename: Optional[str] = None,
+    additional_headers: Optional[Dict[str, str]] = None
+) -> StreamingResponse:
+    """
+    Create a StreamingResponse for file downloads with proper headers.
+
+    This utility function encapsulates the common pattern of creating file download
+    responses with Content-Disposition headers and sanitized filenames.
+
+    Args:
+        content_stream: The async generator yielding file bytes
+        filename: Original filename (will be sanitized automatically)
+        mime_type: MIME type for Content-Type header (defaults to "application/octet-stream")
+        fallback_filename: Fallback if sanitization results in empty string
+        additional_headers: Optional dict for any custom headers (e.g., UTF-8 encoded filenames)
+
+    Returns:
+        StreamingResponse configured for file download with proper headers
+    """
+    safe_filename = sanitize_filename_for_content_disposition(
+        filename or "",
+        fallback=fallback_filename or "file"
+    )
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{safe_filename}"'
+    }
+
+    # Merge additional headers if provided
+    if additional_headers:
+        headers.update(additional_headers)
+
+    media_type = mime_type if mime_type else "application/octet-stream"
+
+    return StreamingResponse(
+        content_stream,
+        media_type=media_type,
+        headers=headers
+    )
+
 
 def find_unescaped_quote(text: str) -> int:
     """Return index of first un-escaped quote (") or -1 if none."""
@@ -104,7 +290,7 @@ def _stringify_content(content: Union[str, list, dict, None]) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None]:
+async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -113,32 +299,46 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str, None
     """
     if parts is None:
         parts = []
+    if opik_tracer is not None:
+        config = {"callbacks": [opik_tracer]}
+    else:
+        config = {}
     try:
         if hasattr(llm, "astream"):
-            async for part in llm.astream(messages):
+            async for part in llm.astream(messages, config=config):
                 if not part:
                     continue
                 parts.append(part)
-                content = getattr(part, "content", None)
+
+                if isinstance(part, dict):
+                    yield part
+                    continue
+                else:
+                    content = getattr(part, "content", None)
                 text = _stringify_content(content)
                 if text:
                     yield text
         else:
-            # Non-streaming – yield whole blob once
-            response = await llm.ainvoke(messages)
+            logger.info("Using non-streaming mode")
+            response = await llm.ainvoke(messages, config=config)
             content = getattr(response, "content", response)
             parts.append(response)
 
-            text = _stringify_content(content)
-            if text:
-                yield text
+            if isinstance(content, dict):
+                yield content
+            else:
+                text = _stringify_content(content)
+                if text:
+                    yield text
+                else:
+                    logger.info("No content found in response")
     except Exception as e:
         logger.error(f"Error in aiter_llm_stream: {str(e)}", exc_info=True)
         raise
 
 # Configuration for Qdrant limits based on context length.
 VECTOR_DB_LIMIT_TIERS = [
-    (17000, 187),  # For context lengths up to 17k
+    (17000, 65),  # For context lengths up to 17k
     (33000, 231),  # For context lengths up to 33k
     (65000, 320),  # For context lengths up to 65k
 ]
@@ -176,7 +376,10 @@ async def execute_tool_calls(
     if not tools:
         raise ValueError("Tools are required")
 
-    llm_with_tools = llm.bind_tools(tools)
+    llm_to_pass = bind_tools_for_llm(llm, tools)
+    if not llm_to_pass:
+        logger.warning("Failed to bind tools for LLM, so using structured output")
+        llm_to_pass = _apply_structured_output(llm,schema=AnswerWithMetadataDict)
 
     hops = 0
     tools_executed = False
@@ -186,9 +389,8 @@ async def execute_tool_calls(
         # with error handling for provider-level tool failures
         try:
             # Measure LLM invocation latency
-
             ai = None
-            async for event in call_aiter_llm_stream(llm_with_tools, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk):
+            async for event in call_aiter_llm_stream(llm_to_pass, messages, final_results, records=[], target_words_per_chunk=target_words_per_chunk, original_llm=llm):
                 if event.get("event") == "complete" or event.get("event") == "error":
                     yield event
                     return
@@ -196,7 +398,6 @@ async def execute_tool_calls(
                     ai = event.get("data").get("ai")
                 else:
                     yield event
-
 
             ai = AIMessage(
                 content = ai.content,
@@ -211,53 +412,6 @@ async def execute_tool_calls(
             logger.debug("execute_tool_calls: no tool_calls returned; exiting tool loop")
             messages.append(ai)
             break
-
-        # Check if LLM incorrectly made a tool call for unknown tools (e.g., tool name "json")
-        # This happens when the model wraps the final answer in a tool call instead of returning it directly
-        valid_tool_names = [t.name for t in tools]
-
-        # If there are any invalid tool calls, use reflection to guide the LLM
-        invalid_tool_calls = [call for call in ai.tool_calls if call.get("name") not in valid_tool_names]
-
-        if invalid_tool_calls:
-            logger.warning(
-                "execute_tool_calls: detected invalid tool calls: %s. Using reflection to guide LLM.",
-                [call.get("name") for call in invalid_tool_calls]
-            )
-
-            # Add the AI message with invalid tool calls
-            messages.append(ai)
-
-            # Create reflection messages for each invalid tool call
-            for call in invalid_tool_calls:
-                call_id = call.get("id")
-                tool_name = call.get("name")
-
-                reflection_message = (
-                    f"Error: Tool '{tool_name}' is not a valid tool. "
-                    f"Available tools are: {', '.join(valid_tool_names)}. "
-                    "Please provide your final answer directly as a JSON object with the following structure: "
-                    '{"answer": "your answer here", "reason": "reasoning", "confidence": "High/Medium/Low", '
-                    '"answerMatchType": "Derived From Blocks/Exact Match/etc", "blockNumbers": [list of block numbers]}. '
-                    "Do NOT wrap your response in any tool call."
-                )
-
-                messages.append(
-                    ToolMessage(
-                        content=reflection_message,
-                        tool_call_id=call_id
-                    )
-                )
-
-                logger.info(
-                    "execute_tool_calls: added reflection message for invalid tool '%s' with call_id=%s",
-                    tool_name,
-                    call_id
-                )
-
-            # Continue the loop to let the LLM try again with the reflection
-            hops += 1
-            continue
 
         tools_executed = True
         logger.debug(
@@ -292,7 +446,7 @@ async def execute_tool_calls(
             tool_args.append((args,tool))
 
         tool_results_inner = []
-
+        valid_tool_names = [t.name for t in tools]
         # Execute all tools in parallel using asyncio.gather
         async def execute_single_tool(args, tool, tool_name, call_id) -> Dict[str, Any]:
             """Execute a single tool and return result with metadata"""
@@ -305,6 +459,14 @@ async def execute_tool_calls(
                     "call_id": call_id
                 }
 
+            if tool_name not in valid_tool_names:
+                logger.warning("invalid tool requested, name=%s", tool_name)
+                return {
+                    "ok": False,
+                    "error": f"Invalid tool: {tool_name}",
+                    "tool_name": tool_name,
+                    "call_id": call_id
+                }
             try:
                 logger.debug(
                     "execute_tool_calls: running tool name=%s call_id=%s args_keys=%s",
@@ -331,16 +493,15 @@ async def execute_tool_calls(
 
         # Create parallel tasks for all tools
         tool_tasks = []
-        tool_names = []
         for (args, tool), call in zip(tool_args, ai.tool_calls):
             tool_name = call["name"]
             call_id = call.get("id")
-            tool_names.append(tool_name)
             tool_tasks.append(execute_single_tool(args, tool, tool_name, call_id))
 
         # Execute all tools in parallel
         tool_results_inner = await asyncio.gather(*tool_tasks, return_exceptions=False)
 
+        records = []
         # Process results and yield events
         for tool_result in tool_results_inner:
             tool_name = tool_result.get("tool_name", "unknown")
@@ -363,6 +524,8 @@ async def execute_tool_calls(
                         "record_info": tool_result.get("record_info", {})
                     }
                 }
+                if "records" in tool_result:
+                    records.extend(tool_result.get("records", []))
             else:
                 logger.warning(
                     "execute_tool_calls: tool error result name=%s call_id=%s error=%s",
@@ -378,14 +541,6 @@ async def execute_tool_calls(
                         "call_id": call_id
                     }
                 }
-
-        # Handle both old single-record format and new multi-record format
-        records = []
-        for tool_result in tool_results_inner:
-            if tool_result.get("ok"):
-                # New format: multiple records
-                if "records" in tool_result:
-                    records.extend(tool_result.get("records", []))
 
         # First, add the AI message with tool calls to messages
         messages.append(ai)
@@ -421,7 +576,6 @@ async def execute_tool_calls(
                 org_id=org_id,
                 user_id=user_id,
                 limit=vector_db_limit,
-
                 filter_groups=None,
                 virtual_record_ids_from_tool=virtual_record_ids,
             )
@@ -483,7 +637,7 @@ async def execute_tool_calls(
 
         hops += 1
 
-    if len(tool_results)>0:
+    if len(tool_results) > 0 and supports_human_message_after_tool(llm):
         messages.append(HumanMessage(content="""Strictly follow the citation guidelines mentioned in the prompt above."""))
 
     yield {
@@ -503,12 +657,16 @@ async def stream_llm_response(
     logger,
     target_words_per_chunk: int = 1,
     mode: Optional[str] = "json",
+    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
+    records: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
     Incrementally stream the answer portion of an LLM response.
     For each chunk we also emit the citations visible so far.
     Supports both JSON mode (with structured output) and simple mode (direct streaming).
     """
+    if records is None:
+        records = []
 
     if mode == "json":
         # Original streaming logic for the final answer
@@ -547,7 +705,8 @@ async def stream_llm_response(
                     reason = None
                     confidence = None
 
-                    normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results)
+                # Always normalize citations - don't use LLM-generated citations
+                normalized, cites = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result, records)
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -559,7 +718,7 @@ async def stream_llm_response(
                         "data": {
                             "chunk": chunk_text,
                             "accumulated": accumulated,
-                            "citations": cites,
+                            "citations": cites,  # Use normalized citations
                         },
                     }
 
@@ -567,7 +726,7 @@ async def stream_llm_response(
                     "event": "complete",
                     "data": {
                         "answer": normalized,
-                        "citations": cites,
+                        "citations": cites,  # Use normalized citations
                         "reason": reason,
                         "confidence": confidence,
                     },
@@ -577,12 +736,6 @@ async def stream_llm_response(
             # If detection fails, fall back to normal path
             pass
 
-        # Try to bind structured output
-        try:
-            llm.with_structured_output(AnswerWithMetadata)
-            logger.info("LLM bound with structured output successfully")
-        except Exception as e:
-            print(f"LLM provider or api does not support structured output: {e}")
 
         try:
             async for token in aiter_llm_stream(llm, messages):
@@ -625,8 +778,16 @@ async def stream_llm_response(
                                 continue
 
                             normalized, cites = normalize_citations_and_chunks_for_agent(
-                                current_raw, final_results
+                                current_raw, final_results, virtual_record_id_to_result, records
                             )
+
+                            # CRITICAL DEBUG: Log citation generation
+                            if not cites and "[R" in current_raw:
+                                logger.warning("⚠️ CITATION BUG: Found [R markers but got 0 citations!")
+                                logger.warning(f"   - Text has markers: {bool('[R' in current_raw)}")
+                                logger.warning(f"   - final_results count: {len(final_results)}")
+                                logger.warning(f"   - virtual_record_id_to_result count: {len(virtual_record_id_to_result) if virtual_record_id_to_result else 0}")
+                                logger.warning(f"   - records count: {len(records) if records else 0}")
 
                             chunk_text = normalized[prev_norm_len:]
                             prev_norm_len = len(normalized)
@@ -645,19 +806,34 @@ async def stream_llm_response(
                 parsed = json.loads(escape_ctl(full_json_buf))
                 final_answer = parsed.get("answer", answer_buf)
 
-                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results)
-                yield {
-                    "event": "complete",
-                    "data": {
+                normalized, c = normalize_citations_and_chunks_for_agent(final_answer, final_results, virtual_record_id_to_result, records)
+
+                # CRITICAL DEBUG: Log final citation count
+                logger.info("📊 CITATION DEBUG - Final complete event:")
+                logger.info(f"   - Answer has [R markers: {bool('[R' in final_answer)}")
+                logger.info(f"   - Citations generated: {len(c)}")
+                if not c and "[R" in final_answer:
+                    logger.error("⚠️ CITATION BUG: Answer has [R markers but NO citations created!")
+                    logger.error(f"   - final_results: {len(final_results)}")
+                    logger.error(f"   - virtual_record_id_to_result: {len(virtual_record_id_to_result) if virtual_record_id_to_result else 0}")
+                    logger.error(f"   - records: {len(records) if records else 0}")
+
+                complete_data = {
                         "answer": normalized,
-                        "citations": c,
+                        "citations": c,  # Use normalized citations
                         "reason": parsed.get("reason"),
                         "confidence": parsed.get("confidence"),
-                    },
+                    }
+                # Include referenceData if present (IDs for follow-up queries)
+                if parsed.get("referenceData"):
+                    complete_data["referenceData"] = parsed.get("referenceData")
+                yield {
+                    "event": "complete",
+                    "data": complete_data,
                 }
             except Exception:
                 # Fallback if JSON parsing fails
-                normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results)
+                normalized, c = normalize_citations_and_chunks_for_agent(answer_buf, final_results, virtual_record_id_to_result, records)
                 yield {
                     "event": "complete",
                     "data": {
@@ -697,7 +873,7 @@ async def stream_llm_response(
 
             if existing_ai_content:
                 logger.info("stream_llm_response: detected existing AI message (simple mode), streaming directly")
-                normalized, cites = normalize_citations_and_chunks_for_agent(existing_ai_content, final_results)
+                normalized, cites = normalize_citations_and_chunks_for_agent(existing_ai_content, final_results, virtual_record_id_to_result, records)
 
                 words = re.findall(r'\S+', normalized)
                 for i in range(0, len(words), target_words_per_chunk):
@@ -750,7 +926,7 @@ async def stream_llm_response(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results
+                            current_raw, final_results, virtual_record_id_to_result, records
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -766,7 +942,7 @@ async def stream_llm_response(
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records)
             yield {
                 "event": "complete",
                 "data": {
@@ -831,8 +1007,6 @@ async def handle_json_mode(
     """
     Handle JSON mode streaming.
     """
-
-
     # Fast-path: if the last message is already an AI answer (e.g., from invalid tool call conversion), stream it directly
     try:
         last_msg = messages[-1] if messages else None
@@ -886,16 +1060,12 @@ async def handle_json_mode(
         # If fast-path detection fails, fall back to normal path
         logger.debug("stream_llm_response_with_tools: fast-path failed, falling back to LLM call: %s", str(e))
 
-    # Try to bind structured output
-    try:
-        llm.with_structured_output(AnswerWithMetadata)
-        logger.info("LLM bound with structured output successfully")
-    except Exception as e:
-        logger.warning(f"LLM provider or api does not support structured output: {e}")
 
     try:
         logger.debug("handle_json_mode: Starting LLM stream")
-        async for token in call_aiter_llm_stream(llm, messages,final_results,records,target_words_per_chunk):
+        llm_with_structured_output = _apply_structured_output(llm,schema=AnswerWithMetadataDict)
+
+        async for token in call_aiter_llm_stream(llm_with_structured_output, messages,final_results,records,target_words_per_chunk):
             yield token
     except Exception as exc:
         yield {
@@ -910,6 +1080,7 @@ async def handle_simple_mode(
     records: List[Dict[str, Any]],
     logger: logging.Logger,
     target_words_per_chunk: int = 1,
+    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     # Simple mode: stream content directly without JSON parsing
         logger.debug("stream_llm_response_with_tools: simple mode - streaming raw content")
@@ -989,7 +1160,7 @@ async def handle_simple_mode(
                             continue
 
                         normalized, cites = normalize_citations_and_chunks_for_agent(
-                            current_raw, final_results
+                            current_raw, final_results, virtual_record_id_to_result, records
                         )
 
                         chunk_text = normalized[prev_norm_len:]
@@ -1005,7 +1176,7 @@ async def handle_simple_mode(
                         }
 
             # Final normalization and emit complete
-            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results)
+            normalized, cites = normalize_citations_and_chunks_for_agent(content_buf, final_results, virtual_record_id_to_result, records)
             yield {
                 "event": "complete",
                 "data": {
@@ -1143,7 +1314,7 @@ async def stream_llm_response_with_tools(
             async for event in handle_json_mode(llm, messages, final_results, records, logger, target_words_per_chunk):
                 yield event
         else:
-            async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk):
+            async for event in handle_simple_mode(llm, messages, final_results, records, logger, target_words_per_chunk, virtual_record_id_to_result):
                 yield event
 
         logger.info("stream_llm_response_with_tools: COMPLETE | Successfully completed streaming")
@@ -1178,7 +1349,6 @@ def _initialize_answer_parser_regex() -> Tuple[re.Pattern, re.Pattern, re.Patter
     word_iter = re.compile(r'\S+').finditer
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
-
 async def call_aiter_llm_stream(
     llm,
     messages,
@@ -1186,7 +1356,8 @@ async def call_aiter_llm_stream(
     records=None,
     target_words_per_chunk=1,
     reflection_retry_count=0,
-    max_reflection_retries=1,
+    max_reflection_retries=MAX_REFLECTION_RETRIES_DEFAULT,
+    original_llm=None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """Stream LLM response and parse answer field from JSON, emitting chunks and final event."""
     state = AnswerParserState()
@@ -1194,8 +1365,45 @@ async def call_aiter_llm_stream(
 
     parts = []
     async for token in aiter_llm_stream(llm, messages,parts):
-        state.full_json_buf += token
+        if isinstance(token, dict):
+            state.full_json_buf = token
 
+            answer = token.get("answer", "")
+            if answer:
+                state.answer_buf = answer
+
+                                # Check for incomplete citations at the end of the answer
+                safe_answer = answer
+                if incomplete_match := incomplete_cite_re.search(answer):
+                    # Only process up to the incomplete citation
+                    safe_answer = answer[:incomplete_match.start()]
+
+                # Only process if we have new content beyond what we've already emitted
+                if len(safe_answer) <= state.emit_upto:
+                    # Nothing safe to emit yet, wait for more content
+                    continue
+
+                state.emit_upto = len(safe_answer)
+                normalized, cites = normalize_citations_and_chunks(
+                            safe_answer, final_results, records
+                        )
+
+                chunk_text = normalized[state.prev_norm_len:]
+                state.prev_norm_len = len(normalized)
+
+                if chunk_text:  # Only yield if there's actual content to emit
+                    yield {
+                        "event": "answer_chunk",
+                        "data": {
+                            "chunk": chunk_text,
+                            "accumulated": normalized,
+                            "citations": cites,
+                        },
+                    }
+
+            continue
+
+        state.full_json_buf += token
         # Look for the start of the "answer" field
         if not state.answer_buf:
             match = answer_key_re.search(state.full_json_buf)
@@ -1211,8 +1419,6 @@ async def call_aiter_llm_stream(
             if end_idx != -1:
                 state.answer_done = True
                 state.answer_buf = state.answer_buf[:end_idx]
-
-
         # Stream answer in word-based chunks
         if state.answer_buf:
             # Process words from current emit position
@@ -1265,59 +1471,70 @@ async def call_aiter_llm_stream(
                         break
 
     ai = None
+    tool_calls_happened = True
     for part in parts:
+        if isinstance(part, dict):
+            logger.info("part is a dict, breaking from loop")
+            tool_calls_happened = False
+            break
         if ai is None:
             ai = part
         else:
             ai += part
 
-    tool_calls = getattr(ai, 'tool_calls', [])
-    if tool_calls:
-        yield {
-            "event": "tool_calls",
-            "data": {
-                "ai": ai,
-            },
-        }
-        return
+    if tool_calls_happened:
+        tool_calls = getattr(ai, 'tool_calls', [])
+        if tool_calls:
+            yield {
+                "event": "tool_calls",
+                "data": {
+                    "ai": ai,
+                },
+            }
+            logger.info("tool_calls detected, returning")
+            return
 
+    # Try to parse the full JSON buffer
+    try:
+        response_text = state.full_json_buf
+        if  isinstance(response_text, str):
+            response_text = cleanup_content(response_text)
 
-    if not (state.answer_buf):
-        # No answer field found in the response - use reflection to guide the LLM
-        if reflection_retry_count < max_reflection_retries:
-            logger.warning(
-                "call_aiter_llm_stream: No answer field found in LLM response. Using reflection to guide LLM to proper format. Retry count: %d",
-                reflection_retry_count
-            )
-
-            response_text = state.full_json_buf.strip()
-            if response_text.startswith("```json"):
-                response_text = response_text.replace("```json", "", 1)
-            if response_text.endswith("```"):
-                response_text = response_text.rsplit("```", 1)[0]
-            response_text = response_text.strip()
-            try:
-                parser = PydanticOutputParser(pydantic_object=AnswerWithMetadata)
+        try:
+            if isinstance(response_text, str):
                 parsed = parser.parse(response_text)
-            except Exception as e:
+            else:
+                parsed = AnswerWithMetadataJSON.model_validate(response_text)
+        except Exception as e:
+            # JSON parsing failed - use reflection to guide the LLM
+            if reflection_retry_count < max_reflection_retries:
+                yield {"event": "restreaming","data": {}}
+                yield {"event": "status", "data": {"status": "processing", "message": "Rethinking..."}}
                 parse_error = str(e)
+                logger.warning(
+                    "JSON parsing failed for LLM response with error: %s. Using reflection to guide LLM to proper format. Retry count: %d.",
+                    parse_error,
+                    reflection_retry_count
+                )
+
                 # Create reflection message to guide the LLM
                 reflection_message = HumanMessage(
-                    content=(f"""The previous response failed validation with the following error: {parse_error}
-
-                    Please correct your response to match the expected schema. Ensure all fields are properly formatted and all required fields are present. Respond only with valid JSON that matches the AnswerWithMetadata schema.""")
-                )
+                    content=(f"""The previous response failed validation with the following error: {parse_error}. {format_instructions}"""
+                ))
                 # Add the reflection message to the messages list
                 updated_messages = messages.copy()
-                if ai is not None:
-                    ai_message = AIMessage(
-                        content=ai.content,
-                    )
-                    updated_messages.append(ai_message)
+
+                # Ensure response_text is a string for AIMessage (can be dict from structured output)
+                ai_message_content = response_text if isinstance(response_text, str) else json.dumps(response_text)
+                ai_message = AIMessage(
+                    content=ai_message_content,
+                )
+                updated_messages.append(ai_message)
 
                 updated_messages.append(reflection_message)
 
-                # Recursively call the function with updated messages
+                if original_llm:
+                    llm = _apply_structured_output(original_llm,schema=AnswerWithMetadataDict)
                 async for event in call_aiter_llm_stream(
                     llm,
                     updated_messages,
@@ -1326,48 +1543,324 @@ async def call_aiter_llm_stream(
                     target_words_per_chunk,
                     reflection_retry_count + 1,
                     max_reflection_retries,
+                    original_llm=original_llm,
                 ):
                     yield event
+                return
+            else:
+                logger.error(
+                    "call_aiter_llm_stream: JSON parsing failed after %d reflection attempts. Falling back to answer_buf.",
+                    max_reflection_retries
+                )
+                # After max retries, fallback to using answer_buf if available
+                if state.answer_buf:
+                    normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
+                    yield {
+                        "event": "complete",
+                        "data": {
+                            "answer": normalized,
+                            "citations": c,
+                            "reason": None,
+                            "confidence": None,
+                        },
+                    }
+                else:
+                    # No answer at all, return error
+                    yield {
+                        "event": "error",
+                        "data": {
+                            "error": "LLM did not provide any appropriate answer"
+                        },
+                    }
+                return
 
-            return
-        else:
-            logger.error(
-                "call_aiter_llm_stream: No answer field found after %d reflection attempts. Returning error.",
-                max_reflection_retries
+        final_answer = parsed.answer if parsed.answer else state.answer_buf
+        normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
+        complete_data = {
+            "answer": normalized,
+            "citations": c,
+            "reason": parsed.reason,
+            "confidence": parsed.confidence,
+        }
+        # Include referenceData if present (IDs for follow-up queries)
+        if hasattr(parsed, 'referenceData') and parsed.referenceData:
+            complete_data["referenceData"] = parsed.referenceData
+        yield {
+            "event": "complete",
+            "data": complete_data,
+        }
+    except Exception as e:
+        logger.error("Error in call_aiter_llm_stream", exc_info=True)
+        yield {"event": "error","data": {"error": f"Error in call_aiter_llm_stream: {str(e)}"}}
+        return
+
+def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
+    """
+    Bind tools to the LLM.
+    """
+    try:
+        return llm.bind_tools(tools)
+    except Exception:
+        logger.warning("Tool binding failed, using llm without tools.")
+        return False
+
+def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
+
+        additional_kwargs = {}
+        if isinstance(llm, ChatAnthropic):
+            model_str = getattr(llm, 'model', None)
+            if not model_str:
+                logger.warning("model name not found, using non-structured LLM")
+                return llm
+            is_legacy_model = any(pattern in model_str for pattern in ANTHROPIC_LEGACY_MODEL_PATTERNS)
+            if is_legacy_model:
+                logger.info("Legacy Anthropic model detected, using non-structured LLM")
+                return llm
+
+            additional_kwargs["stream"] = True
+
+        additional_kwargs["method"] = "json_schema"
+
+        try:
+            model_with_structure = llm.with_structured_output(
+                schema,
+                **additional_kwargs
             )
-            # After max retries, return an error event
-            yield {
-                "event": "error",
-                "data": {
-                    "error": "LLM did not provide any appropriate answer"
-                },
-            }
-            return
+            logger.info("Using structured output")
+            return model_with_structure
+        except Exception as e:
+            logger.warning("Failed to apply structured output, falling back to default. Error: %s", str(e))
+            logger.info("Using non-structured LLM")
+
+    logger.info("Using non-structured LLM")
+    return llm
+
+
+def cleanup_content(response_text: str) -> str:
+    response_text = response_text.strip()
+    if '</think>' in response_text:
+            response_text = response_text.split('</think>')[-1]
+    if response_text.startswith("```json"):
+        response_text = response_text.replace("```json", "", 1)
+    if response_text.endswith("```"):
+        response_text = response_text.rsplit("```", 1)[0]
+    response_text = response_text.strip()
+    return response_text
+
+
+async def invoke_with_structured_output_and_reflection(
+    llm: BaseChatModel,
+    messages: List,
+    schema: Type[SchemaT],
+    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+) -> Optional[SchemaT]:
+    """
+    Invoke LLM with structured output and automatic reflection on parse failure.
+
+    Args:
+        llm: The LangChain chat model to use
+        messages: List of messages to send to the LLM
+        schema: Pydantic model class to validate the response against
+        max_retries: Maximum number of reflection retries on parse failure
+
+    Returns:
+        Validated Pydantic model instance, or None if parsing fails after all retries
+    """
+    llm_with_structured_output = _apply_structured_output(llm, schema=schema)
 
     try:
-        parsed = json.loads(escape_ctl(state.full_json_buf))
-        final_answer = parsed.get("answer", state.answer_buf)
-        normalized, c = normalize_citations_and_chunks(final_answer, final_results, records)
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": c,
-                "reason": parsed.get("reason"),
-                "confidence": parsed.get("confidence"),
+        response = await llm_with_structured_output.ainvoke(messages)
+    except Exception as e:
+        logger.error(f"LLM invocation failed: {e}")
+        return None
 
-            },
-        }
-    except Exception:
-        # Fallback if JSON parsing fails
+    # Try to parse the response
+    parsed_response = None
+    try:
 
-        normalized, c = normalize_citations_and_chunks(state.answer_buf, final_results, records)
-        yield {
-            "event": "complete",
-            "data": {
-                "answer": normalized,
-                "citations": c,
-                "reason": None,
-                "confidence": None,
-            },
-        }
+        if isinstance(response, dict):
+            if 'content' in response:
+                # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
+                logger.debug("Response is a dict with 'content' key, extracting content for parsing")
+                response_content = response['content']
+                response_text = cleanup_content(response_content)
+                logger.debug(f"Cleaned response content length: {len(response_text)} chars")
+                parsed_response = schema.model_validate_json(response_text)
+                logger.debug("Dict with content response validated successfully")
+            else:
+                logger.debug("Response is a dict, validating directly")
+                response_content = json.dumps(response)
+                parsed_response = schema.model_validate(response)
+                logger.debug("Dict response validated successfully")
+        else:
+            if hasattr(response, 'content'):
+                # Response is an AIMessage or string
+                logger.debug("Response is AIMessage, extracting content for parsing")
+                response_content = response.content
+                response_text = cleanup_content(response_content)
+                logger.debug(f"Cleaned response content length: {len(response_text)} chars")
+                parsed_response = schema.model_validate_json(response_text)
+                logger.debug("AIMessage/string response validated successfully")
+            else:
+                # Response is already a Pydantic model
+                logger.debug("Response is a Pydantic model, extracting and validating")
+                response_content = response.model_dump_json()
+                parsed_response = schema.model_validate(response.model_dump())
+                logger.debug("Pydantic model response validated successfully")
+
+        return parsed_response
+
+    except Exception as parse_error:
+        # Attempt reflection: ask LLM to correct its response
+        logger.warning(f"Initial parse failed: {parse_error}. Attempting reflection...")
+
+        reflection_messages = list(messages)  # Copy the original messages
+
+        # Add the failed response to context
+        reflection_messages.append(AIMessage(content=response_content))
+
+        reflection_prompt = f"""Your previous response could not be parsed correctly.
+Error: {str(parse_error)}
+
+Please correct your response to match the expected JSON schema. Ensure all fields are properly formatted and all required fields are present.
+Respond only with valid JSON that matches the schema."""
+
+        reflection_messages.append(HumanMessage(content=reflection_prompt))
+
+        for attempt in range(max_retries):
+            try:
+                reflection_response = await llm_with_structured_output.ainvoke(reflection_messages)
+                if isinstance(reflection_response, dict):
+                    if 'content' in reflection_response:
+                        # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
+                        logger.debug("Reflection response is a dict with 'content' key, extracting content for parsing")
+                        reflection_content = reflection_response['content']
+                        reflection_text = cleanup_content(reflection_content)
+                        logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
+                        parsed_response = schema.model_validate_json(reflection_text)
+                    else:
+                        logger.debug("Reflection response is a dict, validating directly")
+                        reflection_content = json.dumps(reflection_response)
+                        parsed_response = schema.model_validate(reflection_response)
+                else:
+                    if hasattr(reflection_response, 'content'):
+                        logger.debug("Reflection response is AIMessage, extracting content")
+                        reflection_content = reflection_response.content
+                        reflection_text = cleanup_content(reflection_content)
+                        logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
+                        parsed_response = schema.model_validate_json(reflection_text)
+                    else:
+                        logger.debug("Reflection response is a Pydantic model, extracting and validating")
+                        reflection_content = reflection_response.model_dump_json()
+                        parsed_response = schema.model_validate(reflection_response.model_dump())
+
+                logger.info(f"Reflection successful on attempt {attempt + 1}")
+                return parsed_response
+
+            except Exception as reflection_error:
+                logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
+                if attempt < max_retries - 1:
+                    # Update messages for next retry
+                    reflection_messages.append(AIMessage(content=reflection_content))
+                    reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
+
+        logger.error("All reflection attempts failed")
+        return None
+
+
+async def invoke_with_row_descriptions_and_reflection(
+    llm: BaseChatModel,
+    messages: List,
+    expected_count: int,
+    max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+) -> Optional[RowDescriptions]:
+    """
+    Invoke LLM with row description output and validate count matches expected.
+
+    If the LLM returns an incorrect number of descriptions, performs reflection
+    to give it one chance to correct the count mismatch.
+
+    Args:
+        llm: The LangChain chat model to use
+        messages: List of messages to send to the LLM
+        expected_count: Expected number of row descriptions
+        max_retries: Maximum number of reflection retries on parse failure (default: 2)
+
+    Returns:
+        Validated RowDescriptions instance with correct count, or None if validation fails
+    """
+    # First, try to get a parsed response using the standard reflection function
+    parsed_response = await invoke_with_structured_output_and_reflection(
+        llm, messages, RowDescriptions, max_retries
+    )
+
+    if parsed_response is None:
+        logger.warning("Failed to parse RowDescriptions after initial attempts")
+        return None
+
+    # Validate the count matches expected
+    actual_count = len(parsed_response.descriptions)
+
+    if actual_count == expected_count:
+        logger.debug(f"Row count validation passed: {actual_count} descriptions")
+        return parsed_response
+
+    # Count mismatch detected - perform reflection to correct it
+    logger.warning(
+        f"Row count mismatch: LLM returned {actual_count} descriptions "
+        f"but {expected_count} were expected. Attempting reflection..."
+    )
+
+    # Build reflection messages
+    reflection_messages = list(messages)
+    reflection_messages.append(
+        AIMessage(content=json.dumps(parsed_response.model_dump()))
+    )
+
+    reflection_prompt = f"""Your previous response contained {actual_count} descriptions, but exactly {expected_count} descriptions are required.
+
+CRITICAL: You must provide EXACTLY {expected_count} descriptions - one for each row, in the same order they were provided.
+
+Please correct your response to include exactly {expected_count} descriptions. Do not skip any rows, do not combine rows, and do not split rows.
+
+Respond with a valid JSON object:
+{{
+    "descriptions": [
+        "Description for row 1",
+        "Description for row 2",
+        ...
+        "Description for row {expected_count}"
+    ]
+}}"""
+
+    reflection_messages.append(HumanMessage(content=reflection_prompt))
+
+    # Try reflection once (per user preference: 1 reflection attempt for count mismatches)
+    try:
+        reflection_response = await invoke_with_structured_output_and_reflection(
+            llm, reflection_messages, RowDescriptions, max_retries=1
+        )
+
+        if reflection_response is None:
+            logger.error("Reflection failed to parse response")
+            return None
+
+        # Validate the count again
+        reflection_count = len(reflection_response.descriptions)
+
+        if reflection_count == expected_count:
+            logger.info(
+                f"Reflection successful: corrected from {actual_count} to {reflection_count} descriptions"
+            )
+            return reflection_response
+        else:
+            logger.error(
+                f"Reflection failed: still have {reflection_count} descriptions "
+                f"instead of {expected_count}"
+            )
+            return None
+
+    except Exception as e:
+        logger.error(f"Reflection attempt failed with error: {e}")
+        return None

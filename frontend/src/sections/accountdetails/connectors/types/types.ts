@@ -66,9 +66,49 @@ interface SyncCustomField extends BaseField {
     | 'JSON';
 }
 
+// Filter value types
+export type FilterOperator = string;
+export type FilterValue = string | number | boolean | string[] | DatetimeRange | EpochDatetimeRange | null;
+
+// Option source types
+type OptionSourceType = 'manual' | 'static' | 'dynamic';
+
+// Filter option for dynamic/static options
+interface FilterOption {
+  id: string;
+  label: string;
+}
+
+// Filter options response
+interface FilterOptionsResponse {
+  success: boolean;
+  options: FilterOption[];
+  page: number;
+  limit: number;
+  hasMore: boolean;
+  cursor?: string;  // Optional cursor for cursor-based pagination (API-specific)
+  message?: string;
+}
+
+export interface DatetimeRange {
+  start: string | number;
+  end: string | number;
+}
+
+export interface EpochDatetimeRange {
+  start: number | null;
+  end: number | null;
+}
+
+export interface FilterValueData {
+  operator: FilterOperator;
+  value: FilterValue;
+  type?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect' | 'tags' | 'daterange' | 'datetimerange';
+}
+
 // Filter schema field
 interface FilterSchemaField extends BaseField {
-  fieldType:
+  fieldType?:
     | 'TEXT'
     | 'SELECT'
     | 'MULTISELECT'
@@ -77,18 +117,11 @@ interface FilterSchemaField extends BaseField {
     | 'NUMBER'
     | 'BOOLEAN'
     | 'TAGS';
-  operators?: (
-    | 'EQUALS'
-    | 'NOT_EQUALS'
-    | 'CONTAINS'
-    | 'NOT_CONTAINS'
-    | 'STARTS_WITH'
-    | 'ENDS_WITH'
-    | 'GREATER_THAN'
-    | 'LESS_THAN'
-    | 'IN'
-    | 'NOT_IN'
-  )[];
+  filterType?: 'list' | 'datetime' | 'text' | 'string' | 'number' | 'boolean' | 'multiselect';
+  category?: 'sync' | 'indexing';
+  defaultOperator?: string;
+  operators?: string[];
+  optionSourceType?: OptionSourceType;
 }
 
 // Filter custom field
@@ -164,11 +197,21 @@ interface ConnectorAuthConfig {
     | 'USERNAME_PASSWORD'
     | 'BEARER_TOKEN'
     | 'CUSTOM';
+  supportedAuthTypes?: string[];
   displayRedirectUri?: boolean;
   redirectUri?: string;
   conditionalDisplay?: ConditionalDisplayConfig;
   schema: {
     fields: AuthSchemaField[];
+    redirectUri?: string;
+    displayRedirectUri?: boolean;
+  };
+  schemas?: {
+    [authType: string]: {
+      fields: AuthSchemaField[];
+      redirectUri?: string;
+      displayRedirectUri?: boolean;
+    };
   };
   values: Record<string, any>;
   customFields: AuthCustomField[];
@@ -187,8 +230,20 @@ interface ConnectorSyncConfig {
   values?: Record<string, any>;
 }
 
+// Filter category configuration (sync/indexing)
+interface FilterCategoryConfig {
+  schema?: {
+    fields: FilterSchemaField[];
+  };
+  values?: Record<string, any>;
+  customFields?: FilterCustomField[];
+  customValues?: Record<string, any>;
+}
+
 // Filters configuration interface
 interface ConnectorFiltersConfig {
+  sync?: FilterCategoryConfig;
+  indexing?: FilterCategoryConfig;
   schema?: {
     fields: FilterSchemaField[];
   };
@@ -220,29 +275,116 @@ interface ConnectorConfig {
 
 // Main connector interface matching the app schema
 interface Connector {
-  _key?: string;
+  _key: string;
   name: string;
   type: string;
   appGroup: string;
-  appGroupId: string;
+  appGroupId?: string;
   authType: string;
   appDescription: string;
   appCategories: string[];
   iconPath: string;
   isActive: boolean;
   isConfigured: boolean;
+  isAgentActive: boolean;
+  isAuthenticated?: boolean;
   supportsRealtime: boolean;
+  supportsSync: boolean;
+  supportsAgent: boolean;
+  scope: 'personal' | 'team';
+  createdBy?: string;
+  updatedBy?: string;
   createdAtTimestamp: number;
   updatedAtTimestamp: number;
+  connectorInfo?: string;
 }
+
+/**
+ * Connector registry entry (available connector types)
+ */
+interface ConnectorRegistry {
+  name: string;
+  type: string;
+  appGroup: string;
+  supportedAuthTypes: string[];  // Supported auth types (user selects one during creation)
+  authType?: string;  // Optional: only exists in instance data (from database), not in registry
+  appDescription: string;
+  appCategories: string[];
+  iconPath: string;
+  supportsRealtime: boolean;
+  supportsSync: boolean;
+  supportsAgent: boolean;
+  connectorScopes?: ('personal' | 'team')[];
+  connectorInfo?: string;
+  config: {
+    auth: any;
+    sync: any;
+    filters: any;
+    documentationLinks?: DocumentationLink[];
+  };
+}
+
+interface IndexingStatusStats {
+  NOT_STARTED: number;
+  PAUSED: number;
+  IN_PROGRESS: number;
+  COMPLETED: number;
+  FAILED: number;
+  FILE_TYPE_NOT_SUPPORTED: number;
+  AUTO_INDEX_OFF: number;
+  EMPTY: number;
+  ENABLE_MULTIMODAL_MODELS: number;
+  QUEUED: number;
+  CONNECTOR_DISABLED: number;
+}
+
+interface BasicStats {
+  total: number;
+  indexingStatus: IndexingStatusStats;
+}
+
+interface RecordTypeStats {
+  recordType: string;
+  total: number;
+  indexingStatus: IndexingStatusStats;
+}
+
+// For individual Knowledge Base details
+interface KnowledgeBaseStats {
+  kbId: string;
+  kbName: string;
+  total: number;
+  indexingStatus: IndexingStatusStats;
+  byRecordType: RecordTypeStats[];
+}
+
+// Main connector stats data structure
+interface ConnectorStatsData {
+  orgId: string;
+  origin: 'CONNECTOR';
+  stats: BasicStats;
+  byRecordType: RecordTypeStats[];
+  connectorId: string;
+}
+
+interface ConnectorStatsResponse {
+  success: boolean;
+  message?: string; // Present when success is false
+  data: ConnectorStatsData | null;
+}
+
+type ConnectorToggleType = 'sync' | 'agent';
+
 
 // Export all types
 export type { 
-  Connector, 
-  ConnectorConfig, 
+  Connector,
+  ConnectorConfig,
+  ConnectorRegistry,
   ConnectorAuthConfig,
   ConnectorSyncConfig,
   ConnectorFiltersConfig,
+  FilterCategoryConfig,
   ScheduledConfig,
   WebhookConfig,
   RealtimeConfig,
@@ -255,5 +397,11 @@ export type {
   FieldValidation,
   BaseField,
   ConditionalDisplayRule,
-  ConditionalDisplayConfig
+  ConditionalDisplayConfig,
+  ConnectorStatsData,
+  ConnectorStatsResponse,
+  ConnectorToggleType,
+  FilterOption,
+  FilterOptionsResponse,
+  OptionSourceType
 };

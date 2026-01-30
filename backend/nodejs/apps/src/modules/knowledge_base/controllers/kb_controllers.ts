@@ -1,4 +1,5 @@
 import { v4 as uuidv4 } from 'uuid';
+import * as crypto from 'crypto';
 import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
@@ -35,13 +36,113 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { NotificationService } from '../../notification/service/notification.service';
+import {
+  safeParsePagination,
+} from '../../../utils/safe-integer';
+import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { FileBufferInfo } from '../../../libs/middlewares/file_processor/fp.interface';
 const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
+/**
+ * Get Knowledge Hub nodes (unified browse API)
+ * Supports browsing KBs, apps, folders, record groups, and records
+ */
+export const getKnowledgeHubNodes =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError('User not authenticated');
+      }
+
+      logger.info('Getting knowledge hub nodes', {
+        userId,
+        orgId,
+        query: req.query,
+      });
+
+      // Build query string from request query params
+      const queryParams = new URLSearchParams();
+
+      // Map query params (camelCase to snake_case for Python backend)
+      const paramMapping: { [key: string]: string } = {
+        parentId: 'parent_id',
+        view: 'view',
+        page: 'page',
+        limit: 'limit',
+        sortBy: 'sort_by',
+        sortOrder: 'sort_order',
+        q: 'q',
+        nodeTypes: 'node_types',
+        recordTypes: 'record_types',
+        origins: 'origins',
+        connectorIds: 'connector_ids',
+        kbIds: 'kb_ids',
+        indexingStatus: 'indexing_status',
+        createdAt: 'created_at',
+        updatedAt: 'updated_at',
+        size: 'size',
+        include: 'include',
+      };
+
+      for (const [key, snakeKey] of Object.entries(paramMapping)) {
+        const value = req.query[key];
+        if (value) {
+          queryParams.append(snakeKey, value as string);
+        }
+      }
+
+      if (req.query.onlyContainers !== undefined) {
+        queryParams.append(
+          'only_containers',
+          String(req.query.onlyContainers),
+        );
+      }
+
+      const { parentType, parentId } = req.params;
+      let url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes`;
+
+      if (parentType && parentId) {
+        url += `/${parentType}/${parentId}`;
+      }
+
+      url += `?${queryParams.toString()}`;
+
+      const response = await executeConnectorCommand(
+        url,
+        HttpMethod.GET,
+        req.headers as Record<string, string>, // Forwards auth headers
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Getting knowledge hub nodes',
+        'Failed to get nodes',
+      );
+    } catch (error: any) {
+      logger.error('Error getting knowledge hub nodes', {
+        error: error.message,
+        stack: error.stack,
+      });
+      const handleError = handleBackendError(
+        error,
+        'get knowledge hub nodes',
+      );
+      next(handleError);
+    }
+  };
+
 // Types and helpers for active connector validation
 interface ConnectorInfo {
-  name: string;
+  _key: string;
 }
 
 interface ActiveConnectorsResponse {
@@ -52,7 +153,7 @@ const normalizeAppName = (value: string): string =>
   value.replace(' ', '').toLowerCase();
 
 const validateActiveConnector = async (
-  appName: string,
+  connectorId: string,
   appConfig: AppConfig,
   headers: Record<string, string>,
 ): Promise<void> => {
@@ -68,13 +169,16 @@ const validateActiveConnector = async (
 
   const data = activeAppsResponse.data as ActiveConnectorsResponse;
   const connectors = data?.connectors || [];
-  const allowedApps = connectors.map((connector) =>
-    normalizeAppName(connector.name),
-  );
 
-  if (!allowedApps.includes(normalizeAppName(appName))) {
-    throw new BadRequestError(`Connector ${appName} not allowed`);
+  const isAllowed = connectors.some((connector) => connector._key === connectorId);
+
+  if (!isAllowed) {
+    throw new BadRequestError(`Connector ${connectorId} not allowed`);
   }
+
+  logger.debug('Connector validation successful', {
+    connectorId,
+  });
 };
 
 export const createKnowledgeBase =
@@ -90,6 +194,12 @@ export const createKnowledgeBase =
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
       logger.info(`Creating knowledge base '${kbName}' for user ${userId}`);
@@ -173,12 +283,43 @@ export const listKnowledgeBases =
         throw new UnauthorizedError('User authentication required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Additional validation for search parameter (defense in depth)
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const permissions = req.query.permissions
         ? String(req.query.permissions).split(',')
         : undefined;
@@ -186,14 +327,6 @@ export const listKnowledgeBases =
       const sortOrder = req.query.sortOrder
         ? String(req.query.sortOrder)
         : 'asc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       // Validate sort parameters
       const validSortFields = [
@@ -270,7 +403,7 @@ export const listKnowledgeBases =
       );
 
       // Log successful retrieval
-      logger.info('Knowledge bases retrieved successfully');
+      logger.debug('Knowledge bases retrieved successfully');
     } catch (error: any) {
       logger.error('Error listing knowledge bases', {
         error: error.message,
@@ -296,6 +429,12 @@ export const updateKnowledgeBase =
 
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate kbName for XSS and format specifiers
+      if (kbName) {
+        validateNoXSS(kbName, 'Knowledge base name');
+        validateNoFormatSpecifiers(kbName, 'Knowledge base name');
       }
 
       logger.info(`Updating knowledge base ${kbId}`);
@@ -373,6 +512,12 @@ export const createRootFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in KB ${kbId}`);
 
       const response = await executeConnectorCommand(
@@ -419,6 +564,12 @@ export const createNestedFolder =
         throw new UnauthorizedError('User authentication required');
       }
 
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
+      }
+
       logger.info(`Creating folder '${folderName}' in folder ${folderId}`);
 
       const response = await executeConnectorCommand(
@@ -462,6 +613,12 @@ export const updateFolder =
       const { folderName } = req.body;
       if (!userId) {
         throw new UnauthorizedError('User authentication required');
+      }
+
+      // Validate folderName for XSS and format specifiers
+      if (folderName) {
+        validateNoXSS(folderName, 'Folder name');
+        validateNoFormatSpecifiers(folderName, 'Folder name');
       }
 
       logger.info(`Updating folder ${folderId} in KB ${kbId}`);
@@ -535,7 +692,11 @@ export const deleteFolder =
     }
   };
 
-//  Upload records in KB along with folder creation and folder record creation new controller
+/**
+ * Upload records to Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToKB =
   (
     _recordRelationService: RecordRelationService,
@@ -549,13 +710,11 @@ export const uploadRecordsToKB =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const files = req.body.fileBuffers;
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
-      const { kbId } = req.params; // should be sent in params instead of req.body
-      const filePaths = req.body.file_paths || [];
-      const lastModifiedTimes = req.body.last_modified || [];
-      const isVersioned = req.body?.isVersioned || true;
+      const { kbId } = req.params;
+      const isVersioned = req.body?.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -564,24 +723,15 @@ export const uploadRecordsToKB =
         );
       }
 
-      if (!kbId || !files || files.length === 0) {
+      if (!kbId || fileBuffers.length === 0) {
         throw new BadRequestError('Knowledge Base ID and files are required');
       }
 
-      if (
-        files.length !== filePaths.length ||
-        files.length !== lastModifiedTimes.length
-      ) {
-        throw new BadRequestError(
-          'Files, paths, and timestamps arrays must have the same length',
-        );
-      }
-
-      logger.info('📦 Processing optimized upload', {
-        totalFiles: files.length,
+      logger.info('Processing file upload to KB', {
+        totalFiles: fileBuffers.length,
         kbId,
         userId,
-        samplePaths: filePaths.slice(0, 3),
+        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
       const currentTime = Date.now();
@@ -595,12 +745,8 @@ export const uploadRecordsToKB =
         error: string;
       }> = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = filePaths[i];
-        const lastModified = parseInt(lastModifiedTimes[i]) || currentTime;
-
-        const { originalname, mimetype, size } = file;
+      for (const file of fileBuffers) {
+        const { originalname, mimetype, size, filePath, lastModified } = file;
 
         // Extract filename from path
         const fileName = filePath.includes('/')
@@ -612,7 +758,8 @@ export const uploadRecordsToKB =
           : null;
 
         // Use correct MIME type mapping instead of browser detection
-        const correctMimeType = (extension && getMimeType(extension)) || mimetype;
+        const correctMimeType =
+          (extension && getMimeType(extension)) || mimetype;
 
         // Generate unique ID for the record
         const key: string = uuidv4();
@@ -677,7 +824,7 @@ export const uploadRecordsToKB =
       }
 
       logger.info('✅ Placeholder creation completed', {
-        totalFiles: files.length,
+        totalFiles: fileBuffers.length,
         successful: placeholderResults.length,
         failed: failedFiles.length,
         uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
@@ -729,7 +876,7 @@ export const uploadRecordsToKB =
       if (placeholderResults.length === 0) {
         res.status(200).json({
           message: 'All files failed to upload',
-          totalFiles: files.length,
+          totalFiles: fileBuffers.length,
           status: 'failed',
           records: [],
           failedFiles: failedFiles.map((ff) => ({
@@ -747,6 +894,8 @@ export const uploadRecordsToKB =
         const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
 
         // Create record structure matching the format expected by frontend
+        // Create record structure
+        const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
@@ -760,10 +909,12 @@ export const uploadRecordsToKB =
           sourceLastModifiedTimestamp: validLastModified,
           isDeleted: false,
           isArchived: false,
-          indexingStatus: INDEXING_STATUS.NOT_STARTED,
+          indexingStatus: INDEXING_STATUS.QUEUED,
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: connectorId,
+          sizeInBytes: size,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -791,7 +942,7 @@ export const uploadRecordsToKB =
         message: failedFiles.length > 0 
           ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
           : 'Upload initiated successfully',
-        totalFiles: files.length,
+        totalFiles: fileBuffers.length,
         successfulFiles: placeholderResults.length,
         failedFiles: failedFiles.length,
         status: 'processing',
@@ -848,7 +999,7 @@ export const uploadRecordsToKB =
         });
       });
     } catch (error: any) {
-      logger.error('❌ Record upload failed', {
+      logger.error('Record upload failed', {
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,
@@ -858,6 +1009,11 @@ export const uploadRecordsToKB =
     }
   };
 
+/**
+ * Upload records to a specific folder within a Knowledge Base.
+ * Files are processed by file processor middleware which attaches
+ * filePath and lastModified to each file buffer.
+ */
 export const uploadRecordsToFolder =
   (
     _recordRelationService: RecordRelationService,
@@ -871,13 +1027,11 @@ export const uploadRecordsToFolder =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const files = req.body.fileBuffers;
+      const fileBuffers: FileBufferInfo[] = req.body.fileBuffers || [];
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const { kbId, folderId } = req.params;
-      const filePaths = req.body.file_paths || [];
-      const lastModifiedTimes = req.body.last_modified || [];
-      const isVersioned = req.body?.isVersioned || true;
+      const isVersioned = req.body?.isVersioned ?? true;
 
       // Validation
       if (!userId || !orgId) {
@@ -886,27 +1040,18 @@ export const uploadRecordsToFolder =
         );
       }
 
-      if (!kbId || !folderId || !files || files.length === 0) {
+      if (!kbId || !folderId || fileBuffers.length === 0) {
         throw new BadRequestError(
           'Knowledge Base ID, Folder ID, and files are required',
         );
       }
 
-      if (
-        files.length !== filePaths.length ||
-        files.length !== lastModifiedTimes.length
-      ) {
-        throw new BadRequestError(
-          'Files, paths, and timestamps arrays must have the same length',
-        );
-      }
-
-      logger.info('📦 Processing folder upload', {
-        totalFiles: files.length,
+      logger.info('Processing file upload to folder', {
+        totalFiles: fileBuffers.length,
         kbId,
         folderId,
         userId,
-        samplePaths: filePaths.slice(0, 3),
+        samplePaths: fileBuffers.slice(0, 3).map((f) => f.filePath),
       });
 
       const currentTime = Date.now();
@@ -920,12 +1065,8 @@ export const uploadRecordsToFolder =
         error: string;
       }> = [];
 
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const filePath = filePaths[i];
-        const lastModified = parseInt(lastModifiedTimes[i]) || currentTime;
-
-        const { originalname, mimetype, size } = file;
+      for (const file of fileBuffers) {
+        const { originalname, mimetype, size, filePath, lastModified } = file;
 
         // Extract filename from path
         const fileName = filePath.includes('/')
@@ -937,7 +1078,8 @@ export const uploadRecordsToFolder =
           : null;
 
         // Use correct MIME type mapping instead of browser detection
-        const correctMimeType = extension ? getMimeType(extension) : mimetype;
+        const correctMimeType =
+          (extension && getMimeType(extension)) || mimetype;
 
         // Generate unique ID for the record
         const key: string = uuidv4();
@@ -1002,7 +1144,7 @@ export const uploadRecordsToFolder =
       }
 
       logger.info('✅ Placeholder creation completed', {
-        totalFiles: files.length,
+        totalFiles: fileBuffers.length,
         successful: placeholderResults.length,
         failed: failedFiles.length,
         uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
@@ -1056,7 +1198,7 @@ export const uploadRecordsToFolder =
       if (placeholderResults.length === 0) {
         res.status(200).json({
           message: 'All files failed to upload',
-          totalFiles: files.length,
+          totalFiles: fileBuffers.length,
           status: 'failed',
           records: [],
           failedFiles: failedFiles.map((ff) => ({
@@ -1074,6 +1216,8 @@ export const uploadRecordsToFolder =
         const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
 
         // Create record structure matching the format expected by frontend
+        // Create record structure
+        const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
@@ -1087,10 +1231,11 @@ export const uploadRecordsToFolder =
           sourceLastModifiedTimestamp: validLastModified,
           isDeleted: false,
           isArchived: false,
-          indexingStatus: INDEXING_STATUS.NOT_STARTED,
+          indexingStatus: INDEXING_STATUS.QUEUED,
           version: 1,
           webUrl: webUrl,
           mimeType: correctMimeType,
+          connectorId: connectorId,
         };
 
         const fileRecord: IFileRecordDocument = {
@@ -1118,7 +1263,7 @@ export const uploadRecordsToFolder =
         message: failedFiles.length > 0 
           ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
           : 'Upload initiated successfully',
-        totalFiles: files.length,
+        totalFiles: fileBuffers.length,
         successfulFiles: placeholderResults.length,
         failedFiles: failedFiles.length,
         status: 'processing',
@@ -1208,7 +1353,7 @@ export const updateRecord =
 
       // Check if there's a file in the request
       const hasFileBuffer = req.body.fileBuffer && req.body.fileBuffer.buffer;
-      let originalname, mimetype, size, extension, lastModified;
+      let originalname, mimetype, size, extension, lastModified, sha256Hash;
 
       if (hasFileBuffer) {
         ({ originalname, mimetype, size, lastModified } = req.body.fileBuffer);
@@ -1219,11 +1364,21 @@ export const updateRecord =
               .substring(originalname.lastIndexOf('.') + 1)
               .toLowerCase()
           : null;
+        // Calculate SHA-256 checksum for security
+        const buffer = req.body.fileBuffer.buffer;
+        sha256Hash = crypto.createHash('sha256').update(buffer).digest('hex');
       }
 
       if (!recordName) {
         recordName = originalname;
         logger.info('No custom name provided');
+      }
+
+      // Validate recordName for XSS and format specifiers
+      // This validation happens after we've determined the final recordName value
+      if (recordName) {
+        validateNoXSS(recordName, 'Record name');
+        validateNoFormatSpecifiers(recordName, 'Record name');
       }
 
       // Prepare update data with timestamp
@@ -1240,13 +1395,18 @@ export const updateRecord =
           size,
           extension,
           lastModified,
+          sha256Hash,
         };
 
         // Get filename without extension to use as record name
         if (originalname && originalname.includes('.')) {
           const lastDotIndex = originalname.lastIndexOf('.');
           if (lastDotIndex > 0) {
-            updatedData.recordName = originalname.substring(0, lastDotIndex);
+            const fileNameWithoutExt = originalname.substring(0, lastDotIndex);
+            // Validate the filename (without extension) for XSS
+            validateNoXSS(fileNameWithoutExt, 'Record name');
+            validateNoFormatSpecifiers(fileNameWithoutExt, 'Record name');
+            updatedData.recordName = fileNameWithoutExt;
             logger.info('Setting record name from file', {
               recordName: updatedData.recordName,
               originalFileName: originalname,
@@ -1293,15 +1453,15 @@ export const updateRecord =
       let fileUploaded = false;
       let storageDocumentId = null;
 
-      if (hasFileBuffer && updateResult?.record) {
+      if (hasFileBuffer && updateResult) {
         // Use the externalRecordId as the storageDocumentId
-        storageDocumentId = updateResult.record.externalRecordId;
+        storageDocumentId = updateResult.externalRecordId;
 
         // Check if we have a valid externalRecordId to use
         if (!storageDocumentId) {
           logger.error('No external record ID found after database update', {
             recordId,
-            updatedRecord: updateResult?.record._key,
+            updatedRecord: updateResult?._key,
           });
           throw new BadRequestError(
             'Cannot update file: No external record ID found for this record',
@@ -1316,7 +1476,7 @@ export const updateRecord =
           mimeType: mimetype,
           extension,
           storageDocumentId: storageDocumentId,
-          version: updateResult?.record.version,
+          version: updateResult?.version,
         });
 
         try {
@@ -1333,18 +1493,21 @@ export const updateRecord =
           logger.info('File uploaded to storage successfully', {
             recordId,
             storageDocumentId,
-            version: updateResult?.record.version,
+            version: updateResult?.version,
           });
 
           fileUploaded = true;
         } catch (storageError: any) {
+          const is404 = storageError?.response?.status === 404;
+          
           logger.error(
             'Failed to upload file to storage after database update',
             {
               recordId,
               storageDocumentId: storageDocumentId,
               error: storageError.message,
-              version: updateResult.record.version,
+              version: updateResult.version,
+              is404,
             },
           );
 
@@ -1355,9 +1518,17 @@ export const updateRecord =
             {
               recordId,
               storageDocumentId,
-              databaseVersion: updateResult.record.version,
+              databaseVersion: updateResult.version,
             },
           );
+
+          // Provide specific error message for 404 (file not found in storage)
+          if (is404) {
+            throw new InternalServerError(
+              `File storage document not found. The original file may have been deleted` +
+              `Please delete this record and re-upload the file.`,
+            );
+          }
 
           throw new InternalServerError(
             `Record updated but file upload failed: ${storageError.message}. Please retry the file upload.`,
@@ -1373,7 +1544,7 @@ export const updateRecord =
         fileUploaded,
         newFileName: fileUploaded ? originalname : undefined,
         updatedFields: Object.keys(updatedData),
-        version: updateResult.record?.version,
+        version: updateResult?.version,
         requestId: req.context?.requestId,
       });
 
@@ -1382,7 +1553,7 @@ export const updateRecord =
         message: fileUploaded
           ? 'Record updated with new file version'
           : 'Record updated successfully',
-        record: updateResult.record,
+        record: updateResult,
         fileUploaded,
         meta: {
           requestId: req.context?.requestId,
@@ -1431,12 +1602,43 @@ export const getKBContent =
         throw new BadRequestError('Knowledge Base ID is required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1450,13 +1652,29 @@ export const getKBContent =
         ? String(req.query.indexingStatus).split(',')
         : undefined;
 
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
+      // Parse date filters with safe integer validation
+      let dateFrom: number | undefined;
+      let dateTo: number | undefined;
+      if (req.query.dateFrom) {
+        try {
+          dateFrom = parseInt(String(req.query.dateFrom), 10);
+          if (isNaN(dateFrom) || dateFrom < 0) {
+            throw new BadRequestError('Invalid dateFrom parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateFrom parameter');
+        }
+      }
+      if (req.query.dateTo) {
+        try {
+          dateTo = parseInt(String(req.query.dateTo), 10);
+          if (isNaN(dateTo) || dateTo < 0) {
+            throw new BadRequestError('Invalid dateTo parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateTo parameter');
+        }
+      }
 
       // Sorting parameters
       const sortBy = req.query.sortBy
@@ -1469,14 +1687,6 @@ export const getKBContent =
         sortOrderParam === 'asc' || sortOrderParam === 'desc'
           ? sortOrderParam
           : 'desc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       logger.info('Getting KB records', {
         kbId,
@@ -1587,12 +1797,43 @@ export const getFolderContents =
         throw new BadRequestError('Knowledge Base ID is required');
       }
 
-      // Extract and parse query parameters
-      const page = req.query.page ? parseInt(String(req.query.page), 10) : 1;
-      const limit = req.query.limit
-        ? parseInt(String(req.query.limit), 10)
-        : 20;
+      // Extract and parse query parameters with safe integer validation
+      let page: number;
+      let limit: number;
+      try {
+        const pagination = safeParsePagination(
+          req.query.page as string | undefined,
+          req.query.limit as string | undefined,
+          1,
+          20,
+          100,
+        );
+        page = pagination.page;
+        limit = pagination.limit;
+      } catch (error: any) {
+        throw new BadRequestError(
+          error.message || 'Invalid pagination parameters',
+        );
+      }
+
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1606,13 +1847,29 @@ export const getFolderContents =
         ? String(req.query.indexingStatus).split(',')
         : undefined;
 
-      // Parse date filters
-      const dateFrom = req.query.dateFrom
-        ? parseInt(String(req.query.dateFrom), 10)
-        : undefined;
-      const dateTo = req.query.dateTo
-        ? parseInt(String(req.query.dateTo), 10)
-        : undefined;
+      // Parse date filters with safe integer validation
+      let dateFrom: number | undefined;
+      let dateTo: number | undefined;
+      if (req.query.dateFrom) {
+        try {
+          dateFrom = parseInt(String(req.query.dateFrom), 10);
+          if (isNaN(dateFrom) || dateFrom < 0) {
+            throw new BadRequestError('Invalid dateFrom parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateFrom parameter');
+        }
+      }
+      if (req.query.dateTo) {
+        try {
+          dateTo = parseInt(String(req.query.dateTo), 10);
+          if (isNaN(dateTo) || dateTo < 0) {
+            throw new BadRequestError('Invalid dateTo parameter');
+          }
+        } catch (error: any) {
+          throw new BadRequestError('Invalid dateTo parameter');
+        }
+      }
 
       // Sorting parameters
       const sortBy = req.query.sortBy
@@ -1625,14 +1882,6 @@ export const getFolderContents =
         sortOrderParam === 'asc' || sortOrderParam === 'desc'
           ? sortOrderParam
           : 'desc';
-
-      // Validate pagination parameters
-      if (page < 1) {
-        throw new BadRequestError('Page must be greater than 0');
-      }
-      if (limit < 1 || limit > 100) {
-        throw new BadRequestError('Limit must be between 1 and 100');
-      }
 
       logger.info('Getting KB records', {
         kbId,
@@ -1744,6 +1993,23 @@ export const getAllRecords =
         ? parseInt(String(req.query.limit), 10)
         : 20;
       const search = req.query.search ? String(req.query.search) : undefined;
+      
+      // Validate search parameter for XSS and format specifiers
+      if (search) {
+        try {
+          validateNoXSS(search, 'search parameter');
+          validateNoFormatSpecifiers(search, 'search parameter');
+          
+          if (search.length > 1000) {
+            throw new BadRequestError('Search parameter too long (max 1000 characters)');
+          }
+        } catch (error: any) {
+          throw new BadRequestError(
+            error.message || 'Search parameter contains potentially dangerous content'
+          );
+        }
+      }
+      
       const recordTypes = req.query.recordTypes
         ? String(req.query.recordTypes).split(',')
         : undefined;
@@ -1795,7 +2061,7 @@ export const getAllRecords =
         throw new BadRequestError('Limit must be between 1 and 100');
       }
 
-      logger.info('Getting all records for user', {
+      logger.debug('Getting all records for user', {
         userId,
         orgId,
         page,
@@ -1871,7 +2137,7 @@ export const getAllRecords =
       const result = response.data as any;
 
       // Log successful retrieval
-      logger.info('All records retrieved successfully', {
+      logger.debug('All records retrieved successfully', {
         totalRecords: result.pagination?.totalCount || 0,
         page: result.pagination?.page || page,
         userId,
@@ -1978,6 +2244,7 @@ export const reindexRecord =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
+      const { depth = 0, force = false } = req.body || {};
 
       // Validate user authentication
       if (!userId || !orgId) {
@@ -1986,11 +2253,12 @@ export const reindexRecord =
         );
       }
 
-      // Call the Python service to get record
+      // Call the Python service to reindex record
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/records/${recordId}/reindex`,
         HttpMethod.POST,
         req.headers as Record<string, string>,
+        { depth, force },
       );
 
       handleConnectorResponse(
@@ -2000,8 +2268,8 @@ export const reindexRecord =
         'Record not reindexed',
       );
 
-      // Log successful retrieval
-      logger.info('Record reindexed successfully');
+      // Log successful reindex
+      logger.info('Record reindexed successfully', { force });
     } catch (error: any) {
       logger.error('Error reindexing record', {
         recordId: req.params.recordId,
@@ -2009,7 +2277,54 @@ export const reindexRecord =
       });
       const handleError = handleBackendError(error, 'reindex record');
       next(handleError);
-      return; // Added return statement
+      return;
+    }
+  };
+
+export const reindexRecordGroup =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordGroupId } = req.params as { recordGroupId: string };
+      const { userId, orgId } = req.user || {};
+      const { depth = 0, force = false } = req.body || {};
+
+      // Validate user authentication
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      // Call the Python service to reindex record group
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/record-groups/${recordGroupId}/reindex`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { depth, force },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Record group not found',
+        'Record group not reindexed',
+      );
+
+      // Log successful reindex
+      logger.info('Record group reindexed successfully', {
+        recordGroupId,
+        depth,
+        force,
+      });
+    } catch (error: any) {
+      logger.error('Error reindexing record group', {
+        recordGroupId: req.params.recordGroupId,
+        error,
+      });
+      const handleError = handleBackendError(error, 'reindex record group');
+      next(handleError);
+      return;
     }
   };
 
@@ -2071,26 +2386,30 @@ export const createKBPermission =
         throw new BadRequestError('User IDs or team IDs are required');
       }
 
-      if (!role) {
-        throw new BadRequestError('Role is required');
+      // Role is required only if users are provided (teams don't need roles)
+      if (userIds.length > 0 && !role) {
+        throw new BadRequestError('Role is required when adding users');
       }
 
-      const validRoles = [
-        'OWNER',
-        'ORGANIZER',
-        'FILEORGANIZER',
-        'WRITER',
-        'COMMENTER',
-        'READER',
-      ];
-      if (!validRoles.includes(role)) {
-        throw new BadRequestError(
-          `Invalid role. Must be one of: ${validRoles.join(', ')}`,
-        );
+      // Validate role only if it's provided (for users)
+      if (role) {
+        const validRoles = [
+          'OWNER',
+          'ORGANIZER',
+          'FILEORGANIZER',
+          'WRITER',
+          'COMMENTER',
+          'READER',
+        ];
+        if (!validRoles.includes(role)) {
+          throw new BadRequestError(
+            `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+          );
+        }
       }
 
       logger.info(
-        `Creating ${role} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
+        `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
         {
           userIds:
             userIds.length > 5
@@ -2100,20 +2419,25 @@ export const createKBPermission =
             teamIds.length > 5
               ? `${teamIds.slice(0, 5).join(', ')} and ${teamIds.length - 5} more`
               : teamIds.join(', '),
-          role,
+          role: role || 'N/A (team access)',
         },
       );
 
       try {
+        const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
+          userIds: userIds,
+          teamIds: teamIds,
+        };
+        // Only include role if it's provided (for users)
+        if (role) {
+          payload.role = role;
+        }
+
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
           HttpMethod.POST,
           req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-            role: role,
-          },
+          payload,
         );
 
         if (response.statusCode !== 200) {
@@ -2126,7 +2450,7 @@ export const createKBPermission =
           kbId,
           grantedCount: permissionResult.grantedCount,
           updatedCount: permissionResult.updatedCount,
-          role,
+          role: role || 'N/A (team access)',
         });
 
         res.status(201).json({
@@ -2460,17 +2784,17 @@ export const getConnectorStats =
         );
       }
 
-      if (!req.params.connector) {
-        throw new BadRequestError('Connector is required');
+      if (!req.params.connectorId) {
+        throw new BadRequestError('Connector ID is required');
       }
 
       try {
         // Call the Python service to get record
 
-        let queryParams = new URLSearchParams();
+        const queryParams = new URLSearchParams();
 
         queryParams.append('org_id', orgId);
-        queryParams.append('connector', req.params.connector);
+        queryParams.append('connector_id', req.params.connectorId);
         const response = await executeConnectorCommand(
           `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,
           HttpMethod.GET,
@@ -2541,14 +2865,20 @@ export const getRecordBuffer =
     try {
       const { recordId } = req.params as { recordId: string };
       const { userId, orgId } = req.user || {};
-
+      const { convertTo } = req.query as { convertTo: string };
       if (!userId || !orgId) {
         throw new BadRequestError('User authentication is required');
       }
 
+      const queryParams = new URLSearchParams();
+      if (convertTo) {
+        logger.info('Converting file to ', { convertTo });
+        queryParams.append('convertTo', convertTo);
+      }
+
       // Make request to FastAPI backend
       const response = await axios.get(
-        `${connectorUrl}/api/v1/stream/record/${recordId}`,
+        `${connectorUrl}/api/v1/stream/record/${recordId}?${queryParams.toString()}`,
         {
           responseType: 'stream',
           headers: {
@@ -2606,19 +2936,20 @@ export const getRecordBuffer =
     }
   };
 
-export const reindexAllRecords =
+export const reindexFailedRecords =
   (recordRelationService: RecordRelationService, appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const app = req.body.app;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        app,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2627,10 +2958,11 @@ export const reindexAllRecords =
         userId,
         orgId,
         app: normalizeAppName(app),
+        connectorId,
       };
 
       const reindexResponse =
-        await recordRelationService.reindexAllRecords(reindexPayload);
+        await recordRelationService.reindexFailedRecords(reindexPayload);
 
       res.status(200).json({
         reindexResponse,
@@ -2638,7 +2970,7 @@ export const reindexAllRecords =
 
       return; // Added return statement
     } catch (error: any) {
-      logger.error('Error re indexing all records', {
+      logger.error('Error re indexing failed records', {
         error,
       });
       next(error);
@@ -2653,12 +2985,13 @@ export const resyncConnectorRecords =
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
+      const connectorId = req.body.connectorId;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
 
       await validateActiveConnector(
-        connectorName,
+        connectorId,
         appConfig,
         req.headers as Record<string, string>,
       );
@@ -2667,6 +3000,7 @@ export const resyncConnectorRecords =
         userId,
         orgId,
         connectorName: normalizeAppName(connectorName),
+        connectorId,
       };
 
       const resyncConnectorResponse =
@@ -2685,5 +3019,55 @@ export const resyncConnectorRecords =
       });
       next(error);
       return; // Added return statement
+    }
+  };
+
+/**
+ * Move a record (file or folder) to a different location within the same KB.
+ */
+export const moveRecord =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { userId } = req.user || {};
+      const { kbId, recordId } = req.params;
+      const { newParentId } = req.body;
+
+      if (!userId) {
+        throw new UnauthorizedError('User authentication required');
+      }
+
+      logger.info(
+        `Moving record ${recordId} to ${newParentId ? `folder ${newParentId}` : 'KB root'} in KB ${kbId}`,
+      );
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/record/${recordId}/move`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        { newParentId },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Moving record',
+        'Record not found',
+      );
+    } catch (error: any) {
+      logger.error('Error moving record', {
+        error: error.message,
+        kbId: req.params.kbId,
+        recordId: req.params.recordId,
+        userId: req.user?.userId,
+        status: error.response?.status,
+        data: error.response?.data,
+      });
+      const handleError = handleBackendError(error, 'move record');
+      next(handleError);
     }
   };

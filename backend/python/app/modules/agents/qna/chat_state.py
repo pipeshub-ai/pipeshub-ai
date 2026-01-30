@@ -1,10 +1,11 @@
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
-from langchain.chat_models.base import BaseChatModel
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
+from app.config.configuration_service import ConfigurationService
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -21,12 +22,14 @@ class ChatState(TypedDict):
     retrieval_service: RetrievalService
     arango_service: BaseArangoService
     reranker_service: RerankerService
+    config_service: ConfigurationService
 
     query: str
     limit: int # Number of chunks to retrieve from the vector database
     messages: List[BaseMessage]  # Changed to BaseMessage for tool calling
     previous_conversations: List[Dict[str, str]]
     quick_mode: bool  # Renamed from decompose_query to avoid conflict
+    chat_mode: Optional[str]  # "quick", "standard", "analysis", "deep_research", "creative", "precise"
     filters: Optional[Dict[str, Any]]
     retrieval_mode: str
 
@@ -57,12 +60,34 @@ class ChatState(TypedDict):
     system_prompt: Optional[str]  # User-defined system prompt
     apps: Optional[List[str]]  # List of app IDs to search in
     kb: Optional[List[str]]  # List of KB IDs to search in
+    connector_instances: Optional[List[Dict[str, Any]]]  # List of connector instances with id, type, name
     tools: Optional[List[str]]  # List of tool names to enable for this agent
     output_file_path: Optional[str]  # Optional file path for saving responses
+    tool_to_connector_map: Optional[Dict[str, str]]  # Mapping from app_name (tool) to connector instance ID
 
     # Tool calling specific fields - no ToolExecutor dependency
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
     tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
+    tool_records: Optional[List[Dict[str, Any]]]  # Full record data from tools (for citation normalization)
+
+    # Planner-based execution fields
+    execution_plan: Optional[Dict[str, Any]]  # Planned execution from planner node
+    planned_tool_calls: Optional[List[Dict[str, Any]]]  # List of planned tool calls to execute
+    completion_data: Optional[Dict[str, Any]]  # Final completion data with citations
+
+    # ⚡ PERFORMANCE: Cache fields (must be in TypedDict to persist between nodes!)
+    _cached_agent_tools: Optional[List[Any]]  # Cached list of tool wrappers
+    _cached_blocked_tools: Optional[Dict[str, int]]  # Cached dict of blocked tools
+    _tool_instance_cache: Optional[Dict[str, Any]]  # Cached tool instances
+    _performance_tracker: Optional[Any]  # Performance tracking object
+    _cached_llm_with_tools: Optional[Any]  # ⚡ NUCLEAR: Cached LLM with bound tools (eliminates 1-2s overhead!)
+
+    # Additional tracking fields
+    successful_tool_count: Optional[int]  # Count of successful tools
+    failed_tool_count: Optional[int]  # Count of failed tools
+    tool_retry_count: Optional[Dict[str, int]]  # Retry count per tool
+    available_tools: Optional[List[str]]  # List of available tool names
+    performance_summary: Optional[Dict[str, Any]]  # Performance summary data
     all_tool_results: Optional[List[Dict[str, Any]]]  # All tool results for the session
 
     # Enhanced tool result tracking for better LLM context
@@ -85,6 +110,52 @@ class ChatState(TypedDict):
     available_tools: Optional[List[str]]  # List of all available tools from registry
     tool_configs: Optional[Dict[str, Any]]  # Tool configurations (Slack tokens, etc.)
     registry_tool_instances: Optional[Dict[str, Any]]  # Cached tool instances
+
+    # Knowledge retrieval processing fields
+    virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]]  # Mapping for citations
+    blob_store: Optional[Any]  # BlobStorage instance for processing results
+    is_multimodal_llm: Optional[bool]  # Whether LLM supports multimodal content
+
+    # Reflection and retry fields (for intelligent error recovery)
+    reflection: Optional[Dict[str, Any]]  # Reflection analysis result from reflect_node
+    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix
+    retry_count: int  # Current retry count (starts at 0)
+    max_retries: int  # Maximum retries allowed (default 1 for speed)
+    is_retry: bool  # Whether this is a retry iteration
+    execution_errors: Optional[List[Dict[str, Any]]]  # Error details for retry context
+
+def _build_tool_to_connector_map(connector_instances: List[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Build a mapping from app_name (connector type) to connector instance ID.
+
+    Maps ALL connector types (both 'knowledge' and 'action' categories) to their
+    instance IDs for use by tools.
+
+    Args:
+        connector_instances: List of connector instances with id, type, name, category
+
+    Returns:
+        Dictionary mapping app_name (type) to connector instance ID
+    """
+    if not connector_instances:
+        return {}
+
+    tool_to_connector = {}
+    for instance in connector_instances:
+        if isinstance(instance, dict):
+            connector_id = instance.get("id")
+            connector_type = instance.get("type")
+
+            if connector_id and connector_type:
+                # Map connector type (e.g., "SLACK", "JIRA") to connector instance ID
+                # Normalize the type to lowercase for consistent matching
+                normalized_type = connector_type.replace(" ", "").lower()
+                tool_to_connector[normalized_type] = connector_id
+                # Also map the original type (case-sensitive) for flexibility
+                tool_to_connector[connector_type] = connector_id
+
+    return tool_to_connector
+
 
 def cleanup_state_after_retrieval(state: ChatState) -> None:
     """
@@ -129,7 +200,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, arango_service: BaseArangoService,
-                        reranker_service: RerankerService, org_info: Dict[str, Any] = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, org_info: Dict[str, Any] = None) -> ChatState:
     """Build the initial state from the chat query and user info"""
 
     # Get user-defined system prompt or use default
@@ -143,9 +214,11 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     filters = chat_query.get("filters", {})
     apps = filters.get("apps", None)
     kb = filters.get("kb", None)
+    connector_instances = filters.get("connectors", None)  # List of dicts with id, type, name
 
     logger.debug(f"apps: {apps}")
     logger.debug(f"kb: {kb}")
+    logger.debug(f"connector_instances: {connector_instances}")
     logger.debug(f"tools: {tools}")
     logger.debug(f"output_file_path: {output_file_path}")
 
@@ -153,10 +226,11 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "query": chat_query.get("query", ""),
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
-        "previous_conversations": chat_query.get("previousConversations", []),
+        "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
         "quick_mode": chat_query.get("quickMode", False),  # Renamed
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
+        "chat_mode": chat_query.get("chatMode", "quick"),
 
         # Query analysis (will be populated by analyze_query_node)
         "query_analysis": None,
@@ -185,18 +259,26 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
         "reranker_service": reranker_service,
+        "config_service": config_service,
 
         # Enhanced features
         "system_prompt": system_prompt,
         "apps": apps,
         "kb": kb,
+        "connector_instances": connector_instances,
         "tools": tools,
         "output_file_path": output_file_path,
+        "tool_to_connector_map": _build_tool_to_connector_map(connector_instances) if connector_instances else None,
 
         # Tool calling specific fields - direct execution
         "pending_tool_calls": False,
         "tool_results": None,
         "all_tool_results": [],
+
+        # Planner-based execution fields
+        "execution_plan": None,
+        "planned_tool_calls": [],
+        "completion_data": None,
 
         # Enhanced tool result tracking
         "tool_execution_summary": {},
@@ -218,4 +300,17 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "available_tools": None,
         "tool_configs": None,
         "registry_tool_instances": {},  # Cache for tool instances
+
+        # Knowledge retrieval processing fields
+        "virtual_record_id_to_result": {},  # Mapping for citations
+        "blob_store": None,  # Will be initialized during retrieval
+        "is_multimodal_llm": False,  # Will be determined from LLM config
+
+        # Reflection and retry fields (for intelligent error recovery)
+        "reflection": None,  # Reflection analysis result
+        "reflection_decision": None,  # Decision from reflect_node
+        "retry_count": 0,  # Current retry count
+        "max_retries": 1,  # Single retry for speed (fast failure)
+        "is_retry": False,  # Whether this is a retry iteration
+        "execution_errors": [],  # Error details for retry context
     }

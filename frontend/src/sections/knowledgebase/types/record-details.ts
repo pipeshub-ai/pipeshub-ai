@@ -77,10 +77,13 @@ export interface Record {
   sourceLastModifiedTimestamp: number;
   isDeleted: boolean;
   isArchived: boolean;
+  isVLMOcrProcessed?: boolean;
   indexingStatus: string;
   version: number;
+  sizeInBytes?: number;
   fileRecord: FileRecord | null;
   mailRecord: MailRecord | null;
+  ticketRecord: TicketRecord | null;
   departments?: Array<{ _id: string; name: string }>;
   appSpecificRecordType?: Array<{ _id: string; name: string }>;
   modules?: Array<{ _id: string; name: string }>;
@@ -89,6 +92,9 @@ export interface Record {
   summaryDocumentId?: string;
   webUrl?: string;
   reason:string
+  mimeType?: string;
+  previewRenderable?: boolean;
+  hideWeburl?: boolean;
 }
 
 export interface FileRecord {
@@ -99,7 +105,7 @@ export interface FileRecord {
   name: string;
   isFile: boolean;
   extension: string;
-  mimeType: string;
+  mimeType?: string;
   sizeInBytes: number;
   webUrl: string;
   path: string;
@@ -122,6 +128,24 @@ export interface MailRecord {
   historyId: string;
   webUrl: string;
   labelIds: string[];
+}
+
+export interface TicketRecord {
+  _key: string;
+  _id: string;
+  _rev: string;
+  orgId: string;
+  name: string;
+  status: string;
+  priority: string;
+  type: string;
+  deliveryStatus: string;
+  assignee: string | null;
+  reporterEmail: string | null;
+  assigneeEmail: string | null;
+  creatorEmail: string;
+  creatorName: string;
+  reporterName: string | null;
 }
 
 export interface Permissions {

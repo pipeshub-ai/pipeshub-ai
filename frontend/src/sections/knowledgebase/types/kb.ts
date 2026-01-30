@@ -24,7 +24,7 @@ export interface Item {
   createdAt: number;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
-  indexingStatus?: 'NOT_STARTED' | 'PAUSED' | 'COMPLETED' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'AUTO_INDEX_OFF' | 'EMPTY' | 'ENABLE_MULTIMODAL_MODELS' | 'QUEUED' | 'PROCESSING' | 'IN_PROGRESS';
+  indexingStatus?: 'NOT_STARTED' | 'PAUSED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'AUTO_INDEX_OFF' | 'EMPTY' | 'ENABLE_MULTIMODAL_MODELS' | 'QUEUED' | 'CONNECTOR_DISABLED' | 'PROCESSING';
   parentFolderId?: string;
   isProcessing?: boolean; // Flag for optimistic UI updates
   recordType?: string;
@@ -53,6 +53,7 @@ export interface UserPermission {
   canCreateFolders: boolean;
   canEdit: boolean;
   canDelete: boolean;
+  canManagePermissions: boolean;
 }
 
 export interface FolderContents {

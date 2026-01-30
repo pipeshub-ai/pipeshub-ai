@@ -1,7 +1,7 @@
 import type { Theme, SxProps } from '@mui/material';
 
 import { z as zod } from 'zod';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 
@@ -11,8 +11,12 @@ import LoadingButton from '@mui/lab/LoadingButton';
 import { Snackbar, Typography } from '@mui/material';
 
 import { useRouter } from 'src/routes/hooks';
+import { useTurnstile } from 'src/hooks/use-turnstile';
+
+import { CONFIG } from 'src/config-global';
 
 import { Form, Field } from 'src/components/hook-form';
+import { TurnstileWidget, type TurnstileWidgetHandle } from 'src/components/turnstile/turnstile-widget';
 
 import { forgotPassword } from '../../context/jwt';
 import { FormHead } from '../../components/form-head';
@@ -42,6 +46,8 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [openSnackBar, setOpenSnackBar] = useState<boolean>(false);
   const [successMsg, setSuccessMsg] = useState<string>('');
+  const { turnstileToken, handleSuccess, handleError, handleExpire, resetTurnstile } = useTurnstile();
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
   const methods = useForm<ForgotPasswordSchemaType>({
     resolver: zodResolver(ForgotPasswordSchema),
@@ -54,7 +60,7 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
 
   const onSubmit = handleSubmit(async (data : ForgotPasswordSchemaType) : Promise<void> => {
     try {
-      await forgotPassword({ email: data.email });
+      await forgotPassword({ email: data.email, turnstileToken });
       setSuccessMsg('Reset Password email sent successfully');
       setOpenSnackBar(true);
       setErrorMsg('');
@@ -64,6 +70,12 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
       }, 3000);
     } catch (error) {
       setErrorMsg(typeof error === 'string' ? error : error.errorMessage);
+      
+      // Reset CAPTCHA on error
+      if (CONFIG.turnstileSiteKey) {
+        turnstileRef.current?.reset();
+        resetTurnstile();
+      }
     }
   });
 
@@ -74,7 +86,18 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
   const renderForm = (
     <Box gap={3} display="flex" flexDirection="column">
       <Field.Text name="email" label="Email address" InputLabelProps={{ shrink: true }} />
-
+      
+      {CONFIG.turnstileSiteKey && (
+        <TurnstileWidget
+          ref={turnstileRef}
+          siteKey={CONFIG.turnstileSiteKey}
+          onSuccess={handleSuccess}
+          onError={handleError}
+          onExpire={handleExpire}
+          size="normal"
+        />
+      )}
+      
       <LoadingButton
         fullWidth
         color="inherit"
@@ -82,9 +105,10 @@ export default function ForgotPassword({ onBackToSignIn, sx } : ForgotPasswordPr
         type="submit"
         variant="contained"
         loading={isSubmitting}
-        loadingIndicator="Sign in..."
+        disabled={!turnstileToken && !!CONFIG.turnstileSiteKey}
+        loadingIndicator="Sending request..."
       >
-        Send request
+        {CONFIG.turnstileSiteKey && !turnstileToken ? 'Verifying...' : 'Send request'}
       </LoadingButton>
     </Box>
   );

@@ -47,7 +47,7 @@ Here's what's available out of the box:
 #### 1. Go to [`Confluence Data Source`](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/backend/python/app/sources/external/confluence/confluence.py)
 Find the operation (method) you want to expose to the PipesHub Agent. For example, to get page content by ID:
 ```python
-async def get_page_by_id(self, id: int, body_format: Dict[str, Any]) -> HTTPResponse:
+async def get_page_by_id(self, id: int, body_format: str) -> HTTPResponse:
     ...
 ```
 
@@ -83,7 +83,7 @@ def get_page_content(self, page_id: str) -> Tuple[bool, str]:
         response = self._run_async(
             self.client.get_page_by_id(
                 id=page_id_int,
-                body_format={"storage": {}}
+                body_format="storage"
             )
         )
         return self._handle_response(response, "Page content fetched successfully")

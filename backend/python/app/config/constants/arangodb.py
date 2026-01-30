@@ -30,7 +30,9 @@ class DepartmentNames(Enum):
 
 class Connectors(Enum):
     GOOGLE_DRIVE = "DRIVE"
+    GOOGLE_DRIVE_WORKSPACE = "DRIVE WORKSPACE"
     GOOGLE_MAIL = "GMAIL"
+    GOOGLE_MAIL_WORKSPACE = "GMAIL WORKSPACE"
     GOOGLE_CALENDAR = "CALENDAR"
 
     ONEDRIVE = "ONEDRIVE"
@@ -46,12 +48,21 @@ class Connectors(Enum):
 
     CONFLUENCE = "CONFLUENCE"
     JIRA = "JIRA"
-
+    BOX = "BOX"
+    NEXTCLOUD = "NEXTCLOUD"
     DROPBOX = "DROPBOX"
+    DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
 
     SERVICENOW = "SERVICENOW"
+    S3 = "S3"
+    MINIO = "MINIO"
+    GCS = "GCS"
+    AZURE_BLOB = "AZURE BLOB"
+    AZURE_FILES = "AZURE FILES"
+    LINEAR = "LINEAR"
+    ZAMMAD = "ZAMMAD"
 
     UNKNOWN = "UNKNOWN"
 
@@ -61,9 +72,18 @@ class AppGroups(Enum):
     ATLASSIAN = "Atlassian"
     MICROSOFT = "Microsoft"
     DROPBOX = "Dropbox"
+    BOX = "Box"
     SERVICENOW = "Servicenow"
+    NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    S3 = "S3"
+    MINIO = "MinIO"
+    GOOGLE_CLOUD = "Google Cloud"
+    AZURE = "Azure"
+    LINEAR = "Linear"
+    ZAMMAD = "Zammad"
+    LOCAL_STORAGE = "Local Storage"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -107,6 +127,8 @@ class CollectionNames(Enum):
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
+    ENTITY_RELATIONS = "entityRelations"
+    PROJECTS = "projects"
 
     # Users and groups
     PEOPLE = "people"
@@ -171,6 +193,7 @@ class ExtensionTypes(Enum):
     XLSX = "xlsx"
     XLS = "xls"
     CSV = "csv"
+    TSV = "tsv"
     TXT = "txt"
     MD = "md"
     MDX = "mdx"
@@ -198,6 +221,7 @@ class MimeTypes(Enum):
     XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     XLS = "application/vnd.ms-excel"
     CSV = "text/csv"
+    TSV = "text/tab-separated-values"
     BIN = "application/octet-stream"
     NOTION_TEXT = "notion/text"
     NOTION_PAGE_COMMENT_TEXT = "notion/pageCommentText"
@@ -233,6 +257,7 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    CONNECTOR_DISABLED = "CONNECTOR_DISABLED"
 
 
 class RecordTypes(Enum):
@@ -240,14 +265,15 @@ class RecordTypes(Enum):
     ATTACHMENT = "ATTACHMENT"
     LINK = "LINK"
     MAIL = "MAIL"
+    GROUP_MAIL = "GROUP_MAIL"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
+    DATABASE = "DATABASE"
+    DATASOURCE = "DATASOURCE"
     COMMENT = "COMMENT"
     TICKET = "TICKET"
     MESSAGE = "MESSAGE"
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
-    NOTION_DATABASE = "NOTION_DATABASE"
-    NOTION_PAGE = "NOTION_PAGE"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
 
@@ -255,6 +281,24 @@ class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
     ATTACHMENT = "ATTACHMENT"
+    OTHERS = "OTHERS"
+    LINKED_TO = "LINKED_TO"
+    BLOCKS = "BLOCKS"
+    DUPLICATES = "DUPLICATES"
+    DEPENDS_ON = "DEPENDS_ON"
+    CLONES = "CLONES"
+    IMPLEMENTS = "IMPLEMENTS"
+    REVIEWS = "REVIEWS"
+    CAUSES = "CAUSES"
+    RELATED = "RELATED"
+
+
+class EntityRelations(Enum):
+    """Standard edge types for entity relationships"""
+    ASSIGNED_TO = "ASSIGNED_TO"
+    REPORTED_BY = "REPORTED_BY"
+    CREATED_BY = "CREATED_BY"
+    LEAD_BY = "LEAD_BY"
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
@@ -269,14 +313,24 @@ class AccountType(Enum):
     BUSINESS = "business"
     ADMIN = "admin"
 
+class ConnectorScopes(Enum):
+    PERSONAL = "personal"
+    TEAM = "team"
+
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,
     "MAIL": CollectionNames.MAILS.value,
+    "GROUP_MAIL": CollectionNames.MAILS.value,
     "WEBPAGE": CollectionNames.WEBPAGES.value,
+    "SHAREPOINT_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_PAGE": CollectionNames.WEBPAGES.value,
     "CONFLUENCE_BLOGPOST": CollectionNames.WEBPAGES.value,
     "TICKET": CollectionNames.TICKETS.value,
     "COMMENT": CollectionNames.COMMENTS.value,
     "INLINE_COMMENT": CollectionNames.COMMENTS.value,
+    "LINK": CollectionNames.LINKS.value,
+    "PROJECT": CollectionNames.PROJECTS.value,
+    "DATABASE": CollectionNames.WEBPAGES.value,
+    "DATASOURCE": CollectionNames.WEBPAGES.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

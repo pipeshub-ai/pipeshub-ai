@@ -70,25 +70,29 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             cert_key=cert_key,
             cert_cert=cert_cert,
         )
-        self.client = None
+        self._client: Optional[etcd3.client] = None
         self.connection_manager = Etcd3ConnectionManager(config)
         self.serializer = serializer
         self.deserializer = deserializer
         self._active_watchers: List[Any] = []
         logger.debug("✅ ETCD3 store initialized")
 
+    @property
+    def client(self) -> Optional[etcd3.client]:
+        """Expose the underlying etcd client for watchers and diagnostics."""
+        return self._client
+
     async def _get_client(self) -> etcd3.client:
         """Get the ETCD client, ensuring connection is available."""
         logger.debug("🔄 Getting ETCD client")
         client = await self.connection_manager.get_client()
         logger.debug("✅ Got ETCD client: %s", client)
-        self.client = client
+        self._client = client
         return client
 
     async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
         """Create a new key in etcd."""
         logger.debug("🔄 Creating key in ETCD: %s", key)
-        logger.debug("📋 Value: %s (type: %s)", value, type(value))
         logger.debug("📋 TTL: %s seconds", ttl if ttl else "None")
 
         try:
@@ -104,7 +108,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             if existing_value[0] is not None and not overwrite:
                 logger.debug("📋 Key exists, skipping creation")
-                return True
+                return False  # Key was not created (already exists)
             elif existing_value[0] is not None:
                 logger.debug("📋 Key exists, updating value")
                 success = await asyncio.to_thread(
@@ -195,7 +199,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def delete_key(self, key: str) -> bool:
         client = await self._get_client()
         try:
-            result = await client.delete(key)
+            result = await asyncio.to_thread(lambda: client.delete(key))
             return result is not None
         except Exception as e:
             raise ConnectionError(f"Failed to delete key: {str(e)}")

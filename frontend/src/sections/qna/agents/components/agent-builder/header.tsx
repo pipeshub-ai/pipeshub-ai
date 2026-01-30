@@ -71,24 +71,27 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
     });
   };
 
+  const isDark = theme.palette.mode === 'dark';
+
   return (
     <Box
       sx={{
-        px: { xs: 1, sm: 2, md: 3 },
-        py: 1.5,
-        borderBottom: `1px solid ${alpha(theme.palette.divider, 0.1)}`,
-        bgcolor: alpha(theme.palette.background.paper, 0.8),
-        backdropFilter: 'blur(12px)',
+        px: { xs: 2, sm: 3, md: 4 },
+        py: 2,
+        borderBottom: `1px solid ${theme.palette.divider}`,
+        backgroundColor: theme.palette.background.paper,
         display: 'flex',
         alignItems: 'center',
-        gap: { xs: 1, sm: 1.5, md: 2 },
+        gap: { xs: 1.5, sm: 2, md: 2.5 },
         flexShrink: 0,
-        minHeight: { xs: 56, sm: 64 },
+        minHeight: { xs: 64, sm: 72 },
         boxSizing: 'border-box',
         position: 'sticky',
         top: 0,
         zIndex: 1200,
-        boxShadow: '0 1px 3px rgba(0,0,0,0.04)',
+        boxShadow: isDark 
+          ? `0 2px 8px rgba(0, 0, 0, 0.2)`
+          : `0 2px 8px rgba(0, 0, 0, 0.04)`,
       }}
     >
       {/* Sidebar Toggle */}
@@ -97,63 +100,85 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
           onClick={() => setSidebarOpen(!sidebarOpen)}
           size={isMobile ? 'small' : 'medium'}
           sx={{
-            border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-            borderRadius: 2,
-            bgcolor: alpha(theme.palette.background.default, 0.5),
-            '&:hover': {
-              bgcolor: alpha(theme.palette.primary.main, 0.08),
-              borderColor: alpha(theme.palette.primary.main, 0.3),
-              color: theme.palette.primary.main,
-            },
+            border: `1px solid ${theme.palette.divider}`,
+            borderRadius: 1.5,
+            backgroundColor: theme.palette.background.paper,
+            color: theme.palette.text.secondary,
+            width: { xs: 36, sm: 40 },
+            height: { xs: 36, sm: 40 },
             transition: 'all 0.2s ease',
+            '&:hover': {
+              backgroundColor: theme.palette.action.hover,
+              borderColor: theme.palette.text.secondary,
+              color: theme.palette.text.primary,
+              transform: 'scale(1.05)',
+            },
           }}
         >
           <Icon icon={menuIcon} width={isMobile ? 18 : 20} height={isMobile ? 18 : 20} />
         </IconButton>
       </Tooltip>
 
-      {/* Breadcrumbs - Hidden on mobile */}
+      {/* Premium Breadcrumbs - Hidden on mobile */}
       {!isMobile && (
         <Breadcrumbs
-          separator="›"
+          separator={
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                color: theme.palette.text.secondary,
+                mx: 1,
+                fontSize: '0.875rem',
+              }}
+            >
+              ›
+            </Box>
+          }
           sx={{
-            ml: 0.5,
-            '& .MuiBreadcrumbs-separator': {
-              color: theme.palette.text.secondary,
-              mx: 0.5,
+            ml: 1,
+            '& .MuiBreadcrumbs-ol': {
+              alignItems: 'center',
             },
           }}
         >
           <Link
-            underline="hover"
-            color="inherit"
+            underline="none"
             onClick={onClose}
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: 0.5,
+              gap: 0.75,
               cursor: 'pointer',
               fontWeight: 500,
               fontSize: '0.875rem',
               color: theme.palette.text.secondary,
-              transition: 'color 0.2s ease',
-              '&:hover': { color: theme.palette.primary.main },
+              transition: 'all 0.2s ease',
+              px: 1,
+              py: 0.5,
+              borderRadius: 1,
+              '&:hover': {
+                color: theme.palette.text.primary,
+                backgroundColor: theme.palette.action.hover,
+              },
             }}
           >
-            <Icon icon={homeIcon} width={14} height={14} />
+            <Icon icon={homeIcon} width={16} height={16} />
             Agents
           </Link>
           <Box
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: 0.5,
+              gap: 0.75,
               color: theme.palette.text.primary,
               fontWeight: 600,
               fontSize: '0.875rem',
+              px: 1,
+              py: 0.5,
             }}
           >
-            <Icon icon={sparklesIcon} width={14} height={14} />
+            <Icon icon={sparklesIcon} width={16} height={16} />
             Flow Builder
           </Box>
         </Breadcrumbs>
@@ -164,19 +189,22 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
         <Chip
           label={editingAgent ? 'Editing' : 'Creating'}
           size="small"
-          color={editingAgent ? 'warning' : 'primary'}
-          variant="outlined"
           sx={{
-            height: 24,
-            fontSize: '0.7rem',
+            height: 28,
+            fontSize: '0.75rem',
             fontWeight: 600,
+            backgroundColor: isDark 
+              ? alpha(theme.palette.background.paper, 0.6)
+              : alpha(theme.palette.background.default, 0.8),
+            border: `1px solid ${theme.palette.divider}`,
+            color: theme.palette.text.primary,
           }}
         />
       )}
 
       <Box sx={{ flexGrow: 1 }} />
 
-      {/* Agent Name Input - Responsive width */}
+      {/* Premium Agent Name Input */}
       <TextField
         label="Agent Name"
         value={agentName || ''}
@@ -184,24 +212,38 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
         size="small"
         placeholder={isMobile ? 'Agent name...' : 'Enter agent name...'}
         sx={{
-          width: { xs: 150, sm: 200, md: 280, lg: 320 },
+          width: { xs: 160, sm: 220, md: 300, lg: 340 },
           '& .MuiOutlinedInput-root': {
-            borderRadius: 2,
-            bgcolor: alpha(theme.palette.background.default, 0.6),
-            backdropFilter: 'blur(8px)',
-            border: `1px solid ${alpha(theme.palette.divider, 0.15)}`,
+            borderRadius: 1.5,
+            backgroundColor: theme.palette.background.paper,
+            border: `1px solid ${theme.palette.divider}`,
+            transition: 'all 0.2s ease',
+            '& fieldset': {
+              borderColor: theme.palette.divider,
+            },
             '&:hover': {
-              bgcolor: alpha(theme.palette.background.default, 0.8),
-              borderColor: alpha(theme.palette.primary.main, 0.3),
+              backgroundColor: theme.palette.background.paper,
+              '& fieldset': {
+                borderColor: theme.palette.text.secondary,
+              },
             },
             '&.Mui-focused': {
-              bgcolor: theme.palette.background.default,
-              borderColor: theme.palette.primary.main,
+              backgroundColor: theme.palette.background.paper,
+              '& fieldset': {
+                borderColor: theme.palette.text.secondary,
+                borderWidth: '1.5px',
+              },
             },
           },
           '& .MuiInputLabel-root': {
             color: theme.palette.text.secondary,
-            fontSize: isMobile ? '0.8rem' : '0.875rem',
+            fontSize: '0.8125rem',
+            fontWeight: 500,
+          },
+          '& .MuiInputBase-input': {
+            fontSize: '0.875rem',
+            fontWeight: 500,
+            color: theme.palette.text.primary,
           },
         }}
       />
@@ -210,7 +252,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
 
       {/* Action Buttons - Responsive layout */}
       <Stack direction="row" spacing={1} alignItems="center">
-        {/* Template Button - Hidden on mobile, icon only on tablet */}
+        {/* Premium Template Button */}
         {!isMobile && (
           <Tooltip title="Use Template">
             <Button
@@ -226,21 +268,28 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               onClick={() => setTemplateDialogOpen(true)}
               disabled={saving || templatesLoading}
               sx={{
-                height: 36,
-                px: isTablet ? 1 : 1.5,
-                borderRadius: 2,
+                height: 38,
+                px: isTablet ? 1.5 : 2,
+                borderRadius: 1.5,
                 fontSize: '0.8125rem',
-                fontWeight: 500,
+                fontWeight: 600,
                 textTransform: 'none',
-                border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                bgcolor: alpha(theme.palette.background.default, 0.5),
-                color: theme.palette.text.secondary,
-                '&:hover': {
-                  bgcolor: alpha(theme.palette.primary.main, 0.08),
-                  borderColor: alpha(theme.palette.primary.main, 0.3),
-                  color: theme.palette.primary.main,
-                },
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: theme.palette.background.paper,
+                color: theme.palette.text.primary,
                 transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  borderColor: theme.palette.text.secondary,
+                  transform: 'translateY(-1px)',
+                  boxShadow: isDark 
+                    ? `0 2px 8px rgba(0, 0, 0, 0.2)`
+                    : `0 2px 8px rgba(0, 0, 0, 0.08)`,
+                },
+                '&:disabled': {
+                  backgroundColor: theme.palette.action.disabledBackground,
+                  color: theme.palette.action.disabled,
+                },
               }}
             >
               {!isTablet && (templatesLoading ? 'Loading...' : 'Template')}
@@ -248,7 +297,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
           </Tooltip>
         )}
 
-        {/* Share Button - Icon only on mobile */}
+        {/* Premium Share Button */}
         {editingAgent && (
           <Tooltip title="Share Agent">
             <Button
@@ -258,21 +307,28 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               onClick={() => setShareAgentDialogOpen(true)}
               disabled={saving || templatesLoading}
               sx={{
-                height: 36,
-                px: isMobile ? 1 : 1.5,
-                borderRadius: 2,
+                height: 38,
+                px: isMobile ? 1.5 : 2,
+                borderRadius: 1.5,
                 fontSize: '0.8125rem',
-                fontWeight: 500,
+                fontWeight: 600,
                 textTransform: 'none',
-                border: `1px solid ${alpha(theme.palette.divider, 0.2)}`,
-                bgcolor: alpha(theme.palette.background.default, 0.5),
-                color: theme.palette.text.secondary,
-                '&:hover': {
-                  bgcolor: alpha(theme.palette.info.main, 0.08),
-                  borderColor: alpha(theme.palette.info.main, 0.3),
-                  color: theme.palette.info.main,
-                },
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: theme.palette.background.paper,
+                color: theme.palette.text.primary,
                 transition: 'all 0.2s ease',
+                '&:hover': {
+                  backgroundColor: theme.palette.action.hover,
+                  borderColor: theme.palette.text.secondary,
+                  transform: 'translateY(-1px)',
+                  boxShadow: isDark 
+                    ? `0 2px 8px rgba(0, 0, 0, 0.2)`
+                    : `0 2px 8px rgba(0, 0, 0, 0.08)`,
+                },
+                '&:disabled': {
+                  backgroundColor: theme.palette.action.disabledBackground,
+                  color: theme.palette.action.disabled,
+                },
               }}
             >
               {!isMobile && 'Share'}
@@ -280,43 +336,34 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
           </Tooltip>
         )}
 
-        {/* Main Action Button Group */}
-        <ButtonGroup
-          variant="contained"
-          size="small"
-          sx={{
-            '& .MuiButtonGroup-grouped': {
-              borderRadius: 2,
-              '&:not(:last-of-type)': {
-                borderRight: 'none',
-                borderTopRightRadius: 0,
-                borderBottomRightRadius: 0,
-              },
-              '&:not(:first-of-type)': {
-                borderTopLeftRadius: 0,
-                borderBottomLeftRadius: 0,
-              },
-            },
-          }}
-        >
+        {/* Premium Action Buttons */}
+        <Stack direction="row" spacing={1.5} alignItems="center">
           {/* Cancel/Close Button */}
           {editingAgent && (
             <Button
               onClick={onClose}
               disabled={saving}
-              startIcon={<Icon icon={closeIcon} width={14} height={14} />}
+              startIcon={<Icon icon={closeIcon} width={16} height={16} />}
               sx={{
-                height: 36,
-                px: isMobile ? 1 : 1.5,
+                height: 38,
+                px: isMobile ? 1.5 : 2,
+                borderRadius: 1.5,
                 fontSize: '0.8125rem',
-                fontWeight: 500,
+                fontWeight: 600,
                 textTransform: 'none',
-                bgcolor: alpha(theme.palette.grey[500], 0.1),
+                border: `1px solid ${theme.palette.divider}`,
+                backgroundColor: theme.palette.background.paper,
                 color: theme.palette.text.secondary,
-                borderColor: alpha(theme.palette.divider, 0.2),
+                transition: 'all 0.2s ease',
                 '&:hover': {
-                  bgcolor: alpha(theme.palette.error.main, 0.1),
+                  backgroundColor: theme.palette.action.hover,
+                  borderColor: theme.palette.error.main,
                   color: theme.palette.error.main,
+                  transform: 'translateY(-1px)',
+                },
+                '&:disabled': {
+                  backgroundColor: theme.palette.action.disabledBackground,
+                  color: theme.palette.action.disabled,
                 },
               }}
             >
@@ -324,8 +371,9 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
             </Button>
           )}
 
-          {/* Save/Update Button */}
+          {/* Premium Save/Update Button */}
           <Button
+            variant="contained"
             startIcon={
               saving ? (
                 <CircularProgress size={14} color="inherit" />
@@ -334,25 +382,32 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               )
             }
             onClick={onSave}
-            disabled={saving || !agentName}
+            disabled={saving}
             sx={{
-              height: 36,
-              px: isMobile ? 1.5 : 2,
+              height: 38,
+              px: isMobile ? 2 : 2.5,
+              borderRadius: 1.5,
               fontSize: '0.8125rem',
               fontWeight: 600,
               textTransform: 'none',
-              bgcolor: editingAgent ? theme.palette.warning.main : theme.palette.primary.main,
+              backgroundColor: editingAgent ? theme.palette.warning.main : theme.palette.primary.main,
               color: 'white',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+              boxShadow: isDark 
+                ? `0 2px 8px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.3)}`
+                : `0 2px 8px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.2)}`,
+              transition: 'all 0.2s ease',
               '&:hover': {
-                bgcolor: editingAgent ? theme.palette.warning.dark : theme.palette.primary.dark,
-                boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+                backgroundColor: editingAgent ? theme.palette.warning.dark : theme.palette.primary.dark,
+                transform: 'translateY(-1px)',
+                boxShadow: isDark 
+                  ? `0 4px 12px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.4)}`
+                  : `0 4px 12px ${alpha(editingAgent ? theme.palette.warning.main : theme.palette.primary.main, 0.3)}`,
               },
               '&:disabled': {
-                bgcolor: alpha(theme.palette.action.disabled, 0.12),
+                backgroundColor: theme.palette.action.disabledBackground,
                 color: theme.palette.action.disabled,
+                boxShadow: 'none',
               },
-              transition: 'all 0.2s ease',
             }}
           >
             {isMobile
@@ -369,7 +424,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
                   ? 'Update Agent'
                   : 'Save Agent'}
           </Button>
-        </ButtonGroup>
+        </Stack>
       </Stack>
 
       {/* Permissions Dialog */}

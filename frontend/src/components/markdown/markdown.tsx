@@ -38,7 +38,6 @@ export function Markdown({ children, sx, ...other }: MarkdownProps) {
        * https://github.com/remarkjs/react-markdown/issues/774
        * urlTransform={(value: string) => value}
        */
-      className={markdownClasses.root}
       sx={sx}
       {...other}
     />

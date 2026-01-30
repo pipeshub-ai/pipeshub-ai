@@ -3,8 +3,8 @@ import json
 import os
 from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
 
-import dotenv
-import etcd3
+import dotenv  # type: ignore
+import etcd3  # type: ignore
 
 from app.config.constants.service import config_node_constants
 from app.config.constants.store_type import StoreType
@@ -57,8 +57,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     @property
     def client(self) -> Optional[etcd3.client]:
         """Expose the underlying ETCD client for watchers and diagnostics."""
-
-        return getattr(self.store, "client", None)
+        return self.store.client
 
 
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
@@ -173,7 +172,6 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         )
                     else:
                         processed_value = encrypted_stored_value
-                    self.logger.debug("🔒 Processed value for key %s: %s", key, processed_value)
                     # Parse value if it's not already a dict (for unencrypted keys, it's already deserialized)
                     stored_value = json.loads(processed_value) if isinstance(processed_value, str) else processed_value
 

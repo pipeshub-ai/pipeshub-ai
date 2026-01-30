@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -49,7 +49,6 @@ class KnowledgeBaseService :
             user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
             self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
 
-            # Step 2: Generate data
             timestamp = get_epoch_timestamp_in_ms()
             kb_key = str(uuid.uuid4())
 
@@ -77,7 +76,7 @@ class KnowledgeBaseService :
                     "reason": f"Transaction creation failed: {str(tx_error)}"
                 }
 
-
+            kb_connector_id = f"knowledgeBase_{org_id}"
             kb_data = {
                 "_key": kb_key,
                 "createdBy": user_key,
@@ -85,6 +84,7 @@ class KnowledgeBaseService :
                 "groupName": name,
                 "groupType": Connectors.KNOWLEDGE_BASE.value,
                 "connectorName": Connectors.KNOWLEDGE_BASE.value,
+                "connectorId": kb_connector_id,  # Link KB to the app
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             }
@@ -100,14 +100,21 @@ class KnowledgeBaseService :
                 "lastUpdatedTimestampAtSource": timestamp,
             }
 
+            # Create belongs_to edge from record group to app
+            belongs_to_edge = {
+                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "_to": f"{CollectionNames.APPS.value}/{kb_connector_id}",
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }
 
             # Step 5: Execute database operations
             self.logger.info("💾 Executing database operations...")
             result = await self.arango_service.create_knowledge_base(
                 kb_data=kb_data,
-                # root_folder_data=root_folder_data,
                 permission_edge=permission_edge,
-                # folder_edge=folder_edge,
+                belongs_to_edge=belongs_to_edge,
                 transaction=transaction
             )
 
@@ -496,7 +503,7 @@ class KnowledgeBaseService :
                 return validation_result
 
             # Additional validation for parent folder
-            folder_valid = await self.arango_service.validate_folder_exists_in_kb(kb_id, parent_folder_id)
+            folder_valid = await self.arango_service.validate_folder_in_kb(kb_id, parent_folder_id)
             if not folder_valid:
                 return {
                     "success": False,
@@ -876,7 +883,7 @@ class KnowledgeBaseService :
                 }
 
             # Step 2: Validate folder exists in KB
-            folder_exists = await self.arango_service.validate_folder_exists_in_kb(kb_id, folder_id)
+            folder_exists = await self.arango_service.validate_folder_in_kb(kb_id, folder_id)
             if not folder_exists:
                 return {
                     "success": False,
@@ -921,22 +928,26 @@ class KnowledgeBaseService :
             self.logger.info(f"🚀 Creating {role} permissions for {len(user_ids)} users and {len(team_ids)} teams on KB {kb_id}")
 
             # Step 1: Validate inputs early
-            valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
-            if role not in valid_roles:
-                return {"success": False, "reason": f"Invalid role: {role}", "code": 400}
+            unique_users = list(set(user_ids)) if user_ids else []
+            unique_teams = list(set(team_ids)) if team_ids else []
 
-            unique_users = list(set(user_ids))
-            unique_teams = list(set(team_ids))
             if not unique_users and not unique_teams:
                 return {"success": False, "reason": "No users or teams provided", "code": 400}
 
+            # Role is required for users, but not for teams (teams don't have roles)
+            if unique_users:
+                valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
+                if not role or role not in valid_roles:
+                    return {"success": False, "reason": f"Invalid role: {role}. Role is required for users.", "code": 400}
+
             # Step 2: Single AQL query to do everything at once
+            # Pass role even if only teams (it will be ignored for teams)
             result = await self.arango_service.create_kb_permissions(
                 kb_id=kb_id,
                 requester_id=requester_id,
                 user_ids=unique_users,
                 team_ids=unique_teams,
-                role=role
+                role=role if role else "READER"  # Default for teams (won't be used)
             )
 
             if result.get("success"):
@@ -967,6 +978,15 @@ class KnowledgeBaseService :
                 return {
                     "success": False,
                     "reason": "No users or teams provided for permission update",
+                    "code": "400"
+                }
+
+            # Teams don't have roles - they just have access or not
+            # So we can only update user permissions, not team permissions
+            if team_ids:
+                return {
+                    "success": False,
+                    "reason": "Teams don't have roles. Only user permissions can be updated.",
                     "code": "400"
                 }
 
@@ -1511,7 +1531,8 @@ class KnowledgeBaseService :
                 "canUpload": user_role in ["OWNER", "WRITER"],
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
                 "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"]
+                "canDelete": user_role in ["OWNER"],
+                "canManagePermissions": user_role in ["OWNER"]
             }
 
             result["pagination"] = {
@@ -1619,7 +1640,8 @@ class KnowledgeBaseService :
                 "canUpload": user_role in ["OWNER", "WRITER"],
                 "canCreateFolders": user_role in ["OWNER", "WRITER"],
                 "canEdit": user_role in ["OWNER", "WRITER", "FILEORGANIZER"],
-                "canDelete": user_role in ["OWNER"]
+                "canDelete": user_role in ["OWNER"],
+                "canManagePermissions": user_role in ["OWNER"]
             }
 
             result["pagination"] = {
@@ -1675,3 +1697,184 @@ class KnowledgeBaseService :
     async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
         """Upload to specific folder"""
         return await self.arango_service.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)
+
+    # ========================================================================
+    # Move Record API
+    # ========================================================================
+
+    async def move_record(
+        self,
+        kb_id: str,
+        record_id: str,
+        new_parent_id: Optional[str],  # None for KB root, folder_id for folder
+        user_id: str,
+    ) -> Dict[str, Any]:
+        """
+        Move a record (file or folder) from one parent to another within the same KB.
+
+        Args:
+            kb_id: Knowledge base ID
+            record_id: Record to move
+            new_parent_id: Target folder ID, or None to move to KB root
+            user_id: User performing the action
+
+        Edge cases handled:
+            - Permission check (requires OWNER or WRITER)
+            - Prevents moving a folder to its own descendant (circular reference)
+            - Validates both record and new parent belong to the same KB
+            - Handles moving to KB root (new_parent_id = None)
+            - Early exit if already at target location
+        """
+        try:
+            self.logger.info(
+                f"🚀 Moving record {record_id} to "
+                f"{'KB root' if not new_parent_id else f'folder {new_parent_id}'} in KB {kb_id}"
+            )
+
+            # Step 1: Validate user exists
+            user = await self.arango_service.get_user_by_user_id(user_id=user_id)
+            if not user:
+                self.logger.warning(f"⚠️ User not found: {user_id}")
+                return self._error_response(404, f"User not found: {user_id}")
+
+            user_key = user.get('_key')
+
+            # Step 2: Check user permission on KB (must be OWNER or WRITER)
+            user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                self.logger.warning(
+                    f"⚠️ User {user_key} lacks permission to move records in KB {kb_id}"
+                )
+                return self._error_response(
+                    403,
+                    "User must be OWNER or WRITER to move records"
+                )
+
+            # Step 3: Validate record exists
+            record = await self.arango_service.get_document(record_id, "records")
+            if not record:
+                self.logger.warning(f"⚠️ Record not found: {record_id}")
+                return self._error_response(404, f"Record {record_id} not found")
+
+            # Step 4: Verify record belongs to this KB
+            record_connector_id = record.get("connectorId")
+            if record_connector_id != kb_id:
+                self.logger.warning(
+                    f"⚠️ Record {record_id} belongs to KB {record_connector_id}, not {kb_id}"
+                )
+                return self._error_response(400, "Record does not belong to the specified KB")
+
+            # Step 5: Check if record is a folder (for circular reference check)
+            is_folder = self.arango_service.is_record_folder(record_id)
+            self.logger.debug(f"Record {record_id} is_folder: {is_folder}")
+
+            # Step 6: Get current parent info
+            current_parent_info = self.arango_service.get_record_parent_info(record_id)
+            current_parent_id = current_parent_info.get("parentId") if current_parent_info else None
+            current_parent_type = current_parent_info.get("parentType") if current_parent_info else None
+
+            # Step 7: Check if already at target location (no-op)
+            if new_parent_id is None:
+                # Moving to KB root - check if current parent is the KB
+                if current_parent_type == "recordGroup" and current_parent_id == kb_id:
+                    self.logger.info(f"ℹ️ Record {record_id} is already at KB root, no action needed")
+                    return {"success": True, "message": "Record is already at target location"}
+            else:
+                # Moving to a folder - check if current parent is that folder
+                if current_parent_type == "record" and current_parent_id == new_parent_id:
+                    self.logger.info(f"ℹ️ Record {record_id} is already in folder {new_parent_id}")
+                    return {"success": True, "message": "Record is already at target location"}
+
+            # Step 8: Validate new parent folder (if provided)
+            if new_parent_id:
+                # Check new parent exists and is in the same KB
+                new_parent_valid = await self.arango_service.validate_folder_in_kb(kb_id, new_parent_id)
+                if not new_parent_valid:
+                    self.logger.warning(f"⚠️ Target folder {new_parent_id} not found in KB {kb_id}")
+                    return self._error_response(
+                        404,
+                        f"Target folder {new_parent_id} not found in KB {kb_id}"
+                    )
+
+                # Step 9: Circular reference check (only for folders)
+                if is_folder:
+                    is_descendant = self.arango_service.is_record_descendant_of(
+                        ancestor_id=record_id,
+                        potential_descendant_id=new_parent_id
+                    )
+                    if is_descendant:
+                        self.logger.warning(
+                            f"⚠️ Cannot move folder {record_id} into its descendant {new_parent_id}"
+                        )
+                        return self._error_response(
+                            400,
+                            "Cannot move a folder into its own descendant (would create circular reference)"
+                        )
+
+            # Step 10: Perform the move with transaction
+            write_collections = ["records", "recordRelations"]
+            transaction = self.arango_service.db.begin_transaction(
+                write=write_collections
+            )
+
+            try:
+                # Delete old parent edge
+                self.arango_service.delete_parent_child_edge_to_record(
+                    record_id=record_id,
+                    transaction=transaction
+                )
+
+                # Create new parent edge
+                if new_parent_id:
+                    # Move to folder
+                    self.arango_service.create_parent_child_edge(
+                        parent_id=new_parent_id,
+                        child_id=record_id,
+                        parent_is_kb=False,  # Parent is a folder (record)
+                        transaction=transaction
+                    )
+                    new_external_parent = new_parent_id
+                else:
+                    # Move to KB root
+                    self.arango_service.create_parent_child_edge(
+                        parent_id=kb_id,
+                        child_id=record_id,
+                        parent_is_kb=True,  # Parent is the KB (recordGroup)
+                        transaction=transaction
+                    )
+                    new_external_parent = kb_id
+
+                # Update externalParentId on the record
+                self.arango_service.update_record_external_parent_id(
+                    record_id=record_id,
+                    new_parent_id=new_external_parent,
+                    transaction=transaction
+                )
+
+                # Commit transaction
+                await asyncio.to_thread(lambda: transaction.commit_transaction())
+
+                self.logger.info(
+                    f"✅ Record {record_id} moved successfully to "
+                    f"{'KB root' if not new_parent_id else f'folder {new_parent_id}'}"
+                )
+                return {
+                    "success": True,
+                    "message": "Record moved successfully",
+                    "recordId": record_id,
+                    "newParentId": new_parent_id,
+                    "kbId": kb_id
+                }
+
+            except Exception as txn_error:
+                # Rollback on error
+                self.logger.error(f"❌ Transaction error during move: {str(txn_error)}")
+                try:
+                    await asyncio.to_thread(lambda: transaction.abort_transaction())
+                except Exception as rollback_error:
+                    self.logger.error(f"❌ Failed to rollback transaction: {rollback_error}")
+                raise txn_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to move record {record_id}: {str(e)}")
+            return self._error_response(500, f"Failed to move record: {str(e)}")

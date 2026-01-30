@@ -9,11 +9,13 @@ import {
   Grid,
   Link,
   Alert,
+  Switch,
   Snackbar,
   TextField,
   Typography,
   InputAdornment,
   CircularProgress,
+  FormControlLabel,
 } from '@mui/material';
 
 import axios from 'src/utils/axios';
@@ -73,6 +75,7 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
       clientId: '',
       redirectUri:
         redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`,
+      enableJit: true,
     });
 
     const [errors, setErrors] = useState({
@@ -119,25 +122,25 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
       const fetchConfig = async () => {
         setIsLoading(true);
         try {
-          const uris = await getRedirectUris();
+          // Parallelize API calls for better performance
+          const [uris, config] = await Promise.all([
+            getRedirectUris(),
+            getAzureAuthConfig(),
+          ]);
+
           setRedirectUris(uris);
 
           // Set default redirectUri from uris immediately (not from state)
           const recommendedUri =
             uris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`;
 
-          setFormData((prevFormData) => ({
-            ...prevFormData,
+          // Consolidate all form data updates into a single atomic update
+          setFormData({
             redirectUri: recommendedUri,
-          }));
-
-          const config = await getAzureAuthConfig();
-
-          setFormData((prev) => ({
-            ...prev,
-            clientId: config.clientId || '',
-            tenantId: config.tenantId || '',
-          }));
+            clientId: config?.clientId || '',
+            tenantId: config?.tenantId || '',
+            enableJit: config?.enableJit ?? true,
+          });
         } catch (error) {
           console.error('Failed to load Azure AD auth config:', error);
           // showErrorSnackbar('Failed to load Azure AD authentication configuration');
@@ -200,6 +203,7 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
         await updateAzureAuthConfig({
           clientId: formData.clientId,
           tenantId: formData.tenantId,
+          enableJit: formData.enableJit,
         });
 
         showSuccessSnackbar('Azure AD authentication configuration saved successfully');
@@ -350,6 +354,41 @@ const AzureAdAuthForm = forwardRef<AzureAdAuthFormRef, AzureAdAuthFormProps>(
                     },
                   }}
                 />
+              </Grid>
+
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.primary.main, 0.04),
+                    border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formData.enableJit}
+                        onChange={(e) =>
+                          setFormData((prev) => ({ ...prev, enableJit: e.target.checked }))
+                        }
+                        color="primary"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="subtitle2">
+                          Enable Just-In-Time (JIT) Provisioning
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Automatically create user accounts when they sign in with Azure AD for the
+                          first time
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: 'flex-start', ml: 0 }}
+                  />
+                </Box>
               </Grid>
             </Grid>
 

@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Paper,
   Typography,
@@ -7,23 +7,33 @@ import {
   Box,
   alpha,
   useTheme,
+  IconButton,
+  Menu,
+  MenuItem,
+  ListItemIcon,
+  ListItemText,
+  Divider,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import settingsIcon from '@iconify-icons/eva/settings-2-outline';
-import refreshIcon from '@iconify-icons/mdi/refresh';
 import pauseIcon from '@iconify-icons/mdi/pause';
 import playIcon from '@iconify-icons/mdi/play';
 import keyIcon from '@iconify-icons/mdi/key';
-import { Connector } from '../../types/types';
+import deleteIcon from '@iconify-icons/mdi/delete';
+import editIcon from '@iconify-icons/mdi/pencil';
+import filterIcon from '@iconify-icons/mdi/filter';
+import { Connector, ConnectorToggleType } from '../../types/types';
 
 interface ConnectorActionsSidebarProps {
   connector: Connector;
   isAuthenticated: boolean;
   loading: boolean;
   onAuthenticate: () => void;
-  onConfigure: () => void;
-  onRefresh: () => void;
-  onToggle: (enabled: boolean) => void;
+  onConfigureAuth: () => void;
+  onConfigureSync: () => void;
+  onToggle: (enabled: boolean, type: ConnectorToggleType) => void;
+  onDelete: () => void;
+  onRename: () => void;
   hideAuthenticate?: boolean;
 }
 
@@ -32,13 +42,35 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   isAuthenticated,
   loading,
   onAuthenticate,
-  onConfigure,
-  onRefresh,
+  onConfigureAuth,
+  onConfigureSync,
   onToggle,
+  onDelete,
+  onRename,
   hideAuthenticate,
 }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
+  const menuOpen = Boolean(menuAnchor);
+
+  const handleMenuOpen = (event: React.MouseEvent<HTMLElement>) => {
+    setMenuAnchor(event.currentTarget);
+  };
+
+  const handleMenuClose = () => {
+    setMenuAnchor(null);
+  };
+
+  const handleRenameClick = () => {
+    handleMenuClose();
+    onRename();
+  };
+
+  const handleDeleteClick = () => {
+    handleMenuClose();
+    onDelete();
+  };
 
   const isConfigured = connector.isConfigured || false;
   const isActive = connector.isActive || false;
@@ -47,10 +79,12 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
   // If authenticate is hidden (admin consent or business service-account flow), enabling should rely on configuration
   const canEnable = isActive
     ? true
-    : (isOauth
-        ? (hideAuthenticate ? isConfigured : isAuthenticated)
-        : isConfigured);
-
+    : isOauth
+      ? hideAuthenticate
+        ? isConfigured
+        : isAuthenticated
+      : isConfigured;
+  const supportsSync = connector.supportsSync || false;
   return (
     <Stack spacing={1.5}>
       {/* Quick Actions */}
@@ -64,102 +98,179 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
           bgcolor: theme.palette.background.paper,
         }}
       >
-        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5 }}>
-          Quick Actions
-        </Typography>
+        <Box
+          sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 1.5 }}
+        >
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Quick Actions
+          </Typography>
+          <Box>
+            <IconButton
+              size="small"
+              onClick={handleMenuOpen}
+              sx={{
+                color: 'text.secondary',
+                '&:hover': {
+                  bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  color: theme.palette.primary.main,
+                },
+              }}
+            >
+              <Iconify icon={settingsIcon} width={20} height={20} />
+            </IconButton>
+            <Menu
+              anchorEl={menuAnchor}
+              open={menuOpen}
+              onClose={handleMenuClose}
+              anchorOrigin={{
+                vertical: 'bottom',
+                horizontal: 'right',
+              }}
+              transformOrigin={{
+                vertical: 'top',
+                horizontal: 'right',
+              }}
+              PaperProps={{
+                sx: {
+                  mt: 0.5,
+                  minWidth: 180,
+                  borderRadius: 1.5,
+                  boxShadow: isDark ? '0 4px 20px rgba(0,0,0,0.3)' : '0 4px 20px rgba(0,0,0,0.1)',
+                },
+              }}
+            >
+              <MenuItem
+                onClick={handleRenameClick}
+                sx={{
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.primary.main, 0.08),
+                  },
+                }}
+              >
+                <ListItemIcon>
+                  <Iconify icon={editIcon} width={18} height={18} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Rename Instance"
+                  primaryTypographyProps={{ fontSize: '0.875rem' }}
+                />
+              </MenuItem>
+              <Divider sx={{ my: 0.5 }} />
+              <MenuItem
+                onClick={handleDeleteClick}
+                sx={{
+                  color: 'error.main',
+                  '&:hover': {
+                    bgcolor: alpha(theme.palette.error.main, 0.08),
+                  },
+                }}
+              >
+                <ListItemIcon>
+                  <Iconify icon={deleteIcon} width={18} height={18} sx={{ color: 'error.main' }} />
+                </ListItemIcon>
+                <ListItemText
+                  primary="Delete Instance"
+                  primaryTypographyProps={{ fontSize: '0.875rem', color: 'error.main' }}
+                />
+              </MenuItem>
+            </Menu>
+          </Box>
+        </Box>
 
         <Stack spacing={1}>
           {(connector.authType || '').toUpperCase() === 'OAUTH' && !hideAuthenticate && (
             <Button
-              variant="contained"
+              variant={isAuthenticated ? 'outlined' : 'contained'}
               fullWidth
               size="small"
               startIcon={<Iconify icon={keyIcon} width={14} height={14} />}
               onClick={onAuthenticate}
-              disabled={loading || isAuthenticated}
+              disabled={loading}
               sx={{
                 textTransform: 'none',
                 fontWeight: 500,
                 justifyContent: 'flex-start',
                 borderRadius: 1,
-                backgroundColor: isAuthenticated ? theme.palette.success.main : theme.palette.secondary.main,
-                '&:hover': {
-                  backgroundColor: isAuthenticated 
-                    ? alpha(theme.palette.success.main, 0.8)
-                    : alpha(theme.palette.secondary.main, 0.8),
-                },
+                ...(isAuthenticated
+                  ? {
+                      color: theme.palette.success.main,
+                      borderColor: theme.palette.success.main,
+                      '&:hover': {
+                        backgroundColor: alpha(theme.palette.success.main, 0.08),
+                        borderColor: theme.palette.success.main,
+                      },
+                    }
+                  : {
+                      backgroundColor: theme.palette.secondary.main,
+                      '&:hover': {
+                        backgroundColor: alpha(theme.palette.secondary.main, 0.8),
+                      },
+                    }),
               }}
             >
-              {isAuthenticated ? 'Authenticated' : 'Authenticate'}
+              {isAuthenticated ? 'Reauthenticate' : 'Authenticate'}
             </Button>
           )}
 
-          <Button
-            variant={!isConfigured ? 'contained' : 'outlined'}
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={settingsIcon} width={14} height={14} />}
-            onClick={onConfigure}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-              ...(!isConfigured && {
-                backgroundColor: theme.palette.secondary.main,
-                '&:hover': {
-                  backgroundColor: isDark
-                    ? alpha(theme.palette.secondary.main, 0.8)
-                    : alpha(theme.palette.secondary.main, 0.8),
-                },
-              }),
-            }}
-          >
-            {!isConfigured ? 'Configure Now' : 'Configure Settings'}
-          </Button>
-
-          <Button
-            variant="outlined"
-            fullWidth
-            size="small"
-            startIcon={<Iconify icon={refreshIcon} width={14} height={14} />}
-            onClick={onRefresh}
-            disabled={loading}
-            sx={{
-              textTransform: 'none',
-              fontWeight: 500,
-              justifyContent: 'flex-start',
-              borderRadius: 1,
-            }}
-          >
-            {loading ? 'Refreshing...' : 'Refresh Status'}
-          </Button>
+          {connector.authType !== 'NONE' && (
+            <Button
+              variant={!isConfigured ? 'contained' : 'outlined'}
+              fullWidth
+              size="small"
+              startIcon={<Iconify icon={keyIcon} width={14} height={14} />}
+              onClick={onConfigureAuth}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 500,
+                justifyContent: 'flex-start',
+                borderRadius: 1,
+                ...(!isConfigured && {
+                  backgroundColor: theme.palette.secondary.main,
+                  '&:hover': {
+                    backgroundColor: isDark
+                      ? alpha(theme.palette.secondary.main, 0.8)
+                      : alpha(theme.palette.secondary.main, 0.8),
+                  },
+                }),
+              }}
+            >
+              Auth Settings
+            </Button>
+          )}
 
           {isConfigured && (
             <Button
               variant="outlined"
               fullWidth
               size="small"
-              startIcon={
-                <Iconify
-                  icon={isActive ? pauseIcon : playIcon}
-                  width={14}
-                  height={14}
-                />
-              }
-              onClick={() => onToggle(!isActive)}
+              startIcon={<Iconify icon={filterIcon} width={14} height={14} />}
+              onClick={onConfigureSync}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 500,
+                justifyContent: 'flex-start',
+                borderRadius: 1,
+              }}
+            >
+              Filter Settings
+            </Button>
+          )}
+
+          {isConfigured && (
+            <Button
+              variant="outlined"
+              fullWidth
+              size="small"
+              startIcon={<Iconify icon={isActive ? pauseIcon : playIcon} width={14} height={14} />}
+              onClick={() => onToggle(!isActive, 'sync')}
               disabled={!isActive && !canEnable}
               sx={{
                 textTransform: 'none',
                 fontWeight: 500,
                 justifyContent: 'flex-start',
                 borderRadius: 1,
-                color: isActive
-                  ? theme.palette.warning.main
-                  : theme.palette.success.main,
-                borderColor: isActive
-                  ? theme.palette.warning.main
-                  : theme.palette.success.main,
+                color: isActive ? theme.palette.warning.main : theme.palette.success.main,
+                borderColor: isActive ? theme.palette.warning.main : theme.palette.success.main,
                 '&:hover': {
                   backgroundColor: isActive
                     ? isDark
@@ -169,7 +280,7 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                 },
               }}
             >
-              {isActive ? 'Disable' : 'Enable'}
+              {isActive ? 'Disable Sync' : 'Enable Sync'}
             </Button>
           )}
         </Stack>
@@ -198,16 +309,10 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
                   width: 6,
                   height: 6,
                   borderRadius: '50%',
-                  bgcolor: isConfigured
-                    ? theme.palette.warning.main
-                    : theme.palette.text.disabled,
+                  bgcolor: isConfigured ? theme.palette.warning.main : theme.palette.text.disabled,
                 }}
               />
-              <Typography
-                variant="body2"
-                color="text.secondary"
-                sx={{ fontSize: '0.8125rem' }}
-              >
+              <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
                 Configuration
               </Typography>
             </Stack>
@@ -227,41 +332,37 @@ const ConnectorActionsSidebar: React.FC<ConnectorActionsSidebarProps> = ({
             </Typography>
           </Stack>
 
-          <Stack direction="row" alignItems="center" justifyContent="space-between">
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Box
-                sx={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: '50%',
-                  bgcolor: isActive
-                    ? theme.palette.success.main
-                    : theme.palette.text.disabled,
-                }}
-              />
+          {supportsSync && (
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Stack direction="row" alignItems="center" spacing={1}>
+                <Box
+                  sx={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    bgcolor: isActive ? theme.palette.success.main : theme.palette.text.disabled,
+                  }}
+                />
+                <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8125rem' }}>
+                  Connection
+                </Typography>
+              </Stack>
               <Typography
                 variant="body2"
-                color="text.secondary"
-                sx={{ fontSize: '0.8125rem' }}
+                sx={{
+                  fontWeight: 500,
+                  fontSize: '0.8125rem',
+                  color: isActive
+                    ? isDark
+                      ? theme.palette.success.main
+                      : theme.palette.success.main
+                    : theme.palette.text.disabled,
+                }}
               >
-                Connection
+                {isActive ? 'Active' : 'Inactive'}
               </Typography>
             </Stack>
-            <Typography
-              variant="body2"
-              sx={{
-                fontWeight: 500,
-                fontSize: '0.8125rem',
-                color: isActive
-                  ? isDark
-                    ? theme.palette.success.main
-                    : theme.palette.success.main
-                  : theme.palette.text.disabled,
-              }}
-            >
-              {isActive ? 'Active' : 'Inactive'}
-            </Typography>
-          </Stack>
+          )}
         </Stack>
       </Paper>
     </Stack>

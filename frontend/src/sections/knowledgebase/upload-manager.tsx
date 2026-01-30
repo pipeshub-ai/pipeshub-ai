@@ -230,14 +230,22 @@ export default function UploadManager({
     return chunks;
   };
 
-  const buildFormDataForBatch = (batchFiles: ProcessedFile[], kbId: string): FormData => {
+  const buildFormDataForBatch = (batchFiles: ProcessedFile[]): FormData => {
     const formData = new FormData();
-    formData.append('kb_id', kbId);
+
+    // Send all files under 'files' field (for multer compatibility)
     batchFiles.forEach((processedFile) => {
       formData.append('files', processedFile.file);
-      formData.append('file_paths', processedFile.path);
-      formData.append('last_modified', processedFile.lastModified.toString());
     });
+
+    // Send metadata as JSON array - each entry corresponds to file by index
+    // Structure: [{ file_path: string, last_modified: number }, ...]
+    const filesMetadata = batchFiles.map((processedFile) => ({
+      file_path: processedFile.path,
+      last_modified: processedFile.lastModified,
+    }));
+    formData.append('files_metadata', JSON.stringify(filesMetadata));
+
     return formData;
   };
 
@@ -345,7 +353,7 @@ export default function UploadManager({
           nextIndex += 1;
           if (idx >= batches.length) break;
           const batch = batches[idx];
-          const formData = buildFormDataForBatch(batch, knowledgeBaseId);
+          const formData = buildFormDataForBatch(batch);
 
           try {
             // eslint-disable-next-line no-await-in-loop

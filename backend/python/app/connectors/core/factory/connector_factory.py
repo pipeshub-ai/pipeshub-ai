@@ -5,17 +5,15 @@ from typing import Dict, Optional, Type
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.connector.connector_service import BaseConnector
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
+
+# from app.connectors.core.interfaces.data_store.data_store_provider import DataStoreProvider
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.registry.connector import (
     AirtableConnector,
-    AzureBlobConnector,
     CalendarConnector,
     DocsConnector,
     FormsConnector,
-    LinearConnector,
     MeetConnector,
-    NotionConnector,
-    S3Connector,
     SlackConnector,
     SlidesConnector,
     ZendeskConnector,
@@ -24,17 +22,38 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
+from app.connectors.sources.azure_blob.connector import AzureBlobConnector
+
+# from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
+from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
+from app.connectors.sources.dropbox_individual.connector import (
+    DropboxIndividualConnector,
+)
+from app.connectors.sources.google.drive.individual.connector import (
+    GoogleDriveIndividualConnector,
+)
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+from app.connectors.sources.google.gmail.individual.connector import (
+    GoogleGmailIndividualConnector,
+)
+from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
+from app.connectors.sources.google_cloud_storage.connector import GCSConnector
+from app.connectors.sources.linear.connector import LinearConnector
+from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
 from app.connectors.sources.microsoft.outlook.connector import OutlookConnector
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     SharePointConnector,
 )
-from app.connectors.sources.servicenow.servicenow.connector import (
-    ServiceNowConnector,
-)
+from app.connectors.sources.minio.connector import MinIOConnector
+from app.connectors.sources.nextcloud.connector import NextcloudConnector
+from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.s3.connector import S3Connector
+from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
+from app.connectors.sources.zammad.connector import ZammadConnector
 
 
 class ConnectorFactory:
@@ -47,10 +66,26 @@ class ConnectorFactory:
         "outlook": OutlookConnector,
         "confluence": ConfluenceConnector,
         "jira": JiraConnector,
+        "box": BoxConnector,
+        "drive": GoogleDriveIndividualConnector,
+        "driveworkspace": GoogleDriveTeamConnector,
+        "gmail": GoogleGmailIndividualConnector,
+        "gmailworkspace": GoogleGmailTeamConnector,
         "dropbox": DropboxConnector,
+        "dropboxpersonal": DropboxIndividualConnector,
+        "nextcloud": NextcloudConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
         "bookstack": BookStackConnector,
+        "s3": S3Connector,
+        "minio": MinIOConnector,
+        "gcs": GCSConnector,
+        "kb": KnowledgeBaseConnector,
+        "azureblob": AzureBlobConnector,
+        # "azurefiles": AzureFilesConnector,
+        "linear": LinearConnector,
+        "notion": NotionConnector,
+        "zammad": ZammadConnector,
     }
 
     # Beta connector definitions - single source of truth
@@ -63,11 +98,7 @@ class ConnectorFactory:
         'slides': SlidesConnector,
         'docs': DocsConnector,
         'zendesk': ZendeskConnector,
-        'linear': LinearConnector,
-        's3': S3Connector,
-        'notion': NotionConnector,
         'airtable': AirtableConnector,
-        'azureblob': AzureBlobConnector,
     }
 
 
@@ -110,14 +141,15 @@ class ConnectorFactory:
         cls,
         name: str,
         logger: logging.Logger,
-        data_store_provider: ArangoDataStore,
+        data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create a connector instance"""
         connector_class = cls.get_connector_class(name)
         if not connector_class:
-            logger.error(f"Unknown connector type: {name}")
+            logger.error(f"Unknown connector type: {name} {connector_id}")
             return None
 
         try:
@@ -125,12 +157,13 @@ class ConnectorFactory:
                 logger=logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
+                connector_id=connector_id,
                 **kwargs
             )
-            logger.info(f"Created {name} connector successfully")
+            logger.info(f"Created {name} {connector_id} connector successfully")
             return connector
         except Exception as e:
-            logger.error(f"❌ Failed to create {name} connector: {str(e)}")
+            logger.error(f"❌ Failed to create {name} {connector_id} connector: {str(e)}")
             return None
 
     @classmethod
@@ -138,8 +171,9 @@ class ConnectorFactory:
         cls,
         name: str,
         logger: logging.Logger,
-        data_store_provider: ArangoDataStore,
+        data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create and initialize a connector"""
@@ -148,16 +182,20 @@ class ConnectorFactory:
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
+            connector_id=connector_id,
             **kwargs
         )
 
         if connector:
             try:
-                await connector.init()
-                logger.info(f"Initialized {name} connector successfully")
+                success = await connector.init()
+                if not success:
+                    logger.error(f"❌ Failed to initialize {name} {connector_id} connector")
+                    return None
+                logger.info(f"Initialized {name} {connector_id} connector successfully")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to initialize {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}")
                 return None
 
         return None
@@ -167,8 +205,9 @@ class ConnectorFactory:
         cls,
         name: str,
         logger: logging.Logger,
-        data_store_provider: ArangoDataStore,
+        data_store_provider: GraphDataStore,
         config_service: ConfigurationService,
+        connector_id: str,
         **kwargs
     ) -> Optional[BaseConnector]:
         """Create, initialize, and start sync for a connector"""
@@ -177,6 +216,7 @@ class ConnectorFactory:
             logger=logger,
             data_store_provider=data_store_provider,
             config_service=config_service,
+            connector_id=connector_id,
             **kwargs
         )
 
@@ -184,10 +224,10 @@ class ConnectorFactory:
             try:
                 import asyncio
                 asyncio.create_task(connector.run_sync())
-                logger.info(f"Started sync for {name} connector")
+                logger.info(f"Started sync for {name} {connector_id} connector")
                 return connector
             except Exception as e:
-                logger.error(f"❌ Failed to start sync for {name} connector: {str(e)}")
+                logger.error(f"❌ Failed to start sync for {name} {connector_id} connector: {str(e)}")
                 return None
 
         return None

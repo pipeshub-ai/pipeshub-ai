@@ -12,6 +12,7 @@ export interface ConfiguredModel {
   isDefault: boolean;
   isMultimodal?: boolean;
   isReasoning?: boolean;
+  contextLength?: number;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -32,6 +33,7 @@ export interface ModelData {
   isMultimodal?: boolean;
   isReasoning?: boolean;
   isDefault?: boolean;
+  contextLength?: number;
   name?: string;
 }
 

@@ -3,7 +3,7 @@ import type { Theme, SxProps } from '@mui/material';
 import { z as zod } from 'zod';
 import { useForm } from 'react-hook-form';
 import { useDispatch } from 'react-redux';
-import { useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import eyeIcon from '@iconify-icons/solar/eye-bold';
 import { zodResolver } from '@hookform/resolvers/zod';
 import eyeClosedIcon from '@iconify-icons/solar/eye-closed-bold';
@@ -14,15 +14,21 @@ import Alert from '@mui/material/Alert';
 import IconButton from '@mui/material/IconButton';
 import LoadingButton from '@mui/lab/LoadingButton';
 import InputAdornment from '@mui/material/InputAdornment';
+import CircularProgress from '@mui/material/CircularProgress';
+import Tooltip from '@mui/material/Tooltip';
 
 import { useRouter } from 'src/routes/hooks';
 
 import { useBoolean } from 'src/hooks/use-boolean';
+import { useTurnstile } from 'src/hooks/use-turnstile';
+
+import { CONFIG } from 'src/config-global';
 
 import { setEmail } from 'src/store/auth-slice';
 
 import { Iconify } from 'src/components/iconify';
 import { Form, Field } from 'src/components/hook-form';
+import { TurnstileWidget, type TurnstileWidgetHandle } from 'src/components/turnstile/turnstile-widget';
 
 import { useAuthContext } from '../../hooks';
 import { signInWithPassword } from '../../context/jwt';
@@ -44,7 +50,7 @@ interface ErrorResponse {
 
 interface PasswordSignInProps {
   defaultEmail?: string;
-  onForgotPassword: () => void;
+  onForgotPassword: (turnstileToken?: string | null) => void;
   sx?: SxProps<Theme>;
 }
 
@@ -63,6 +69,16 @@ export default function PasswordSignIn({
   const [errorMsg, setErrorMsg] = useState<string>('');
 
   const password = useBoolean();
+
+  const { turnstileToken, handleSuccess, handleError, handleExpire, resetTurnstile } = useTurnstile();
+  const turnstileRef = useRef<TurnstileWidgetHandle>(null);
+
+  const resetCaptcha = useCallback(() => {
+    if (CONFIG.turnstileSiteKey) {
+      turnstileRef.current?.reset();
+      resetTurnstile();
+    }
+  }, [resetTurnstile]);
 
   const methods = useForm<SignInSchemaType>({
     resolver: zodResolver(SignInSchema),
@@ -90,13 +106,20 @@ export default function PasswordSignIn({
 
   const onSubmit = handleSubmit(async (data: SignInSchemaType): Promise<void> => {
     try {
-      await signInWithPassword({ email: data.email, password: data.password });
+      await signInWithPassword({ 
+        email: data.email, 
+        password: data.password,
+        turnstileToken 
+      });
 
       await checkUserSession?.();
 
       router.refresh();
     } catch (error) {
       setErrorMsg(typeof error === 'string' ? error : (error as ErrorResponse).errorMessage);
+      
+      // Reset CAPTCHA on error
+      resetCaptcha();
     }
   });
 
@@ -105,14 +128,35 @@ export default function PasswordSignIn({
       <Field.Text name="email" label="Email address" InputLabelProps={{ shrink: true }} />
 
       <Box gap={3} display="flex" flexDirection="column">
-        <Link
-          variant="body2"
-          color="inherit"
-          onClick={onForgotPassword}
-          sx={{ alignSelf: 'flex-end', cursor: 'pointer' }}
-        >
-          Forgot Password
-        </Link>
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 1 }}>
+          <Tooltip 
+            title={CONFIG.turnstileSiteKey && !turnstileToken ? "Please wait for security verification" : ""}
+            placement="left"
+          >
+            <Link
+              variant="body2"
+              color="inherit"
+              onClick={() => {
+                onForgotPassword(turnstileToken);
+                // Reset CAPTCHA when navigating to forgot password
+                resetCaptcha();
+              }}
+              sx={{ 
+                cursor: CONFIG.turnstileSiteKey && !turnstileToken ? 'not-allowed' : 'pointer',
+                opacity: CONFIG.turnstileSiteKey && !turnstileToken ? 0.6 : 1,
+                pointerEvents: CONFIG.turnstileSiteKey && !turnstileToken ? 'none' : 'auto',
+                '&:hover': {
+                  textDecoration: 'underline',
+                },
+              }}
+            >
+              Forgot Password
+            </Link>
+          </Tooltip>
+          {CONFIG.turnstileSiteKey && !turnstileToken && (
+            <CircularProgress size={14} sx={{ color: 'text.secondary' }} />
+          )}
+        </Box>
 
         <Field.Text
           name="password"
@@ -131,6 +175,20 @@ export default function PasswordSignIn({
         />
       </Box>
 
+      {CONFIG.turnstileSiteKey && (
+        <TurnstileWidget
+          ref={turnstileRef}
+          siteKey={CONFIG.turnstileSiteKey}
+          onSuccess={handleSuccess}
+          onError={handleError}
+          onExpire={handleExpire}
+          size="compact"
+        />
+      )}
+      {/* {CONFIG.turnstileSiteKey && (
+        <div className="cf-turnstile" data-sitekey={CONFIG.turnstileSiteKey}></div>
+      )} */}
+
       <LoadingButton
         fullWidth
         color="inherit"
@@ -139,9 +197,10 @@ export default function PasswordSignIn({
         variant="contained"
         loading={isSubmitting}
         loadingIndicator="Sign in..."
+        disabled={!turnstileToken && !!CONFIG.turnstileSiteKey}
         sx={{ mt: 4 }}
       >
-        Sign in
+        {CONFIG.turnstileSiteKey && !turnstileToken ? 'Verifying...' : 'Sign in'}
       </LoadingButton>
     </Box>
   );

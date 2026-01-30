@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
@@ -12,9 +13,11 @@ from msgraph import GraphServiceClient
 from msgraph.generated.models.base_delta_function_response import (
     BaseDeltaFunctionResponse,
 )
+from msgraph.generated.models.drive import Drive
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
+from msgraph.generated.models.search_response import SearchResponse
 from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 
 from app.models.entities import AppUser, FileRecord
@@ -126,7 +129,7 @@ class GroupDeltaGetResponse(BaseDeltaFunctionResponse, Parsable):
         writer.write_collection_of_object_values("value", self.value)
 
 class MSGraphClient:
-    def __init__(self, app_name: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
+    def __init__(self, app_name: str, connector_id: str, client: GraphServiceClient, logger: Logger, max_requests_per_second: int = 10) -> None:
         """
         Initializes the OneDriveSync instance with a rate limiter.
 
@@ -139,6 +142,7 @@ class MSGraphClient:
         self.app_name = app_name
         self.logger = logger
         self.rate_limiter = AsyncLimiter(max_requests_per_second, 1)
+        self.connector_id = connector_id
 
     async def get_all_user_groups(self) -> List[dict]:
         """
@@ -149,15 +153,19 @@ class MSGraphClient:
         """
         try:
             groups = []
+
             async with self.rate_limiter:
                 result = await self.client.groups.get()
 
-            groups.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.get_next_page(result.odata_next_link)
-                groups.extend(result.value)
+            while result:
+                if result.value:
+                    groups.extend(result.value)
 
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.groups.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(groups)} groups.")
             return groups
@@ -183,11 +191,15 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.groups.by_group_id(group_id).members.get()
 
-            members.extend(result.value)
-            while result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.groups.by_group_id(group_id).members.get_next_page(result.odata_next_link)
-                members.extend(result.value)
+            while result:
+                if result.value:
+                    members.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.groups.by_group_id(group_id).members.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             return members
 
@@ -211,27 +223,30 @@ class MSGraphClient:
                             'mail', 'jobTitle', 'department', 'surname']
                 )
 
-                # Create request configuration
                 request_configuration = RequestConfiguration(
                     query_parameters=query_params
                 )
 
                 result = await self.client.users.get(request_configuration)
-                users.extend(result.value)
 
-                while result.odata_next_link:
-                    async with self.rate_limiter:
-                        result = await self.client.users.get_next_page(result.odata_next_link)
+            while result:
+                if result.value:
                     users.extend(result.value)
-                self.logger.info(f"Retrieved {len(users)} users.")
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.users.with_url(result.odata_next_link).get()
+                else:
+                    break
+
+            self.logger.info(f"Retrieved {len(users)} users.")
 
             user_list: List[AppUser] = []
             for user in users:
                 user_list.append(AppUser(
                     app_name=self.app_name,
+                    connector_id=self.connector_id,
                     source_user_id=user.id,
-                    first_name=user.display_name,
-                    last_name=user.surname,
                     full_name=user.display_name,
                     email=user.mail or user.user_principal_name,
                     is_active=user.account_enabled,
@@ -272,6 +287,61 @@ class MSGraphClient:
             # Log debug instead of error because sometimes users might be deleted before we fetch them
             self.logger.warning(f"Could not fetch details for user {user_id}: {ex}")
             return None
+
+    async def get_user_info(self, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Fetches user information (email and display name) by user ID.
+
+        Args:
+            user_id: The user identifier
+
+        Returns:
+            Dict with 'email' and 'display_name' keys, or None if user not found
+        """
+        try:
+            async with self.rate_limiter:
+                query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
+                    select=['id', 'mail', 'userPrincipalName', 'displayName']
+                )
+                request_configuration = RequestConfiguration(
+                    query_parameters=query_params
+                )
+
+                user = await self.client.users.by_user_id(user_id).get(request_configuration)
+
+                if user:
+                    return {
+                        'email': user.mail or user.user_principal_name,
+                        'display_name': user.display_name
+                    }
+            return None
+        except Exception as ex:
+            self.logger.warning(f"Could not fetch user info for {user_id}: {ex}")
+            return None
+
+    async def get_user_drive(self, user_id: str) -> Optional[Drive]:
+        """
+        Check if a user has a OneDrive drive provisioned.
+
+        Args:
+            user_id: The user identifier
+
+        Returns:
+            Drive object if user has OneDrive, None otherwise
+
+        Raises:
+            ODataError: If user doesn't have OneDrive or other API errors
+        """
+        try:
+            async with self.rate_limiter:
+                drive = await self.client.users.by_user_id(user_id).drive.get()
+                return drive
+        except ODataError as e:
+            # Re-raise to let caller handle it
+            raise e
+        except Exception as ex:
+            self.logger.error(f"Error fetching drive for user {user_id}: {ex}")
+            raise ex
 
     async def get_delta_response_sharepoint(self, url: str) -> dict:
         response = {'delta_link': None, 'next_link': None, 'drive_items': []}
@@ -426,14 +496,16 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get()
 
-            if result and result.value:
-                permissions.extend(result.value)
-
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.get_next_page(result.odata_next_link)
-                if result and result.value:
+            while result:
+                if result.value:
                     permissions.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        # Use with_url to handle pagination correctly
+                        result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(item_id).permissions.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(permissions)} permissions for file ID {item_id}.")
             return permissions
@@ -460,15 +532,15 @@ class MSGraphClient:
             async with self.rate_limiter:
                 result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.get()
 
-            if result and result.value:
-                children.extend(result.value)
-
-            # Handle pagination
-            while result and hasattr(result, 'odata_next_link') and result.odata_next_link:
-                async with self.rate_limiter:
-                    result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
-                if result and result.value:
+            while result:
+                if result.value:
                     children.extend(result.value)
+
+                if hasattr(result, 'odata_next_link') and result.odata_next_link:
+                    async with self.rate_limiter:
+                        result = await self.client.drives.by_drive_id(drive_id).items.by_drive_item_id(folder_id).children.with_url(result.odata_next_link).get()
+                else:
+                    break
 
             self.logger.info(f"Retrieved {len(children)} children for folder {folder_id}")
             return children
@@ -502,3 +574,55 @@ class MSGraphClient:
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")
             return None
+
+    async def search_query(
+        self,
+        entity_types: List[str],
+        query: str = "*",
+        page: int = 1,
+        limit: int = 20,
+        region: str = "NAM"
+    ) -> dict:
+        """
+        Raw Search via MS Graph. Returns the raw response object/dict.
+        """
+        try:
+            offset = (page - 1) * limit
+            search_query = query.strip() if query and query.strip() else "*"
+
+            search_request = {
+                "requests": [
+                    {
+                        "entityTypes": entity_types,
+                        "query": {"queryString": search_query},
+                        "from": offset,
+                        "size": limit,
+                        "region": region,
+                        # distinct_fields can be requested here if needed
+                        # "fields": ["ListTitle", "title", "path"]
+                    }
+                ]
+            }
+
+            async with self.rate_limiter:
+                request_info = RequestInformation(Method.POST, "https://graph.microsoft.com/v1.0/search/query")
+                request_info.headers.add("Content-Type", "application/json")
+                request_info.content = json.dumps(search_request).encode('utf-8')
+
+                error_mapping = {
+                    "4XX": ODataError,
+                    "5XX": ODataError,
+                }
+
+                result = await self.client.request_adapter.send_async(
+                    request_info=request_info,
+                    parsable_factory=SearchResponse,
+                    error_map=error_mapping
+                )
+
+                # Return the raw result directly
+                return result
+
+        except Exception as ex:
+            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            raise

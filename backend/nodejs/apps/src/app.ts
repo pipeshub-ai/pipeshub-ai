@@ -19,6 +19,7 @@ import {
 } from './modules/enterprise_search/routes/es.routes';
 import { EnterpriseSearchAgentContainer } from './modules/enterprise_search/container/es.container';
 import { requestContextMiddleware } from './libs/middlewares/request.context';
+import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { createUserAccountRouter } from './modules/auth/routes/userAccount.routes';
 import { UserManagerContainer } from './modules/user_management/container/userManager.container';
@@ -34,6 +35,7 @@ import { ConfigurationManagerContainer } from './modules/configuration_manager/c
 import { MailServiceContainer } from './modules/mail/container/mailService.container';
 import { createMailServiceRouter } from './modules/mail/routes/mail.routes';
 import { createConnectorRouter } from './modules/tokens_manager/routes/connectors.routes';
+import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { PrometheusService } from './libs/services/prometheus/prometheus.service';
 import { StorageContainer } from './modules/storage/container/storage.container';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -43,16 +45,21 @@ import {
 } from './modules/tokens_manager/config/config';
 import { NotificationService } from './modules/notification/service/notification.service';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
-import {
-  createSwaggerContainer,
-  SwaggerConfig,
-  SwaggerService,
-} from './modules/docs/swagger.container';
-import { registerStorageSwagger } from './modules/storage/docs/swagger';
+import { ApiDocsContainer } from './modules/api-docs/docs.container';
+import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
 import createCrawlingManagerRouter from './modules/crawling_manager/routes/cm_routes';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
+import { checkAndMigrateIfNeeded } from './libs/keyValueStore/migration/kvStoreMigration.service';
+import { StoreType } from './libs/keyValueStore/constants/KeyValueStoreType';
 import { createTeamsRouter } from './modules/user_management/routes/teams.routes';
+import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
+import {
+  createOAuthProviderRouter,
+  createOAuthClientsRouter,
+  createOIDCDiscoveryRouter,
+} from './modules/oauth_provider/routes';
+import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 
 const loggerConfig = {
   service: 'Application',
@@ -72,6 +79,8 @@ export class Application {
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
   private crawlingManagerContainer!: Container;
+  private apiDocsContainer!: Container;
+  private oauthProviderContainer!: Container;
   private port: number;
 
   constructor() {
@@ -80,6 +89,7 @@ export class Application {
     this.server = http.createServer(this.app);
   }
 
+
   async initialize(): Promise<void> {
     try {
       // Initialize Logger
@@ -87,6 +97,18 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+
+      // Ensure Kafka topics exist (important for Kafka deployments where auto-create is disabled)
+      try {
+        this.logger.info('Ensuring Kafka topics exist...');
+        await ensureKafkaTopicsExist(appConfig.kafka, this.logger, REQUIRED_KAFKA_TOPICS);
+        this.logger.info('Kafka topics check completed');
+      } catch (kafkaError: any) {
+        this.logger.warn(
+          `Could not verify/create Kafka topics: ${kafkaError.message}.`
+        );
+        // Don't throw - allow app to continue; topics might already exist or be created elsewhere
+      }
 
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
@@ -132,6 +154,11 @@ export class Application {
           configurationManagerConfig,
           appConfig,
         );
+
+      this.oauthProviderContainer = await OAuthProviderContainer.initialize(
+        configurationManagerConfig,
+        appConfig,
+      );
 
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
@@ -179,10 +206,18 @@ export class Application {
         .toSelf()
         .inSingletonScope();
 
+      this.oauthProviderContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
+      // Initialize API Documentation
+      this.apiDocsContainer = await ApiDocsContainer.initialize();
+
       // Configure Express
       this.configureMiddleware(appConfig);
       this.configureRoutes();
-      this.setupSwagger();
+      this.setupApiDocs();
       this.configureErrorHandling();
 
       this.notificationContainer
@@ -207,44 +242,54 @@ export class Application {
   }
 
   private configureMiddleware(appConfig: AppConfig): void {
-    const isDev = process.env.NODE_ENV !== 'production';
-    // Security middleware - configure helmet once with all options
-    const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
-    const connectSrc = [
-      ...new Set([
-        "'self'",
-        'https://login.microsoftonline.com',
-        'https://graph.microsoft.com',
-        ...envConnectSrcs,
-        appConfig.connectorPublicUrl,
-      ]),
-    ].filter(Boolean);
+    const isStrictMode = process.env.STRICT_MODE === 'true';
+    if (isStrictMode) {
+      // Security middleware - configure helmet once with all options
+      const envConnectSrcs = process.env.CSP_CONNECT_SRCS?.split(',').filter(Boolean) ?? [];
+      const connectSrc = [
+        ...new Set([
+          "'self'",
+          "https://static.cloudflareinsights.com",
+          // Login with google urls
+          'https://accounts.google.com',
+          'https://www.googleapis.com',
+          // Login with microsoft urls
+          'https://login.microsoftonline.com',
+          'https://graph.microsoft.com',
+          ...envConnectSrcs,
+          appConfig.connectorPublicUrl,
+        ]),
+      ].filter(Boolean);
 
-    this.app.use(helmet({
-      crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
-      contentSecurityPolicy: {
-        directives: {
-          defaultSrc: ["'self'"],
-          scriptSrc: [
-            "'self'",
-            ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-              "https://cdnjs.cloudflare.com",
-              "https://login.microsoftonline.com",
-              "https://graph.microsoft.com",
-            ]),
-            ...(isDev ? ["'unsafe-inline'", "'unsafe-eval'"] : [])
-          ],
-          connectSrc: connectSrc,
-          objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-          frameSrc: ["'self'", "blob:"], // PDF rendering in frames
-          workerSrc: ["'self'", "blob:"], // PDF.js workers
-          childSrc: ["'self'", "blob:"], // PDF rendering
-          imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
-          fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-          mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
+      this.app.use(helmet({
+        crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
+        contentSecurityPolicy: {
+          directives: {
+            defaultSrc: ["'self'"],
+            scriptSrc: [
+              "'self'",
+              ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+                "https://cdnjs.cloudflare.com",
+                "https://login.microsoftonline.com",
+                "https://graph.microsoft.com",
+                "https://accounts.google.com",
+                "https://challenges.cloudflare.com",
+                "https://api.iconify.design",
+                "https://api.simplesvg.com"
+              ]),
+            ],
+            connectSrc: connectSrc,
+            objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
+            frameSrc: ["'self'", "blob:"], // PDF rendering in frames
+            workerSrc: ["'self'", "blob:"], // PDF.js workers
+            childSrc: ["'self'", "blob:"], // PDF rendering
+            imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
+            fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
+            mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
+          }
         }
-      }
-    }));
+      }));
+    }
 
     // Request context middleware
     this.app.use(requestContextMiddleware);
@@ -263,6 +308,7 @@ export class Application {
     // Body parsing
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
+    this.app.use(xssSanitizationMiddleware);
 
     // Logging
     this.app.use(
@@ -302,7 +348,7 @@ export class Application {
     );
     this.app.use('/api/v1/org', createOrgRouter(this.entityManagerContainer));
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer, this.entityManagerContainer));
+    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
 
     this.app.use(
       '/api/v1/userAccount',
@@ -343,6 +389,12 @@ export class Application {
       createConnectorRouter(this.tokenManagerContainer),
     );
 
+    // OAuth config routes
+    this.app.use(
+      '/api/v1/oauth',
+      createOAuthRouter(this.tokenManagerContainer),
+    );
+
     // knowledge base routes
     this.app.use(
       '/api/v1/knowledgeBase',
@@ -364,6 +416,26 @@ export class Application {
     this.app.use(
       '/api/v1/crawlingManager',
       createCrawlingManagerRouter(this.crawlingManagerContainer),
+    );
+
+    // pipeshub OAuth Provider routes
+    this.app.use(
+      '/api/v1/oauth2',
+      createOAuthProviderRouter(this.oauthProviderContainer),
+    );
+
+    // OAuth Clients routes (OAuth app management)
+    this.app.use(
+      '/api/v1/oauth-clients',
+      createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    // OIDC Discovery routes - mounted at root level per RFC 8414
+    // Exposes: GET /.well-known/openid-configuration
+    //          GET /.well-known/jwks.json
+    this.app.use(
+      '/.well-known',
+      createOIDCDiscoveryRouter(this.oauthProviderContainer),
     );
   }
 
@@ -403,6 +475,8 @@ export class Application {
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
+      await ApiDocsContainer.dispose();
+      await OAuthProviderContainer.dispose();
 
       this.logger.info('Application stopped successfully');
     } catch (error) {
@@ -430,41 +504,62 @@ export class Application {
     }
   }
 
-  private setupSwagger() {
+  private setupApiDocs(): void {
     try {
-      // Create the Swagger configuration
-      const swaggerConfig: SwaggerConfig = {
-        title: 'PipesHub API',
-        version: '1.0.0',
-        description: 'RESTful API for PipesHub services',
-        contact: {
-          name: 'API Support',
-          email: 'contact@pipeshub.com',
-        },
-        basePath: '/api-docs',
-      };
-
-      // Create container
-      const swaggerContainer = createSwaggerContainer();
-
-      // Get SwaggerService from container - IMPORTANT: Use the class directly, not as a string token
-      const swaggerService = swaggerContainer.get(SwaggerService);
-
-      // Initialize with app and config
-      swaggerService.initialize(this.app, swaggerConfig);
-
-      // Register module documentation
-      registerStorageSwagger(swaggerService);
-      // Register other modules as needed
-
-      // Setup the Swagger UI routes
-      swaggerService.setupSwaggerRoutes();
-
-      this.logger.info('Swagger documentation initialized successfully');
+      // Mount the API documentation UI at /api/v1/docs
+      this.app.use('/api/v1/docs', createApiDocsRouter(this.apiDocsContainer));
+      this.logger.info('API documentation initialized at /api/v1/docs');
     } catch (error) {
-      this.logger.error('Failed to initialize Swagger documentation', {
+      this.logger.error('Failed to initialize API documentation', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
+    }
+  }
+
+  /**
+   * Run migration from etcd to Redis BEFORE loading app config.
+   * This ensures secrets exist in Redis before we try to read them.
+   * Must be called before initialize().
+   */
+  async preInitMigration(): Promise<void> {
+    const logger = Logger.getInstance(loggerConfig);
+    const configurationManagerConfig = loadConfigurationManagerConfig();
+
+    if (configurationManagerConfig.storeType !== StoreType.Redis) {
+      logger.debug('KV store is not Redis, skipping pre-init migration check');
+      return;
+    }
+
+    logger.info('Checking KV store migration status before loading config...');
+    const migrationResult = await checkAndMigrateIfNeeded({
+      etcd: {
+        host: configurationManagerConfig.storeConfig.host,
+        port: configurationManagerConfig.storeConfig.port,
+        dialTimeout: configurationManagerConfig.storeConfig.dialTimeout,
+      },
+      redis: {
+        host: configurationManagerConfig.redisConfig.host,
+        port: configurationManagerConfig.redisConfig.port,
+        password: configurationManagerConfig.redisConfig.password,
+        db: configurationManagerConfig.redisConfig.db,
+        keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
+      },
+    });
+
+    if (migrationResult !== null) {
+      if (migrationResult.success) {
+        logger.info('KV store migration completed successfully', {
+          migratedKeys: migrationResult.migratedKeys.length,
+        });
+      } else {
+        logger.error('KV store migration failed', {
+          error: migrationResult.error,
+          failedKeys: migrationResult.failedKeys,
+        });
+        throw new Error(`KV store migration failed: ${migrationResult.error}`);
+      }
+    } else {
+      logger.info('KV store migration not needed (already completed or etcd not available)');
     }
   }
 }

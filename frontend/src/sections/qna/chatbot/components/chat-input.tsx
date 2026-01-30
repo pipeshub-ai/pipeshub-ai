@@ -66,7 +66,6 @@ const ChatInput: React.FC<ChatInputProps> = ({
   onFiltersChange,
   models,
 }) => {
-  console.log('models', models);
   const [localValue, setLocalValue] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [hasText, setHasText] = useState(false);
@@ -128,7 +127,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
-  const appItems = useMemo(() => apps || [], [apps]);
+  // Filter out KB apps at the source - they're handled separately via knowledgeBases
+  const appItems = useMemo(() => (apps || []).filter((app) => app?.name !== 'KB'), [apps]);
   // Prefetch app icons to avoid flicker when switching tabs
   useEffect(() => {
     try {
@@ -485,7 +485,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
               }}
             >
               {/* Chat Mode Selector */}
-              <Box sx={{ display: 'flex', gap: 1 }}>
+              <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
                 {CHAT_MODES.map((mode) => (
                   <Chip
                     key={mode.id}
@@ -523,7 +523,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 ))}
               </Box>
               <Box
-                sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center' }}
+                sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center', }}
               >
                 {/* Unified Resources selector with badge */}
                 <Tooltip title="Select apps and knowledge bases">

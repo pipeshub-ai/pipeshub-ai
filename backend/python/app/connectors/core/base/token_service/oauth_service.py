@@ -1,6 +1,7 @@
 import base64
 import hashlib
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -57,6 +58,7 @@ class OAuthToken:
     token_type: str = "Bearer"
     expires_in: Optional[int] = None
     refresh_token: Optional[str] = None
+    refresh_token_expires_in: Optional[int] = None  # used by Microsoft/OneDrive
     scope: Optional[str] = None
     id_token: Optional[str] = None
     created_at: datetime = field(default_factory=datetime.now)
@@ -86,19 +88,24 @@ class OAuthToken:
             "token_type": self.token_type,
             "expires_in": self.expires_in,
             "refresh_token": self.refresh_token,
+            "refresh_token_expires_in": self.refresh_token_expires_in,
             "scope": self.scope,
             "id_token": self.id_token,
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
-            "account_id": self.account_id
+            "account_id": self.account_id,
+            "team_id": self.team_id
         }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
-        """Create token from dictionary"""
+        """Create token from dictionary, filtering out unknown fields"""
         if 'created_at' in data and isinstance(data['created_at'], str):
             data['created_at'] = datetime.fromisoformat(data['created_at'])
-        return cls(**data)
+        # Filter to only known fields to handle varying OAuth provider responses
+        known_fields = {f.name for f in cls.__dataclass_fields__.values()}
+        filtered_data = {k: v for k, v in data.items() if k in known_fields}
+        return cls(**filtered_data)
 
 
 class OAuthProvider:
@@ -148,8 +155,59 @@ class OAuthProvider:
         params.update(self.config.additional_params)
         params.update(kwargs)
 
-
         return f"{self.config.authorize_url}?{urlencode(params)}"
+
+    async def _make_token_request(self, data: dict) -> dict:
+        """Helper to make a token request, handling different auth methods."""
+        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
+        use_json_body = self.config.additional_params.get("use_json_body", False)
+
+        # Notion and some other providers use Basic Auth header instead of body params
+        if not use_basic_auth:
+            data["client_id"] = self.config.client_id
+            data["client_secret"] = self.config.client_secret
+
+        session = await self.session
+        headers = {}
+
+        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
+        if use_basic_auth:
+            credentials = f"{self.config.client_id}:{self.config.client_secret}"
+            encoded_credentials = base64.b64encode(credentials.encode()).decode()
+            headers["Authorization"] = f"Basic {encoded_credentials}"
+
+            # Add Notion-specific version header if present
+            if "notion_version" in self.config.additional_params:
+                headers["Notion-Version"] = self.config.additional_params["notion_version"]
+
+        # Prepare POST request kwargs (JSON or form-encoded)
+        post_kwargs = {"headers": headers}
+        if use_json_body:
+            headers["Content-Type"] = "application/json"
+            post_kwargs["json"] = data
+        else:
+            post_kwargs["data"] = data
+
+        # Make token request
+        async with session.post(self.config.token_url, **post_kwargs) as response:
+            # Check for error status codes (4xx and 5xx)
+            if response.status >= HttpStatusCode.BAD_REQUEST.value:
+                # Get detailed error info for debugging
+                error_text = await response.text()
+                # Log detailed error but mask sensitive data
+                FIRST_8_CHARS = 8
+                masked_client_id = self.config.client_id[:FIRST_8_CHARS] + "..." if len(self.config.client_id) > FIRST_8_CHARS else "***"
+                error_msg = (
+                    f"OAuth token request failed with status {response.status}. "
+                    f"Token URL: {self.config.token_url}, "
+                    f"Redirect URI: {self.config.redirect_uri}, "
+                    f"Client ID (masked): {masked_client_id}, "
+                    f"Response: {error_text}"
+                )
+                raise Exception(error_msg)
+
+            response.raise_for_status()
+            return await response.json()
 
     async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
         # Note: State validation is handled in handle_callback, not here
@@ -159,18 +217,13 @@ class OAuthProvider:
             "grant_type": GrantType.AUTHORIZATION_CODE.value,
             "code": code,
             "redirect_uri": self.config.redirect_uri,
-            "client_id": self.config.client_id,
-            "client_secret": self.config.client_secret,
         }
+
         if code_verifier:
             data["code_verifier"] = code_verifier
 
-        session = await self.session
-        async with session.post(self.config.token_url, data=data) as response:
-            response.raise_for_status()
-            token_data = await response.json()
-
-        token = OAuthToken(**token_data)
+        token_data = await self._make_token_request(data)
+        token = OAuthToken.from_dict(token_data)
         return token
 
     async def refresh_access_token(self, refresh_token: str) -> OAuthToken:
@@ -178,21 +231,21 @@ class OAuthProvider:
         data = {
             "grant_type": GrantType.REFRESH_TOKEN.value,
             "refresh_token": refresh_token,
-            "client_id": self.config.client_id,
-            "client_secret": self.config.client_secret
         }
 
-        session = await self.session
-        async with session.post(self.config.token_url, data=data) as response:
-            if response.status == HttpStatusCode.FORBIDDEN.value:
-                # Log additional details for 403 errors (common with expired/invalid refresh tokens)
-                error_text = await response.text()
-                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. Response: {error_text}")
-            response.raise_for_status()
-            token_data = await response.json()
+        try:
+            token_data = await self._make_token_request(data)
+        except Exception as e:
+            # Enhance error message for 403 errors (common with expired/invalid refresh tokens)
+            error_str = str(e)
+            # Extract status code from error message using regex for more reliable matching
+            status_match = re.search(r"status (\d+)", error_str)
+            if status_match and int(status_match.group(1)) == HttpStatusCode.FORBIDDEN.value:
+                raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}")
+            raise
 
         # Create new token with current timestamp
-        token = OAuthToken(**token_data)
+        token = OAuthToken.from_dict(token_data)
 
         # Handle different OAuth providers:
         # - Google: doesn't return refresh_token on refresh, so preserve the old one
@@ -251,7 +304,8 @@ class OAuthProvider:
         state = self.config.generate_state()
         session_data: Dict[str, Any] = {
             "created_at": datetime.utcnow().isoformat(),
-            "state": state
+            "state": state,
+            "used_codes": []  # Start fresh with empty used_codes for new auth flow
         }
         if use_pkce:
             code_verifier = self._gen_code_verifier()
@@ -268,7 +322,10 @@ class OAuthProvider:
         config = await self.key_value_store.get_key(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
+        # Replace entire oauth session data - this clears any old state, codes, etc.
+        # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
+
         await self.key_value_store.create_key(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
@@ -280,29 +337,70 @@ class OAuthProvider:
         oauth_data = config.get('oauth', {}) or {}
         stored_state = oauth_data.get("state")
 
-        # Validate state
+        # Validate state first (must match for security)
         if not stored_state or stored_state != state:
-            # Idempotent handling: if credentials already exist, treat as success
+            # Check if this is a duplicate callback (code already used, credentials exist)
+            # This handles browser refreshes or duplicate callback attempts
             existing_creds = config.get('credentials')
-            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+            used_codes = oauth_data.get("used_codes", [])
+
+            # Only treat as success if:
+            # 1. Credentials exist AND
+            # 2. This specific code was already used (indicates duplicate callback)
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token') and code in used_codes:
                 try:
                     token = OAuthToken.from_dict(existing_creds)
+                    self.token = token
+                    return token
                 except (TypeError, ValueError, KeyError):
                     # If stored creds are malformed, fall back to error
                     raise ValueError("Invalid or expired state")
-                self.token = token
-                return token
-            # No existing credentials -> genuine invalid/expired state
+
+            # State mismatch and not a duplicate callback -> genuine error
             raise ValueError("Invalid or expired state")
 
-        token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
-        self.token = token
+        # Check if this specific code has already been used (prevent duplicate code usage)
+        used_codes = oauth_data.get("used_codes", [])
+        if code in used_codes:
+            # This code was already used - check if we have valid credentials from it
+            existing_creds = config.get('credentials')
+            if isinstance(existing_creds, dict) and existing_creds.get('access_token'):
+                # Return existing credentials from this code (duplicate callback protection)
+                try:
+                    token = OAuthToken.from_dict(existing_creds)
+                    self.token = token
+                    return token
+                except (TypeError, ValueError, KeyError):
+                    pass
+            # Code was used but no valid credentials - treat as error
+            raise ValueError("Authorization code has already been used")
 
-        # Clean up OAuth state and store credentials
-        config['oauth'] = None  # remove transient state after successful exchange
+        try:
+            token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
+            self.token = token
 
-        # Store the new token (use the refresh_token from the response if available)
-        config['credentials'] = token.to_dict()
-        await self.key_value_store.create_key(self.credentials_path, config)
+            # Mark this code as used
+            used_codes.append(code)
+            oauth_data["used_codes"] = used_codes
 
-        return token
+            # Store the new token FIRST before clearing OAuth state
+            # This ensures credentials are updated even if something fails during cleanup
+            config['credentials'] = token.to_dict()
+
+            # Clean up OAuth transient state after successful exchange
+            # Clear state and code_verifier, but keep used_codes temporarily
+            # to prevent duplicate callback with same code
+            config['oauth'] = {
+                "used_codes": used_codes  # Keep used codes to prevent replay attacks
+            }
+
+            await self.key_value_store.create_key(self.credentials_path, config)
+
+            return token
+        except Exception:
+            # If token exchange fails, still mark the code as used to prevent retry loops
+            used_codes.append(code)
+            oauth_data["used_codes"] = used_codes
+            config['oauth'] = oauth_data
+            await self.key_value_store.create_key(self.credentials_path, config)
+            raise

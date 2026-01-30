@@ -4,11 +4,12 @@ import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
 
 export const getRecordByIdSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  query: z.object({ convertTo: z.string().optional() }),
 });
 
 export const updateRecordSchema = z.object({
   body: z.object({
-    fileBuffer: z.any(),
+    fileBuffer: z.any().optional(),
     recordName: z.string().optional(),
   }),
   params: z.object({
@@ -22,294 +23,165 @@ export const deleteRecordSchema = z.object({
 
 export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  body: z
+    .object({
+      depth: z.number().int().min(-1).max(100).optional(),
+    })
+    .optional(),
 });
 
-export const reindexAllRecordSchema = z.object({
+export const reindexRecordGroupSchema = z.object({
+  params: z.object({ recordGroupId: z.string().min(1) }),
+  body: z
+    .object({
+      depth: z.number().int().min(-1).max(100).optional(),
+    })
+    .optional(),
+});
+
+export const reindexFailedRecordSchema = z.object({
   body: z.object({
     app: z.string().min(1),
+    connectorId: z.string().min(1),
   }),
 });
 
 export const resyncConnectorSchema = z.object({
   body: z.object({
     connectorName: z.string().min(1),
+    connectorId: z.string().min(1),
   }),
 });
 
 export const getConnectorStatsSchema = z.object({
-  params: z.object({ connector: z.string().min(1) }),
+  params: z.object({ connectorId: z.string().min(1) }),
+});
+
+/**
+ * Schema for the processed file buffer with metadata attached.
+ * This is set by the file processor middleware after parsing files_metadata.
+ */
+const fileBufferSchema = z.object({
+  buffer: z.any(),
+  mimetype: z.string().refine(
+    (value) => Object.values(extensionToMimeType).includes(value),
+    { message: 'Invalid MIME type' },
+  ),
+  originalname: z.string(),
+  size: z.number(),
+  lastModified: z.number(),
+  filePath: z.string(),
 });
 
 export const uploadRecordsSchema = z.object({
-  body: z
-    .object({
-      recordName: z.string().min(1).optional(),
-      recordType: z.string().min(1).default('FILE').optional(),
-      origin: z.string().min(1).default('UPLOAD').optional(),
-      isVersioned: z
-        .union([
-          z.boolean(),
-          z.string().transform((val) => {
-            if (val === '') return false;
-            if (val === 'true' || val === '1') return true;
-            if (val === 'false' || val === '0') return false;
-            throw new Error('Invalid boolean string value');
-          }),
-        ])
-        .default(false)
-        .optional(),
-      fileBuffers: z
-        .array(
-          z.object({
-            buffer: z.any(),
-            mimetype: z
-              .string()
-              .refine(
-                (value) => Object.values(extensionToMimeType).includes(value),
-                { message: 'Invalid MIME type' },
-              ),
-            originalname: z.string(),
-            size: z.number(),
-            lastModified: z.number().optional(),
-          }),
-        )
-        .optional(),
-      fileBuffer: z
-        .object({
-          buffer: z.any(),
-          mimetype: z
-            .string()
-            .refine(
-              (value) => Object.values(extensionToMimeType).includes(value),
-              { message: 'Invalid MIME type' },
-            ),
-          originalname: z.string(),
-          size: z.number(),
-          lastModified: z.number().optional(),
-        })
-        .optional(),
+  body: z.object({
+    recordName: z.string().min(1).optional(),
+    recordType: z.string().min(1).default('FILE').optional(),
+    origin: z.string().min(1).default('UPLOAD').optional(),
+    isVersioned: z
+      .union([
+        z.boolean(),
+        z.string().transform((val) => {
+          if (val === '' || val === 'false' || val === '0') return false;
+          if (val === 'true' || val === '1') return true;
+          throw new Error('Invalid boolean string value');
+        }),
+      ])
+      .default(false)
+      .optional(),
 
-      file_paths: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(z.string().min(1, 'File path cannot be empty'))
-          .min(1, 'At least one file path is required')
-          .max(1000, 'Maximum 1000 files allowed per upload')
-          .refine(
-            (paths) => {
-              // Check for duplicate paths
-              const uniquePaths = new Set(paths);
-              return uniquePaths.size === paths.length;
-            },
-            {
-              message: 'Duplicate file paths are not allowed',
-            },
-          )
-          .refine(
-            (paths) => {
-              // Validate path format - no leading/trailing slashes, no double slashes
-              const invalidPaths = paths.filter(
-                (path) =>
-                  path.startsWith('/') ||
-                  path.endsWith('/') ||
-                  path.includes('//') ||
-                  path.includes('\\') ||
-                  /[<>:"|?*\x00-\x1f]/.test(path), // Invalid filename characters
-              );
-              return invalidPaths.length === 0;
-            },
-            {
-              message: 'Invalid file path format detected',
-            },
-          ),
-      ),
+    // Processed file buffers (set by file processor middleware)
+    fileBuffers: z.array(fileBufferSchema).optional(),
+    fileBuffer: fileBufferSchema.optional(),
 
-      last_modified: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(
-            z
-              .string()
-              .regex(/^\d+$/, 'Last modified must be a numeric timestamp'),
-          )
-          .min(1, 'At least one last modified timestamp is required')
-          .transform((timestamps) =>
-            timestamps.map((ts) => {
-              const parsed = parseInt(ts, 10);
-              if (isNaN(parsed) || parsed < 0) {
-                throw new Error(`Invalid timestamp: ${ts}`);
-              }
-              return parsed;
-            }),
-          )
-          .refine(
-            (timestamps) => {
-              // Validate timestamps are reasonable (after 1970, before year 3000)
-              const minTimestamp = 0; // 1970-01-01
-              const maxTimestamp = 32503680000000; // Year 3000
-              return timestamps.every(
-                (ts) => ts >= minTimestamp && ts <= maxTimestamp,
-              );
-            },
-            {
-              message: 'Timestamps must be valid Unix timestamps',
-            },
-          ),
+    // Files metadata JSON string - parsed by file processor
+    // Format: [{ file_path: string, last_modified: number }, ...]
+    files_metadata: z
+      .string()
+      .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          try {
+            const parsed = JSON.parse(val);
+            if (!Array.isArray(parsed)) return false;
+            // Validate each entry has required fields
+            return parsed.every(
+              (entry: any) =>
+                typeof entry.file_path === 'string' &&
+                typeof entry.last_modified === 'number',
+            );
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
+        },
       ),
-    })
-    .refine(
-      (data) => {
-        // Validate that last_modified array length matches file_paths array length
-        if (data.file_paths && data.last_modified) {
-          return data.last_modified.length === data.file_paths.length;
-        }
-        return true;
-      },
-      {
-        message: 'Last modified array must match file paths array length',
-        path: ['last_modified'],
-      },
-    ),
+  }),
   params: z.object({
     kbId: z.string().uuid(),
   }),
 });
 
 export const uploadRecordsToFolderSchema = z.object({
-  body: z
-    .object({
-      recordName: z.string().min(1).optional(),
-      recordType: z.string().min(1).default('FILE').optional(),
-      origin: z.string().min(1).default('UPLOAD').optional(),
-      isVersioned: z
-        .union([
-          z.boolean(),
-          z.string().transform((val) => {
-            if (val === '') return false;
-            if (val === 'true' || val === '1') return true;
-            if (val === 'false' || val === '0') return false;
-            throw new Error('Invalid boolean string value');
-          }),
-        ])
-        .default(false)
-        .optional(),
-      fileBuffers: z
-        .array(
-          z.object({
-            buffer: z.any(),
-            mimetype: z
-              .string()
-              .refine(
-                (value) => Object.values(extensionToMimeType).includes(value),
-                { message: 'Invalid MIME type' },
-              ),
-            originalname: z.string(),
-            size: z.number(),
-            lastModified: z.number().optional(),
-          }),
-        )
-        .optional(),
-      fileBuffer: z
-        .object({
-          buffer: z.any(),
-          mimetype: z
-            .string()
-            .refine(
-              (value) => Object.values(extensionToMimeType).includes(value),
-              { message: 'Invalid MIME type' },
-            ),
-          originalname: z.string(),
-          size: z.number(),
-          lastModified: z.number().optional(),
-        })
-        .optional(),
+  body: z.object({
+    recordName: z.string().min(1).optional(),
+    recordType: z.string().min(1).default('FILE').optional(),
+    origin: z.string().min(1).default('UPLOAD').optional(),
+    isVersioned: z
+      .union([
+        z.boolean(),
+        z.string().transform((val) => {
+          if (val === '' || val === 'false' || val === '0') return false;
+          if (val === 'true' || val === '1') return true;
+          throw new Error('Invalid boolean string value');
+        }),
+      ])
+      .default(false)
+      .optional(),
 
-      file_paths: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(z.string().min(1, 'File path cannot be empty'))
-          .min(1, 'At least one file path is required')
-          .max(1000, 'Maximum 1000 files allowed per upload')
-          .refine(
-            (paths) => {
-              const uniquePaths = new Set(paths);
-              return uniquePaths.size === paths.length;
-            },
-            {
-              message: 'Duplicate file paths are not allowed',
-            },
-          )
-          .refine(
-            (paths) => {
-              const invalidPaths = paths.filter(
-                (path) =>
-                  path.startsWith('/') ||
-                  path.endsWith('/') ||
-                  path.includes('//') ||
-                  path.includes('\\') ||
-                  /[<>:"|?*\x00-\x1f]/.test(path),
-              );
-              return invalidPaths.length === 0;
-            },
-            {
-              message: 'Invalid file path format detected',
-            },
-          ),
-      ),
+    // Processed file buffers (set by file processor middleware)
+    fileBuffers: z.array(fileBufferSchema).optional(),
+    fileBuffer: fileBufferSchema.optional(),
 
-      last_modified: z.preprocess(
-        (val) => (typeof val === 'string' ? [val] : val),
-        z
-          .array(
-            z
-              .string()
-              .regex(/^\d+$/, 'Last modified must be a numeric timestamp'),
-          )
-          .min(1, 'At least one last modified timestamp is required')
-          .transform((timestamps) =>
-            timestamps.map((ts) => {
-              const parsed = parseInt(ts, 10);
-              if (isNaN(parsed) || parsed < 0) {
-                throw new Error(`Invalid timestamp: ${ts}`);
-              }
-              return parsed;
-            }),
-          )
-          .refine(
-            (timestamps) => {
-              const minTimestamp = 0;
-              const maxTimestamp = 32503680000000;
-              return timestamps.every(
-                (ts) => ts >= minTimestamp && ts <= maxTimestamp,
-              );
-            },
-            {
-              message: 'Timestamps must be valid Unix timestamps',
-            },
-          ),
+    // Files metadata JSON string - parsed by file processor
+    // Format: [{ file_path: string, last_modified: number }, ...]
+    files_metadata: z
+      .string()
+      .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          try {
+            const parsed = JSON.parse(val);
+            if (!Array.isArray(parsed)) return false;
+            return parsed.every(
+              (entry: any) =>
+                typeof entry.file_path === 'string' &&
+                typeof entry.last_modified === 'number',
+            );
+          } catch {
+            return false;
+          }
+        },
+        {
+          message:
+            'files_metadata must be a valid JSON array with { file_path, last_modified } objects',
+        },
       ),
-    })
-    .refine(
-      (data) => {
-        // Validate that last_modified array length matches file_paths array length
-        if (data.file_paths && data.last_modified) {
-          return data.last_modified.length === data.file_paths.length;
-        }
-        return true;
-      },
-      {
-        message: 'Last modified array must match file paths array length',
-        path: ['last_modified'],
-      },
-    ),
+  }),
   params: z.object({
     kbId: z.string().uuid(),
-    folderId: z.string().min(1), // Folder ID validation
+    folderId: z.string().min(1),
   }),
 });
 
 export const getAllRecordsSchema = z.object({
-  query: z.object({
+  query: z
+    .object({
     page: z
       .string()
       .optional()
@@ -335,11 +207,52 @@ export const getAllRecordsSchema = z.object({
     search: z
       .string()
       .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          const trimmed = val.trim();
+          
+          // Check for HTML tags and XSS patterns
+          // Optimized to prevent ReDoS: limit quantifiers
+          const htmlTagPattern = /<[^>]{0,10000}>/i;
+          // Pattern matches: <script...>...</script> including </script > with spaces
+          // Updated to match any characters (except >) between script and > in closing tag
+          const scriptTagPattern = /<[\s]*script[\s\S]{0,10000}?>[\s\S]{0,10000}?<\/[\s]*script[^>]{0,10000}>/gi;
+          // Explicit pattern for closing script tags - matches any characters (except >) between script and >
+          // This catches </script >, </script\t\n bar>, </script xyz>, etc.
+          // Limited to 10000 chars to prevent ReDoS
+          const scriptClosingTagPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
+          // Optimized to prevent ReDoS: limit attribute value length
+          const eventHandlerPattern = /\b(on\w+\s*=\s*["']?[^"'>]{0,1000}["']?)/i;
+          const javascriptProtocolPattern = /javascript:/i;
+          
+          if (
+            htmlTagPattern.test(trimmed) ||
+            scriptTagPattern.test(trimmed) ||
+            scriptClosingTagPattern.test(trimmed) ||
+            eventHandlerPattern.test(trimmed) ||
+            javascriptProtocolPattern.test(trimmed)
+          ) {
+            return false;
+          }
+          
+          // Check for format string specifiers (e.g., %s, %x, %n, %1$s, %1!s, etc.)
+          // More aggressive pattern to catch both standard and non-standard format specifiers
+          // Matches: % followed by digits and ! or $, or standard format specifiers, or %digits+letter
+          // Optimized to prevent ReDoS: limited quantifiers
+          const formatSpecifierPattern = /%(?:\d{1,10}[!$]|[#0\-+ ]{0,10}\d{0,10}\.?\d{0,10}[diouxXeEfFgGaAcspn%]|\d{1,10}[a-zA-Z])/;
+          if (formatSpecifierPattern.test(trimmed)) {
+            return false;
+          }
+          return true;
+        },
+        { message: 'Search parameter contains potentially dangerous content (HTML tags, scripts, or format specifiers are not allowed)' },
+      )
       .transform((val) => {
         if (!val) return undefined;
         const trimmed = val.trim();
-        if (trimmed.length > 100) {
-          throw new Error('Search term too long');
+        if (trimmed.length > 1000) {
+          throw new Error('Search term too long (max 1000 characters)');
         }
         return trimmed || undefined;
       }),
@@ -432,11 +345,13 @@ export const getAllRecordsSchema = z.object({
     sortOrder: z.enum(['asc', 'desc']).optional(),
 
     source: z.enum(['all', 'local', 'connector']).optional().default('all'),
-  }),
+  })
+    .strict(), // Reject unknown query parameters
 });
 
 export const getAllKBRecordsSchema = z.object({
-  query: z.object({
+  query: z
+    .object({
     page: z
       .string()
       .optional()
@@ -462,11 +377,52 @@ export const getAllKBRecordsSchema = z.object({
     search: z
       .string()
       .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          const trimmed = val.trim();
+          
+          // Check for HTML tags and XSS patterns
+          // Optimized to prevent ReDoS: limit quantifiers
+          const htmlTagPattern = /<[^>]{0,10000}>/i;
+          // Pattern matches: <script...>...</script> including </script > with spaces
+          // Updated to match any characters (except >) between script and > in closing tag
+          const scriptTagPattern = /<[\s]*script[\s\S]{0,10000}?>[\s\S]{0,10000}?<\/[\s]*script[^>]{0,10000}>/gi;
+          // Explicit pattern for closing script tags - matches any characters (except >) between script and >
+          // This catches </script >, </script\t\n bar>, </script xyz>, etc.
+          // Limited to 10000 chars to prevent ReDoS
+          const scriptClosingTagPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
+          // Optimized to prevent ReDoS: limit attribute value length
+          const eventHandlerPattern = /\b(on\w+\s*=\s*["']?[^"'>]{0,1000}["']?)/i;
+          const javascriptProtocolPattern = /javascript:/i;
+          
+          if (
+            htmlTagPattern.test(trimmed) ||
+            scriptTagPattern.test(trimmed) ||
+            scriptClosingTagPattern.test(trimmed) ||
+            eventHandlerPattern.test(trimmed) ||
+            javascriptProtocolPattern.test(trimmed)
+          ) {
+            return false;
+          }
+          
+          // Check for format string specifiers (e.g., %s, %x, %n, %1$s, %1!s, etc.)
+          // More aggressive pattern to catch both standard and non-standard format specifiers
+          // Matches: % followed by digits and ! or $, or standard format specifiers, or %digits+letter
+          // Optimized to prevent ReDoS: limited quantifiers
+          const formatSpecifierPattern = /%(?:\d{1,10}[!$]|[#0\-+ ]{0,10}\d{0,10}\.?\d{0,10}[diouxXeEfFgGaAcspn%]|\d{1,10}[a-zA-Z])/;
+          if (formatSpecifierPattern.test(trimmed)) {
+            return false;
+          }
+          return true;
+        },
+        { message: 'Search parameter contains potentially dangerous content (HTML tags, scripts, or format specifiers are not allowed)' },
+      )
       .transform((val) => {
         if (!val) return undefined;
         const trimmed = val.trim();
-        if (trimmed.length > 100) {
-          throw new Error('Search term too long');
+        if (trimmed.length > 1000) {
+          throw new Error('Search term too long (max 1000 characters)');
         }
         return trimmed || undefined;
       }),
@@ -573,7 +529,8 @@ export const getKBSchema = z.object({
 });
 
 export const listKnowledgeBasesSchema = z.object({
-  query: z.object({
+  query: z
+    .object({
     page: z
       .string()
       .optional()
@@ -599,11 +556,52 @@ export const listKnowledgeBasesSchema = z.object({
     search: z
       .string()
       .optional()
+      .refine(
+        (val) => {
+          if (!val) return true;
+          const trimmed = val.trim();
+          
+          // Check for HTML tags and XSS patterns
+          // Optimized to prevent ReDoS: limit quantifiers
+          const htmlTagPattern = /<[^>]{0,10000}>/i;
+          // Pattern matches: <script...>...</script> including </script > with spaces
+          // Updated to match any characters (except >) between script and > in closing tag
+          const scriptTagPattern = /<[\s]*script[\s\S]{0,10000}?>[\s\S]{0,10000}?<\/[\s]*script[^>]{0,10000}>/gi;
+          // Explicit pattern for closing script tags - matches any characters (except >) between script and >
+          // This catches </script >, </script\t\n bar>, </script xyz>, etc.
+          // Limited to 10000 chars to prevent ReDoS
+          const scriptClosingTagPattern = /<\/[\s]*script[^>]{0,10000}>/gi;
+          // Optimized to prevent ReDoS: limit attribute value length
+          const eventHandlerPattern = /\b(on\w+\s*=\s*["']?[^"'>]{0,1000}["']?)/i;
+          const javascriptProtocolPattern = /javascript:/i;
+          
+          if (
+            htmlTagPattern.test(trimmed) ||
+            scriptTagPattern.test(trimmed) ||
+            scriptClosingTagPattern.test(trimmed) ||
+            eventHandlerPattern.test(trimmed) ||
+            javascriptProtocolPattern.test(trimmed)
+          ) {
+            return false;
+          }
+          
+          // Check for format string specifiers (e.g., %s, %x, %n, %1$s, %1!s, etc.)
+          // More aggressive pattern to catch both standard and non-standard format specifiers
+          // Matches: % followed by digits and ! or $, or standard format specifiers, or %digits+letter
+          // Optimized to prevent ReDoS: limited quantifiers
+          const formatSpecifierPattern = /%(?:\d{1,10}[!$]|[#0\-+ ]{0,10}\d{0,10}\.?\d{0,10}[diouxXeEfFgGaAcspn%]|\d{1,10}[a-zA-Z])/;
+          if (formatSpecifierPattern.test(trimmed)) {
+            return false;
+          }
+          return true;
+        },
+        { message: 'Search parameter contains potentially dangerous content (HTML tags, scripts, or format specifiers are not allowed)' },
+      )
       .transform((val) => {
         if (!val) return undefined;
         const trimmed = val.trim();
-        if (trimmed.length > 100) {
-          throw new Error('Search term too long');
+        if (trimmed.length > 1000) {
+          throw new Error('Search term too long (max 1000 characters)');
         }
         return trimmed || undefined;
       }),
@@ -634,7 +632,8 @@ export const listKnowledgeBasesSchema = z.object({
       ),
 
     sortOrder: z.enum(['asc', 'desc']).optional(),
-  }),
+  })
+    .strict(), // Reject unknown query parameters
 });
 
 export const updateKBSchema = z.object({
@@ -660,13 +659,22 @@ export const kbPermissionSchema = z.object({
   body: z.object({
     userIds: z.array(z.string()).optional(),
     teamIds: z.array(z.string()).optional(),
-    role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
+    role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']).optional(), // Optional for teams
   }).refine((data) => (data.userIds && data.userIds.length > 0) || (data.teamIds && data.teamIds.length > 0),
     {
       message: 'At least one user or team ID is required',
       path: ['userIds'],
     },
-  ),
+  ).refine((data) => {
+    // Role is required if users are provided
+    if (data.userIds && data.userIds.length > 0) {
+      return data.role !== undefined && data.role !== null;
+    }
+    return true;
+  }, {
+    message: 'Role is required when adding users',
+    path: ['role'],
+  }),
   params: z.object({
     kbId: z.string().uuid(),
   }),
@@ -695,7 +703,16 @@ export const updatePermissionsSchema = z.object({
   body: z.object({
     role: z.enum(['OWNER', 'WRITER', 'READER', 'COMMENTER']),
     userIds: z.array(z.string()).optional(),
-    teamIds: z.array(z.string()).optional(),
+    teamIds: z.array(z.string()).optional(), // Teams don't have roles, so this will be ignored
+  }).refine((data) => {
+    // Only users can be updated (teams don't have roles)
+    if (data.teamIds && data.teamIds.length > 0) {
+      return false;
+    }
+    return true;
+  }, {
+    message: 'Teams do not have roles. Only user permissions can be updated.',
+    path: ['teamIds'],
   }),
   params: z.object({
     kbId: z.string().uuid(),
@@ -709,5 +726,15 @@ export const deletePermissionsSchema = z.object({
   }),
   params: z.object({
     kbId: z.string().uuid(),
+  }),
+});
+
+export const moveRecordSchema = z.object({
+  body: z.object({
+    newParentId: z.string().nullable(),
+  }),
+  params: z.object({
+    kbId: z.string().uuid(),
+    recordId: z.string().min(1),
   }),
 });

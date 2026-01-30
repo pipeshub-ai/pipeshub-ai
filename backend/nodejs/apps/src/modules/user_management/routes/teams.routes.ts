@@ -8,12 +8,39 @@ import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middlewa
 import { TeamsController } from '../controller/teams.controller';
 
 const createTeamValidationSchema = z.object({
-  body: z.object({
-    name: z.string().min(1, 'Name is required'),
-    description: z.string().optional(),
-    userIds: z.array(z.string()).optional(),
-    role: z.string().optional(),
-  }),
+  body: z.preprocess(
+    (data: any) => {
+      // Support both new format (userRoles) and legacy format (userIds + role)
+      if (data?.userRoles && Array.isArray(data.userRoles)) {
+        // Clean up userRoles array
+        data.userRoles = data.userRoles.filter(
+          (ur: any) => ur && ur.userId && typeof ur.userId === 'string' && ur.userId.trim() !== '' && ur.role
+        );
+        if (data.userRoles.length === 0) {
+          delete data.userRoles;
+        }
+      } else if (data?.userIds && Array.isArray(data.userIds)) {
+        // Legacy format: clean up userIds array
+        data.userIds = data.userIds.filter(
+          (id: any) => id !== null && id !== undefined && id !== '' && typeof id === 'string' && id.trim() !== ''
+        );
+        if (data.userIds.length === 0) {
+          delete data.userIds;
+        }
+      }
+      return data;
+    },
+    z.object({
+      name: z.string().min(1, 'Name is required'),
+      description: z.string().optional(),
+      userIds: z.array(z.string().min(1)).optional(), // Legacy format
+      role: z.string().optional(), // Legacy format
+      userRoles: z.array(z.object({
+        userId: z.string().min(1),
+        role: z.string().min(1),
+      })).optional(), // New format
+    })
+  ),
 });
 
 const listTeamsValidationSchema = z.object({
@@ -38,6 +65,17 @@ const updateTeamValidationSchema = z.object({
   body: z.object({
     name: z.string().optional(),
     description: z.string().optional(),
+    addUserIds: z.array(z.string()).optional(), // Legacy format
+    addUserRoles: z.array(z.object({
+      userId: z.string().min(1),
+      role: z.string().min(1),
+    })).optional(), // New format
+    removeUserIds: z.array(z.string()).optional(),
+    role: z.string().optional(), // Legacy format
+    updateUserRoles: z.array(z.object({
+      userId: z.string().min(1),
+      role: z.string().min(1),
+    })).optional(), // New format for updating existing user roles
   }),
 });
 
@@ -52,7 +90,12 @@ const addUsersToTeamValidationSchema = z.object({
     teamId: z.string().min(1, 'Team ID is required'),
   }),
   body: z.object({
-    userIds: z.array(z.string()).min(1, 'User IDs are required'),
+    userIds: z.array(z.string()).min(1, 'User IDs are required').optional(), // Legacy format
+    role: z.string().optional(), // Legacy format
+    userRoles: z.array(z.object({
+      userId: z.string().min(1),
+      role: z.string().min(1),
+    })).min(1, 'User roles are required').optional(), // New format
   }),
 });
 
@@ -72,8 +115,12 @@ const updateTeamUsersPermissionsValidationSchema = z.object({
     teamId: z.string().min(1, 'Team ID is required'),
   }),
   body: z.object({
-    userIds: z.array(z.string()).min(1, 'User IDs are required'),
-    role: z.string().optional(),
+    userIds: z.array(z.string()).min(1, 'User IDs are required').optional(), // Legacy format
+    role: z.string().optional(), // Legacy format
+    userRoles: z.array(z.object({
+      userId: z.string().min(1),
+      role: z.string().min(1),
+    })).min(1, 'User roles are required').optional(), // New format
   }),
 });
 
@@ -232,6 +279,21 @@ export function createTeamsRouter(container: Container) {
       try {
         const teamsController = container.get<TeamsController>('TeamsController');
         await teamsController.getUserTeams(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
+    '/user/teams/created',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(listTeamsValidationSchema),
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const teamsController = container.get<TeamsController>('TeamsController');
+        await teamsController.getUserCreatedTeams(req, res, next);
       } catch (error) {
         next(error);
       }

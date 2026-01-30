@@ -1,4 +1,6 @@
+import asyncio
 import json
+import ssl
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
@@ -19,41 +21,76 @@ class KafkaMessagingProducer(IMessagingProducer):
         self.producer: Optional[AIOKafkaProducer] = None
         self.kafka_config = kafka_config
         self.processed_messages: Dict[str, List[int]] = {}
+        self._producer_lock = asyncio.Lock()
 
     @staticmethod
     def kafka_config_to_dict(kafka_config: KafkaProducerConfig) -> Dict[str, Any]:
-        """Convert KafkaProducerConfig dataclass to dictionary format for aiokafka consumer"""
-        return {
+        """Convert KafkaProducerConfig dataclass to dictionary format for aiokafka producer"""
+        config: Dict[str, Any] = {
             'bootstrap_servers': ",".join(kafka_config.bootstrap_servers),
             'client_id': kafka_config.client_id,
         }
 
+        # Add SSL/SASL configuration
+        if kafka_config.ssl:
+            config["ssl_context"] = ssl.create_default_context()
+            sasl_config = kafka_config.sasl or {}
+            if sasl_config.get("username"):
+                config["security_protocol"] = "SASL_SSL"
+                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                config["sasl_plain_username"] = sasl_config["username"]
+                config["sasl_plain_password"] = sasl_config["password"]
+            else:
+                config["security_protocol"] = "SSL"
+
+        return config
+
     # implementing abstract methods from IMessagingProducer
     async def initialize(self) -> None:
-        """Initialize the Kafka producer"""
-        try:
-            if not self.kafka_config:
-                raise ValueError("Kafka configuration is not valid")
-            producer_config = KafkaMessagingProducer.kafka_config_to_dict(self.kafka_config)
+        """Initialize the Kafka producer with race condition protection"""
+        if self.producer is not None:
+            return  # Fast path: already initialized
 
-            self.producer = AIOKafkaProducer(**producer_config)
-            await self.producer.start()
-            self.logger.info(f"✅ Kafka producer initialized and started with client_id: {producer_config.get('client_id')}")
+        async with self._producer_lock:  # Serialize initialization
+            # Double-check after acquiring lock
+            if self.producer is not None:
+                return
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
-            raise
+            producer = None
+            try:
+                if not self.kafka_config:
+                    raise ValueError("Kafka configuration is not valid")
+
+                producer_config = KafkaMessagingProducer.kafka_config_to_dict(self.kafka_config)
+
+                producer = AIOKafkaProducer(**producer_config)
+                await producer.start()
+
+                # Only assign after successful start
+                self.producer = producer
+                self.logger.info(f"✅ Kafka producer initialized and started with client_id: {producer_config.get('client_id')}")
+
+            except Exception as e:
+                if producer is not None:
+                    try:
+                        await producer.stop()
+                    except Exception as e:
+                        self.logger.info(f"⚠️ Failed to stop Kafka producer during error handling: {str(e)}")
+                self.producer = None
+                self.logger.error(f"❌ Failed to initialize Kafka producer: {str(e)}")
+                raise
 
     # implementing abstract methods from IMessagingProducer
     async def cleanup(self) -> None:
         """Stop the Kafka producer and clean up resources"""
-        if self.producer:
-            try:
-                await self.producer.stop()
-                self.producer = None
-                self.logger.info("✅ Kafka producer stopped successfully")
-            except Exception as e:
-                self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
+        async with self._producer_lock:
+            if self.producer:
+                try:
+                    await self.producer.stop()
+                    self.producer = None
+                    self.logger.info("✅ Kafka producer stopped successfully")
+                except Exception as e:
+                    self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
 
     # implementing abstract methods from IMessagingProducer
     async def start(self) -> None:

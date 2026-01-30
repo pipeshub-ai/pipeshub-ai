@@ -3,6 +3,7 @@ import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { loadConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { configPaths } from '../../configuration_manager/paths/paths';
+import { normalizeUrl } from '../utils/utils';
 
 // Define interfaces for all service configurations
 export interface SmtpConfig {
@@ -25,6 +26,7 @@ export const randomKeyGenerator = () => {
 
 export interface KafkaConfig {
   brokers: string[];
+  ssl?: boolean;
   sasl?: {
     mechanism: 'plain' | 'scram-sha-256' | 'scram-sha-512';
     username: string;
@@ -35,7 +37,9 @@ export interface KafkaConfig {
 export interface RedisConfig {
   host: string;
   port: number;
+  username?: string;
   password?: string;
+  tls?: boolean;
   db?: number;
 }
 
@@ -153,13 +157,14 @@ export class ConfigService {
     return null;
   }
 
-  // Kafka Configuration
+  // Kafka Configuration (supports standard Kafka and AWS MSK with SASL/SCRAM)
   public async getKafkaConfig(): Promise<KafkaConfig> {
     return this.getEncryptedConfig<KafkaConfig>(configPaths.broker.kafka, {
       brokers: process.env.KAFKA_BROKERS!.split(','),
+      ssl: process.env.KAFKA_SSL === 'true',
       ...(process.env.KAFKA_USERNAME && {
         sasl: {
-          mechanism: process.env.KAFKA_SASL_MECHANISM,
+          mechanism: (process.env.KAFKA_SASL_MECHANISM || 'scram-sha-512') as 'plain' | 'scram-sha-256' | 'scram-sha-512',
           username: process.env.KAFKA_USERNAME,
           password: process.env.KAFKA_PASSWORD!,
         },
@@ -174,7 +179,9 @@ export class ConfigService {
       {
         host: process.env.REDIS_HOST!,
         port: parseInt(process.env.REDIS_PORT!, 10),
+        username: process.env.REDIS_USERNAME,
         password: process.env.REDIS_PASSWORD,
+        tls: process.env.REDIS_TLS === 'true',
         db: parseInt(process.env.REDIS_DB || '0', 10),
       },
     );
@@ -230,7 +237,7 @@ export class ConfigService {
     parsedUrl.auth = {
       ...parsedUrl.auth,
       endpoint:
-        parsedUrl.auth?.endpoint ||
+        normalizeUrl(parsedUrl.auth?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -254,7 +261,7 @@ export class ConfigService {
     parsedUrl.communication = {
       ...parsedUrl.communication,
       endpoint:
-        parsedUrl.communication?.endpoint ||
+        normalizeUrl(parsedUrl.communication?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -278,7 +285,7 @@ export class ConfigService {
     parsedUrl.kb = {
       ...parsedUrl.kb,
       endpoint:
-        parsedUrl.kb?.endpoint ||
+        normalizeUrl(parsedUrl.kb?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -302,7 +309,7 @@ export class ConfigService {
     parsedUrl.es = {
       ...parsedUrl.es,
       endpoint:
-        parsedUrl.es?.endpoint ||
+        normalizeUrl(parsedUrl.es?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -326,7 +333,7 @@ export class ConfigService {
     parsedUrl.cm = {
       ...parsedUrl.cm,
       endpoint:
-        parsedUrl.cm?.endpoint ||
+        normalizeUrl(parsedUrl.cm?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -350,7 +357,7 @@ export class ConfigService {
     parsedUrl.tokenBackend = {
       ...parsedUrl.tokenBackend,
       endpoint:
-        parsedUrl.tokenBackend?.endpoint ||
+        normalizeUrl(parsedUrl.tokenBackend?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -373,10 +380,10 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.connectors = {
       ...parsedUrl.connectors,
-      endpoint: parsedUrl.connectors?.endpoint || process.env.CONNECTOR_BACKEND,
+      endpoint: normalizeUrl(process.env.CONNECTOR_BACKEND!) || normalizeUrl(parsedUrl.connectors?.endpoint),
       publicEndpoint:
-        parsedUrl.connectors?.publicEndpoint ||
-        process.env.CONNECTOR_PUBLIC_BACKEND,
+        normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!) ||
+        normalizeUrl(parsedUrl.connectors?.publicEndpoint),
     };
 
     // Save the updated object back to configPaths.endpoint
@@ -392,7 +399,7 @@ export class ConfigService {
       '{}';
 
     let parsedUrl = JSON.parse(url);
-    return parsedUrl.connectors.publicEndpoint || process.env.CONNECTOR_PUBLIC_BACKEND;
+    return normalizeUrl(parsedUrl.connectors.publicEndpoint) || normalizeUrl(process.env.CONNECTOR_PUBLIC_BACKEND!);
   }
 
   public async getIndexingUrl(): Promise<string> {
@@ -405,7 +412,7 @@ export class ConfigService {
     // Preserve existing `auth` object if it exists, otherwise create a new one
     parsedUrl.indexing = {
       ...parsedUrl.indexing,
-      endpoint: parsedUrl.indexing?.endpoint || process.env.INDEXING_BACKEND,
+      endpoint: normalizeUrl(process.env.INDEXING_BACKEND!) || normalizeUrl(parsedUrl.indexing?.endpoint),
     };
 
     // Save the updated object back to configPaths.endpoint
@@ -426,7 +433,7 @@ export class ConfigService {
     parsedUrl.iam = {
       ...parsedUrl.iam,
       endpoint:
-        parsedUrl.iam?.endpoint ||
+        normalizeUrl(parsedUrl.iam?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -449,7 +456,7 @@ export class ConfigService {
     parsedUrl.storage = {
       ...parsedUrl.storage,
       endpoint:
-        parsedUrl.storage?.endpoint ||
+        normalizeUrl(parsedUrl.storage?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -473,8 +480,8 @@ export class ConfigService {
     parsedUrl.frontend = {
       ...parsedUrl.frontend,
       publicEndpoint:
-        parsedUrl.frontend?.publicEndpoint ||
-        process.env.FRONTEND_PUBLIC_URL ||
+        normalizeUrl(process.env.FRONTEND_PUBLIC_URL!) ||
+        normalizeUrl(parsedUrl.frontend?.publicEndpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -498,8 +505,8 @@ export class ConfigService {
     parsedUrl.queryBackend = {
       ...parsedUrl.queryBackend,
       endpoint:
-        parsedUrl.queryBackend?.endpoint ||
-        process.env.QUERY_BACKEND ||
+        normalizeUrl(process.env.QUERY_BACKEND!) ||
+        normalizeUrl(parsedUrl.queryBackend?.endpoint) ||
         `http://localhost:8000`,
     };
 
@@ -523,7 +530,7 @@ export class ConfigService {
     parsedUrl.storage = {
       ...parsedUrl.storage,
       endpoint:
-        parsedUrl.storage?.endpoint ||
+        normalizeUrl(parsedUrl.storage?.endpoint) ||
         `http://localhost:${process.env.PORT ?? 3000}`,
     };
 
@@ -623,6 +630,62 @@ export class ConfigService {
     }
 
     return parsedKeys.cookieSecret;
+  }
+
+  public async getOAuthBackendUrl(): Promise<string> {
+    // Assuming the OAuth backend is the same as the auth backend
+    // When oauth is served from different backend, this method should be overridden
+    return this.getAuthBackendUrl();
+  }
+
+  // OAuth Provider Configuration
+
+  /**
+   * Initialize OAuth issuer configuration in the config store.
+   * This should be called once during application startup/setup.
+   * Separating this from the getter prevents race conditions when
+   * multiple service instances start concurrently.
+   */
+  public async initializeOAuthIssuer(): Promise<void> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    const parsedUrl = JSON.parse(url);
+
+    // Only initialize if not already set
+    if (!parsedUrl.oauthProvider?.issuer) {
+      parsedUrl.oauthProvider = {
+        ...parsedUrl.oauthProvider,
+        issuer:
+          normalizeUrl(process.env.OAUTH_ISSUER!) ||
+          `http://localhost:${process.env.PORT ?? 3000}`,
+      };
+
+      await this.keyValueStoreService.set<string>(
+        configPaths.endpoint,
+        JSON.stringify(parsedUrl),
+      );
+    }
+  }
+
+  /**
+   * Get the OAuth issuer URL. This is a pure getter with no side effects.
+   * Call initializeOAuthIssuer() during application startup to seed the config.
+   */
+  public async getOAuthIssuer(): Promise<string> {
+    const url =
+      (await this.keyValueStoreService.get<string>(configPaths.endpoint)) ||
+      '{}';
+
+    const parsedUrl = JSON.parse(url);
+
+    // Return stored value, or fall back to env var, or default
+    return (
+      normalizeUrl(process.env.OAUTH_ISSUER!) ||
+      normalizeUrl(parsedUrl.oauthProvider?.issuer) ||
+      `http://localhost:${process.env.PORT ?? 3000}`
+    );
   }
 
   public async getRsAvailable(): Promise<string> {

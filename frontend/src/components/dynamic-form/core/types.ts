@@ -14,8 +14,10 @@ export interface LlmFormValues extends BaseFormValues {
   awsAccessSecretKey?: string;
   region?: string;
   provider?: string;
+  customProvider?: string;
   isMultimodal?: boolean;
   isReasoning?: boolean;
+  contextLength?: number;
   }
 
 export interface EmbeddingFormValues extends BaseFormValues {
@@ -26,7 +28,9 @@ export interface EmbeddingFormValues extends BaseFormValues {
   awsAccessSecretKey?: string;
   region?: string;
   provider?: string;
+  customProvider?: string;
   isMultimodal?: boolean;
+  contextLength?: number;
 }
 
 export interface StorageFormValues extends BaseFormValues {
@@ -46,11 +50,6 @@ export interface StorageFormValues extends BaseFormValues {
   baseUrl?: string;
 }
 
-export interface UrlFormValues extends BaseFormValues {
-  frontendUrl?: string;
-  connectorUrl?: string;
-}
-
 export interface SmtpFormValues extends BaseFormValues {
   host?: string;
   port?: number;
@@ -67,4 +66,4 @@ export interface SaveResult {
 }
 
 
-export type AnyFormValues = LlmFormValues | EmbeddingFormValues | StorageFormValues | UrlFormValues | SmtpFormValues;
+export type AnyFormValues = LlmFormValues | EmbeddingFormValues | StorageFormValues | SmtpFormValues;

@@ -3,7 +3,6 @@ import asyncio
 # Only for development/debugging
 import signal
 import sys
-import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -16,13 +15,13 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     EventTypes,
+    OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.containers.indexing import IndexingAppContainer, initialize_container
 from app.services.messaging.kafka.handlers.record import RecordEventHandler
-from app.services.messaging.kafka.rate_limiter.rate_limiter import RateLimiter
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -38,8 +37,6 @@ signal.signal(signal.SIGINT, handle_sigterm)
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
 
-MAX_CONCURRENT_TASKS = 5  # Maximum number of messages to process concurrently
-RATE_LIMIT_PER_SECOND = 2  # Maximum number of new tasks to start per second
 
 async def get_initialized_container() -> IndexingAppContainer:
     """Dependency provider for initialized container"""
@@ -57,10 +54,15 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
     """
     Recover and process records that were in progress when the service crashed.
     This ensures that any incomplete indexing operations are completed before
-    processing new events from Kafka.
+    processing new events from Kafka. Records are processed in parallel (5 at a time).
     """
     logger = app_container.logger()
     logger.info("🔄 Checking for in-progress records to recover...")
+
+    # Semaphore to limit concurrent processing to 5 records
+    semaphore = asyncio.Semaphore(5)
+    # Track results for final summary
+    results = {"success": 0, "partial": 0, "incomplete": 0, "skipped": 0, "error": 0}
 
     try:
         # Get the arango service and event processor
@@ -71,77 +73,144 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             CollectionNames.RECORDS.value,
             ProgressStatus.IN_PROGRESS.value
         )
+        queued_records = await arango_service.get_documents_by_status(
+                CollectionNames.RECORDS.value,
+                ProgressStatus.QUEUED.value
+            )
+        # Create combined list and store length for clarity and efficiency
+        all_records_to_recover = in_progress_records + queued_records
+        total_records = len(all_records_to_recover)
 
-        if not in_progress_records:
-            logger.info("✅ No in-progress records found. Starting fresh.")
+        if not total_records:
+            logger.info("✅ No in-progress or queued records found. Starting fresh.")
             return
 
-        logger.info(f"📋 Found {len(in_progress_records)} in-progress records to recover")
-        # Todo: Fix properly. Wait for connector service to be ready. This is a temporary solution.
-        time.sleep(60)
+        logger.info(f"📋 Found {total_records} in-progress or queued records to recover")
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
 
-        # Process each in-progress record
-        for idx, record in enumerate(in_progress_records, 1):
-            try:
+        async def process_single_record(idx: int, record: dict) -> None:
+            """Process a single record with semaphore control."""
+            async with semaphore:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
-                logger.info(
-                    f"🔄 [{idx}/{len(in_progress_records)}] Recovering record: {record_name} (ID: {record_id})"
-                )
-
-                # Reconstruct the payload from the record data
-                payload = {
-                    "recordId": record_id,
-                    "recordName": record.get("recordName"),
-                    "orgId": record.get("orgId"),
-                    "version": record.get("version", 0),
-                    "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
-                    "extension": record.get("extension"),
-                    "mimeType": record.get("mimeType"),
-                    "origin": record.get("origin"),
-                    "recordType": record.get("recordType"),
-                    "virtualRecordId": record.get("virtualRecordId", None),
-                }
-
-                # Determine event type - default to NEW_RECORD for recovery
-                # Only treat as REINDEX if version > 0 AND virtualRecordId exists
-                # Otherwise, treat as NEW_RECORD (even if version > 0, the initial indexing might have failed)
-                version = payload.get("version", 0)
-                virtual_record_id = payload.get("virtualRecordId")
-
-                if version > 0 and virtual_record_id is not None:
-                    event_type = EventTypes.REINDEX_RECORD.value
-                    logger.info(f"   Treating as REINDEX_RECORD (version={version}, virtualRecordId={virtual_record_id})")
-                else:
-                    event_type = EventTypes.NEW_RECORD.value
-                    logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
-
-                # Process the record using the same handler that processes Kafka messages
-                success = await record_message_handler({
-                    "eventType": event_type,
-                    "payload": payload
-                })
-
-                if success:
+                try:
                     logger.info(
-                        f"✅ [{idx}/{len(in_progress_records)}] Successfully recovered record: {record_name}"
-                    )
-                else:
-                    logger.warning(
-                        f"⚠️ [{idx}/{len(in_progress_records)}] Failed to recover record: {record_name}"
+                        f"🔄 [{idx}/{total_records}] Recovering record: {record_name} (ID: {record_id})"
                     )
 
-            except Exception as e:
-                logger.error(
-                    f"❌ Error recovering record {record.get('_key')}: {str(e)}"
-                )
-                # Continue with next record even if one fails
-                continue
+                    # Check if connector is disabled or deleted
+                    connector_id = record.get("connectorId")
+                    origin = record.get("origin")
+                    if connector_id and origin == OriginTypes.CONNECTOR.value:
+                        connector_instance = await arango_service.get_document(
+                            connector_id, CollectionNames.APPS.value
+                        )
+                        if not connector_instance:
+                            logger.info(
+                                f"⏭️ [{idx}/{total_records}] Skipping recovery for record {record_id}: "
+                                f"connector instance {connector_id} not found (possibly deleted)."
+                            )
+                            results["skipped"] += 1
+                            return
+                        if not connector_instance.get("isActive", False):
+                            logger.info(
+                                f"⏭️ [{idx}/{total_records}] Skipping recovery for record {record_id}: "
+                                f"connector instance {connector_id} is inactive."
+                            )
+                            # Update status to CONNECTOR_DISABLED
+                            await arango_service.update_document(
+                                record_id,
+                                CollectionNames.RECORDS.value,
+                                {
+                                    "indexingStatus": ProgressStatus.CONNECTOR_DISABLED.value,
+                                }
+                            )
+                            results["skipped"] += 1
+                            return
+
+                    # Reconstruct the payload from the record data
+                    payload = {
+                        "recordId": record_id,
+                        "recordName": record.get("recordName"),
+                        "orgId": record.get("orgId"),
+                        "version": record.get("version", 0),
+                        "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
+                        "extension": record.get("extension"),
+                        "mimeType": record.get("mimeType"),
+                        "origin": record.get("origin"),
+                        "recordType": record.get("recordType"),
+                        "virtualRecordId": record.get("virtualRecordId", None),
+                    }
+
+                    # Determine event type - default to NEW_RECORD for recovery
+                    # Only treat as REINDEX if version > 0 AND virtualRecordId exists
+                    # Otherwise, treat as NEW_RECORD (even if version > 0, the initial indexing might have failed)
+                    version = payload.get("version", 0)
+                    virtual_record_id = payload.get("virtualRecordId")
+
+                    if version > 0 and virtual_record_id is not None:
+                        event_type = EventTypes.REINDEX_RECORD.value
+                        logger.info(f"   Treating as REINDEX_RECORD (version={version}, virtualRecordId={virtual_record_id})")
+                    else:
+                        event_type = EventTypes.NEW_RECORD.value
+                        logger.info(f"   Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
+
+                    # Process the record using the same handler that processes Kafka messages
+                    # record_message_handler returns an async generator, so we need to consume it
+                    # Track whether we received the indexing_complete event to verify full recovery
+                    parsing_complete = False
+                    indexing_complete = False
+
+                    async for event in record_message_handler({
+                        "eventType": event_type,
+                        "payload": payload
+                    }):
+                        event_name = event.get("event", "unknown")
+                        logger.debug(f"   Recovery event: {event_name}")
+
+                        if event_name == "parsing_complete":
+                            parsing_complete = True
+                        elif event_name == "indexing_complete":
+                            indexing_complete = True
+
+                    # Only report success if indexing actually completed
+                    if indexing_complete:
+                        logger.info(
+                            f"✅ [{idx}/{total_records}] Successfully recovered record: {record_name}"
+                        )
+                        results["success"] += 1
+                    elif parsing_complete:
+                        logger.warning(
+                            f"⚠️ [{idx}/{total_records}] Partial recovery for record: {record_name} "
+                            f"(parsing completed but indexing did not complete)"
+                        )
+                        results["partial"] += 1
+                    else:
+                        logger.warning(
+                            f"⚠️ [{idx}/{total_records}] Recovery incomplete for record: {record_name} "
+                            f"(no completion events received)"
+                        )
+                        results["incomplete"] += 1
+
+                except Exception as e:
+                    logger.error(
+                        f"❌ Error recovering record {record_id}: {str(e)}"
+                    )
+                    results["error"] += 1
+
+        # Create tasks for all records and process them in parallel (limited by semaphore)
+        tasks = [
+            process_single_record(idx, record)
+            for idx, record in enumerate(all_records_to_recover, 1)
+        ]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         logger.info(
-            f"✅ Recovery complete. Processed {len(in_progress_records)} in-progress records"
+            f"✅ Recovery complete. Processed {total_records} records: "
+            f"{results['success']} success, {results['skipped']} skipped, "
+            f"{results['partial']} partial, {results['incomplete']} incomplete, "
+            f"{results['error']} errors"
         )
 
     except Exception as e:
@@ -159,13 +228,11 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         logger.info("🚀 Starting Entity Kafka Consumer...")
         record_kafka_consumer_config = await KafkaUtils.create_record_kafka_consumer_config(app_container)
 
-        rate_limiter = RateLimiter(RATE_LIMIT_PER_SECOND)
-
         record_kafka_consumer = MessagingFactory.create_consumer(
             broker_type="kafka",
             logger=logger,
             config=record_kafka_consumer_config,
-            rate_limiter=rate_limiter
+            consumer_type="indexing"
         )
         record_message_handler = await KafkaUtils.create_record_message_handler(app_container)
         await record_kafka_consumer.start(record_message_handler)
@@ -173,7 +240,6 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
         logger.info("✅ Record Kafka consumer started")
 
         return consumers
-
     except Exception as e:
         logger.error(f"❌ Error starting Kafka consumers: {str(e)}")
         # Cleanup any started consumers
@@ -184,7 +250,6 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
             except Exception as cleanup_error:
                 logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
         raise
-
 
 async def stop_kafka_consumers(container) -> None:
     """Stop all Kafka consumers"""

@@ -830,12 +830,24 @@ async def create_kb_permissions(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+        # Role is required for users, but optional for teams (teams don't have roles)
+        role = body.get("role")
+        user_ids = body.get("userIds") or []
+        team_ids = body.get("teamIds") or []
+
+        # Validate: role is required if users are provided
+        if user_ids and not role:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Role is required when adding users"
+            )
+
         result = await kb_service.create_kb_permissions(
             kb_id=kb_id,
             requester_id=user_id,
-            user_ids=body.get("userIds"),
-            team_ids=body.get("teamIds"),
-            role=body.get("role"),
+            user_ids=user_ids,
+            team_ids=team_ids,
+            role=role,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
@@ -876,12 +888,31 @@ async def update_kb_permission(
                 detail="Invalid request body"
             )
         user_id = request.state.user.get("userId")
+        # Teams don't have roles, so we can only update user permissions
+        user_ids = body.get("userIds") or []
+        team_ids = body.get("teamIds") or []
+        new_role = body.get("role")
+
+        # Validate: role is required
+        if not new_role:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Role is required"
+            )
+
+        # Teams don't have roles - reject at router level for faster feedback
+        if team_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Teams do not have roles. Only user permissions can be updated."
+            )
+
         result = await kb_service.update_kb_permission(
             kb_id=kb_id,
             requester_id=user_id,
-            user_ids=body.get("userIds"),
-            team_ids=body.get("teamIds"),
-            new_role=body.get("role"),
+            user_ids=user_ids,
+            team_ids=team_ids,
+            new_role=new_role,
         )
         if not result or result.get("success") is False:
             error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
@@ -1225,3 +1256,68 @@ async def list_all_records(
         sort_order=sort_order,
         source=source,
     )
+
+
+# ========================================================================
+# Move Record API
+# ========================================================================
+
+@kb_router.put(
+    "/{kb_id}/record/{record_id}/move",
+    response_model=SuccessResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        403: {"model": ErrorResponse},
+        404: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+@inject
+async def move_record(
+    kb_id: str,
+    record_id: str,
+    request: Request,
+    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+) -> SuccessResponse:
+    """
+    Move a record (file or folder) to a different location within the same KB.
+
+    Request body:
+        - newParentId: Target folder ID, or null to move to KB root
+    """
+    try:
+        try:
+            body = await request.json()
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid request body"
+            )
+
+        user_id = request.state.user.get("userId")
+        new_parent_id = body.get("newParentId")  # None for KB root, folder_id for folder
+
+        result = await kb_service.move_record(
+            kb_id=kb_id,
+            record_id=record_id,
+            new_parent_id=new_parent_id,
+            user_id=user_id,
+        )
+
+        if not result or result.get("success") is False:
+            error_code = int(result.get("code", HTTP_INTERNAL_SERVER_ERROR))
+            error_reason = result.get("reason", "Unknown error")
+            raise HTTPException(
+                status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
+                detail=error_reason
+            )
+
+        return SuccessResponse(message="Record moved successfully")
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Unexpected error: {str(e)}"
+        )

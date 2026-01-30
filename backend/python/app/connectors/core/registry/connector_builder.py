@@ -1,57 +1,32 @@
 from copy import deepcopy
-from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type, Union
 
-
-@dataclass
-class AuthField:
-    """Represents an authentication field"""
-    name: str
-    display_name: str
-    field_type: str = "TEXT"
-    placeholder: str = ""
-    description: str = ""
-    required: bool = True
-    default_value: Any = ""
-    min_length: int = 10
-    max_length: int = 1000
-    is_secret: bool = False
-
-
-@dataclass
-class FilterField:
-    """Represents a filter field"""
-    name: str
-    display_name: str
-    field_type: str = "MULTISELECT"
-    description: str = ""
-    required: bool = False
-    default_value: Any = field(default_factory=list)
-    options: List[str] = field(default_factory=list)
-    operators: List[str] = field(default_factory=lambda: ["IN", "NOT_IN"])
+from app.config.constants.arangodb import ExtensionTypes
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    OAuthConfig,
+)
+from app.connectors.core.registry.auth_utils import (
+    auth_field_to_dict,
+    auto_add_oauth_fields,
+)
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterField,
+    FilterOption,
+    FilterType,
+    MultiselectOperator,
+    OptionSourceType,
+)
+from app.connectors.core.registry.oauth_config_registry import get_oauth_config_registry
+from app.connectors.core.registry.types import AuthField, CustomField, DocumentationLink
 
 
-@dataclass
-class CustomField:
-    """Represents a custom field for sync configuration"""
-    name: str
-    display_name: str
-    field_type: str
-    description: str = ""
-    required: bool = False
-    default_value: Any = ""
-    options: List[str] = field(default_factory=list)
-    min_length: Optional[int] = None
-    max_length: Optional[int] = None
-    is_secret: bool = False
-
-
-@dataclass
-class DocumentationLink:
-    """Represents a documentation link"""
-    title: str
-    url: str
-    doc_type: str
+class ConnectorScope(str, Enum):
+    """Connector scope types."""
+    PERSONAL = "personal"
+    TEAM = "team"
 
 
 class ConnectorConfigBuilder:
@@ -66,12 +41,13 @@ class ConnectorConfigBuilder:
             "iconPath": "/assets/icons/connectors/default.svg",
             "supportsRealtime": False,
             "supportsSync": True,
+            "supportsAgent": True,
             "documentationLinks": [],
+            "hideConnector": False,
             "auth": {
-                "type": "OAUTH",
-                "displayRedirectUri": True,
-                "redirectUri": "",
-                "schema": {"fields": []},
+                "supportedAuthTypes": ["OAUTH"],
+                "schemas": {},  # Per-auth-type schemas: {"OAUTH": {"fields": []}, "API_TOKEN": {"fields": []}}
+                "oauthConfigs": {},  # OAuth URLs and scopes per auth type (temporary, used during OAuth flow)
                 "values": {},
                 "customFields": [],
                 "customValues": {},
@@ -106,11 +82,14 @@ class ConnectorConfigBuilder:
                 "values": {}
             },
             "filters": {
-                "schema": {"fields": []},
-                "values": {},
-                "customFields": [],
-                "customValues": {},
-                "endpoints": {}
+                "sync": {
+                    "schema": {"fields": []},
+                    "values": {}
+                },
+                "indexing": {
+                    "schema": {"fields": []},
+                    "values": {}
+                }
             }
         }
         return self
@@ -132,6 +111,16 @@ class ConnectorConfigBuilder:
         self.config["supportsSync"] = supported
         return self
 
+    def with_agent_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
+        """Enable or disable agent support"""
+        self.config["supportsAgent"] = supported
+        return self
+
+    def with_hide_connector(self, hide: bool = True) -> 'ConnectorConfigBuilder':
+        """Set whether to hide the connector from the UI"""
+        self.config["hideConnector"] = hide
+        return self
+
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
         """Add documentation link"""
         self.config["documentationLinks"].append({
@@ -141,46 +130,98 @@ class ConnectorConfigBuilder:
         })
         return self
 
-    def with_auth_type(self, auth_type: str) -> 'ConnectorConfigBuilder':
-        """Set authentication type"""
-        self.config["auth"]["type"] = auth_type
+    def with_supported_auth_types(self, auth_types: Union[str, List[str]]) -> 'ConnectorConfigBuilder':
+        """Set supported authentication types - user will select one during connector creation"""
+        if isinstance(auth_types, str):
+            self.config["auth"]["supportedAuthTypes"] = [auth_types]
+        elif isinstance(auth_types, list):
+            if not auth_types:
+                raise ValueError("auth_types list cannot be empty")
+            self.config["auth"]["supportedAuthTypes"] = auth_types
+        else:
+            raise ValueError(f"auth_types must be str or List[str], got {type(auth_types)}")
         return self
 
-    def with_redirect_uri(self, redirect_uri: str, display: bool = True) -> 'ConnectorConfigBuilder':
-        """Set redirect URI configuration"""
-        self.config["auth"]["redirectUri"] = redirect_uri
-        self.config["auth"]["displayRedirectUri"] = display
+    def add_supported_auth_type(self, auth_type: str) -> 'ConnectorConfigBuilder':
+        """Add an additional supported authentication type"""
+        if "supportedAuthTypes" not in self.config["auth"]:
+            self.config["auth"]["supportedAuthTypes"] = ["OAUTH"]
+        if auth_type not in self.config["auth"]["supportedAuthTypes"]:
+            self.config["auth"]["supportedAuthTypes"].append(auth_type)
         return self
 
-    def add_auth_field(self, field: AuthField) -> 'ConnectorConfigBuilder':
-        """Add an authentication field"""
+    def add_auth_field(self, field: AuthField, auth_type: str) -> 'ConnectorConfigBuilder':
+        """
+        Add an authentication field to a specific auth type's schema.
 
-        if field.field_type == "CHECKBOX":
-            field.min_length = 0
+        Args:
+            field: AuthField instance to add
+            auth_type: Authentication type to add the field to (required)
+        """
+        if not auth_type:
+            raise ValueError("auth_type is required when adding auth fields")
 
-        field_config = {
-            "name": field.name,
-            "displayName": field.display_name,
-            "placeholder": field.placeholder,
-            "description": field.description,
-            "fieldType": field.field_type,
-            "required": field.required,
-            "defaultValue": field.default_value,
-            "validation": {
-                "minLength": field.min_length,
-                "maxLength": field.max_length,
-            },
-            "isSecret": field.is_secret
+        if "schemas" not in self.config["auth"]:
+            self.config["auth"]["schemas"] = {}
+        if auth_type not in self.config["auth"]["schemas"]:
+            self.config["auth"]["schemas"][auth_type] = {"fields": []}
+
+        target_schema = self.config["auth"]["schemas"][auth_type]
+        field_config = auth_field_to_dict(field)
+        target_schema["fields"].append(field_config)
+        return self
+
+    def with_oauth_config(
+        self,
+        oauth_config: OAuthConfig,
+        auth_type: Optional[str] = None,
+        auto_add_common_fields: bool = True
+    ) -> 'ConnectorConfigBuilder':
+        """
+        Use OAuth configuration from registry.
+
+        This method:
+        1. Populates OAuth URLs, scopes, and redirect URI in oauthConfigs (for OAuth flow)
+        2. Stores redirect URI in the auth type's schema (for form display)
+        3. Automatically adds all OAuth fields from the config to the schema
+
+        All OAuth fields should be defined in the OAuthConfig.auth_fields list.
+        This ensures a single source of truth - define fields once in OAuth config, use everywhere.
+
+        Args:
+            oauth_config: OAuthConfig instance with all fields defined
+            auth_type: Optional specific auth type (defaults to first supported auth type)
+            auto_add_common_fields: If True, automatically adds all fields from oauth_config.auth_fields
+        """
+        # Determine auth type
+        if not auth_type:
+            supported_auth_types = self.config["auth"].get("supportedAuthTypes", ["OAUTH"])
+            auth_type = supported_auth_types[0] if supported_auth_types else "OAUTH"
+
+        # Initialize schemas structure if needed
+        if "schemas" not in self.config["auth"]:
+            self.config["auth"]["schemas"] = {}
+        if auth_type not in self.config["auth"]["schemas"]:
+            self.config["auth"]["schemas"][auth_type] = {"fields": []}
+
+        # Store redirect URI in the auth type's schema (needed for form display)
+        if oauth_config.redirect_uri:
+            self.config["auth"]["schemas"][auth_type]["redirectUri"] = oauth_config.redirect_uri
+            self.config["auth"]["schemas"][auth_type]["displayRedirectUri"] = True
+
+        # Store OAuth URLs and scopes in oauthConfigs (used during OAuth flow)
+        all_scopes = oauth_config.scopes.get_all_scopes()
+        self.config["auth"]["oauthConfigs"][auth_type] = {
+            "authorizeUrl": oauth_config.authorize_url,
+            "tokenUrl": oauth_config.token_url,
+            "scopes": all_scopes,
+            "redirectUri": oauth_config.redirect_uri
         }
-        self.config["auth"]["schema"]["fields"].append(field_config)
-        return self
 
-    def with_oauth_urls(self, authorize_url: str, token_url: str, scopes: Optional[List[str]] = None) -> 'ConnectorConfigBuilder':
-        """Set OAuth URLs and scopes for OAuth connectors"""
-        self.config["auth"]["authorizeUrl"] = authorize_url
-        self.config["auth"]["tokenUrl"] = token_url
-        if scopes:
-            self.config["auth"]["scopes"] = scopes
+        # Auto-add all OAuth fields from config if requested
+        if auto_add_common_fields:
+            auto_add_oauth_fields(self.config, oauth_config, auth_type)
+
         return self
 
     def with_sync_strategies(self, strategies: List[str], selected: str = "MANUAL") -> 'ConnectorConfigBuilder':
@@ -230,21 +271,22 @@ class ConnectorConfigBuilder:
         self.config["sync"]["customFields"].append(field_config)
         return self
 
-    def add_filter_field(self, field: FilterField, endpoint: str = "static") -> 'ConnectorConfigBuilder':
-        """Add a filter field"""
-        field_config = {
-            "name": field.name,
-            "displayName": field.display_name,
-            "description": field.description,
-            "fieldType": field.field_type,
-            "required": field.required,
-            "defaultValue": field.default_value,
-            "options": field.options,
-            "operators": field.operators
-        }
+    def add_filter_field(self, field: FilterField) -> 'ConnectorConfigBuilder':
+        """
+        Add a filter field to the connector schema.
 
-        self.config["filters"]["schema"]["fields"].append(field_config)
-        self.config["filters"]["endpoints"][field.name] = endpoint
+        The field will be added to either sync or indexing category
+        based on field.category.
+
+        Args:
+            field: FilterField definition with type, operators, category
+        """
+        schema_dict = field.to_schema_dict()
+        category = field.category.value  # "sync" or "indexing"
+
+        # Add to appropriate category schema
+        self.config["filters"][category]["schema"]["fields"].append(schema_dict)
+
         return self
 
     def add_conditional_display(self, field_name: str, show_when_field: str, operator: str, value: Union[str, bool, int, float]) -> 'ConnectorConfigBuilder':
@@ -271,19 +313,85 @@ class ConnectorBuilder:
     def __init__(self, name: str) -> None:
         self.name = name
         self.app_group = ""
-        self.auth_type = "OAUTH"
+        self.supported_auth_types: List[str] = ["OAUTH"]  # Supported auth types (user selects one during creation)
         self.app_description = ""
         self.app_categories = []
         self.config_builder = ConnectorConfigBuilder()
+        self.connector_scopes: List[ConnectorScope] = []
+        self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
+        self.connector_info: Optional[str] = None
 
     def in_group(self, app_group: str) -> 'ConnectorBuilder':
         """Set the app group"""
         self.app_group = app_group
         return self
 
-    def with_auth_type(self, auth_type: str) -> 'ConnectorBuilder':
-        """Set the authentication type"""
-        self.auth_type = auth_type
+    def with_scopes(self, scopes: List[ConnectorScope]) -> 'ConnectorBuilder':
+        """Set the connector scopes"""
+        self.connector_scopes = scopes
+        return self
+
+    def with_auth(self, auth_builders: List[AuthBuilder]) -> 'ConnectorBuilder':
+        """
+        Configure authentication types using AuthBuilder pattern (preferred method).
+
+        Args:
+            auth_builders: List of AuthBuilder instances, each configuring one auth type
+
+        Example:
+            with_auth([
+                AuthBuilder.type(AuthType.OAUTH).oauth(...),
+                AuthBuilder.type(AuthType.API_TOKEN).fields([...])
+            ])
+        """
+        if not auth_builders:
+            raise ValueError("auth_builders list cannot be empty")
+
+        # Extract supported auth types and configure
+        supported_auth_types = [builder.get_auth_type() for builder in auth_builders]
+        self.supported_auth_types = supported_auth_types
+
+        # Update config builder with supported auth types
+        self.config_builder.with_supported_auth_types(supported_auth_types)
+
+        # Configure each auth type with its fields/oauth config
+        for builder in auth_builders:
+            auth_type = builder.get_auth_type()
+            oauth_config = builder.get_oauth_config()
+            fields = builder.get_fields()
+
+            # If OAuth config is provided, use it
+            if oauth_config:
+                self._oauth_configs[auth_type] = oauth_config
+                self.config_builder.with_oauth_config(oauth_config, auth_type)
+            else:
+                # Otherwise, add fields manually
+                for field in fields:
+                    self.config_builder.add_auth_field(field, auth_type)
+
+        return self
+
+    def with_supported_auth_types(self, auth_types: Union[str, List[str]]) -> 'ConnectorBuilder':
+        """
+        Set the supported authentication types - user will select one during connector creation.
+
+        For OAuth connectors, prefer using with_auth() with AuthBuilder for better configuration.
+        This method is for simple cases where you just need to set the auth types without OAuth config.
+
+        Args:
+            auth_types: Single auth type string or list of auth type strings
+        """
+        if isinstance(auth_types, str):
+            self.supported_auth_types = [auth_types]
+        elif isinstance(auth_types, list):
+            if not auth_types:
+                raise ValueError("auth_types list cannot be empty")
+            self.supported_auth_types = auth_types
+        else:
+            raise ValueError(f"auth_types must be str or List[str], got {type(auth_types)}")
+
+        # Update config builder with supported auth types
+        self.config_builder.with_supported_auth_types(auth_types)
         return self
 
     def with_description(self, description: str) -> 'ConnectorBuilder':
@@ -296,10 +404,16 @@ class ConnectorBuilder:
         self.app_categories = categories
         return self
 
+    def with_info(self, info: str) -> 'ConnectorBuilder':
+        """Set connector info that will be displayed on the frontend connector page"""
+        self.connector_info = info
+        return self
+
     def configure(self, config_func: Callable[[ConnectorConfigBuilder], ConnectorConfigBuilder]) -> 'ConnectorBuilder':
         """Configure the connector using a configuration function"""
         self.config_builder = config_func(self.config_builder)
         return self
+
 
     def build_decorator(self) -> Callable[[Type], Type]:
         """Build the final connector decorator"""
@@ -307,54 +421,158 @@ class ConnectorBuilder:
 
         config = self.config_builder.build()
 
-        # Validate OAuth requirements when applicable
-        if self.auth_type and self.auth_type.upper() == "OAUTH":
-            self._validate_oauth_requirements(config)
+        # Auto-register all OAuth configs with final connector name
+        oauth_registry = get_oauth_config_registry()
+        for auth_type, oauth_config in self._oauth_configs.items():
+            # Ensure connector name matches final builder name
+            if oauth_config.connector_name != self.name:
+                # Remove old registration if name changed and it's the same object
+                old_config = oauth_registry.get_config(oauth_config.connector_name)
+                if old_config is oauth_config:
+                    del oauth_registry._configs[oauth_config.connector_name]
+                oauth_config.connector_name = self.name
+
+            # Auto-populate metadata from connector builder if not already set
+            # This makes OAuth configs self-contained with metadata
+            # Note: app_description should be OAuth-specific (about the OAuth app), not connector sync description
+            if not oauth_config.icon_path or oauth_config.icon_path == "/assets/icons/connectors/default.svg":
+                oauth_config.icon_path = config.get("iconPath", oauth_config.icon_path)
+            if not oauth_config.app_group:
+                oauth_config.app_group = self.app_group
+            # app_description is intentionally NOT auto-populated from connector description
+            # It should describe the OAuth app itself, not what the connector syncs
+            # If not provided in oauth() method, it remains empty or uses a generic OAuth description
+            if not oauth_config.app_description:
+                # Generate OAuth-specific description if not provided
+                oauth_config.app_description = f"OAuth application for {self.name} integration"
+            if not oauth_config.app_categories:
+                oauth_config.app_categories = self.app_categories
+
+            # Auto-populate documentation links from connector config if not already set
+            # This allows OAuth configs to have setup documentation links
+            if not oauth_config.documentation_links and config.get("documentationLinks"):
+                from app.connectors.core.registry.types import DocumentationLink
+                oauth_config.documentation_links = [
+                    DocumentationLink(
+                        title=link.get("title", ""),
+                        url=link.get("url", ""),
+                        doc_type=link.get("type", "")
+                    )
+                    for link in config.get("documentationLinks", [])
+                ]
+
+            # Register with final name (overwrites if already registered - allows sharing between connector/toolset)
+            oauth_registry.register(oauth_config)
+
+        # Validate OAuth requirements for all OAuth supported auth types
+        for auth_type in self.supported_auth_types:
+            if auth_type and auth_type.upper() == "OAUTH":
+                self._validate_oauth_requirements(config, auth_type)
+
+        # Validate that required auth fields are present
+        self._validate_required_auth_fields(config)
 
         return Connector(
             name=self.name,
             app_group=self.app_group,
-            auth_type=self.auth_type,
+            supported_auth_types=self.supported_auth_types,  # All supported types (user selects one during creation)
             app_description=self.app_description,
             app_categories=self.app_categories,
-            config=config
+            config=config,
+            connector_scopes=self.connector_scopes,
+            connector_info=self.connector_info
         )
 
-    def _validate_oauth_requirements(self, config: Dict[str, Any]) -> None:
-        """Ensure required OAuth fields are provided for OAuth connectors.
+    def _validate_required_auth_fields(self, config: Dict[str, Any]) -> None:
+        """
+        Validate that required auth fields are properly defined.
 
-        Required:
+        This checks that if a field is marked as required=True, it exists
+        in the schema. It does NOT validate that values are provided (that
+        happens at runtime during configuration).
+
+        Note: Auth types like "NONE" may not have schemas, which is allowed.
+        """
+        auth_config = config.get("auth", {})
+        schemas = auth_config.get("schemas", {})
+
+        # Check each supported auth type that has a schema
+        # Some auth types like "NONE" don't need schemas
+        for auth_type in self.supported_auth_types:
+            if auth_type in schemas:
+                schema_fields = schemas[auth_type].get("fields", [])
+
+                # Check for required fields without names
+                for i, field in enumerate(schema_fields):
+                    if isinstance(field, dict):
+                        if field.get("required", False) and not field.get("name"):
+                            raise ValueError(
+                                f"Connector '{self.name}' (auth_type: {auth_type}): "
+                                f"Required field at index {i} is missing a 'name'"
+                            )
+
+    def _validate_oauth_requirements(self, config: Dict[str, Any], auth_type: str = "OAUTH") -> None:
+        """Ensure required OAuth infrastructure is provided for OAuth connectors.
+
+        Required OAuth infrastructure:
         - authorizeUrl
         - tokenUrl
         - redirectUri
         - scopes (non-empty list)
-        - auth schema includes fields: clientId, clientSecret
+
+        Note: Auth fields (clientId, clientSecret, tenantId, etc.) are flexible
+        and should be added by the user via add_auth_field(). We only validate
+        that required fields (marked with required=True) are present.
+
+        Args:
+            config: Configuration dictionary
+            auth_type: Specific auth type to validate (default: "OAUTH")
         """
         auth_config = config.get("auth", {})
-
         missing_items = []
 
-        required_urls = ["authorizeUrl", "tokenUrl", "redirectUri"]
-        for url_key in required_urls:
-            if not auth_config.get(url_key):
-                missing_items.append(url_key)
+        # Check for OAuth configs per auth type
+        oauth_configs = auth_config.get("oauthConfigs", {})
+        if auth_type in oauth_configs:
+            oauth_config = oauth_configs[auth_type]
+            required_urls = ["authorizeUrl", "tokenUrl"]
+            for url_key in required_urls:
+                if not oauth_config.get(url_key):
+                    missing_items.append(f"{auth_type}.{url_key}")
+            scopes = oauth_config.get("scopes", [])
+            if not isinstance(scopes, list) or not scopes:
+                missing_items.append(f"{auth_type}.scopes")
+        else:
+            missing_items.append(f"{auth_type}.oauthConfigs (missing OAuth configuration)")
 
-        scopes = auth_config.get("scopes")
-        if not isinstance(scopes, list) or not scopes:
-            missing_items.append("scopes")
+        # Check redirectUri in schema (required for OAuth flow)
+        schemas = auth_config.get("schemas", {})
+        if auth_type in schemas:
+            redirect_uri = schemas[auth_type].get("redirectUri")
+            if not redirect_uri:
+                missing_items.append(f"{auth_type}.redirectUri")
+        else:
+            missing_items.append(f"{auth_type}.schemas (missing schema)")
 
-        # Validate presence of clientId and clientSecret in auth schema fields
-        schema_fields = auth_config.get("schema", {}).get("fields", [])
-        field_names = {f.get("name") for f in schema_fields if isinstance(f, dict)}
-        required_schema_fields = {"clientId", "clientSecret"}
-        missing_fields = required_schema_fields - field_names
-        for field_name in sorted(list(missing_fields)):
-            missing_items.append(f"auth.schema.fields: {field_name}")
+        # Validate that required auth fields are present
+        if auth_type in schemas:
+            schema_fields = schemas[auth_type].get("fields", [])
+
+            # Check for required fields (fields marked with required=True)
+            missing_required_fields = []
+            for field in schema_fields:
+                if isinstance(field, dict) and field.get("required", False):
+                    field_name = field.get("name")
+                    if not field_name:
+                        missing_required_fields.append("unnamed required field")
+
+            if missing_required_fields:
+                missing_items.append(f"auth.schemas.{auth_type}.fields: missing required field definitions")
 
         if missing_items:
             details = ", ".join(missing_items)
             raise ValueError(
-                f"OAuth configuration incomplete for connector '{self.name}': missing {details}"
+                f"OAuth configuration incomplete for connector '{self.name}' (auth_type: {auth_type}): missing {details}"
             )
 
 
@@ -448,31 +666,86 @@ class CommonFields:
         )
 
     @staticmethod
-    def file_types_filter() -> FilterField:
-        """Standard file types filter"""
+    def file_extension_filter(
+        description: Optional[str] = None,
+        display_name: str = "File Extensions",
+        options_endpoint: Optional[str] = None,
+    ) -> FilterField:
+        """
+        Standard file extension filter (static multiselect).
+
+        Note: options_endpoint is reserved for a future dynamic-options implementation.
+        """
         return FilterField(
-            name="fileTypes",
-            display_name="File Types",
-            description="Select the types of files to sync",
-            options=["document", "spreadsheet", "presentation", "pdf", "image", "video"]
+            name="file_extensions",
+            display_name=display_name,
+            filter_type=FilterType.MULTISELECT,
+            category=FilterCategory.SYNC,
+            description=description
+            or "Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
+            default_value=[],
+            default_operator=MultiselectOperator.IN.value,
+            option_source_type=OptionSourceType.STATIC,
+            options=[
+                FilterOption(id=ext.value, label=f".{ext.value}")
+                for ext in ExtensionTypes
+            ]
         )
 
     @staticmethod
-    def folders_filter() -> FilterField:
+    def folders_filter(options_endpoint: Optional[str] = None) -> FilterField:
         """Standard folders filter"""
         return FilterField(
             name="folders",
             display_name="Folders",
-            description="Select folders to sync from"
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Select folders to sync from",
         )
 
     @staticmethod
-    def channels_filter() -> FilterField:
+    def channels_filter(options_endpoint: Optional[str] = None) -> FilterField:
         """Standard channels filter"""
         return FilterField(
             name="channels",
             display_name="Channels",
-            description="Select channels to sync messages from"
+            filter_type=FilterType.LIST,
+            category=FilterCategory.SYNC,
+            description="Select channels to sync messages from",
+        )
+
+    @staticmethod
+    def modified_date_filter(description: Optional[str] = None) -> FilterField:
+        """Standard modified date filter with operator selection"""
+        return FilterField(
+            name="modified",
+            display_name="Modified Date",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            description=description or "Filter content by modification date."
+        )
+
+    @staticmethod
+    def created_date_filter(description: Optional[str] = None) -> FilterField:
+        """Standard created date filter with operator selection"""
+        return FilterField(
+            name="created",
+            display_name="Created Date",
+            filter_type=FilterType.DATETIME,
+            category=FilterCategory.SYNC,
+            description=description or "Filter content by creation date."
+        )
+
+    @staticmethod
+    def enable_manual_sync_filter() -> FilterField:
+        """Standard manual indexing control filter (master switch for indexing)"""
+        return FilterField(
+            name="enable_manual_sync",
+            display_name="Enable Manual Indexing",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Disable automatic indexing for all synced records.",
+            default_value=False
         )
 
     @staticmethod

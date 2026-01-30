@@ -3,16 +3,19 @@ import axios from 'src/utils/axios';
 
 export interface GoogleAuthConfig {
   clientId: string;
+  enableJit?: boolean;
 }
 
 export interface AzureAuthConfig {
   clientId: string;
   tenantId: string;
+  enableJit?: boolean;
 }
 
 export interface MicrosoftAuthConfig {
   clientId: string;
   tenantId: string;
+  enableJit?: boolean;
 }
 
 export interface SamlSsoConfig {
@@ -20,7 +23,8 @@ export interface SamlSsoConfig {
   certificate?: string;    
   emailKey?: string;        
   logoutUrl?: string;       
-  entityId?: string;       
+  entityId?: string;
+  enableJit?: boolean;       
 }
 
 export interface OAuthConfig {
@@ -32,6 +36,7 @@ export interface OAuthConfig {
   providerName: string;
   scope?: string;
   redirectUri?: string;
+  enableJit?: boolean;
 }
 
 // Base API URL

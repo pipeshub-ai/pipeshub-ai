@@ -1,4 +1,5 @@
 import uuid
+from typing import Optional
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -19,7 +20,7 @@ class GmailChangeHandler:
         self.arango_service = arango_service
         self.logger = logger
 
-    async def process_changes(self, user_service, changes, org_id, user) -> bool:
+    async def process_changes(self, user_service, changes, org_id, user, connector_id: Optional[str] = None) -> bool:
         """Process changes since last sync time"""
         self.logger.info("🚀 Processing changes")
         self.logger.info(f"changes: {changes}")
@@ -96,7 +97,7 @@ class GmailChangeHandler:
                         "isParent": message_data.get("threadId")
                         == message_id,  # Check if threadId and messageId are same
                         "internalDate": message_data.get("internalDate"),
-                        "subject": headers.get("Subject", "No Subject"),
+                        "subject": headers.get("Subject") or "No Subject",
                         "from": headers.get("From", [""])[0],
                         "to": headers.get("To", []),
                         "cc": headers.get("Cc", []),
@@ -110,13 +111,14 @@ class GmailChangeHandler:
                     record = {
                         "_key": message_record["_key"],
                         "orgId": org_id,
-                        "recordName": headers.get("Subject", "No Subject"),
+                        "recordName": headers.get("Subject") or "No Subject",
                         "externalRecordId": message_id,
                         "externalRevisionId": None,
                         "recordType": RecordTypes.MAIL.value,
                         "version": 0,
                         "origin": OriginTypes.CONNECTOR.value,
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": connector_id,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                         "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                         "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
@@ -127,7 +129,7 @@ class GmailChangeHandler:
                         "virtualRecordId": None,
                         "lastIndexTimestamp": None,
                         "lastExtractionTimestamp": None,
-                        "indexingStatus": "NOT_STARTED",
+                        "indexingStatus": "QUEUED",
                         "extractionStatus": "NOT_STARTED",
                         "webUrl": f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
                         "isLatestVersion": True,
@@ -224,13 +226,14 @@ class GmailChangeHandler:
                                     "externalRevisionId": None,
                                     "origin": OriginTypes.CONNECTOR.value,
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
+                                    "connectorId": connector_id,
                                     "virtualRecordId": None,
                                     "lastSyncTimestamp": get_epoch_timestamp_in_ms(),
                                     "isDeleted": False,
                                     "isArchived": False,
                                     "lastIndexTimestamp": None,
                                     "lastExtractionTimestamp": None,
-                                    "indexingStatus": "NOT_STARTED",
+                                    "indexingStatus": "QUEUED",
                                     "extractionStatus": "NOT_STARTED",
                                     "isLatestVersion": True,
                                     "isDirty": False,
@@ -378,13 +381,14 @@ class GmailChangeHandler:
                     message_event = {
                         "orgId": org_id,
                         "recordId": message_record["_key"],
-                        "recordName": headers.get("Subject", "No Subject"),
+                        "recordName": headers.get("Subject") or "No Subject",
                         "recordType": RecordTypes.MAIL.value,
                         "recordVersion": 0,
                         "eventType": EventTypes.NEW_RECORD.value,
                         "body": message_data.get("body", ""),
                         "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{message_record['_key']}/signedUrl",
                         "connectorName": Connectors.GOOGLE_MAIL.value,
+                        "connectorId": connector_id,
                         "origin": OriginTypes.CONNECTOR.value,
                         "mimeType": "text/gmail_content",
                         "createdAtSourceTimestamp": int(
@@ -429,6 +433,7 @@ class GmailChangeHandler:
                                 "eventType": EventTypes.NEW_RECORD.value,
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment_key}/signedUrl",
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
+                                "connectorId": connector_id,
                                 "extension": extension,
                                 "origin": OriginTypes.CONNECTOR.value,
                                 "mimeType": attachment.get(
@@ -576,6 +581,7 @@ class GmailChangeHandler:
                                     "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{attachment['_key']}/signedUrl",
                                     "eventType": EventTypes.DELETE_RECORD.value,
                                     "connectorName": Connectors.GOOGLE_MAIL.value,
+                                    "connectorId": connector_id,
                                     "origin": OriginTypes.CONNECTOR.value,
                                     "mimeType": attachment.get("mimeType"),
                                 }
@@ -597,12 +603,13 @@ class GmailChangeHandler:
                                 "orgId": org_id,
                                 "recordId": existing_message["_key"],
                                 "virtualRecordId": existing_message.get("virtualRecordId", None),
-                                "recordName": existing_message.get("recordName", "No Subject"),
+                                "recordName": existing_message.get("recordName") or "No Subject",
                                 "recordType": RecordTypes.MAIL.value,
                                 "recordVersion": 0,
                                 "signedUrlRoute": f"{connector_endpoint}/api/v1/{org_id}/{user_id}/gmail/record/{existing_message['_key']}/signedUrl",
                                 "eventType": EventTypes.DELETE_RECORD.value,
                                 "connectorName": Connectors.GOOGLE_MAIL.value,
+                                "connectorId": connector_id,
                                 "origin": OriginTypes.CONNECTOR.value,
                             }
                             await self.arango_service.kafka_service.send_event_to_kafka(

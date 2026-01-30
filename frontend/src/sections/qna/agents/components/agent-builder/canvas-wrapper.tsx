@@ -1,6 +1,6 @@
 // src/sections/qna/agents/components/flow-builder-canvas-wrapper.tsx
-import React from 'react';
-import { Box } from '@mui/material';
+import React, { memo } from 'react';
+import { Box, useTheme, alpha } from '@mui/material';
 import FlowBuilderSidebar from './sidebar';
 import AgentBuilderCanvas from './canvas';
 import type { AgentBuilderCanvasWrapperProps } from '../../types/agent';
@@ -10,6 +10,10 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   sidebarWidth,
   nodeTemplates,
   loading,
+  activeAgentConnectors,
+  configuredConnectors,
+  connectorRegistry,
+  isBusiness,
   nodes,
   edges,
   onNodesChange,
@@ -22,20 +26,30 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   setNodes,
   onNodeEdit,
   onNodeDelete,
-}) => (
-  <Box
-    sx={{
-      flex: 1,
-      display: 'flex',
-      overflow: 'hidden',
-      minHeight: 0,
-    }}
-  >
+  onError,
+}) => {
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
+  return (
+    <Box
+      sx={{
+        flex: 1,
+        display: 'flex',
+        overflow: 'hidden',
+        minHeight: 0,
+        backgroundColor: theme.palette.background.default,
+      }}
+    >
     <FlowBuilderSidebar
       sidebarOpen={sidebarOpen}
       nodeTemplates={nodeTemplates}
       loading={loading}
       sidebarWidth={sidebarWidth}
+      activeAgentConnectors={activeAgentConnectors}
+      configuredConnectors={configuredConnectors}
+      connectorRegistry={connectorRegistry}
+      isBusiness={isBusiness}
     />
 
     <AgentBuilderCanvas
@@ -52,10 +66,14 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       setNodes={setNodes}
       sidebarOpen={sidebarOpen}
       sidebarWidth={sidebarWidth}
+      configuredConnectors={configuredConnectors}
+      activeAgentConnectors={activeAgentConnectors}
       onNodeEdit={onNodeEdit}
       onNodeDelete={onNodeDelete}
+      onError={onError}
     />
   </Box>
-);
+  );
+};
 
-export default AgentBuilderCanvasWrapper;
+export default memo(AgentBuilderCanvasWrapper);

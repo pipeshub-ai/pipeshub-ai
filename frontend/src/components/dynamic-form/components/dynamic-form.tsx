@@ -146,9 +146,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
           } else if (finalConfigType === 'storage' && data.providerType === 'local') {
             hasData = true;
             validationResult = true;
-          } else if (finalConfigType === 'url') {
-            hasData = !!(data.frontendUrl?.trim() || data.connectorUrl?.trim());
-            validationResult = hasData ? isValid : true;
           } else {
             const nonMetaKeys = Object.keys(data).filter(
               (key) => key !== 'providerType' && key !== 'modelType' && key !== '_provider'
@@ -366,11 +363,19 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
       getFormData: async (): Promise<any> => {
         const formData = getValues();
         const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
-        return {
+        
+        const result = {
           ...formData,
           [isLegacyModelType ? 'modelType' : 'providerType']: currentProvider,
           _provider: currentProvider,
         };
+        
+        // Handle "other" provider case for Bedrock: use customProvider value
+        if (currentProvider === 'bedrock' && formData.provider === 'other' && formData.customProvider) {
+          result.provider = formData.customProvider;
+        }
+        
+        return result;
       },
 
       validateForm: async (): Promise<boolean> => {
@@ -408,10 +413,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
 
         if (finalConfigType === 'storage' && formData.providerType === 'local') {
           return true;
-        }
-
-        if (finalConfigType === 'url') {
-          return !!(formData.frontendUrl?.trim() || formData.connectorUrl?.trim());
         }
 
         const nonMetaKeys = Object.keys(formData).filter(
@@ -548,8 +549,6 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         return 'Configure your storage settings for file management.';
       case 'smtp':
         return 'Configure SMTP settings for email notifications.';
-      case 'url':
-        return 'Configure the public URLs for your services.';
       default:
         return `Configure your ${String(finalConfigType).toUpperCase()} settings.`;
     }

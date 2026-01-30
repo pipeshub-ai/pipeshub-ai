@@ -62,6 +62,15 @@ interface IMessageMetadata {
   reason?: string;
 }
 
+// Reference data item for follow-up queries (stores IDs that were in the response)
+export interface IReferenceDataItem {
+  name: string;        // Display name shown to user
+  id: string;          // Technical ID (numeric ID, UUID, etc.)
+  type?: string;       // Item type (e.g., "jira_project", "jira_issue", "google_file")
+  key?: string;        // Short key/code (e.g., "PA" for Jira project, "PA-123" for issue) - CRITICAL for JQL
+  accountId?: string;  // Jira user accountId - needed for assignee/reporter JQL filters
+}
+
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system';
   content: string;
@@ -74,6 +83,8 @@ export interface IMessage {
   createdAt?: Date;
   updatedAt?: Date;
   modelInfo?: IAIModel;
+  // Reference data for follow-up queries (IDs from tool responses)
+  referenceData?: IReferenceDataItem[];
 }
 
 export interface IConversation {
@@ -163,6 +174,8 @@ export interface IAIResponse {
     reason?: string;
   };
   modelInfo?: IAIModel;
+  // Reference data for follow-up queries (IDs from tool responses)
+  referenceData?: IReferenceDataItem[];
 }
 
 export interface IAIModel {

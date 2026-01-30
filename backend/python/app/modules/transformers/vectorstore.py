@@ -6,14 +6,14 @@ from typing import List, Optional
 
 import httpx
 import spacy
-from langchain.chat_models.base import BaseChatModel
-from langchain.schema import Document, HumanMessage
+from langchain_core.documents import Document
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
 from qdrant_client.http.models import PointStruct
 from spacy.language import Language
 from spacy.tokens import Doc
 
-from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
@@ -32,7 +32,6 @@ from app.utils.aimodels import (
     get_embedding_model,
 )
 from app.utils.llm import get_llm
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Module-level shared spaCy pipeline to avoid repeated heavy loads
 _SHARED_NLP: Optional[Language] = None
@@ -337,7 +336,9 @@ class VectorStore(Transformer):
                 dense_embeddings = get_default_embedding_model()
                 self.logger.info("Using default embedding model")
             else:
-                config = embedding_configs[0]
+                # Find the default config, or fall back to the first one.
+                config = next((c for c in embedding_configs if c.get("isDefault")), embedding_configs[0])
+
                 provider = config["provider"]
                 configuration = config["configuration"]
                 model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
@@ -815,48 +816,14 @@ class VectorStore(Transformer):
                     details={"error": str(result), "batch_index": i},
                 )
 
-    async def _update_record_status(
-        self, chunks: List[Document], record_id: str
-    ) -> None:
-        """Update record indexing status in the database."""
-        if not chunks:
-            return
 
-        meta = chunks[0].metadata if isinstance(chunks[0], Document) else chunks[0].get("metadata", {})
-        record = await self.arango_service.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
-        if not record:
-            raise DocumentProcessingError(
-                "Record not found in database",
-                doc_id=record_id,
-            )
-
-        doc = dict(record)
-        doc.update(
-            {
-                "indexingStatus": "COMPLETED",
-                "isDirty": False,
-                "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                "virtualRecordId": meta.get("virtualRecordId"),
-            }
-        )
-
-        docs = [doc]
-        success = await self.arango_service.batch_upsert_nodes(
-            docs, CollectionNames.RECORDS.value
-        )
-        if not success:
-            raise DocumentProcessingError(
-                "Failed to update indexing status", doc_id=record_id
-            )
 
     async def _create_embeddings(
         self, chunks: List[Document], record_id: str, virtual_record_id: str
     ) -> None:
         """
         Create both sparse and dense embeddings for document chunks and store them in vector store.
-        Handles both text and image embeddings.
+        Handles both text and image embeddings
 
         Args:
             chunks: List of document chunks to embed
@@ -904,8 +871,6 @@ class VectorStore(Transformer):
                         details={"error": str(e)},
                     )
 
-            # Update record status
-            await self._update_record_status(chunks, record_id)
             self.logger.info(f"✅ Embeddings created and stored for record: {record_id}")
 
         except (

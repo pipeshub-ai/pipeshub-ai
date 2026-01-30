@@ -14,6 +14,10 @@ const baseNavData = [
         title: 'Knowledge Search',
         path: paths.dashboard.knowledgebase.search,
       },
+      {
+        title: 'All Records',
+        path: paths.dashboard.allRecords,
+      },
     ],
   },
 ];
@@ -24,7 +28,7 @@ export const getDashboardNavData = (accountType: string | undefined, isAdmin: bo
   
   const navigationData = [...baseNavData];
   
-  if (isBusiness && isAdmin) {
+  if (isBusiness) {
     navigationData.push({
       subheader: 'Administration',
       items: [

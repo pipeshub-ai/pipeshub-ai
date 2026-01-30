@@ -52,7 +52,15 @@ export class DynamicConfigFactory {
       if (customDefaultValue !== undefined) {
         defaultValues[field.name] = customDefaultValue;
       } else if (field.type === 'number') {
-        defaultValues[field.name] = field.name === 'port' ? 587 : 0;
+        // For optional number fields, use undefined instead of 0
+        // Only set 0 for required number fields (except port which has a specific default)
+        if (field.name === 'port') {
+          defaultValues[field.name] = 587;
+        } else if (field.required === false) {
+          defaultValues[field.name] = undefined;
+        } else {
+          defaultValues[field.name] = 0;
+        }
       } else if (field.type === 'checkbox') {
         defaultValues[field.name] = false;
       } else if (field.type === 'select' && field.options) {

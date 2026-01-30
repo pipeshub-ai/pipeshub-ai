@@ -24,6 +24,13 @@ import {
 } from '../schema/agent.conversation.schema';
 import { Response } from 'express';
 import { Conversation } from '../schema/conversation.schema';
+import { safeParsePagination } from '../../../utils/safe-integer';
+import {
+  sanitizeForResponse,
+  validateBooleanParam,
+  validateNoXSS,
+  validateNoFormatSpecifiers,
+} from '../../../utils/xss-sanitization';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -50,6 +57,26 @@ export const buildUserQueryMessage = (query: string): IMessage => ({
   updatedAt: new Date(),
 });
 
+/**
+ * Safely extracts and validates a search parameter from query string
+ * Prevents type confusion by ensuring the parameter is a string, not an array
+ * @param searchParam - The search parameter from req.query.search
+ * @returns A validated string value
+ * @throws BadRequestError if the parameter is an array or not a string
+ */
+function extractSearchParameter(searchParam: unknown): string {
+  // First check: reject arrays explicitly
+  if (Array.isArray(searchParam)) {
+    throw new BadRequestError('Search parameter must be a string, not an array');
+  }
+  // Second check: ensure it's a string type
+  if (typeof searchParam !== 'string') {
+    throw new BadRequestError('Search parameter must be a string');
+  }
+  // Return the validated string
+  return searchParam;
+}
+
 export const buildAIFailureResponseMessage = (): IMessage => ({
   messageType: 'error',
   content: 'Error Generating Response, Please try again',
@@ -67,7 +94,7 @@ export const buildAIResponseMessage = (
     throw new InternalServerError('AI response must include an answer');
   }
 
-  return {
+  const message: IMessage = {
     messageType: 'bot_response',
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -91,6 +118,14 @@ export const buildAIResponseMessage = (
     },
     modelInfo: modelInfo,
   };
+
+  // Include referenceData if present (IDs for follow-up queries)
+  // This stores technical IDs that were in the response for later reference
+  if (aiResponse.data.referenceData && Array.isArray(aiResponse.data.referenceData)) {
+    message.referenceData = aiResponse.data.referenceData;
+  }
+
+  return message;
 };
 
 export const formatPreviousConversations = (messages: IMessage[]) => {
@@ -99,17 +134,33 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
     .map((msg) => ({
       content: msg.content,
       role: msg.messageType,
+      // Include referenceData for follow-up queries (IDs from tool responses)
+      ...(msg.referenceData && msg.referenceData.length > 0 && { referenceData: msg.referenceData }),
     }));
 };
 
 export const getPaginationParams = (req: AuthenticatedUserRequest) => {
-  const page = Math.max(1, parseInt(req.query?.page as string) || 1);
-  const limit = Math.max(
-    1,
-    Math.min(parseInt(req.query?.limit as string) || 20, 100),
-  );
-  const skip = (page - 1) * limit;
-  return { page, limit, skip };
+  try {
+    // Validate and sanitize page and limit parameters for XSS
+    
+    if (req.query?.page) {
+      validateNoXSS(req.query.page as string, 'page parameter');
+    }
+    if (req.query?.limit) {
+      validateNoXSS(req.query.limit as string, 'limit parameter');
+    }
+    
+    return safeParsePagination(
+      req.query?.page as string | undefined,
+      req.query?.limit as string | undefined,
+      1,
+      20,
+      100,
+    );
+  } catch (error: any) {
+    // Fallback to safe defaults if parsing fails
+    return { page: 1, limit: 20, skip: 0 };
+  }
 };
 
 export const buildSortOptions = (req: AuthenticatedUserRequest) => {
@@ -182,13 +233,27 @@ export const buildFilter = (
     filter._id = new mongoose.Types.ObjectId(id);
   }
 
-  // Handle search
+  // Handle search with XSS validation
+  // Use helper function to safely extract and validate search parameter
   if (req.query.search) {
+    const searchValue = extractSearchParameter(req.query.search);
+    
+    // Validate search parameter for XSS
+    validateNoXSS(searchValue, 'search parameter');
+    
+    // Additional validation: limit search length
+    if (searchValue.length > 1000) {
+      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+    }
+    
+    // Escape special regex characters to prevent regex injection
+    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
     filter.$and = [
       {
         $or: [
-          { title: { $regex: req.query.search, $options: 'i' } },
-          { 'messages.content': { $regex: req.query.search, $options: 'i' } },
+          { title: { $regex: escapedSearch, $options: 'i' } },
+          { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
         ],
       },
     ];
@@ -213,9 +278,15 @@ export const buildFilter = (
     }
   }
 
-  // Handle shared/private filter
+  // Handle shared/private filter with XSS validation
   if (req.query.shared !== undefined) {
-    filter.isShared = req.query.shared === 'true';
+    const sharedValue = validateBooleanParam(
+      req.query.shared as string,
+      'shared parameter',
+    );
+    if (sharedValue !== undefined) {
+      filter.isShared = sharedValue;
+    }
   }
 
   return filter;
@@ -260,8 +331,28 @@ export const buildFiltersMetadata = (
   addFilterIfApplied('startDate', query.startDate);
   addFilterIfApplied('endDate', query.endDate);
   addFilterIfApplied('messageType', query.messageType);
-  addFilterIfApplied('page', query.page);
-  addFilterIfApplied('limit', query.limit);
+
+  // Extract and parse query parameters with safe integer validation
+  let page: number;
+  let limit: number;
+  try {
+    const pagination = safeParsePagination(
+      query.page as string | undefined,
+      query.limit as string | undefined,
+      1,
+      20,
+      100,
+    );
+    page = pagination.page;
+    limit = pagination.limit;
+  } catch (error: any) {
+    throw new BadRequestError(
+      error.message || 'Invalid pagination parameters',
+    );
+  }
+
+  addFilterIfApplied('page', page);
+  addFilterIfApplied('limit', limit);
 
   // Process date filters
   if (appliedFilters.createdAt) {
@@ -281,13 +372,19 @@ export const buildFiltersMetadata = (
       shared: {
         values: ['true', 'false'],
         description: 'Filter by shared status',
-        current: query.shared || null,
+        current:
+          typeof query.shared === 'string'
+            ? sanitizeForResponse(query.shared)
+            : query.shared || null,
         applied: activeFilters.has('shared'),
       },
       tags: {
         type: 'string',
         description: 'Filter by tags',
-        current: query.tags || null,
+        current:
+          typeof query.tags === 'string'
+            ? sanitizeForResponse(query.tags)
+            : query.tags || null,
         applied: activeFilters.has('tags'),
       },
       minMessages: {
@@ -299,13 +396,16 @@ export const buildFiltersMetadata = (
       search: {
         type: 'string',
         description: 'Search in conversation title and messages',
-        current: query.search || null,
+        current:
+          typeof query.search === 'string'
+            ? sanitizeForResponse(query.search)
+            : query.search || null,
         applied: activeFilters.has('search'),
       },
       pagination: {
         page: {
           type: 'number',
-          current: query.page || 1,
+          current: page || 1,
           min: 1,
           max: 1000,
           default: 1,
@@ -314,7 +414,7 @@ export const buildFiltersMetadata = (
         },
         limit: {
           type: 'number',
-          current: query.limit || 20,
+          current: limit || 20,
           min: 1,
           max: 100,
           default: 20,
@@ -333,14 +433,20 @@ export const buildFiltersMetadata = (
           ],
           default: 'lastActivityAt',
           description: 'Field to sort by',
-          current: query.sortBy || 'lastActivityAt',
+          current:
+            typeof query.sortBy === 'string'
+              ? sanitizeForResponse(query.sortBy)
+              : query.sortBy || 'lastActivityAt',
           applied: activeFilters.has('sorting'),
         },
         sortOrder: {
           values: ['asc', 'desc'],
           default: 'desc',
           description: 'Sort order',
-          current: query.sortOrder || 'desc',
+          current:
+            typeof query.sortOrder === 'string'
+              ? sanitizeForResponse(query.sortOrder)
+              : query.sortOrder || 'desc',
           applied: activeFilters.has('sorting'),
         },
       },
@@ -352,11 +458,15 @@ export const buildFiltersMetadata = (
           current: {
             start:
               appliedFilters.createdAt?.$gte?.toISOString() ||
-              query.startDate ||
+              (typeof query.startDate === 'string'
+                ? sanitizeForResponse(query.startDate)
+                : query.startDate) ||
               null,
             end:
               appliedFilters.createdAt?.$lte?.toISOString() ||
-              query.endDate ||
+              (typeof query.endDate === 'string'
+                ? sanitizeForResponse(query.endDate)
+                : query.endDate) ||
               null,
           },
           applied: activeFilters.has('dateRange'),
@@ -366,7 +476,10 @@ export const buildFiltersMetadata = (
         messageType: {
           values: ['user_query', 'bot_response', 'error', 'feedback', 'system'],
           description: 'Filter by message type',
-          current: query.messageType || null,
+          current:
+            typeof query.messageType === 'string'
+              ? sanitizeForResponse(query.messageType)
+              : query.messageType || null,
           applied: activeFilters.has('messageType'),
         },
       },
@@ -898,13 +1011,28 @@ export const buildAgentConversationFilter = (
     filter._id = new mongoose.Types.ObjectId(`${conversationId}`);
   }
 
-  // Handle search
+  // Handle search with XSS and format string validation
+  // Use helper function to safely extract and validate search parameter
   if (req.query.search) {
+    const searchValue = extractSearchParameter(req.query.search);
+    
+    // Validate search parameter for XSS and format specifiers
+    validateNoXSS(searchValue, 'search parameter');
+    validateNoFormatSpecifiers(searchValue, 'search parameter');
+    
+    // Additional validation: limit search length
+    if (searchValue.length > 1000) {
+      throw new BadRequestError('Search parameter too long (max 1000 characters)');
+    }
+    
+    // Escape special regex characters to prevent regex injection
+    const escapedSearch = searchValue.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
     filter.$and = [
       {
         $or: [
-          { title: { $regex: req.query.search, $options: 'i' } },
-          { 'messages.content': { $regex: req.query.search, $options: 'i' } },
+          { title: { $regex: escapedSearch, $options: 'i' } },
+          { 'messages.content': { $regex: escapedSearch, $options: 'i' } },
         ],
       },
     ];
@@ -929,9 +1057,15 @@ export const buildAgentConversationFilter = (
     }
   }
 
-  // Handle shared/private filter
+  // Handle shared/private filter with XSS validation
   if (req.query.shared !== undefined) {
-    filter.isShared = req.query.shared === 'true';
+    const sharedValue = validateBooleanParam(
+      req.query.shared as string,
+      'shared parameter',
+    );
+    if (sharedValue !== undefined) {
+      filter.isShared = sharedValue;
+    }
   }
 
   return filter;

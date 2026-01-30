@@ -15,18 +15,34 @@ class KeyValueStore(ABC, Generic[T]):
         T: The type of values stored in the key-value store
     """
 
+    @property
     @abstractmethod
-    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> None:
+    def client(self) -> Optional[object]:
+        """
+        Expose the underlying client for watchers and diagnostics.
+
+        Returns:
+            The underlying client instance (e.g., Redis client, etcd3 client),
+            or None if not connected.
+        """
+        pass
+
+    @abstractmethod
+    async def create_key(self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None) -> bool:
         """
         Create a new key-value pair in the store.
 
         Args:
             key: The key to create
             value: The value to associate with the key
+            overwrite: If True, overwrite existing key. If False, skip if key exists.
             ttl: Optional time-to-live in seconds
 
+        Returns:
+            True if the key was created or updated, False if the key already existed
+            and overwrite was False.
+
         Raises:
-            KeyError: If the key already exists
             ValueError: If the key or value is invalid
             ConnectionError: If the store is unavailable
         """

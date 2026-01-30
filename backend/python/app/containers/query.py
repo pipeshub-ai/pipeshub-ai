@@ -1,7 +1,7 @@
 from dependency_injector import containers, providers
 
 from app.config.configuration_service import ConfigurationService
-from app.config.providers.etcd.etcd3_encrypted_store import Etcd3EncryptedKeyValueStore
+from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.modules.reranker.reranker import RerankerService
@@ -14,7 +14,7 @@ class QueryAppContainer(BaseAppContainer):
     # Override logger with service-specific name
     logger = providers.Singleton(create_logger, "query_service")
     container_utils = ContainerUtils()
-    key_value_store = providers.Singleton(Etcd3EncryptedKeyValueStore, logger=logger)
+    key_value_store = providers.Singleton(EncryptedKeyValueStore, logger=logger)
 
     # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
@@ -28,7 +28,7 @@ class QueryAppContainer(BaseAppContainer):
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in query service
     arango_service = providers.Resource(
-        container_utils.create_retrieval_arango_service,
+        container_utils.create_arango_service,
         logger=logger,
         arango_client=arango_client,
         config_service=config_service,

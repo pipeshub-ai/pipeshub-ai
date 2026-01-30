@@ -17,6 +17,7 @@ import fileDocumentBoxIcon from '@iconify-icons/mdi/file-document-box';
 import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
 import databaseIcon from '@iconify-icons/mdi/database';
 import infoIcon from '@iconify-icons/mdi/information-outline';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
 
 import {
   Box,
@@ -64,6 +65,7 @@ import {
 } from './components/buttons';
 import {
   formatFileSize,
+  getExtensionFromMimeType,
   getFileIcon,
   getFileIconColor,
   getIndexingStatusColor,
@@ -148,11 +150,18 @@ export default function RecordDetails() {
       );
       setSnackbar({
         open: true,
-        message: response.data.success ? 'File indexing started' : 'Failed to start reindexing',
+        message: response.data.success 
+          ? 'File indexing started' 
+          : response.data.reason || 'Failed to start reindexing',
         severity: response.data.success ? 'success' : 'error',
       });
-    } catch (error) {
+    } catch (error: any) {
       console.log('error in re indexing', error);
+      setSnackbar({
+        open: true,
+        message: error.response?.data?.reason || error.message || 'Failed to start reindexing',
+        severity: 'error',
+      });
     }
   };
 
@@ -236,32 +245,52 @@ export default function RecordDetails() {
   }
 
   const { record, knowledgeBase, permissions, metadata } = recordData;
-  const createdAt = new Date(record.sourceCreatedAtTimestamp).toLocaleString();
-  const updatedAt = new Date(record.sourceLastModifiedTimestamp).toLocaleString();
+  const createdAt = new Date(
+    record.sourceCreatedAtTimestamp || record.createdAtTimestamp
+  ).toLocaleString();
+  const updatedAt = new Date(
+    record.sourceLastModifiedTimestamp || record.updatedAtTimestamp
+  ).toLocaleString();
 
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
   const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
+  const isTicketRecord = record.recordType === 'TICKET' && record.ticketRecord;
 
   // Get file information if it's a file record
   let fileSize = 'N/A';
   let fileType = 'N/A';
   let fileIcon: any = fileDocumentBoxIcon;
   let fileIconColor = '#1976d2';
-
+  let extension = '';
+  fileIcon = getFileIcon(record.fileRecord?.extension || '', record.mimeType || '');
   if (isFileRecord && record.fileRecord) {
-    fileSize = formatFileSize(record.fileRecord.sizeInBytes);
-    fileType = record.fileRecord.extension ? record.fileRecord.extension.toUpperCase() : 'N/A';
-    fileIcon = getFileIcon(record.fileRecord.extension || '');
-    fileIconColor = getFileIconColor(record.fileRecord.extension || '');
+    // Check sizeInBytes in multiple possible locations: record object, or fileRecord
+    // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
+    const sizeInBytes = record.sizeInBytes ?? record.fileRecord.sizeInBytes;
+    if (sizeInBytes !== undefined && sizeInBytes !== null && !Number.isNaN(sizeInBytes) && sizeInBytes >= 0) {
+      fileSize = formatFileSize(sizeInBytes);
+    }
+    // Get extension from fileRecord or derive from MIME type
+    const mimeType = record.fileRecord.mimeType || record.mimeType || '';
+    extension = record.fileRecord.extension || '';
+    fileType = extension.toUpperCase() || 'N/A';
+    fileIcon = getFileIcon(extension, mimeType);
+    fileIconColor = getFileIconColor(extension, mimeType);
   } else if (isMailRecord) {
     fileIcon = emailIcon;
     fileIconColor = '#2196f3';
     fileType = 'EMAIL';
     // We don't have a size for emails, so leave fileSize as N/A
+  } else if (isTicketRecord) {
+    fileIcon = ticketIcon;
+    fileIconColor = '#ff9800';
+    fileType = 'TICKET';
+    // We don't have a size for tickets, so leave fileSize as N/A
   }
   // Check all possible sources for webUrl
   const webUrl = record.webUrl || record.fileRecord?.webUrl || record.mailRecord?.webUrl;
+  const hideWeburl = record.hideWeburl ?? false;
 
   const hasValidNames = (items: MetadataItem[]) => {
     if (!items || items.length === 0) return false;
@@ -342,7 +371,7 @@ export default function RecordDetails() {
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 <IconButton
-                  onClick={() => navigate('/knowledge-base/details')}
+                  onClick={() => navigate('/all-records')}
                   size="small"
                   sx={{
                     borderRadius: 1,
@@ -368,7 +397,7 @@ export default function RecordDetails() {
                   <Stack direction="row" spacing={2} alignItems="center">
                     <Chip
                       size="small"
-                      label={record.recordType}
+                      label={record.recordType.split('_').join(' ')}
                       color="primary"
                       sx={{ height: 22, fontSize: '0.75rem' }}
                     />
@@ -402,7 +431,7 @@ export default function RecordDetails() {
                   <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && <OpenButton webUrl={webUrl} variant="default" />}
+                {webUrl && record.origin !=='UPLOAD' && !hideWeburl && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
                 {recordId && (
@@ -415,7 +444,9 @@ export default function RecordDetails() {
                 )}
 
                 {/* Delete button */}
-                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                {!isRecordConnector && (
+                  <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                )}
               </Box>
               <Box
                 sx={{
@@ -439,7 +470,7 @@ export default function RecordDetails() {
                   <SummaryButton onClick={handleShowSummary} variant="default" />
                 )}
 
-                {webUrl && <OpenButton webUrl={webUrl} variant="default" />}
+                {webUrl && record.origin !=='UPLOAD' && !hideWeburl && <OpenButton webUrl={webUrl} variant="default" />}
 
                 {/* Reindex button */}
                 {recordId && (
@@ -452,7 +483,9 @@ export default function RecordDetails() {
                 )}
 
                 {/* Delete button */}
-                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                {!isRecordConnector && (
+                  <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="default" />
+                )}
               </Box>
 
               {/* Tablet: Compact buttons with text */}
@@ -485,10 +518,12 @@ export default function RecordDetails() {
                   />
                 )}
 
-                {webUrl && <OpenButton webUrl={webUrl} variant="compact" />}
+                {webUrl && record.origin !=='UPLOAD' && !hideWeburl && <OpenButton webUrl={webUrl} variant="compact" />}
 
                 {/* Delete button - Compact */}
-                <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="compact" />
+                {!isRecordConnector && (
+                  <DeleteButton onClick={() => setIsDeleteDialogOpen(true)} variant="compact" />
+                )}
               </Box>
 
               {/* Mobile: Priority action + Hamburger Menu */}
@@ -591,7 +626,7 @@ export default function RecordDetails() {
                   )}
 
                   {/* Open */}
-                  {webUrl && (
+                  {webUrl && record.origin !=='UPLOAD' && !hideWeburl && (
                     <OpenButton
                       webUrl={webUrl}
                       variant="menu"
@@ -610,14 +645,18 @@ export default function RecordDetails() {
                     />
                   )}
 
-                  <Divider sx={{ my: 0.5 }} />
+                  {!isRecordConnector && (
+                    <>
+                      <Divider sx={{ my: 0.5 }} />
 
-                  {/* Delete - Dangerous action at bottom */}
-                  <DeleteButton
-                    onClick={() => setIsDeleteDialogOpen(true)}
-                    variant="menu"
-                    onMenuClose={handleActionMenuClose}
-                  />
+                      {/* Delete - Dangerous action at bottom */}
+                      <DeleteButton
+                        onClick={() => setIsDeleteDialogOpen(true)}
+                        variant="menu"
+                        onMenuClose={handleActionMenuClose}
+                      />
+                    </>
+                  )}
                 </Menu>
               </Box>
             </Box>
@@ -673,7 +712,7 @@ export default function RecordDetails() {
                     <Icon icon={updateIcon} style={{ fontSize: '16px' }} />
                     <Box component="span">Indexing Status:</Box>
                     <Chip
-                      label={record.indexingStatus.replace('_', ' ')}
+                      label={record.indexingStatus.replaceAll('_', ' ')}
                       size="small"
                       color={getIndexingStatusColor(record.indexingStatus)}
                       sx={{
@@ -790,6 +829,28 @@ export default function RecordDetails() {
                             </Typography>
                             <Typography variant="body2">
                               {record.mailRecord?.subject || 'N/A'}
+                            </Typography>
+                          </Box>
+                        )}
+
+                        {isTicketRecord && record.ticketRecord && (
+                          <Box>
+                            <Typography
+                              variant="caption"
+                              color="text.secondary"
+                              gutterBottom
+                              sx={{
+                                textTransform: 'uppercase',
+                                fontWeight: 500,
+                                letterSpacing: '0.5px',
+                                display: 'block',
+                                mb: 0.75,
+                              }}
+                            >
+                              Summary
+                            </Typography>
+                            <Typography variant="body2">
+                              {record.ticketRecord?.name || record.recordName || 'N/A'}
                             </Typography>
                           </Box>
                         )}
@@ -1177,6 +1238,10 @@ export default function RecordDetails() {
                         </Typography>
                       </Box>
                     )}
+
+                    {/* Note: Description field has been removed from TicketRecord.
+                        Content is now stored in block_containers in the base Record class.
+                        If description display is needed, it should be extracted from block_containers. */}
 
                     {/* Departments */}
                     {metadata?.departments &&

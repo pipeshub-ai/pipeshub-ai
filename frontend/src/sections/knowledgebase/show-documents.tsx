@@ -20,6 +20,9 @@ import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
 import docIcon from '@iconify-icons/vscode-icons/file-type-word';
 import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
 import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
+import websiteIcon from '@iconify-icons/mdi/web';
+import ticketIcon from '@iconify-icons/mdi/ticket-outline';
+import linkIcon from '@iconify-icons/mdi/open-in-new';
 
 import {
   Box,
@@ -36,8 +39,8 @@ import {
 
 import axios from 'src/utils/axios';
 import { CONFIG } from 'src/config-global';
+import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import type { Record } from './types/record-details';
-import { getConnectorPublicUrl } from '../accountdetails/account-settings/services/utils/services-configuration-service';
 import { ORIGIN } from './constants/knowledge-search';
 import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import DocxViewer from '../qna/chatbot/components/docx-highlighter';
@@ -47,6 +50,9 @@ import TextViewer from '../qna/chatbot/components/text-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { KnowledgeBaseAPI } from './services/api';
 import ImageHighlighter from '../qna/chatbot/components/image-highlighter';
+import { getExtensionFromMimeType } from './utils/utils';
+
+const MAX_FILE_SIZE_MB = 10; // 10MB
 
 // Simplified state management for viewport mode
 interface DocumentViewerState {
@@ -64,6 +70,12 @@ const getFileIcon = (extension: string, recordType?: string) => {
   // Handle mail records
   if (recordType === 'MAIL') {
     return emailIcon;
+  }
+  if (recordType === 'WEBPAGE') {
+    return websiteIcon;
+  }
+  if (recordType === 'TICKET') {
+    return ticketIcon;
   }
 
   const ext = extension?.replace('.', '').toLowerCase();
@@ -111,7 +123,7 @@ const getFileIcon = (extension: string, recordType?: string) => {
 
 const getExtensionColor = (extension: string, recordType?: string) => {
   // Handle mail records
-  if (recordType === 'MAIL') {
+  if (recordType === 'MAIL' || recordType === 'WEBPAGE') {
     return '#1976d2'; // Blue for emails
   }
 
@@ -140,20 +152,15 @@ const getExtensionColor = (extension: string, recordType?: string) => {
 };
 
 function getDocumentType(extension: string, recordType?: string) {
-  // Handle mail records - treat as HTML for rendering
-  if (recordType === 'MAIL') {
-    return 'html';
-  }
-
   if (extension === 'pdf') return 'pdf';
-  if (['xlsx', 'xls', 'csv'].includes(extension)) return 'excel';
+  if (['xlsx', 'xls', 'csv', 'tsv'].includes(extension)) return 'excel';
   if (extension === 'docx') return 'docx';
   if (extension === 'html') return 'html';
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
   if (extension === 'mdx') return 'mdx';
-  if (['ppt', 'pptx'].includes(extension)) return 'ppt';
-  if (['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(extension)) return 'image';
+  if (['ppt', 'pptx'].includes(extension)) return 'pdf'; // have to convert to pdf
+  if (['jpg', 'jpeg', 'png', 'webp', 'svg', 'gif'].includes(extension)) return 'image';
   return 'other';
 }
 
@@ -473,28 +480,70 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   );
 
   // Fixed early return - check for either fileRecord OR mailRecord
-  if (!record?.fileRecord && !record?.mailRecord) return null;
+  // if (!record?.fileRecord && !record?.mailRecord) return null;
 
   const {
     recordName,
     externalRecordId,
+    createdAtTimestamp,
     sourceCreatedAtTimestamp,
     fileRecord,
     mailRecord,
     origin,
     recordType,
+    mimeType,
   } = record;
 
   // Get the appropriate record data and extension
-  const currentRecord = fileRecord || mailRecord;
-  const extension = fileRecord?.extension || 'eml'; // Use 'eml' for email records
+  const extension = fileRecord?.extension
+    ? fileRecord.extension
+    : getExtensionFromMimeType(mimeType || '');
   const recordTypeForDisplay = recordType || 'FILE';
+
+  // Helper function to get webUrl with text fragment (similar to other components)
+  const getWebUrl = useCallback((): string | null => {
+    try {
+      const hideWeburl = record.hideWeburl ?? false;
+      if (hideWeburl) {
+        return null;
+      }
+
+      let webUrl = record.webUrl;
+      if (!webUrl) {
+        return null;
+      }
+
+      if (record.origin === 'UPLOAD' && webUrl && !webUrl.startsWith('http')) {
+        const baseUrl = `${window.location.protocol}//${window.location.host}`;
+        webUrl = baseUrl + webUrl;
+      }
+
+      return webUrl;
+    } catch (error) {
+      console.warn('Error accessing webUrl:', error);
+      return null;
+    }
+  }, [record]);
+
+  // Shared handler for opening web URL (extracted from duplicated onClick logic)
+  const handleOpenWebUrl = useCallback(() => {
+    const webUrl = getWebUrl();
+    if (webUrl) {
+      window.open(webUrl, '_blank', 'noopener,noreferrer');
+    } else {
+      setSnackbar({
+        open: true,
+        message: 'Unable to open document. URL not available.',
+        severity: 'warning',
+      });
+    }
+  }, [getWebUrl]);
 
   const handleDownload = async () => {
     try {
       setIsDownloading(true);
-      const recordId = origin === ORIGIN.UPLOAD ? externalRecordId : record._key;
-      await KnowledgeBaseAPI.handleDownloadDocument(recordId, recordName, origin);
+      // Always use record._key - the backend handles both KB and connector records via unified stream API
+      await KnowledgeBaseAPI.handleDownloadDocument(record._key, recordName);
     } catch (error) {
       console.error('Failed to download document:', error);
       setSnackbar({
@@ -508,6 +557,12 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
   };
 
   const viewDocument = async (): Promise<void> => {
+    // Check if previewRenderable is false - if so, open webUrl instead of viewer
+    if (record.previewRenderable === false) {
+      handleOpenWebUrl();
+      return;
+    }
+
     // Start with loading phase
     setViewerState((prev) => ({
       ...prev,
@@ -531,108 +586,53 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
       }
 
       let fileDataLoaded = false;
-      let loadedFileUrl = '';
+
       let loadedFileBuffer: ArrayBuffer | null = null;
 
-      if (record.origin === ORIGIN.UPLOAD) {
-        try {
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
+      // Unified streaming - use stream/record API for both KB and connector records
+      try {
+        setViewerState((prev) => ({ ...prev, loadingStep: 'Downloading document...' }));
 
-          const downloadResponse = await axios.get(
-            `/api/v1/document/${externalRecordId}/download`,
-            { responseType: 'blob' }
+        let params: { convertTo?: string } = {};
+
+        // Handle PowerPoint files - request PDF conversion
+        if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
+          params = { convertTo: 'application/pdf' };
+          if (record.fileRecord.sizeInBytes / 1048576 > MAX_FILE_SIZE_MB) {
+            throw new Error('Large file size, redirecting to web page');
+          }
+        }
+
+        const streamResponse = await axios.get(
+            `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
+            { responseType: 'blob', params }
           );
+        
+        if (!streamResponse) return;
 
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document data...' }));
+        setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
 
-          const reader = new FileReader();
-          const textPromise = new Promise<string>((resolve) => {
-            reader.onload = () => {
-              resolve(reader.result?.toString() || '');
-            };
-          });
+        const bufferReader = new FileReader();
+        const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
+          bufferReader.onload = () => {
+            const originalBuffer = bufferReader.result as ArrayBuffer;
+            const bufferCopy = originalBuffer.slice(0);
+            resolve(bufferCopy);
+          };
+          bufferReader.onerror = () => {
+            reject(new Error('Failed to read blob as array buffer'));
+          };
+          bufferReader.readAsArrayBuffer(streamResponse.data);
+        });
 
-          reader.readAsText(downloadResponse.data);
-          const text = await textPromise;
-
-          try {
-            const jsonData = JSON.parse(text);
-            if (jsonData && jsonData.signedUrl) {
-              loadedFileUrl = jsonData.signedUrl;
-              fileDataLoaded = true;
-            }
-          } catch (e) {
-            const bufferReader = new FileReader();
-            const arrayBufferPromise = new Promise<ArrayBuffer>((resolve) => {
-              bufferReader.onload = () => {
-                resolve(bufferReader.result as ArrayBuffer);
-              };
-              bufferReader.readAsArrayBuffer(downloadResponse.data);
-            });
-
-            loadedFileBuffer = await arrayBufferPromise;
-            fileDataLoaded = true;
-          }
-        } catch (error) {
-          console.error('Error downloading document:', error);
-          showErrorAndRedirect('Failed to load document from upload');
-          return;
-        }
-      } else if (record.origin === ORIGIN.CONNECTOR) {
-        try {
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Connecting to document source...' }));
-
-          let params = {};
-
-          // Handle PowerPoint files
-          if (record?.fileRecord && ['pptx', 'ppt'].includes(record?.fileRecord?.extension)) {
-            params = { convertTo: 'pdf' };
-            if (record.fileRecord.sizeInBytes / 1048576 > 5) {
-              throw new Error('Large file size, redirecting to web page');
-            }
-          }
-
-          const publicConnectorUrlResponse = await getConnectorPublicUrl();
-          let connectorResponse;
-
-          if (publicConnectorUrlResponse && publicConnectorUrlResponse.url) {
-            const CONNECTOR_URL = publicConnectorUrlResponse.url;
-            connectorResponse = await axios.get(
-              `${CONNECTOR_URL}/api/v1/stream/record/${recordId}`,
-              { responseType: 'blob', params }
-            );
-          } else {
-            connectorResponse = await axios.get(
-              `${CONFIG.backendUrl}/api/v1/knowledgeBase/stream/record/${recordId}`,
-              { responseType: 'blob', params }
-            );
-          }
-
-          if (!connectorResponse) return;
-
-          setViewerState((prev) => ({ ...prev, loadingStep: 'Processing document...' }));
-
-          const bufferReader = new FileReader();
-          const arrayBufferPromise = new Promise<ArrayBuffer>((resolve, reject) => {
-            bufferReader.onload = () => {
-              const originalBuffer = bufferReader.result as ArrayBuffer;
-              const bufferCopy = originalBuffer.slice(0);
-              resolve(bufferCopy);
-            };
-            bufferReader.onerror = () => {
-              reject(new Error('Failed to read blob as array buffer'));
-            };
-            bufferReader.readAsArrayBuffer(connectorResponse.data);
-          });
-
-          loadedFileBuffer = await arrayBufferPromise;
-          fileDataLoaded = true;
-        } catch (err) {
-          console.error('Error downloading document:', err);
-          showErrorAndRedirect('Failed to load document from connector');
-          return;
-        }
+        loadedFileBuffer = await arrayBufferPromise;
+        fileDataLoaded = true;
+      } catch (err) {
+        console.error('Error downloading document:', err);
+        showErrorAndRedirect('Failed to load document');
+        return;
       }
+
 
       if (fileDataLoaded) {
         // Use recordType to determine document type for mail records
@@ -646,14 +646,16 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             ...prev,
             phase: 'ready',
             documentType,
-            fileUrl: loadedFileUrl,
+            fileUrl: '',
             fileBuffer: loadedFileBuffer,
             recordCitations: null,
           }));
         }, 800);
 
         // Support mail records in addition to existing types
-        if (!['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)) {
+        if (
+          !['pdf', 'excel', 'docx', 'html', 'text', 'md', 'mdx', 'image'].includes(documentType)
+        ) {
           setSnackbar({
             open: true,
             message: `Unsupported document type: ${extension}`,
@@ -769,6 +771,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             url={fileUrl}
             buffer={fileBuffer}
             citations={recordCitations?.documents || []}
+            fileExtension={extension}
           />
         );
       default:
@@ -797,12 +800,16 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             style={{ color: getExtensionColor(extension, recordTypeForDisplay) }}
           />
           <Box sx={{ flexGrow: 1 }}>
-            <Typography variant="h6" gutterBottom>
-              {recordName}
-            </Typography>
+            <Tooltip title={recordName} arrow placement="top">
+              <Box>
+                <Typography variant="h6" gutterBottom>
+                  {recordName.length > 60 ? `${recordName.substring(0, 60)}...` : recordName}
+                </Typography>
+              </Box>
+            </Tooltip>
             <Typography variant="body2" color="text.secondary">
               {recordTypeForDisplay === 'MAIL' ? 'Email received' : 'Added'} on{' '}
-              {dayjs(sourceCreatedAtTimestamp).format('MMM DD, YYYY')}
+              {dayjs(sourceCreatedAtTimestamp || createdAtTimestamp).format('MMM DD, YYYY')}
             </Typography>
             {/* Show additional info for email records */}
             {recordTypeForDisplay === 'MAIL' && mailRecord && (
@@ -812,55 +819,76 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
             )}
           </Box>
 
-          {/* Download Button */}
-          <Tooltip title="Download document" arrow placement="top">
-            {isDownloading ? (
-              <Box sx={{ p: 1 }}>
-                <CircularProgress size={24} />
-              </Box>
-            ) : (
-              <>
-                {recordTypeForDisplay !== 'MAIL' && (
-                  <>
-                    <IconButton
-                      onClick={handleDownload}
-                      sx={{
-                        color: 'primary.main',
-                        '&:hover': {
-                          backgroundColor: 'primary.light',
-                          color: 'white',
-                        },
-                      }}
-                      disabled={viewerState.phase === 'loading'}
-                    >
-                      <Icon icon={downloadIcon} width={24} />
-                    </IconButton>
-                  </>
-                )}
-              </>
-            )}
-          </Tooltip>
+          {/* Download Button - Only show if previewRenderable is not false */}
+          {record.previewRenderable !== false && (
+            <Tooltip title="Download document" arrow placement="top">
+              {isDownloading ? (
+                <Box sx={{ p: 1 }}>
+                  <CircularProgress size={24} />
+                </Box>
+              ) : (
+                <>
+                  {recordTypeForDisplay !== 'MAIL' && (
+                    <>
+                      <IconButton
+                        onClick={handleDownload}
+                        sx={{
+                          color: 'primary.main',
+                          '&:hover': {
+                            backgroundColor: 'primary.light',
+                            color: 'white',
+                          },
+                        }}
+                        disabled={viewerState.phase === 'loading'}
+                      >
+                        <Icon icon={downloadIcon} width={24} />
+                      </IconButton>
+                    </>
+                  )}
+                </>
+              )}
+            </Tooltip>
+          )}
 
-          {/* View Document Button */}
-          <Tooltip
-            title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
-            arrow
-            placement="top"
-          >
-            <IconButton
-              onClick={viewDocument}
-              sx={{
-                color: 'primary.main',
-                '&:hover': {
-                  backgroundColor: 'primary.light',
-                  color: 'white',
-                },
-              }}
-              disabled={viewerState.phase === 'loading'}
+          {/* View Document Button - Only show if previewRenderable is not false */}
+          {extension && record.previewRenderable !== false && (
+            <Tooltip
+              title={recordTypeForDisplay === 'MAIL' ? 'Preview email' : 'Preview document'}
+              arrow
+              placement="top"
             >
-              <Icon icon={eyeIcon} width={24} />
-            </IconButton>
-          </Tooltip>
+              <IconButton
+                onClick={viewDocument}
+                sx={{
+                  color: 'primary.main',
+                  '&:hover': {
+                    backgroundColor: 'primary.light',
+                    color: 'white',
+                  },
+                }}
+                disabled={viewerState.phase === 'loading'}
+              >
+                <Icon icon={eyeIcon} width={24} />
+              </IconButton>
+            </Tooltip>
+          )}
+          {/* Open in New Tab Button - Show if previewRenderable is false */}
+          {extension && record.previewRenderable === false && (
+            <Tooltip title="Open in new tab" arrow placement="top">
+              <IconButton
+                onClick={handleOpenWebUrl}
+                sx={{
+                  color: 'primary.main',
+                  '&:hover': {
+                    backgroundColor: 'primary.light',
+                    color: 'white',
+                  },
+                }}
+              >
+                <Icon icon={linkIcon} width={24} />
+              </IconButton>
+            </Tooltip>
+          )}
         </Stack>
       </Box>
 
