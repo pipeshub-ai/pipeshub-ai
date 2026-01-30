@@ -15,8 +15,8 @@ from tenacity import (
 
 from app.models.blocks import (
     Block,
+    BlockContainerIndex,
     BlockGroup,
-    BlockGroupChildren,
     BlocksContainer,
     BlockType,
     DataFormat,
@@ -158,6 +158,47 @@ class CSVParser:
             raise ValueError("CSV file is empty or has no valid rows")
         return (data, line_numbers)
 
+    def to_markdown(self, data: List[Dict[str, Any]]) -> str:
+        """
+        Convert CSV data to markdown table format.
+        Args:
+            data: List of dictionaries from read_stream() method
+        Returns:
+            String containing markdown formatted table
+        """
+        if not data:
+            return ""
+
+        # Get headers from the first row
+        headers = list(data[0].keys())
+
+        # Start building the markdown table
+        markdown_lines = []
+
+        # Add header row
+        header_row = "| " + " | ".join(str(header) for header in headers) + " |"
+        markdown_lines.append(header_row)
+
+        # Add separator row
+        separator_row = "|" + "|".join(" --- " for _ in headers) + "|"
+        markdown_lines.append(separator_row)
+
+        # Add data rows
+        for row in data:
+            # Handle None values and convert to string, escape pipe characters
+            formatted_values = []
+            for header in headers:
+                value = row.get(header, "")
+                if value is None:
+                    value = ""
+                # Escape pipe characters and convert to string
+                value_str = str(value).replace("|", "\\|")
+                formatted_values.append(value_str)
+
+            data_row = "| " + " | ".join(formatted_values) + " |"
+            markdown_lines.append(data_row)
+
+        return "\n".join(markdown_lines)
 
     def write_file(self, file_path: str | Path, data: List[Dict[str, Any]]) -> None:
         """
@@ -979,7 +1020,7 @@ class CSVParser:
 
             # Create table BlockGroup
             table_group_index = len(block_groups)
-            table_row_block_indices = []
+            table_group_children: List[BlockContainerIndex] = []
 
             column_headers = list(csv_result[0].keys())
 
@@ -1026,7 +1067,7 @@ class CSVParser:
                                 parent_index=table_group_index,
                             )
                         )
-                        table_row_block_indices.append(block_index)
+                        table_group_children.append(BlockContainerIndex(block_index=block_index))
             else:
                 # Use simple format for rows (skip LLM)
                 for idx, row in enumerate(csv_result):
@@ -1047,7 +1088,7 @@ class CSVParser:
                             parent_index=table_group_index,
                         )
                     )
-                    table_row_block_indices.append(block_index)
+                    table_group_children.append(BlockContainerIndex(block_index=block_index))
 
             # Create markdown for this table
             csv_markdown = self.to_markdown(csv_result)
@@ -1065,7 +1106,7 @@ class CSVParser:
                     "column_headers": column_headers,
                     "table_markdown": csv_markdown,
                 },
-                children=BlockGroupChildren.from_indices(block_indices=table_row_block_indices),
+                children=table_group_children,
             )
             block_groups.append(table_group)
 
@@ -1075,7 +1116,7 @@ class CSVParser:
     async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], line_numbers: List[int], llm: BaseChatModel) -> BlocksContainer:
 
         blocks = []
-        block_indices = []
+        children = []
 
         # Phase 1: Detect if headers are valid
         current_headers = list(csv_result[0].keys())
@@ -1162,12 +1203,13 @@ class CSVParser:
                             format=DataFormat.JSON,
                             data={
                                 "row_natural_language_text": row_text,
-                                "row_number": actual_row_number
+                                "row_number": actual_row_number,
+                                "row": json.dumps(row)
                             },
                             parent_index=0,
                         )
                         )
-                    block_indices.append(idx)
+                    children.append(BlockContainerIndex(block_index=idx))
         else:
             # Use simple format for rows (skip LLM)
             for idx, row in enumerate(csv_result):
@@ -1181,31 +1223,30 @@ class CSVParser:
                         format=DataFormat.JSON,
                         data={
                             "row_natural_language_text": row_text,
-                            "row_number": actual_row_number
+                            "row_number": actual_row_number,
+                            "row": json.dumps(row)
                         },
                         parent_index=0,
                     )
                 )
-                block_indices.append(idx)
+                children.append(BlockContainerIndex(block_index=idx))
 
+        csv_markdown = self.to_markdown(csv_result)
         column_headers = list(csv_result[0].keys())
-        num_of_rows = len(csv_result)
-        num_of_cols = len(column_headers)
-        num_of_cells = num_of_rows * num_of_cols
         blockGroup = BlockGroup(
             index=0,
             type=GroupType.TABLE,
             format=DataFormat.JSON,
             table_metadata=TableMetadata(
-                num_of_rows=num_of_rows,
-                num_of_cols=num_of_cols,
-                num_of_cells=num_of_cells,
+                num_of_rows=len(csv_result),
+                num_of_cols=len(column_headers),
             ),
             data={
                 "table_summary": table_summary,
                 "column_headers": column_headers,
+                "table_markdown": csv_markdown,
             },
-            children=BlockGroupChildren.from_indices(block_indices=block_indices),
+            children=children,
         )
         blocks_container = BlocksContainer(blocks=blocks, block_groups=[blockGroup])
         return blocks_container

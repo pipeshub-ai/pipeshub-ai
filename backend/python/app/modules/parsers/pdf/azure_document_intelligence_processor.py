@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from io import BytesIO
@@ -777,9 +778,8 @@ class AzureOCRStrategy(OCRStrategy):
                     continue
                 row_count = table_data.get("row_count", 0)
                 col_count = table_data.get("column_count", 0)
-                num_of_cells = row_count * col_count
-                table_data_grid = self.cells_to_grid(row_count, col_count, cells)
-                response = await get_table_summary_n_headers(self.config, table_data_grid)
+                table_markdown,table_data_grid = self.cells_to_markdown(row_count, col_count, cells)
+                response = await get_table_summary_n_headers(self.config, table_markdown)
                 table_summary = response.summary if response else ""
                 column_headers = response.headers if response else []
 
@@ -795,11 +795,11 @@ class AzureOCRStrategy(OCRStrategy):
                     table_metadata=TableMetadata(
                         num_of_rows=row_count,
                         num_of_cols=col_count,
-                        num_of_cells=num_of_cells,
                     ),
                     data={
                         "table_summary": table_summary,
                         "column_headers": column_headers,
+                        "table_markdown": table_markdown,
                     },
                     format=DataFormat.JSON,
                     citation_metadata=CitationMetadata(
@@ -815,7 +815,8 @@ class AzureOCRStrategy(OCRStrategy):
                         parent_index=block_group.index,
                         data={
                             "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
-                            "row_number": i+1
+                            "row_number": i+1,
+                            "row":json.dumps(row)
                         },
                         citation_metadata=block_group.citation_metadata
                     )
@@ -829,7 +830,7 @@ class AzureOCRStrategy(OCRStrategy):
                 self.logger.debug(f"   Table {table_idx}: {table_data['row_count']}x{table_data['column_count']}")
 
 
-    def cells_to_grid(self, row_count: int, col_count: int, cells: list[dict]) -> list[list[str]]:
+    def cells_to_markdown(row_count: int, col_count: int, cells: list[dict]) -> tuple[str, list[list[str]]]:
         # Initialize empty grid
         grid = [['' for _ in range(col_count)] for _ in range(row_count)]
 
@@ -853,8 +854,23 @@ class AzureOCRStrategy(OCRStrategy):
                     for c in range(col_idx, min(col_idx + col_span, col_count)):
                         occupied[r][c] = True
 
-        # Return grid (list of lists)
-        return grid
+        # Build markdown table
+        lines = []
+
+        for row_idx, row in enumerate(grid):
+            # Create row with pipe separators
+            row_content = '| ' + ' | '.join(row) + ' |'
+            lines.append(row_content)
+
+            # Add header separator after first row
+            if row_idx == 0:
+                separator = '| ' + ' | '.join(['---'] * col_count) + ' |'
+                lines.append(separator)
+
+        markdown = '\n'.join(lines)
+
+        # Return both markdown and grid (list of lists)
+        return markdown, grid
 
     def _merge_small_blocks(self, blocks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge small text blocks based on word count threshold"""
