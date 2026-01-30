@@ -192,32 +192,6 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             lambda parent_external_id: get_parent_weburl_for_s3(parent_external_id, base_console_url)
         )
 
-    def _create_placeholder_parent_record(
-        self,
-        parent_external_id: str,
-        parent_record_type: RecordType,
-        record: Record,
-    ) -> Record:
-        """
-        Create a placeholder parent record with S3-specific weburl and path.
-
-        Overrides the base implementation to use connector-specific URL generation
-        for parent folder URLs.
-        """
-        parent_record = super()._create_placeholder_parent_record(
-            parent_external_id, parent_record_type, record
-        )
-
-        if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
-            weburl = self.parent_url_generator(parent_external_id)
-            path = get_parent_path_for_s3(parent_external_id)
-            parent_record.weburl = weburl
-            parent_record.path = path
-            parent_record.is_internal = True
-            parent_record.hide_weburl = True
-
-        return parent_record
-
 
 class S3CompatibleBaseConnector(BaseConnector):
     """
@@ -392,15 +366,34 @@ class S3CompatibleBaseConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
-        """Create record groups for buckets with appropriate permissions."""
+        """Create record groups for buckets with appropriate permissions.
+        Only creates record groups for buckets that do not already have one,
+        to avoid duplicate BELONGS_TO edges in the graph on every sync.
+        """
         if not bucket_names:
             return
 
-        record_groups = []
-        for bucket_name in bucket_names:
-            if not bucket_name:
-                continue
+        # Only create record groups for buckets that don't already have one
+        new_bucket_names: List[str] = []
+        async with self.data_store_provider.transaction() as tx_store:
+            for bucket_name in bucket_names:
+                if not bucket_name:
+                    continue
+                existing = await tx_store.get_record_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=bucket_name,
+                )
+                if existing is None:
+                    new_bucket_names.append(bucket_name)
 
+        if not new_bucket_names:
+            self.logger.info(
+                "All buckets already have record groups; skipping record group creation"
+            )
+            return
+
+        record_groups = []
+        for bucket_name in new_bucket_names:
             permissions = []
             if self.connector_scope == ConnectorScope.TEAM.value:
                 permissions.append(
