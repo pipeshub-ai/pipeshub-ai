@@ -1776,7 +1776,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "includeRemoved": True,
                     "restrictToMyDrive": False,  # Include shared files
                     "supportsAllDrives": True,
-                    "includeItemsFromAllDrives": True,
+                    "includeItemsFromAllDrives": False,  # Exclude shared drives, only get "shared with me" files
                     "fields": "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, headRevisionId, version, shared, owners, md5Checksum, sha1Checksum, sha256Checksum, parents))",
                 }
 
