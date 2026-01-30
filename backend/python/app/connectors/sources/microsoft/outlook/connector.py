@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import binascii
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -81,6 +83,12 @@ from app.sources.external.microsoft.users_groups.users_groups import (
 )
 from app.utils.streaming import create_stream_record_response
 
+
+class GapFillFailedException(Exception):
+    """Exception raised when historical gap fill fails."""
+    pass
+
+
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
 FILTER_TIMESTAMP_BUFFER_SECONDS = 60  # Buffer to handle minor clock skew comparisons
@@ -96,6 +104,16 @@ STANDARD_OUTLOOK_FOLDERS = [
     "Outbox",
     "Conversation History"
 ]
+
+# Magic Numbers / Constants
+THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22
+FILTER_TIMESTAMP_BUFFER_SECONDS = 60
+DEFAULT_BATCH_SIZE = 50
+DEFAULT_GROUP_BATCH_SIZE = 10
+DEFAULT_API_PAGE_SIZE = 100
+DEFAULT_USER_CACHE_TTL = 3600
+DEFAULT_MAX_RETRIES = 3
+DEFAULT_RETRY_BACKOFF = 2
 
 
 @dataclass
@@ -227,24 +245,26 @@ class OutlookConnector(BaseConnector):
         'id', 'subject', 'receivedDateTime', 'from', 'toRecipients',
         'ccRecipients', 'bccRecipients', 'body', 'hasAttachments',
         'conversationId', 'internetMessageId', 'conversationIndex',
-        'webLink', 'createdDateTime', 'lastModifiedDateTime', 'eTag'
+        'webLink', 'createdDateTime', 'lastModifiedDateTime'
     ]
 
     # Batch size for processing records
-    BATCH_SIZE = 50
+    BATCH_SIZE = DEFAULT_BATCH_SIZE
 
     # Group processing batch size
-    GROUP_BATCH_SIZE = 10
+    GROUP_BATCH_SIZE = DEFAULT_GROUP_BATCH_SIZE
 
     # API page size for paginated requests
-    API_PAGE_SIZE = 100
+    API_PAGE_SIZE = DEFAULT_API_PAGE_SIZE
 
     # User cache configuration
-    USER_CACHE_TTL_SECONDS = 3600
+    USER_CACHE_TTL_SECONDS = DEFAULT_USER_CACHE_TTL
 
     # Rate limiting configuration
     RATE_LIMIT_REQUESTS = 50
     RATE_LIMIT_PERIOD = 1
+    MAX_RETRIES = DEFAULT_MAX_RETRIES
+    RETRY_BACKOFF_FACTOR = DEFAULT_RETRY_BACKOFF
 
     # User cache limits
     USER_CACHE_MAX_SIZE = 10000
@@ -277,6 +297,7 @@ class OutlookConnector(BaseConnector):
         self._user_cache_timestamp: Optional[int] = None
         self._user_cache_max_size: int = self.USER_CACHE_MAX_SIZE
         self._user_cache_ttl: int = self.USER_CACHE_TTL_SECONDS
+        self._user_cache_lock = asyncio.Lock()
 
         self.email_delta_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -319,10 +340,7 @@ class OutlookConnector(BaseConnector):
             self.external_outlook_client = OutlookCalendarContactsDataSource(self.external_client)
             self.external_users_client = UsersGroupsDataSource(self.external_client)
 
-            # Load filters from config service
-            self.sync_filters, self.indexing_filters = await load_connector_filters(
-                self.config_service, "outlook", connector_id, self.logger
-            )
+
 
             # Test connection
             if not await self.test_connection_and_access():
@@ -415,32 +433,36 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Failed to populate user cache: {e}")
 
     async def _get_user_id_from_email(self, email: str) -> Optional[str]:
-        """Get user ID from email using cache or fetch on demand (LRU-style)."""
+        """Get user ID from email using cache or fetch on demand (FIFO eviction)."""
         try:
             email_lower = email.lower()
 
-            # 1. Check cache first
+            # 1. Check cache first (Optimistic)
             if email_lower in self._user_cache:
                 return self._user_cache[email_lower]
 
-            # 2. Fetch on demand if not in cache
-            # This avoids fetching all 50k+ users if we only need one
-            user_id = await self._fetch_single_user_by_email(email)
+            # 2. Acquire Lock for Double-Check and Fetch
+            async with self._user_cache_lock:
+                # 3. Double Check
+                if email_lower in self._user_cache:
+                    return self._user_cache[email_lower]
 
-            if user_id:
-                # Add to cache with limit check
-                if len(self._user_cache) >= self._user_cache_max_size:
-                    # Simple eviction: Clear a portion of cache to make room
-                    eviction_count = int(self._user_cache_max_size * self.USER_CACHE_EVICTION_RATIO)
-                    keys_to_remove = list(self._user_cache.keys())[:eviction_count]
-                    for k in keys_to_remove:
-                        del self._user_cache[k]
-                    self.logger.info(f"User cache limit reached. Evicted {len(keys_to_remove)} entries.")
+                # 4. Fetch on demand (Serialized)
+                user_id = await self._fetch_single_user_by_email(email)
 
-                self._user_cache[email_lower] = user_id
+                if user_id:
+                    # Add to cache with limit check
+                    if len(self._user_cache) >= self._user_cache_max_size:
+                        # Simple eviction: Clear a portion of cache to make room
+                        eviction_count = int(self._user_cache_max_size * self.USER_CACHE_EVICTION_RATIO)
+                        keys_to_remove = list(self._user_cache.keys())[:eviction_count]
+                        for k in keys_to_remove:
+                            del self._user_cache[k]
+                        self.logger.info(f"User cache limit reached. Evicted {len(keys_to_remove)} entries.")
+
+                    self._user_cache[email_lower] = user_id
+
                 return user_id
-
-            return None
 
         except Exception as e:
             self.logger.error(f"Error getting user ID from cache for {email}: {e}")
@@ -482,6 +504,12 @@ class OutlookConnector(BaseConnector):
         """Run full Outlook sync - users, groups, emails and attachments."""
         try:
             org_id = self.data_entities_processor.org_id
+
+            # Load filters from config service
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "outlook", self.connector_id, self.logger
+            )
+
             self.logger.info("Starting Outlook sync...")
 
             # Ensure external clients are initialized
@@ -700,6 +728,8 @@ class OutlookConnector(BaseConnector):
                 except Exception as e:
                     group_name = self._safe_get_attr(group, 'display_name', 'unknown')
                     self.logger.error(f"Error processing group {group_name}: {e}")
+                    # Consider adding to error count or similar mechanism if available
+                    # For now just continue to next group
                     continue
 
             # Process remaining groups
@@ -895,13 +925,29 @@ class OutlookConnector(BaseConnector):
             self.logger.info(f"Syncing conversations for {len(user_groups)} groups")
 
             total_conversations = 0
+            all_group_mail_records = []  # Collect all group mail records for thread edges processing
+
             for group in user_groups:
                 try:
-                    count = await self._sync_single_group_conversations(group)
-                    total_conversations += count
+                    records = await self._sync_single_group_conversations(group)
+                    if isinstance(records, tuple):
+                        count, mail_records = records
+                        total_conversations += count
+                        all_group_mail_records.extend(mail_records)
+                    else:
+                        # Backward compatibility if method doesn't return mail_records
+                        total_conversations += records
                 except Exception as e:
                     self.logger.error(f"Error syncing conversations for group {group.name}: {e}")
                     continue
+
+            # After all groups are processed, create thread edges for group conversations
+            try:
+                group_thread_edges_created = await self._create_all_thread_edges_for_groups(all_group_mail_records)
+                if group_thread_edges_created > 0:
+                    self.logger.info(f"Created {group_thread_edges_created} thread edges for group conversations")
+            except Exception as e:
+                self.logger.error(f"Error creating thread edges for group conversations: {e}")
 
             self.logger.info(f"✅ Synced {total_conversations} group conversation posts across {len(user_groups)} groups")
 
@@ -909,8 +955,8 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error syncing group conversations: {e}", exc_info=True)
             raise
 
-    async def _sync_single_group_conversations(self, group: AppUserGroup) -> int:
-        """Sync conversations for a single group with incremental thread filtering."""
+    async def _sync_single_group_conversations(self, group: AppUserGroup) -> Tuple[int, List[Record]]:
+        """Sync conversations for a single group with Gap Fill optimization."""
         try:
             group_id = group.source_user_group_id
             group_name = group.name
@@ -918,7 +964,7 @@ class OutlookConnector(BaseConnector):
 
             self.logger.info(f"Syncing conversations for group: {group_name}")
 
-            # Get sync point for this group (tracks last thread sync)
+            # Get sync point
             sync_point_key = generate_record_sync_point_key(
                 "group_conversations",
                 "group",
@@ -927,52 +973,183 @@ class OutlookConnector(BaseConnector):
             sync_point = await self.group_conversations_sync_point.read_sync_point(sync_point_key)
             last_sync_timestamp = sync_point.get('last_sync_timestamp') if sync_point else None
 
-            # Convert timestamp to correct format if needed
+            # --- GAP FILL OPTIMIZATION START ---
+
+            # 1. Determine Current Filter (From Config)
+            current_filter_start_ts = None
+            received_date_filter = self.sync_filters.get(SyncFilterKey.RECEIVED_DATE)
+            current_filter_iso = None
+
+            if received_date_filter and not received_date_filter.is_empty():
+                current_filter_iso, _ = received_date_filter.get_datetime_iso()
+                if current_filter_iso:
+                    try:
+                        dt = datetime.fromisoformat(current_filter_iso.replace('Z', '+00:00'))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        current_filter_start_ts = int(dt.timestamp())
+                    except ValueError:
+                        self.logger.warning(f"Could not parse filter date: {current_filter_iso}")
+
+            # 2. Retrieve Stored Filter (From Sync Point)
+            stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
+
+            processed_count = 0
+            all_group_mail_records = []
+
+            # 3. Detect Gap
+            # Only run if we have explicit filters for both current and stored state
+            should_fill_gap = (
+                last_sync_timestamp is not None and # We have synced before
+                stored_filter_start_ts is not None and
+                current_filter_start_ts is not None and
+                current_filter_start_ts < (stored_filter_start_ts - FILTER_TIMESTAMP_BUFFER_SECONDS)
+            )
+
+            gap_fill_failed = False
+
+            if should_fill_gap:
+                self.logger.info(
+                    f"Filter expanded for Group '{group_name}'. "
+                    f"Filling gap: {datetime.fromtimestamp(current_filter_start_ts, timezone.utc)} to "
+                    f" {datetime.fromtimestamp(stored_filter_start_ts, timezone.utc)}"
+                )
+
+                try:
+                    gap_count, gap_records = await self._fetch_historical_group_gap(
+                        group, org_id,
+                        start_ts=current_filter_start_ts,
+                        end_ts=stored_filter_start_ts
+                    )
+                    processed_count += gap_count
+                    all_group_mail_records.extend(gap_records)
+                except Exception as e:
+                    self.logger.error(f"Group Gap fill failed for '{group_name}' (continuing with standard sync): {e}", exc_info=True)
+                    gap_fill_failed = True
+
+            # --- GAP FILL OPTIMIZATION END ---
+
+            # Standard Sync Logic (Modified to respect new filter if this is the first run)
+
+            # Format timestamp for API
+            api_filter_timestamp = None
+
             if last_sync_timestamp:
+                # Normal incremental sync
                 try:
                     dt = datetime.fromisoformat(last_sync_timestamp.replace('Z', '+00:00'))
-                    last_sync_timestamp = dt.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
-                except (ValueError, AttributeError) as e:
-                    self.logger.warning(f"Failed to parse timestamp '{last_sync_timestamp}': {e}. Will perform full sync for this group.")
-                    last_sync_timestamp = None
+                    api_filter_timestamp = dt.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
+                except (ValueError, AttributeError):
+                     api_filter_timestamp = None
+            elif current_filter_iso:
+                # First run: use the configured filter
+                api_filter_timestamp = current_filter_iso + 'Z' if not current_filter_iso.endswith('Z') else current_filter_iso
 
-            # Get threads updated since last sync (server-side filter)
-            threads = await self._get_group_threads(group_id, last_sync_timestamp)
+            # Get threads updated since filter
+            threads = await self._get_group_threads(group_id, api_filter_timestamp)
 
-            if not threads:
-                return 0
+            if threads:
+                self.logger.info(f"Found {len(threads)} updated threads for group {group_name}")
+                for thread in threads:
+                    try:
+                        # Pass last_sync_timestamp to filter individual posts inside the thread
+                        # If gap fill just happened, we still only want *new* posts here, so we stick to last_sync_timestamp
+                        posts_count, thread_mail_records = await self._process_group_thread(
+                            org_id, group, thread, api_filter_timestamp
+                        )
+                        processed_count += posts_count
+                        all_group_mail_records.extend(thread_mail_records)
+                    except Exception as e:
+                        thread_id = self._safe_get_attr(thread, 'id', 'unknown')
+                        self.logger.error(f"Error processing thread {thread_id}: {e}")
+                        continue
+            else:
+                self.logger.debug(f"No updated threads found for group {group_name}")
 
-            self.logger.info(f"Found {len(threads)} updated threads for group {group_name}")
-
-            total_posts = 0
-            for thread in threads:
-                try:
-                    # Get all posts for this thread, filter client-side
-                    posts_count = await self._process_group_thread(org_id, group, thread, last_sync_timestamp)
-                    total_posts += posts_count
-                except Exception as e:
-                    thread_id = self._safe_get_attr(thread, 'id', 'unknown')
-                    self.logger.error(f"Error processing thread {thread_id}: {e}")
-                    continue
-
-            # Update group sync point with current timestamp
+            # Update group sync point
             current_timestamp = datetime.now(timezone.utc)
             timestamp_str = current_timestamp.strftime('%Y-%m-%dT%H:%M:%S') + 'Z'
 
+            sync_point_data = {
+                'last_sync_timestamp': timestamp_str,
+                'group_id': group_id,
+                'group_name': group_name
+            }
+
+            # Update watermark logic
+            if gap_fill_failed:
+                 # Revert to old watermark so we try again next time
+                 state_filter_ts = stored_filter_start_ts
+            elif current_filter_start_ts is not None:
+                if stored_filter_start_ts is not None:
+                    state_filter_ts = min(current_filter_start_ts, stored_filter_start_ts)
+                else:
+                    state_filter_ts = current_filter_start_ts
+            else:
+                state_filter_ts = stored_filter_start_ts
+
+            if state_filter_ts is not None:
+                sync_point_data['filter_start_ts'] = state_filter_ts
+
             await self.group_conversations_sync_point.update_sync_point(
                 sync_point_key,
-                {
-                    'last_sync_timestamp': timestamp_str,
-                    'group_id': group_id,
-                    'group_name': group_name
-                }
+                sync_point_data
             )
 
-            return total_posts
+            return processed_count, all_group_mail_records
 
         except Exception as e:
             self.logger.error(f"Error syncing conversations for group {group.name}: {e}")
-            return 0
+            return 0, []
+
+    async def _fetch_historical_group_gap(
+        self, group: AppUserGroup, org_id: str, start_ts: int, end_ts: int
+    ) -> Tuple[int, List[Record]]:
+        """Fetch group threads specifically between start_ts and end_ts (Gap Fill)."""
+        try:
+            group_id = group.source_user_group_id
+
+            # Format timestamps
+            start_iso = datetime.fromtimestamp(start_ts, timezone.utc).isoformat().replace('+00:00', 'Z')
+            end_iso = datetime.fromtimestamp(end_ts, timezone.utc).isoformat().replace('+00:00', 'Z')
+
+            # Construct filter: lastDeliveredDateTime >= start AND < end
+            # Note: Groups API uses 'lastDeliveredDateTime' for threads
+            filter_str = f"lastDeliveredDateTime ge {start_iso} and lastDeliveredDateTime lt {end_iso}"
+
+            self.logger.info(f"Fetching historical group threads with filter: {filter_str}")
+
+            all_gap_records = []
+            processed_count = 0
+
+            # We must use list_threads directly as _get_group_threads only handles 'ge'
+            async with self.rate_limiter:
+                response = await self.external_outlook_client.groups_list_threads(
+                    group_id=group_id,
+                    select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
+                    filter=filter_str
+                )
+
+            if not response.success:
+                raise GapFillFailedException(f"Failed to fetch group gap threads: {response.error}")
+
+            threads = self._safe_get_attr(response.data, 'value', [])
+
+            # Note: Pagination for groups_list_threads might be needed if the gap is huge.
+            # Assuming standard page size for now, but production might need a loop here similar to _get_all_users
+
+            for thread in threads:
+                 # For gap fill, we pass None as last_sync_timestamp to _process_group_thread
+                 # because we want ALL posts in this specific thread (since the thread itself is in the gap)
+                 # effectively relying on the thread's existence in this time window.
+                 p_count, t_records = await self._process_group_thread(org_id, group, thread, last_sync_timestamp=None)
+                 processed_count += p_count
+                 all_gap_records.extend(t_records)
+
+            return processed_count, all_gap_records
+
+        except Exception as e:
+             raise GapFillFailedException(f"Group Gap fill failed: {e}") from e
 
     async def _get_group_threads(self, group_id: str, last_sync_timestamp: Optional[str] = None) -> List[Dict]:
         """Get threads for a group, filtered by last sync timestamp if provided."""
@@ -985,12 +1162,12 @@ class OutlookConnector(BaseConnector):
             if last_sync_timestamp:
                 filter_str = f"lastDeliveredDateTime ge {last_sync_timestamp}"
 
-            async with self.rate_limiter:
-                response = await self.external_outlook_client.groups_list_threads(
-                    group_id=group_id,
-                    select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
-                    filter=filter_str
-                )
+            response = await self._retry_request(
+                self.external_outlook_client.groups_list_threads,
+                group_id=group_id,
+                select=['id', 'topic', 'lastDeliveredDateTime', 'hasAttachments', 'preview'],
+                filter=filter_str
+            )
 
             if not response.success:
                 self.logger.error(f"Failed to get threads for group {group_id}: {response.error}")
@@ -1010,14 +1187,16 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting threads for group {group_id}: {e}")
             return []
 
-    async def _process_group_thread(self, org_id: str, group: AppUserGroup, thread: Dict, last_sync_timestamp: Optional[str] = None) -> int:
+    async def _process_group_thread(self, org_id: str, group: AppUserGroup, thread: Dict, last_sync_timestamp: Optional[str] = None) -> Tuple[int, List[Record]]:
         """Process a single thread and its posts with client-side post filtering."""
         try:
             group_id = group.source_user_group_id
             thread_id = self._safe_get_attr(thread, 'id')
 
+            self.logger.info(f"Processing thread {thread_id} for group {group.name}")
+
             if not thread_id:
-                return 0
+                return 0, []
 
             # Parse last sync time for comparison
             last_sync_time = None
@@ -1031,7 +1210,7 @@ class OutlookConnector(BaseConnector):
             all_posts = await self._get_thread_posts(group_id, thread_id)
 
             if not all_posts:
-                return 0
+                return 0, []
 
             # Filter posts client-side - only process new ones
             posts_to_process = []
@@ -1057,38 +1236,158 @@ class OutlookConnector(BaseConnector):
                     posts_to_process.append(post)
 
             if not posts_to_process:
-                return 0
+                return 0, []
 
-            # Process each new post as a MailRecord
-            batch_records = []
-            for post in posts_to_process:
-                try:
-                    record_update = await self._process_group_post(org_id, group, thread, post)
-                    if record_update and record_update.record:
-                        permissions = record_update.new_permissions or []
-                        batch_records.append((record_update.record, permissions))
+            self.logger.debug(f"Processing {len(posts_to_process)} new posts out of {len(all_posts)} total")
 
-                        # Process attachments if post has them
-                        has_attachments = self._safe_get_attr(post, 'has_attachments', False)
-                        if has_attachments:
-                            attachment_updates = await self._process_group_post_attachments(
-                                org_id, group, thread, post, permissions
-                            )
-                            if attachment_updates:
-                                batch_records.extend(attachment_updates)
-                except Exception as e:
-                    post_id = self._safe_get_attr(post, 'id', 'unknown')
-                    self.logger.error(f"Error processing post {post_id}: {e}")
-                    continue
+            thread_mail_records = []  # Collect mail records for thread processing
 
-            # Save batch
-            if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+            # Use helper method for batch processing
+            processed_count = await self._process_and_save_group_posts(
+                posts_to_process,
+                org_id,
+                group,
+                thread,
+                mail_records_collector=thread_mail_records
+            )
 
-            return len(batch_records)
+            return processed_count, thread_mail_records
 
         except Exception as e:
             self.logger.error(f"Error processing thread: {e}")
+            return 0, []
+
+    async def _process_and_save_group_posts(
+        self,
+        posts: List[Dict],
+        org_id: str,
+        group: AppUserGroup,
+        thread: Dict,
+        mail_records_collector: Optional[List[Record]] = None
+    ) -> int:
+        """
+        Process group posts and save them in batches (Immediate Batching Pattern).
+
+        Args:
+            posts: List of post objects to process
+            org_id: Organization ID
+            group: Group object
+            thread: Thread data
+            mail_records_collector: Optional list to collect mail records
+
+        Returns:
+            Number of records processed
+        """
+        batch_records: List[Tuple[Record, List[Permission]]] = []
+        processed_count = 0
+
+        for post in posts:
+            try:
+                # 1. Process Post
+                record_update = await self._process_group_post(org_id, group, thread, post)
+
+                if record_update and record_update.record:
+                    permissions = record_update.new_permissions or []
+                    batch_records.append((record_update.record, permissions))
+
+                    # Collect mail records if requested
+                    if (mail_records_collector is not None and
+                        hasattr(record_update.record, 'record_type') and
+                        record_update.record.record_type == RecordType.GROUP_MAIL):
+                        mail_records_collector.append(record_update.record)
+
+                    # 2. Process Attachments if any
+                    has_attachments = self._safe_get_attr(post, 'has_attachments', False)
+                    if has_attachments:
+                        attachment_updates = await self._process_group_post_attachments(
+                            org_id, group, thread, post, permissions
+                        )
+                        if attachment_updates:
+                            # attachment_updates is List[Tuple[Record, List[Permission]]]
+                            batch_records.extend(attachment_updates)
+
+                    # 3. Check Batch Size (Flush if needed)
+                    if len(batch_records) >= self.BATCH_SIZE:
+                        await self.data_entities_processor.on_new_records(batch_records)
+                        processed_count += len(batch_records)
+                        batch_records = []
+
+            except Exception as e:
+                post_id = self._safe_get_attr(post, 'id', 'unknown')
+                self.logger.error(f"Error processing group post {post_id}: {e}")
+                continue
+
+        # Process remaining records
+        if batch_records:
+            await self.data_entities_processor.on_new_records(batch_records)
+            processed_count += len(batch_records)
+
+        return processed_count
+
+    async def _create_all_thread_edges_for_groups(self, group_mail_records: List[Record]) -> int:
+        """Create thread edges for all group conversation messages by searching ArangoDB for parents."""
+        try:
+            if not group_mail_records:
+                self.logger.debug("No group mail records provided for thread edges")
+                return 0
+
+            edges = []
+            processed_count = 0
+
+            # Group records by thread_id to process each thread separately
+            records_by_thread: Dict[str, List[Record]] = {}
+            for record in group_mail_records:
+                if hasattr(record, 'thread_id') and record.thread_id:
+                    if record.thread_id not in records_by_thread:
+                        records_by_thread[record.thread_id] = []
+                    records_by_thread[record.thread_id].append(record)
+
+            # Process each thread
+            for thread_id, thread_records in records_by_thread.items():
+                # Sort records by source_created_at to get chronological order
+                thread_records.sort(key=lambda r: r.source_created_at or 0)
+
+                # Find root post (earliest in thread)
+                if not thread_records:
+                    continue
+
+                root_record = thread_records[0]
+
+                # For each subsequent record, create edge from root
+                for record in thread_records[1:]:
+                    edge = {
+                        "from_id": root_record.id,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": record.id,
+                        "to_collection": CollectionNames.RECORDS.value,
+                        "relationType": "SIBLING"
+                    }
+                    edges.append(edge)
+                    processed_count += 1
+
+            # Create all edges in batch
+            if edges:
+                try:
+                    # Fix 4: Deduplicate edges in memory
+                    unique_edges_map = {}
+                    for e in edges:
+                         key = f"{e['from_id']}->{e['to_id']}"
+                         unique_edges_map[key] = e
+
+                    final_edges = list(unique_edges_map.values())
+
+                    async with self.data_store_provider.transaction() as tx_store:
+                        await tx_store.batch_create_edges(final_edges, collection=CollectionNames.RECORD_RELATIONS.value)
+
+                    self.logger.info(f"Created {len(final_edges)} thread edges for {len(records_by_thread)} threads")
+                except Exception as e:
+                    self.logger.error(f"Error creating thread edges batch for group conversations (rolled back): {e}")
+                    raise
+
+            return processed_count
+
+        except Exception as e:
+            self.logger.error(f"Error creating thread edges for group conversations: {e}")
             return 0
 
     async def _get_thread_posts(self, group_id: str, thread_id: str) -> List[Dict]:
@@ -1097,12 +1396,12 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            async with self.rate_limiter:
-                response = await self.external_outlook_client.groups_threads_list_posts(
-                    group_id=group_id,
-                    thread_id=thread_id,
-                    select=['id', 'body', 'from', 'receivedDateTime', 'hasAttachments', 'conversationId', 'conversationThreadId']
-                )
+            response = await self._retry_request(
+                self.external_outlook_client.groups_threads_list_posts,
+                group_id=group_id,
+                thread_id=thread_id,
+                select=['id', 'body', 'from', 'receivedDateTime', 'hasAttachments', 'conversationId', 'conversationThreadId']
+            )
 
             if not response.success:
                 self.logger.error(f"Failed to get posts for thread {thread_id}: {response.error}")
@@ -1155,6 +1454,9 @@ class OutlookConnector(BaseConnector):
 
             # Get thread ID from the thread object
             thread_id = self._safe_get_attr(thread, 'id')
+            if not thread_id:
+                self.logger.warning(f"No thread ID found for post {post_id}")
+                return None
 
             # Create MailRecord for the post
             mail_record = MailRecord(
@@ -1296,18 +1598,55 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
+            all_attachments = []
+
             async with self.rate_limiter:
-                response = await self.external_outlook_client.groups_threads_posts_list_attachments(
+                # Initial request
+                response = await self._retry_request(
+                    self.external_outlook_client.groups_threads_posts_list_attachments,
                     group_id=group_id,
                     conversationThread_id=thread_id,
                     post_id=post_id
                 )
 
             if not response.success:
-                self.logger.error(f"Failed to get attachments for post {post_id}: {response.error}")
-                return []
+                 self.logger.warning(f"Failed to get attachments for post {post_id}: {response.error}")
+                 return []
 
-            return self._safe_get_attr(response.data, 'value', [])
+            data = response.data or {}
+            all_attachments.extend(data.get('value', []))
+
+            # Handle pagination
+            next_link = data.get('odata_next_link')
+
+            while next_link:
+                try:
+                    # Use raw client to follow next link
+                    request_info = self.external_outlook_client.client.request_adapter.request_info_factory.create_get_request_information(next_link)
+
+                    error_map = {
+                        "4XX": ODataError,
+                        "5XX": ODataError,
+                    }
+
+                    async with self.rate_limiter:
+                        response_obj = await self._retry_request(
+                            self.external_outlook_client.client.request_adapter.send_async,
+                            request_info,
+                            MessageCollectionResponse, # Repurpose this as it contains 'value' and 'odata_next_link'
+                            error_map
+                        )
+
+                    new_items = response_obj.value if response_obj and response_obj.value else []
+                    all_attachments.extend(new_items)
+
+                    next_link = response_obj.odata_next_link if response_obj and response_obj.odata_next_link else None
+
+                except Exception as e:
+                    self.logger.warning(f"Error fetching next page of attachments for post {post_id}: {e}")
+                    break
+
+            return all_attachments
 
         except Exception as e:
             self.logger.error(f"Error getting group post attachments: {e}")
@@ -1339,7 +1678,11 @@ class OutlookConnector(BaseConnector):
             if not content_bytes:
                 return b''
 
-            return base64.b64decode(content_bytes)
+            try:
+                return base64.b64decode(content_bytes)
+            except (binascii.Error, ValueError) as e:
+                self.logger.warning(f"Failed to decode base64 attachment: {e}")
+                return b''
 
         except Exception as e:
             self.logger.error(f"Error downloading group post attachment: {e}")
@@ -1368,27 +1711,30 @@ class OutlookConnector(BaseConnector):
 
             total_processed = 0
             folder_results = []
-            all_mail_records = []  # Collect all mail records for email thread edges processing
 
-            # Process folders sequentially instead of concurrently
+            # Process folders sequentially
             for folder in folders:
                 folder_name = self._safe_get_attr(folder, 'display_name', 'Unnamed Folder')
                 try:
-                    result, folder_mail_records = await self._process_single_folder_messages(org_id, user, folder)
-                    folder_results.append(f"{folder_name}: {result} messages")
-                    total_processed += result
-                    all_mail_records.extend(folder_mail_records)  # Collect mail records
+                    # Fix 2: Deep Clean - Edges are processed incrementally.
+                    # We ignore returned records to stop memory leak.
+                    result_tuple = await self._process_single_folder_messages(org_id, user, folder)
+
+                    # Handle backward compatibility during refactor (tuple vs int)
+                    if isinstance(result_tuple, tuple):
+                        count = result_tuple[0]
+                    else:
+                        count = result_tuple
+
+                    folder_results.append(f"{folder_name}: {count} messages")
+                    total_processed += count
+
                 except Exception as e:
                     self.logger.error(f"Error processing folder {folder_name}: {e}")
                     folder_results.append(f"{folder_name}: Failed")
 
-            # After all folders are processed, create email thread edges using collected records
-            try:
-                thread_edges_created = await self._create_all_thread_edges_for_user(org_id, user, all_mail_records)
-                if thread_edges_created > 0:
-                    self.logger.info(f"Created {thread_edges_created} thread edges for user {user.email}")
-            except Exception as e:
-                self.logger.error(f"Error creating thread edges for user {user.email}: {e}")
+            # Note: Thread edges are now created incrementally per batch in _process_and_save_messages
+            # to prevent memory issues. No need to collect and process all at once here.
 
             return f"Processed {total_processed} items across {len(folders)} folders: {'; '.join(folder_results)}"
 
@@ -1471,8 +1817,16 @@ class OutlookConnector(BaseConnector):
             # Create all edges in batch
             if edges:
                 try:
+                    # Deduplicate edges in memory
+                    unique_edges_map = {}
+                    for e in edges:
+                         key = f"{e['from_id']}->{e['to_id']}"
+                         unique_edges_map[key] = e
+
+                    final_edges = list(unique_edges_map.values())
+
                     async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.RECORD_RELATIONS.value)
+                        await tx_store.batch_create_edges(final_edges, collection=CollectionNames.RECORD_RELATIONS.value)
                 except Exception as e:
                     self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
                     processed_count = 0
@@ -1771,7 +2125,7 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error syncing folders for user {user.email}: {e}")
             return []
 
-    async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: Dict) -> tuple[int, List[Record]]:
+    async def _process_single_folder_messages(self, org_id: str, user: AppUser, folder: Dict) -> int:
         """Process messages using batch processing with gap-fill optimization."""
         try:
             user_id = user.source_user_id
@@ -1806,7 +2160,6 @@ class OutlookConnector(BaseConnector):
             stored_filter_start_ts = sync_point.get('filter_start_ts') if sync_point else None
 
             processed_count = 0
-            mail_records = []
 
             # Detect Gap: Only run if we have explicit filters for both current and stored state
             # Check for None to prevent unintended full history fetch
@@ -1828,14 +2181,13 @@ class OutlookConnector(BaseConnector):
 
                 try:
                     # Fetch ONLY the missing historical emails
-                    gap_count, gap_records = await self._fetch_historical_gap(
+                    gap_count, _ = await self._fetch_historical_gap(
                         user_id, folder_id, folder_name,
                         org_id, user,
                         start_ts=current_filter_start_ts,
                         end_ts=stored_filter_start_ts
                     )
                     processed_count += gap_count
-                    mail_records.extend(gap_records)
                 except Exception as e:
                     # Log error but mark as failed so we don't corrupt state
                     self.logger.error(f"Gap fill failed for '{folder_name}' (continuing with delta): {e}", exc_info=True)
@@ -1851,7 +2203,7 @@ class OutlookConnector(BaseConnector):
             if messages:
                 # Process and save messages using helper method
                 count = await self._process_and_save_messages(
-                    messages, org_id, user, folder_id, folder_name, mail_records_collector=mail_records
+                    messages, org_id, user, folder_id, folder_name
                 )
                 processed_count += count
 
@@ -1895,11 +2247,11 @@ class OutlookConnector(BaseConnector):
             )
 
             self.logger.info(f"Folder '{folder_name}' completed: {processed_count} records processed")
-            return processed_count, mail_records
+            return processed_count
 
         except Exception as e:
             self.logger.error(f"Error processing messages in folder '{folder_name}' for user {user.email}: {e}", exc_info=True)
-            return 0, []
+            return 0
 
     async def _get_all_messages_delta_external(self, user_id: str, folder_id: str, delta_link: Optional[str] = None) -> Dict:
         """Get folder messages using delta sync with automatic pagination from external Outlook API.
@@ -2163,10 +2515,14 @@ class OutlookConnector(BaseConnector):
                         else:
                             permission_type = PermissionType.READ
 
+                        # Try to resolve user ID from cache or external fetch
+                        user_id = await self._get_user_id_from_email(email_address)
+
                         permission = Permission(
                             email=email_address,
                             type=permission_type,
                             entity_type=EntityType.USER,
+                            external_id=user_id  # Can be None for external users (Outlook guests)
                         )
                         permissions.append(permission)
 
@@ -2320,7 +2676,8 @@ class OutlookConnector(BaseConnector):
                 raise Exception("External Outlook client not initialized")
 
             async with self.rate_limiter:
-                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_list_attachments(
+                response: OutlookCalendarContactsResponse = await self._retry_request(
+                    self.external_outlook_client.users_messages_list_attachments,
                     user_id=user_id,
                     message_id=message_id
                 )
@@ -2372,7 +2729,8 @@ class OutlookConnector(BaseConnector):
                     )
 
                 async with self.rate_limiter:
-                    response = await self.external_outlook_client.groups_threads_get_post(
+                    response = await self._retry_request(
+                        self.external_outlook_client.groups_threads_get_post,
                         group_id=group_id,
                         thread_id=thread_id,
                         post_id=post_id
@@ -2478,11 +2836,11 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            async with self.rate_limiter:
-                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
-                    user_id=user_id,
-                    message_id=message_id
-                )
+            response: OutlookCalendarContactsResponse = await self._retry_request(
+                self.external_outlook_client.users_get_messages,
+                user_id=user_id,
+                message_id=message_id
+            )
 
             if not response.success:
                 self.logger.error(f"Failed to get message {message_id}: {response.error}")
@@ -2500,12 +2858,12 @@ class OutlookConnector(BaseConnector):
             if not self.external_outlook_client:
                 raise Exception("External Outlook client not initialized")
 
-            async with self.rate_limiter:
-                response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
-                    user_id=user_id,
-                    message_id=message_id,
-                    attachment_id=attachment_id
-                )
+            response: OutlookCalendarContactsResponse = await self._retry_request(
+                self.external_outlook_client.users_messages_get_attachments,
+                user_id=user_id,
+                message_id=message_id,
+                attachment_id=attachment_id
+            )
 
             if not response.success or not response.data:
                 return b''
@@ -2554,8 +2912,14 @@ class OutlookConnector(BaseConnector):
                 finally:
                     self.external_client = None
 
-            self.external_outlook_client = None
-            self.external_users_client = None
+            # Close other clients if they have close methods
+            if hasattr(self, 'external_outlook_client') and self.external_outlook_client:
+                # OutlookCalendarContactsDataSource doesn't have a close method, but dropping reference is good
+                self.external_outlook_client = None
+
+            if hasattr(self, 'external_users_client') and self.external_users_client:
+                 # UsersGroupsDataSource doesn't have a close method, but dropping reference is good
+                 self.external_users_client = None
             self.credentials = None
             # Clear user cache
             self._user_cache.clear()
@@ -3193,7 +3557,7 @@ class OutlookConnector(BaseConnector):
 
     async def _process_and_save_messages(
         self,
-        messages: List,
+        messages: List[Dict],
         org_id: str,
         user: AppUser,
         folder_id: str,
@@ -3201,50 +3565,65 @@ class OutlookConnector(BaseConnector):
         mail_records_collector: Optional[List[Record]] = None
     ) -> int:
         """
-        Process messages and save them in batches.
-
+        Process messages and save them in batches via incremental edge processing.
         Args:
             messages: List of message objects to process
             org_id: Organization ID
             user: User object
             folder_id: Folder ID
             folder_name: Folder name
-            mail_records_collector: Optional list to collect mail records
-
         Returns:
             Number of records processed
         """
-        # Collect all updates
-        all_updates = []
-        for message in messages:
-            record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
-            all_updates.extend(record_updates)
-
-        # Process records in batches
         batch_records = []
         processed_count = 0
 
-        for update in all_updates:
-            if update and update.record:
-                permissions = update.new_permissions or []
-                batch_records.append((update.record, permissions))
+        for message in messages:
+            try:
+                record_updates = await self._process_single_message(org_id, user, message, folder_id, folder_name)
 
-                # If caller wants to collect mail records, add to collector
-                if mail_records_collector is not None:
-                    if hasattr(update.record, 'record_type') and update.record.record_type == RecordType.MAIL:
-                        mail_records_collector.append(update.record)
+                if record_updates:
+                    for update in record_updates:
+                         if update and update.record:
+                             permissions = update.new_permissions or []
+                             batch_records.append((update.record, permissions))
 
-            if len(batch_records) >= self.BATCH_SIZE:
-                await self.data_entities_processor.on_new_records(batch_records)
-                processed_count += len(batch_records)
-                batch_records = []
+                             if mail_records_collector is not None:
+                                 # Fix 1: Memory cap
+                                 if len(mail_records_collector) < 5000:
+                                     mail_records_collector.append(update.record)
+
+                if len(batch_records) >= self.BATCH_SIZE:
+                    # 1. Save Records
+                    await self.data_entities_processor.on_new_records(batch_records)
+
+                    # 2. Process Edges for JUST this batch immediately
+                    records_in_batch = [x[0] for x in batch_records if hasattr(x[0], 'record_type') and x[0].record_type == RecordType.MAIL]
+                    if records_in_batch:
+                         await self._create_all_thread_edges_for_user(org_id, user, records_in_batch)
+
+                    processed_count += len(batch_records)
+                    batch_records = []
+
+            except Exception as e:
+                msg_id = self._safe_get_attr(message, 'id', 'unknown')
+                self.logger.error(f"Error processing message {msg_id}: {e}")
+                continue
 
         # Process remaining records
         if batch_records:
             await self.data_entities_processor.on_new_records(batch_records)
+
+            # Edges for final batch
+            records_in_batch = [x[0] for x in batch_records if hasattr(x[0], 'record_type') and x[0].record_type == RecordType.MAIL]
+            if records_in_batch:
+                 await self._create_all_thread_edges_for_user(org_id, user, records_in_batch)
+
             processed_count += len(batch_records)
 
         return processed_count
+
+
 
 
 
@@ -3256,8 +3635,9 @@ class OutlookConnector(BaseConnector):
         """
         try:
             # Format timestamps to ISO for Graph API
-            start_iso = datetime.fromtimestamp(start_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-            end_iso = datetime.fromtimestamp(end_ts, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            # Format timestamps to ISO for Graph API (ensure UTC 'Z')
+            start_iso = datetime.fromtimestamp(start_ts, timezone.utc).isoformat().replace('+00:00', 'Z')
+            end_iso = datetime.fromtimestamp(end_ts, timezone.utc).isoformat().replace('+00:00', 'Z')
 
             # Construct filter: >= start AND < end
             gap_filter = f"receivedDateTime ge {start_iso} and receivedDateTime lt {end_iso}"
@@ -3289,7 +3669,8 @@ class OutlookConnector(BaseConnector):
             return processed_count, all_gap_records
         except Exception as e:
             self.logger.error(f"Error in gap fill fetch: {e}", exc_info=True)
-            raise
+            # Fix 5: Signal parent that gap fill failed so sync state isn't corrupted
+            raise GapFillFailedException(f"Gap fill failed: {e}") from e
 
     async def _get_historical_messages_page(self, user_id: str, folder_id: str, filter_str: str, next_link: Optional[str] = None) -> Dict:
         """
@@ -3306,7 +3687,8 @@ class OutlookConnector(BaseConnector):
                     "5XX": ODataError,
                 }
                 async with self.rate_limiter:
-                    response = await self.external_outlook_client.client.request_adapter.send_async(
+                    response = await self._retry_request(
+                        self.external_outlook_client.client.request_adapter.send_async,
                         request_info,
                         MessageCollectionResponse,
                         error_map
@@ -3318,7 +3700,8 @@ class OutlookConnector(BaseConnector):
             else:
                 # Initial request using the Outlook DataSource wrapper
                 async with self.rate_limiter:
-                    response_wrapper = await self.external_outlook_client.users_mail_folders_list_messages(
+                    response_wrapper = await self._retry_request(
+                        self.external_outlook_client.users_mail_folders_list_messages,
                         user_id=user_id,
                         mailFolder_id=folder_id,
                         filter=filter_str,
@@ -3342,9 +3725,30 @@ class OutlookConnector(BaseConnector):
                 'next_link': new_next_link
             }
 
-        except Exception:
+        except Exception as e:
             # Propagate the exception to trigger the safety mechanism in _process_single_folder_messages
-            raise
+            raise e
+
+    async def _retry_request(self, func, *args, **kwargs):
+        """Execute a function with retry logic for rate limiting."""
+        retries = 0
+        while True:
+            try:
+                # Remove internal kwargs if any (none currently used, but keeping cleaner signature)
+                if 'msgraph_client' in kwargs:
+                    kwargs.pop('msgraph_client')
+
+                return await func(*args, **kwargs)
+            except Exception as e:
+                # Check for 429 Too Many Requests
+                is_rate_limit = "429" in str(e)
+                if is_rate_limit and retries < self.MAX_RETRIES:
+                    wait_time = self.RETRY_BACKOFF_FACTOR ** retries
+                    self.logger.warning(f"Rate limited (429). Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    retries += 1
+                    continue
+                raise e
 
     @classmethod
     async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
