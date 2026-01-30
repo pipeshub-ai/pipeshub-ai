@@ -14,6 +14,10 @@ class GoogleDriveApp(App):
     def __init__(self, connector_id: str) -> None:
         super().__init__(Connectors.GOOGLE_DRIVE, AppGroups.GOOGLE_WORKSPACE, connector_id)
 
+class GoogleDriveTeamApp(App):
+    def __init__(self, connector_id: str) -> None:
+        super().__init__(Connectors.GOOGLE_DRIVE_WORKSPACE, AppGroups.GOOGLE_WORKSPACE, connector_id)
+
 class GoogleCalendarApp(App):
     def __init__(self, connector_id: str) -> None:
         super().__init__(Connectors.GOOGLE_CALENDAR, AppGroups.GOOGLE_WORKSPACE, connector_id)

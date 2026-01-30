@@ -291,7 +291,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         metadata: dict,
         user_id: str,
         user_email: str,
-        record_group_id: str
+        drive_id: str
     ) -> Optional[RecordUpdate]:
         """
         Process a single Google Drive file and detect changes.
@@ -300,7 +300,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             metadata: Google Drive file metadata dictionary
             user_id: The user's account ID
             user_email: The user's email
-            record_group_id: The record group ID (user's drive ID)
+            drive_id: The drive ID
 
         Returns:
             RecordUpdate object or None if entry should be skipped
@@ -348,7 +348,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     content_changed = True
                     is_updated = True
 
-                if existing_record and record_group_id != existing_record.external_record_group_id:
+                if existing_record and drive_id != existing_record.external_record_group_id:
                     is_updated = True
                     metadata_changed = True
 
@@ -373,6 +373,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if "." in file_name:
                     file_extension = file_name.rsplit(".", 1)[-1].lower()
 
+            parent_external_record_id = (metadata.get("parents") or [None])[0]
+
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -380,13 +382,14 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 record_name=str(metadata.get("name", "Untitled")),
                 record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.DRIVE.value,
-                external_record_group_id=record_group_id,
+                external_record_group_id=drive_id,
                 external_record_id=str(file_id),
                 external_revision_id=metadata.get("headRevisionId") or metadata.get("version", None),
-                parent_external_record_id=metadata.get("parents", [None])[0] if metadata.get("parents", [None]) else None,
+                parent_external_record_id=parent_external_record_id if parent_external_record_id != drive_id else None,
+                parent_record_type=RecordType.FILE if parent_external_record_id != drive_id else None,
                 version=0 if is_new else (existing_record.version + 1 if existing_record else 0),
                 origin=OriginTypes.CONNECTOR.value,
-                connector_name=Connectors.GOOGLE_DRIVE.value,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
@@ -606,7 +609,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         files: List[dict],
         user_id: str,
         user_email: str,
-        record_group_id: str
+        drive_id: str
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Google Drive files and yield records with their permissions.
@@ -616,7 +619,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             files: List of Google Drive file metadata
             user_id: The user's account ID
             user_email: The user's email
-            record_group_id: The record group ID (user's drive ID)
+            drive_id: The drive ID
         """
         import asyncio
 
@@ -626,7 +629,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     file_metadata,
                     user_id,
                     user_email,
-                    record_group_id
+                    drive_id
                 )
                 if record_update and record_update.record:
                     files_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True)
@@ -668,7 +671,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
 
-    async def _sync_user_personal_drive(self) -> None:
+    async def _sync_user_personal_drive(self, drive_id: str) -> None:
         """
         Sync user's personal Google Drive.
 
@@ -699,13 +702,13 @@ class GoogleDriveIndividualConnector(BaseConnector):
         if not page_token:
             # Full sync: no sync point exists
             self.logger.info("🆕 Starting full sync for Google Drive (no sync point found)")
-            await self._perform_full_sync(sync_point_key, org_id, user_id, user_email)
+            await self._perform_full_sync(sync_point_key, org_id, user_id, user_email, drive_id)
         else:
             # Incremental sync: sync point exists
             self.logger.info("🔄 Starting incremental sync for Google Drive")
-            await self._perform_incremental_sync(sync_point_key, org_id, user_id, user_email, page_token)
+            await self._perform_incremental_sync(sync_point_key, org_id, user_id, user_email, page_token, drive_id)
 
-    async def _perform_full_sync(self, sync_point_key: str, org_id: str, user_id: str, user_email: str) -> None:
+    async def _perform_full_sync(self, sync_point_key: str, org_id: str, user_id: str, user_email: str, drive_id: str) -> None:
         """
         Perform full sync by fetching all files using files_list.
 
@@ -714,6 +717,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             org_id: Organization ID
             user_id: User's account ID
             user_email: User's email
+            drive_id: Drive ID
         """
         try:
             # Get start page token for future incremental syncs
@@ -758,7 +762,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     files,
                     user_id,
                     user_email,
-                    user_id  # record_group_id is user_id for personal drive
+                    drive_id
                 ):
                     if update.is_deleted:
                         await self._handle_record_updates(update)
@@ -799,7 +803,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error during full sync: {e}", exc_info=True)
             raise
 
-    async def _perform_incremental_sync(self, sync_point_key: str, org_id: str, user_id: str, user_email: str, page_token: str) -> None:
+    async def _perform_incremental_sync(self, sync_point_key: str, org_id: str, user_id: str, user_email: str, page_token: str, drive_id: str) -> None:
         """
         Perform incremental sync by fetching changes using changes_list.
 
@@ -809,6 +813,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             user_id: User's account ID
             user_email: User's email
             page_token: Page token from sync point
+            drive_id: Drive ID
         """
         try:
             current_page_token = page_token
@@ -869,7 +874,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                         files,
                         user_id,
                         user_email,
-                        user_id
+                        drive_id
                     ):
                         if update.is_deleted:
                             await self._handle_record_updates(update)
@@ -1242,14 +1247,16 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 detail=f"Error streaming file: {str(e)}"
             )
 
-    async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str) -> RecordGroup:
+    async def _create_personal_record_group(self, user_id: str, user_email: str, display_name: str, drive_id: str) -> RecordGroup:
         """Create a personal record group for the user."""
+        # Fetch root drive info to get the actual drive ID
+
         record_group = RecordGroup(
             name=display_name,
             group_type=RecordGroupType.DRIVE.value,
             connector_name=self.connector_name,
             connector_id=self.connector_id,
-            external_group_id=user_id,
+            external_group_id=drive_id,
         )
 
         permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]
@@ -1263,7 +1270,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 email=user_about.get('user').get('emailAddress'),
                 full_name=user_about.get('user').get('displayName'),
                 source_user_id=user_about.get('user').get('permissionId'),
-                app_name=Connectors.GOOGLE_DRIVE.value,
+                app_name=self.connector_name,
                 connector_id=self.connector_id
             )
             await self.data_entities_processor.on_new_app_users([user])
@@ -1287,14 +1294,23 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Create user personal drive
         display_name = f"Google Drive - {user_about.get('user').get('emailAddress')}"
+        drive_info = await self.drive_data_source.files_get(fileId="root", supportsAllDrives=True)
+        drive_id = drive_info.get("id")
+
+        if not drive_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to get drive ID"
+            )
         await self._create_personal_record_group(
             user_about.get('user').get('permissionId'),
             user_about.get('user').get('emailAddress'),
-            display_name
+            display_name,
+            drive_id
         )
 
         # Sync user's personal drive
-        await self._sync_user_personal_drive()
+        await self._sync_user_personal_drive(drive_id=drive_id)
 
         self.logger.info("Sync completed for Google Drive Individual")
 
