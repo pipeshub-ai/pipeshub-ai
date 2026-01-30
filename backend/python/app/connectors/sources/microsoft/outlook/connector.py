@@ -1121,17 +1121,17 @@ class OutlookConnector(BaseConnector):
 
             all_gap_records = []
             processed_count = 0
-            
+
             # Pagination loop
             next_link = None
             page_count = 0
-            
+
             while True:
                 page_count += 1
                 if page_count > self.MAX_GAP_FILL_PAGES:
                     self.logger.warning(f"Gap fill for {group.name} hit max pages ({self.MAX_GAP_FILL_PAGES}). Stopping early.")
                     break
-                
+
                 try:
                     # We must use list_threads directly as _get_group_threads only handles 'ge'
                     async with self.rate_limiter:
@@ -1148,11 +1148,11 @@ class OutlookConnector(BaseConnector):
                         raise GapFillFailedException(f"Failed to fetch page {page_count}: {response.error}")
 
                     threads = self._safe_get_attr(response.data, 'value', [])
-                    
+
                     if not threads and page_count == 1:
                         # Only break if first page is empty. Middle pages might be empty? OData usually doesn't return empty middle pages.
                         break
-                    
+
                     for thread in threads:
                          # For gap fill, pass None as last_sync_timestamp
                          p_count, t_records = await self._process_group_thread(org_id, group, thread, last_sync_timestamp=None)
@@ -1163,10 +1163,10 @@ class OutlookConnector(BaseConnector):
                     next_link = self._safe_get_attr(response.data, '@odata.nextLink')
                     if not next_link:
                          next_link = self._safe_get_attr(response.data, 'odata_next_link')
-                    
+
                     if not next_link:
                         break
-                        
+
                 except GapFillFailedException:
                     raise
                 except Exception as e:
