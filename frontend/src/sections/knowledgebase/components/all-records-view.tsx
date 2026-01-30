@@ -698,7 +698,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   const getConnectorIconPath = (connectorType?: string): string => {
     if (!connectorType) return '/assets/icons/connectors/default.svg';
 
-    return `/assets/icons/connectors/${connectorType.toLowerCase()}.svg`;
+    return `/assets/icons/connectors/${connectorType.replace(' ', '').toLowerCase()}.svg`;
   };
 
   // Get MDI icon and color for node types (kb, folder, recordGroup)
