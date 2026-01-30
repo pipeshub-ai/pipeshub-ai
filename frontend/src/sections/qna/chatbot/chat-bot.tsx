@@ -730,7 +730,7 @@ const ChatInterface = () => {
     const apps = connectors.map((c: any) => ({
       id: c._key,
       name: c.name || '',
-      iconPath: c.iconPath || '/assets/icons/connectors/default.svg',
+      iconPath: c.iconPath || '/assets/icons/connectors/collections.svg',
     }));
 
     setAllApps(apps);

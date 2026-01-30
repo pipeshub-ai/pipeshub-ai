@@ -60,17 +60,17 @@ export const EditKnowledgeBaseDialog: React.FC<EditKnowledgeBaseDialogProps> = (
     const trimmedName = name.trim();
 
     if (!trimmedName) {
-      setError('Knowledge base name is required');
+      setError('Collection name is required');
       return;
     }
 
     if (trimmedName.length < 2) {
-      setError('Knowledge base name must be at least 2 characters');
+      setError('Collection name must be at least 2 characters');
       return;
     }
 
     if (trimmedName.length > 100) {
-      setError('Knowledge base name must be less than 100 characters');
+      setError('Collection name must be less than 100 characters');
       return;
     }
 
@@ -83,7 +83,7 @@ export const EditKnowledgeBaseDialog: React.FC<EditKnowledgeBaseDialogProps> = (
       await onSubmit(trimmedName);
       onClose();
     } catch (err: any) {
-      setError(err.message || 'Failed to update knowledge base');
+      setError(err.message || 'Failed to update collection');
     }
   };
 
@@ -143,7 +143,7 @@ export const EditKnowledgeBaseDialog: React.FC<EditKnowledgeBaseDialogProps> = (
           >
             <Icon icon={brainIcon} width={18} height={18} />
           </Box>
-          Edit Knowledge Base
+          Edit Collection
         </Box>
 
         <IconButton
@@ -170,13 +170,13 @@ export const EditKnowledgeBaseDialog: React.FC<EditKnowledgeBaseDialogProps> = (
         >
           <Box sx={{ mb: 3 }}>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-              Update the name of your knowledge base. This will be visible to all users with access.
+              Update the name of your collection. This will be visible to all users with access.
             </Typography>
 
             <TextField
               autoFocus
               fullWidth
-              label="Knowledge Base Name"
+              label="Collection Name"
               value={name}
               onChange={(e) => {
                 setName(e.target.value);
@@ -184,7 +184,7 @@ export const EditKnowledgeBaseDialog: React.FC<EditKnowledgeBaseDialogProps> = (
               }}
               onKeyDown={handleKeyDown}
               error={!!error}
-              helperText={error || 'Enter a descriptive name for your knowledge base'}
+              helperText={error || 'Enter a descriptive name for your collection'}
               disabled={loading}
               variant="outlined"
               sx={{

@@ -1,7 +1,7 @@
 // components/dialogs/CreateKnowledgeBaseDialog.tsx
 import React, { useState } from 'react';
 import closeIcon from '@iconify-icons/eva/close-outline';
-import knowledgeIcon from '@iconify-icons/eva/book-open-outline';
+import knowledgeIcon from '@iconify-icons/mdi/folder-multiple';
 
 import {
   Box,
@@ -97,7 +97,7 @@ export const CreateKnowledgeBaseDialog: React.FC<CreateKnowledgeBaseDialogProps>
           >
             <Iconify icon={knowledgeIcon} width={18} height={18} />
           </Box>
-          Create Knowledge Base
+          Create Collection
         </Box>
 
         <IconButton
@@ -126,14 +126,14 @@ export const CreateKnowledgeBaseDialog: React.FC<CreateKnowledgeBaseDialogProps>
             color="text.secondary" 
             sx={{ mb: 2 }}
           >
-            Create a new knowledge base to organize and store your documents, information, and data for AI-powered search and retrieval.
+            Create a new collection to organize and store your documents, information, and data for AI-powered search and retrieval.
           </Typography>
           
           <TextField
             autoFocus
             fullWidth
-            label="Knowledge Base Name"
-            placeholder="Enter knowledge base name..."
+            label="Collection Name"
+            placeholder="Enter collection name..."
             value={name}
             onChange={(e) => setName(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && !loading && name.trim() && handleSubmit()}
@@ -193,7 +193,7 @@ export const CreateKnowledgeBaseDialog: React.FC<CreateKnowledgeBaseDialogProps>
             px: 3,
           }}
         >
-          {loading ? 'Creating...' : 'Create Knowledge Base'}
+          {loading ? 'Creating...' : 'Create Collection'}
         </Button>
       </DialogActions>
     </Dialog>

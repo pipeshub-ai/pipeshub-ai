@@ -165,7 +165,7 @@ const KbPermissionsDialog: React.FC<KbPermissionsDialogProps> = ({ open, onClose
       onClose={onClose}
       subjectName={kbName}
       api={api}
-      title="Manage Access"
+      title="Manage Collection Access"
       addPeopleLabel="Add People & Teams"
     />
   );

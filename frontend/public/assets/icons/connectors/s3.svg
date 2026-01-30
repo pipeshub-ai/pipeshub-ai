@@ -1,18 +1,7 @@
-<?xml version="1.0" encoding="utf-8"?>
-<!-- Uploaded to: SVG Repo, www.svgrepo.com, Generator: SVG Repo Mixer Tools -->
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink"
-aria-label="Amazon Simple Storage Service" role="img"
-viewBox="0 0 512 512">
-<rect
-width="512" height="512"
-rx="15%"
-fill="#ffffff"/>
-<path fill="#e05243" d="M260 348l-137 33V131l137 32z"/>
-<path fill="#8c3123" d="M256 349l133 32V131l-133 32v186"/>
-<g fill="#e05243">
-<path id="a" d="M256 64v97l58 14V93zm133 67v250l26-13V143zm-133 77v97l58-8v-82zm58 129l-58 14v97l58-29z"/>
-</g>
-<use fill="#8c3123" transform="rotate(180 256 256)" xlink:href="#a"/>
-<path fill="#5e1f18" d="M314 175l-58 11-58-11 58-15 58 15"/>
-<path fill="#f2b0a9" d="M314 337l-58-11-58 11 58 16 58-16"/>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<!-- Uploaded to: SVG Repo, www.svgrepo.com, Transformed by: SVG Repo Mixer Tools -->
+<svg width="800px" height="800px" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" fill="none">
+<g id="SVGRepo_bgCarrier" stroke-width="0"/>
+<g id="SVGRepo_tracerCarrier" stroke-linecap="round" stroke-linejoin="round"/>
+<g id="SVGRepo_iconCarrier"> <g fill-rule="evenodd" clip-rule="evenodd"> <path fill="#ec2913" d="M13.481 3.094l-2.52 4.937 2.52 4.938 1.033-.594V3.687l-1.033-.593z"/> <path fill="#a62011" d="M13.481 3.094l-5.042.594L5.873 8.03l2.566 4.344 5.042.594V3.094z"/> <path fill="#7e170c" d="M3.306 3.094l-.82.375v9.125l.82.375L8.44 8.03 3.306 3.094z"/> <path fill="#ec2913" d="M3.295 3.083l5.151 1.473v7.083l-5.15 1.333V3.083z"/> <path fill="#7e170c" d="M8.449 5.333l-2.187-.36 2.187-2.556 2.182 2.555-2.182.361z"/> <path fill="#7e170c" d="M10.63 4.972l-2.184.367-2.184-.367V2.417M8.449 10.694l-2.187.417 2.187 2.195 2.182-2.195-2.182-.417z"/> <path fill="#a62011" d="M8.44.5L6.251 1.688v3.28l2.194-.635L8.44.5zM8.446 6.139l-2.184.244V9.66l2.184.257V6.139zM8.446 11.667l-2.184-.564v3.22L8.446 15.5v-3.833z"/> <path fill="#ec2913" d="M10.63 11.103l-2.184.564V15.5l2.184-1.176v-3.22zM8.446 6.139l2.184.244V9.66l-2.184.257V6.139zM8.44.5l2.186 1.188v3.28L8.44 4.345V.5z"/> </g> </g>
 </svg>

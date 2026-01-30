@@ -707,7 +707,7 @@ export const ListView: React.FC<ListViewProps> = ({
           getRowId={(row) => row.id}
           rowHeight={56}
           localeText={{
-            noRowsLabel: 'No records uploaded for knowledge base',
+            noRowsLabel: 'No records uploaded for Collection',
           }}
           sx={{
             border: 'none',

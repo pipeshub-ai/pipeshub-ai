@@ -666,7 +666,7 @@ class KnowledgeHubService:
                 FilterOption(
                     id=k['id'],
                     label=k['name'],
-                    iconPath='/assets/icons/connectors/default.svg'
+                    iconPath='/assets/icons/connectors/collections.svg'
                 )
                 for k in kbs_data
             ]
