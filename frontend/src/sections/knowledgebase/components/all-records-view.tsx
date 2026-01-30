@@ -542,7 +542,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         sortBy,
         sortOrder,
         q: undefined,
-        // Preserve filters
+         // Clear filters and search query
         recordTypes: undefined,
         origins: undefined,
         connectorIds: undefined,
