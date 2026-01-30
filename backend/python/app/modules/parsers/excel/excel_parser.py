@@ -1318,7 +1318,6 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         "column_headers": headers,
                         "sheet_number": sheet_idx,
                         "sheet_name": sheet_name,
-                        "table_markdown": table_markdown,
                     },
                     format=DataFormat.JSON,
                 )
