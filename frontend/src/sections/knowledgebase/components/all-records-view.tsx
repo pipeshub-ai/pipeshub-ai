@@ -541,13 +541,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         limit: limit.toString(),
         sortBy,
         sortOrder,
-        q: q || undefined,
-        // Preserve filters
-        recordTypes: filters.recordTypes?.join(',') || undefined,
-        origins: filters.origins?.join(',') || undefined,
-        connectorIds: filters.connectorIds?.join(',') || undefined,
-        kbIds: filters.kbIds?.join(',') || undefined,
-        indexingStatus: filters.indexingStatus?.join(',') || undefined,
+        q: undefined,
+         // Clear filters and search query
+        recordTypes: undefined,
+        origins: undefined,
+        connectorIds: undefined,
+        kbIds: undefined,
+        indexingStatus: undefined,
       });
     } else if (node.nodeType === 'record') {
       onNavigateToRecord(node.id);
