@@ -228,12 +228,12 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   // Data state
   const [items, setItems] = useState<HubNode[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isRefreshing, setIsRefreshing] = useState(false); // For filter/refresh operations
   const [totalCount, setTotalCount] = useState(0);
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([]);
   const [counts, setCounts] = useState<any>(null);
   const [availableFilters, setAvailableFilters] = useState<AvailableFilters>({});
   const [permissions, setPermissions] = useState<any>(null);
+  const [refreshCounter, setRefreshCounter] = useState(0);
 
   // UI state
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -263,99 +263,84 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     severity: 'success' as 'success' | 'error' | 'warning',
   });
 
-  // Refs
-  const loadingRef = useRef(false);
-
   // Sync search input with URL param
   useEffect(() => {
     setSearchQueryLocal(q || '');
   }, [q]);
 
-  // Load data based on current URL state
-  const loadData = useCallback(async (isRefresh: boolean = false) => {
-    if (loadingRef.current) return;
+  // Load data whenever any dependency changes
+  useEffect(() => {
+    // Clear items immediately to prevent showing stale data
+    setItems([]);
+    setTotalCount(0);
+    setLoading(true);
 
-    loadingRef.current = true;
-    
-    // Show different loading states based on context
-    if (isRefresh || items.length > 0) {
-      setIsRefreshing(true);
-    } else {
-      setLoading(true);
-    }
+    const fetchData = async () => {
+      try {
+        const params: any = {
+          page,
+          limit,
+          include: 'counts,permissions,breadcrumbs,availableFilters',
+          q: q || undefined,
+        };
 
-    try {
-      const params: any = {
-        page,
-        limit,
-        include: 'counts,permissions,breadcrumbs,availableFilters',
-        q: q || undefined,
-      };
+        // Add sort params if they exist
+        if (sortBy) {
+          params.sortBy = sortBy;
+        }
+        if (sortOrder) {
+          params.sortOrder = sortOrder;
+        }
 
-      // Add sort params if they exist
-      if (sortBy) {
-        params.sortBy = sortBy;
-      }
-      if (sortOrder) {
-        params.sortOrder = sortOrder;
-      }
+        // Add filters if they exist and have values
+        if (filters.recordTypes && filters.recordTypes.length > 0) {
+          params.recordTypes = filters.recordTypes.join(',');
+        }
+        if (filters.origins && filters.origins.length > 0) {
+          params.origins = filters.origins.join(',');
+        }
+        if (filters.connectorIds && filters.connectorIds.length > 0) {
+          params.connectorIds = filters.connectorIds.join(',');
+        }
+        if (filters.kbIds && filters.kbIds.length > 0) {
+          params.kbIds = filters.kbIds.join(',');
+        }
+        if (filters.indexingStatus && filters.indexingStatus.length > 0) {
+          params.indexingStatus = filters.indexingStatus.join(',');
+        }
 
-      // Add filters if they exist and have values
-      if (filters.recordTypes && filters.recordTypes.length > 0) {
-        params.recordTypes = filters.recordTypes.join(',');
-      }
-      if (filters.origins && filters.origins.length > 0) {
-        params.origins = filters.origins.join(',');
-      }
-      if (filters.connectorIds && filters.connectorIds.length > 0) {
-        params.connectorIds = filters.connectorIds.join(',');
-      }
-      if (filters.kbIds && filters.kbIds.length > 0) {
-        params.kbIds = filters.kbIds.join(',');
-      }
-      if (filters.indexingStatus && filters.indexingStatus.length > 0) {
-        params.indexingStatus = filters.indexingStatus.join(',');
-      }
+        let data;
+        if (!nodeType || !nodeId) {
+          // Load root level nodes
+          data = await KnowledgeBaseAPI.getKnowledgeHubNodes(params);
+        } else {
+          // Load specific node children
+          data = await KnowledgeBaseAPI.getKnowledgeHubNodeChildren(nodeType, nodeId, params);
+        }
 
-      let data;
-      if (!nodeType || !nodeId) {
-        // Load root level nodes
-        data = await KnowledgeBaseAPI.getKnowledgeHubNodes(params);
-      } else {
-        // Load specific node children
-        data = await KnowledgeBaseAPI.getKnowledgeHubNodeChildren(nodeType, nodeId, params);
-      }
-
-      // Update state only after successful fetch to prevent flickering
-      setItems(data.items || []);
-      setTotalCount(data.pagination?.totalItems || 0);
-      setBreadcrumbs(data.breadcrumbs || []);
-      setCounts(data.counts);
-      setAvailableFilters(data.filters?.available || {});
-      setPermissions(data.permissions || null);
-    } catch (error) {
-      console.error('Failed to load data:', error);
-      // Only clear items on initial load failure, not on refresh
-      if (!isRefresh && items.length === 0) {
+        // Update state with fresh data from API
+        setItems(data.items || []);
+        setTotalCount(data.pagination?.totalItems || 0);
+        setBreadcrumbs(data.breadcrumbs || []);
+        setCounts(data.counts);
+        setAvailableFilters(data.filters?.available || {});
+        setPermissions(data.permissions || null);
+      } catch (error) {
+        console.error('Failed to load data:', error);
         setItems([]);
         setTotalCount(0);
+        setSnackbar({
+          open: true,
+          message: 'Failed to load data. Please try again.',
+          severity: 'error',
+        });
+      } finally {
+        setLoading(false);
       }
-      setSnackbar({
-        open: true,
-        message: 'Failed to load data. Please try again.',
-        severity: 'error',
-      });
-    } finally {
-      setLoading(false);
-      setIsRefreshing(false);
-      loadingRef.current = false;
-    }
-  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, items.length]);
+    };
 
-  // Load data when dependencies change
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
+    fetchData();
+  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, refreshCounter]);
 
   // Navigation handlers
   const handleRowClick = (node: HubNode) => {
@@ -477,6 +462,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       limit: limit.toString(),
       sortBy,
       sortOrder,
+      q: undefined, // Explicitly clear the search query param
       recordTypes: filters.recordTypes?.join(',') || undefined,
       origins: filters.origins?.join(',') || undefined,
       connectorIds: filters.connectorIds?.join(',') || undefined,
@@ -486,7 +472,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
   };
 
   const handleRefresh = () => {
-    loadData(true);
+    setRefreshCounter((prev) => prev + 1);
   };
 
   const handleFilterChange = (newFilters: AppliedFilters) => {
@@ -562,7 +548,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           : response.reason || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      loadData(true);
+      setRefreshCounter((prev) => prev + 1);
     } catch (err: any) {
       console.error('Failed to reindexing document', err);
       setSnackbar({
@@ -583,7 +569,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           : response.reason || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      loadData(true);
+      setRefreshCounter((prev) => prev + 1);
     } catch (err: any) {
       console.error('Failed to reindex folder', err);
       setSnackbar({
@@ -604,7 +590,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           : response.message || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
-      loadData(true);
+      setRefreshCounter((prev) => prev + 1);
     } catch (err: any) {
       console.error('Failed to reindex record group', err);
       setSnackbar({
@@ -632,7 +618,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         severity: response.success ? 'success' : 'error',
       });
       setForceReindexDialog({ open: false, id: '', name: '', type: 'record' });
-      loadData(true);
+      setRefreshCounter((prev) => prev + 1);
     } catch (err: any) {
       console.error('Failed to force reindex', err);
       setSnackbar({
@@ -663,7 +649,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       message: 'Record deleted successfully',
       severity: 'success',
     });
-    loadData(true);
+    setRefreshCounter((prev) => prev + 1);
   };
 
   const closeActionMenu = () => {
@@ -846,7 +832,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           app: 'Connector',
           kb: 'Knowledge Base',
           folder: 'Folder',
-          recordGroup: 'Folder',
+          recordGroup: 'Record Group',
           record: params.row.recordType?.split('_').join(' ') || 'File',
         };
         return (
@@ -1181,15 +1167,6 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           // Add reindex options
           if (node.nodeType === 'record') {
-            // For records
-            if (node.indexingStatus === 'FAILED' || node.indexingStatus === 'NOT_STARTED') {
-              menuActions.push({
-                label: 'Retry Indexing',
-                icon: refreshIcon,
-                color: theme.palette.warning.main,
-                onClick: () => handleRetryIndexing(node.id),
-              });
-            }
             // Force reindex for completed records only
             if (node.indexingStatus === 'COMPLETED') {
               menuActions.push({
@@ -1198,6 +1175,15 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 color: theme.palette.info.main,
                 onClick: () =>
                   setForceReindexDialog({ open: true, id: node.id, name: node.name, type: 'record' }),
+              });
+            }
+            // For records
+            if (node.indexingStatus === 'FAILED' || node.indexingStatus === 'NOT_STARTED' || node.indexingStatus === 'PAUSED' || node.indexingStatus === 'QUEUED' || node.indexingStatus === 'AUTO_INDEX_OFF') {
+              menuActions.push({
+                label: 'Retry Indexing',
+                icon: refreshIcon,
+                color: theme.palette.warning.main,
+                onClick: () => handleRetryIndexing(node.id),
               });
             }
           } 
@@ -1263,14 +1249,14 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
         onFilterChange={handleFilterChange}
         open={sidebarOpen}
         onToggle={() => setSidebarOpen(!sidebarOpen)}
-        isLoading={isRefreshing}
+        isLoading={loading}
       />
 
       {/* Main Content */}
       <MainContentContainer theme={theme} sidebarOpen={sidebarOpen}>
         <Fade in timeout={300}>
           <Box sx={{ height: '100%', display: 'flex', flexDirection: 'column', minWidth: 0 }}>
-            {(loading || isRefreshing) && (
+            {loading && (
               <LinearProgress
                 sx={{
                   position: 'absolute',
@@ -1501,7 +1487,14 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                   variant="outlined"
                   size="small"
                   value={searchQueryLocal}
-                  onChange={(e) => setSearchQueryLocal(e.target.value)}
+                  onChange={(e) => {
+                    const newValue = e.target.value;
+                    setSearchQueryLocal(newValue);
+                    // If the search input becomes empty, automatically clear the search
+                    if (newValue.trim() === '' && q) {
+                      handleClearSearch();
+                    }
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter') {
                       handleSearchSubmit();
@@ -1588,31 +1581,6 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 ) : (
                   <>
                     <Box sx={{ flexGrow: 1, height: 'calc(100% - 64px)', minHeight: 0, overflow: 'hidden', position: 'relative' }}>
-                      {/* Loading overlay during refresh */}
-                      {isRefreshing && (
-                        <Box
-                          sx={{
-                            position: 'absolute',
-                            top: 0,
-                            left: 0,
-                            right: 0,
-                            bottom: 0,
-                            backgroundColor: alpha(theme.palette.background.paper, 0.7),
-                            backdropFilter: 'blur(2px)',
-                            zIndex: 10,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexDirection: 'column',
-                            gap: 2,
-                          }}
-                        >
-                          <CircularProgress size={32} thickness={4} />
-                          <Typography variant="body2" color="text.secondary">
-                            Loading...
-                          </Typography>
-                        </Box>
-                      )}
                       <DataGrid<HubNode>
                         rows={items}
                         columns={columns}
