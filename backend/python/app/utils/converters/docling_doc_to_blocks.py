@@ -1,3 +1,4 @@
+import json
 import uuid
 from typing import Optional
 
@@ -5,8 +6,8 @@ from docling.datamodel.document import DoclingDocument
 
 from app.models.blocks import (
     Block,
+    BlockContainerIndex,
     BlockGroup,
-    BlockGroupChildren,
     BlocksContainer,
     BlockType,
     CitationMetadata,
@@ -184,22 +185,18 @@ class DoclingDocToBlocksConverter():
                 block_groups.append(block_group)
 
             children = item.get("children", [])
-            child_block_indices = []
-            child_block_group_indices = []
+            childBlocks = []
 
             for child in children:
                 result = await _process_item(child, doc, level + 1, block_group.index if block_group else None)
                 if result:
                     if isinstance(result, Block):
-                        child_block_indices.append(result.index)
+                        childBlocks.append(BlockContainerIndex(block_index=result.index))
                     elif isinstance(result, BlockGroup):
-                        child_block_group_indices.append(result.index)
+                        childBlocks.append(BlockContainerIndex(block_group_index=result.index))
 
             if block_group:
-                block_group.children = BlockGroupChildren.from_indices(
-                    block_indices=child_block_indices,
-                    block_group_indices=child_block_group_indices
-                )
+                block_group.children = childBlocks
 
             return block_group
 
@@ -258,23 +255,13 @@ class DoclingDocToBlocksConverter():
 
             return block
 
-        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
+        async def _handle_table_block(item: dict, doc_dict: dict,parent_index: int, ref_path: str,table_markdown: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
             table_data = item.get("data", {})
             cell_data = table_data.get("table_cells", [])
             if len(cell_data) == 0:
                 self.logger.warning(f"No table cells found in the table data: {table_data}")
                 return None
-
-            # Get table grid for summary generation
-            table_grid = table_data.get("grid", [])
-            table_grid_data = []
-            for row in table_grid:
-                row_data = []
-                for cell in row:
-                    row_data.append(cell.get("text", ""))
-                table_grid_data.append(row_data)
-
-            response = await get_table_summary_n_headers(self.config, table_grid_data)
+            response = await get_table_summary_n_headers(self.config, table_markdown)
             table_summary = response.summary if response else ""
             column_headers = response.headers if response else []
 
@@ -285,11 +272,6 @@ class DoclingDocToBlocksConverter():
             _captions = _resolve_ref_list(_captions)
             _footnotes = item.get("footnotes", [])
             _footnotes = _resolve_ref_list(_footnotes)
-
-            num_of_rows = table_data.get("num_rows", None)
-            num_of_cols = table_data.get("num_cols", None)
-            num_of_cells = num_of_rows * num_of_cols if num_of_rows and num_of_cols else None
-
             block_group = BlockGroup(
                 index=len(block_groups),
                 name=item.get("name", ""),
@@ -298,21 +280,21 @@ class DoclingDocToBlocksConverter():
                 description=None,
                 source_group_id=item.get("self_ref", ""),
                 table_metadata=TableMetadata(
-                    num_of_rows=num_of_rows,
-                    num_of_cols=num_of_cols,
-                    num_of_cells=num_of_cells,
+                    num_of_rows=table_data.get("num_rows", 0),
+                    num_of_cols=table_data.get("num_cols", 0),
                     captions=_captions,
                     footnotes=_footnotes,
                 ),
                 data={
                     "table_summary": table_summary,
                     "column_headers": column_headers,
+                    "table_markdown": table_markdown,
                 },
                 format=DataFormat.JSON,
             )
             _enrich_metadata(block_group, item, doc_dict, default_page_number=page_number)
 
-            table_row_block_indices = []
+            childBlocks = []
             for i,row in enumerate(table_rows):
                 index = len(blocks)
                 block = Block(
@@ -329,15 +311,16 @@ class DoclingDocToBlocksConverter():
                     parent_index=block_group.index,
                     data={
                         "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
-                        "row_number": i+1
+                        "row_number": i+1,
+                        "row":json.dumps(row)
                     },
                     citation_metadata=block_group.citation_metadata
                 )
                 # _enrich_metadata(block, row, doc_dict)
                 blocks.append(block)
-                table_row_block_indices.append(index)
+                childBlocks.append(BlockContainerIndex(block_index=index))
 
-            block_group.children = BlockGroupChildren.from_indices(block_indices=table_row_block_indices)
+            block_group.children = childBlocks
             block_groups.append(block_group)
             children = item.get("children", [])
             for child in children:
@@ -394,7 +377,10 @@ class DoclingDocToBlocksConverter():
                 result = await _handle_image_block(item, doc_dict, parent_index, ref_path,level,doc)
 
             elif item_type == DOCLING_TABLE_BLOCK_TYPE:
-                result = await _handle_table_block(item, doc_dict, parent_index, ref_path,level,doc)
+                tables = doc.tables
+                table = tables[item_index]
+                table_markdown = table.export_to_markdown(doc=doc)
+                result = await _handle_table_block(item, doc_dict, parent_index, ref_path,table_markdown,level,doc)
             else:
                 self.logger.error(f"❌ Unknown item type: {item_type} {item}")
                 return None
