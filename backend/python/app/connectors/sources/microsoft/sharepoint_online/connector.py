@@ -2844,44 +2844,61 @@ class SharePointConnector(BaseConnector):
 
         groups = await self.msgraph_client.get_all_user_groups()
 
+        # Process all groups concurrently using asyncio.gather
+        results = await asyncio.gather(
+            *[self._process_single_group(group) for group in groups],
+            return_exceptions=True
+        )
+
+        # Filter out None results (failed groups) and exceptions
         group_with_members = []
-        for group in groups:
-            try:
-                members = await self.msgraph_client.get_group_members(group.id)
-
-                user_group = AppUserGroup(
-                    source_user_group_id=group.id,
-                    app_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    name=group.display_name,
-                    description=group.description,
-                    source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
-                )
-
-                app_users = []
-                for member in members:
-                    odata_type = getattr(member, 'odata_type', None) or (member.additional_data or {}).get('@odata.type', '')
-
-                    if '#microsoft.graph.user' in odata_type:
-                        app_user = self._create_app_user_from_member(member)
-                        if app_user:
-                            app_users.append(app_user)
-                    elif '#microsoft.graph.group' in odata_type:
-                        nested_users = await self._get_users_from_nested_group(member)
-                        app_users.extend(nested_users)
-                    else:
-                        self.logger.debug(f"Skipping member type '{odata_type}' for member {member.id}")
-
-                group_with_members.append((user_group, app_users))
-
-            except Exception as e:
-                self.logger.error(f"❌ Error processing group {group.display_name}: {e}", exc_info=True)
-                continue
+        for result in results:
+            if isinstance(result, Exception):
+                self.logger.error(f"❌ Error processing group: {result}", exc_info=True)
+            elif result is not None:
+                group_with_members.append(result)
 
         if group_with_members:
             await self.data_entities_processor.on_new_user_groups(group_with_members)
 
         self.logger.info(f"Initial full sync completed: processed {len(groups)} Azure AD groups")
+
+    async def _process_single_group(self, group) -> Optional[Tuple[AppUserGroup, List[AppUser]]]:
+        """
+        Processes a single group and returns a tuple of (user_group, app_users).
+        Returns None if processing fails.
+        """
+        try:
+            members = await self.msgraph_client.get_group_members(group.id)
+
+            user_group = AppUserGroup(
+                source_user_group_id=group.id,
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                name=group.display_name,
+                description=group.description,
+                source_created_at=group.created_date_time.timestamp() if group.created_date_time else get_epoch_timestamp_in_ms(),
+            )
+
+            app_users = []
+            for member in members:
+                odata_type = getattr(member, 'odata_type', None) or (member.additional_data or {}).get('@odata.type', '')
+
+                if '#microsoft.graph.user' in odata_type:
+                    app_user = self._create_app_user_from_member(member)
+                    if app_user:
+                        app_users.append(app_user)
+                elif '#microsoft.graph.group' in odata_type:
+                    nested_users = await self._get_users_from_nested_group(member)
+                    app_users.extend(nested_users)
+                else:
+                    self.logger.debug(f"Skipping member type '{odata_type}' for member {member.id}")
+
+            return (user_group, app_users)
+
+        except Exception as e:
+            self.logger.error(f"❌ Error processing group {group.display_name}: {e}", exc_info=True)
+            return None
 
     async def _perform_delta_sync(self, url: str, sync_point_key: str) -> None:
         """
