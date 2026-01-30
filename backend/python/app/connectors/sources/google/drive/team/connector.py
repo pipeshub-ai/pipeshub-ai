@@ -990,7 +990,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Fetch root drive info to get the actual drive ID
             drive_info = await user_drive_data_source.files_get(fileId="root", supportsAllDrives=True)
-            drive_id = drive_info.get("id", user.email)
+            drive_id = drive_info.get("id")
 
             if not drive_id:
                 raise HTTPException(
@@ -1429,7 +1429,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if "." in file_name:
                     file_extension = file_name.rsplit(".", 1)[-1].lower()
 
-            parent_external_record_id = metadata.get("parents", [None])[0] if metadata.get("parents", [None]) else None
+            parent_external_record_id = parent_external_record_id = (metadata.get("parents") or [None])[0]
 
             # Create FileRecord directly
             file_record = FileRecord(

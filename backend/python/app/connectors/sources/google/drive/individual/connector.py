@@ -373,7 +373,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if "." in file_name:
                     file_extension = file_name.rsplit(".", 1)[-1].lower()
 
-            parent_external_record_id = metadata.get("parents", [None])[0] if metadata.get("parents", [None]) else None
+            parent_external_record_id = (metadata.get("parents") or [None])[0]
 
             # Create FileRecord directly
             file_record = FileRecord(
