@@ -118,6 +118,10 @@ export const getSourceIcon = (result: SearchResult, allConnectors: any[]): strin
     return connector.iconPath;
   }
 
+  if (result.metadata.connector){
+    return `/assets/icons/connectors/${result.metadata.connector.toLowerCase()}.svg`;
+  }
+
   return '/assets/icons/connectors/default.svg';
 };
 
@@ -187,6 +191,7 @@ const KnowledgeSearch = ({
   onSearchQueryChange,
   onTopKChange,
   onViewCitations,
+  onManualSearch,
   recordsMap,
   allConnectors,
 }: KnowledgeSearchProps) => {
@@ -266,6 +271,10 @@ const KnowledgeSearch = ({
     setHasSearched(true);
     if (onSearchQueryChange) {
       onSearchQueryChange(searchInputValue);
+    }
+    // Also trigger manual search to refresh with current filters
+    if (onManualSearch) {
+      onManualSearch();
     }
   };
 
@@ -655,11 +664,7 @@ const KnowledgeSearch = ({
                                     objectFit: 'contain',
                                   }}
                                   onError={(e) => {
-                                    e.currentTarget.style.display = 'none';
-                                    e.currentTarget.nextElementSibling?.setAttribute(
-                                      'style',
-                                      'display: block'
-                                    );
+                                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
                                   }}
                                 />
                               </Box>

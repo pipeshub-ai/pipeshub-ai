@@ -31,7 +31,7 @@ export default function AllRecordsPage() {
         newParams.set(key, value);
       }
     });
-    navigate(`${paths.dashboard.allRecords}?${newParams.toString()}`, { replace: true });
+    navigate(`${paths.dashboard.allRecords}?${newParams.toString()}`);
   }, [navigate]);
   
   const handleNavigateToRecord = (recordId: string) => {
@@ -54,6 +54,8 @@ export default function AllRecordsPage() {
           connectorIds: connectorIds?.split(',').filter(Boolean) || [],
           kbIds: kbIds?.split(',').filter(Boolean) || [],
           indexingStatus: indexingStatus?.split(',').filter(Boolean) || [],
+          sortBy,
+          sortOrder,
         }}
         onUpdateUrl={updateUrl}
         onNavigateToRecord={handleNavigateToRecord}
