@@ -252,6 +252,14 @@ export default function RecordDetails() {
     record.sourceLastModifiedTimestamp || record.updatedAtTimestamp
   ).toLocaleString();
 
+  // Common chip base styles (DRY principle)
+  const chipBaseStyles = {
+    height: 20,
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    '& .MuiChip-label': { px: 1 },
+  };
+
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
   const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
@@ -743,7 +751,7 @@ export default function RecordDetails() {
                       flexWrap: 'wrap',
                     }}
                   >
-                    {record?.origin === 'CONNECTOR' ? (
+                    {record.origin === 'CONNECTOR' ? (
                       <>
                         {/* Connector Section */}
                         <Icon
@@ -763,12 +771,7 @@ export default function RecordDetails() {
                             size="small"
                             color="primary"
                             variant="outlined"
-                            sx={{
-                              height: 20,
-                              fontSize: '0.7rem',
-                              fontWeight: 600,
-                              '& .MuiChip-label': { px: 1 },
-                            }}
+                            sx={chipBaseStyles}
                           />
                         )}
                         {/* Record Group Section */}
@@ -797,12 +800,9 @@ export default function RecordDetails() {
                               color="info"
                               variant="filled"
                               sx={{
-                                height: 20,
-                                fontSize: '0.7rem',
-                                fontWeight: 600,
+                                ...chipBaseStyles,
                                 bgcolor: alpha(theme.palette.info.main, 0.05),
                                 color: theme.palette.info.dark,
-                                '& .MuiChip-label': { px: 1 },
                               }}
                             />
                           </>
@@ -829,12 +829,9 @@ export default function RecordDetails() {
                             color="success"
                             variant="filled"
                             sx={{
-                              height: 20,
-                              fontSize: '0.7rem',
-                              fontWeight: 600,
+                              ...chipBaseStyles,
                               bgcolor: alpha(theme.palette.success.main, 0.05),
                               color: theme.palette.success.dark,
-                              '& .MuiChip-label': { px: 1 },
                             }}
                           />
                         )}
