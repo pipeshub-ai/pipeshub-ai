@@ -569,13 +569,13 @@ class EntityEventService(BaseEventService):
                 return None
 
             metadata = KnowledgeBaseConnector._connector_metadata
-            connector_type = metadata.get('name', Connectors.KNOWLEDGE_BASE.value)
+            connector_name = metadata.get('name', "Collections")
             app_group = metadata.get('appGroup', 'Local Storage')
 
             # Check if KB connector instance already exists for this org
             org_apps = await self.arango_service.get_org_apps(org_id)
             existing_kb_app = next(
-                (app for app in org_apps if app.get('type') == connector_type),
+                (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
                 None
             )
 
@@ -600,8 +600,8 @@ class EntityEventService(BaseEventService):
 
             instance_document = {
                 '_key': instance_key,
-                'name': connector_type,  # Use connector type as instance name
-                'type': connector_type,
+                'name': connector_name,
+                'type': Connectors.KNOWLEDGE_BASE.value,
                 'appGroup': app_group,
                 'authType': selected_auth_type,
                 'scope': scope,
@@ -634,7 +634,7 @@ class EntityEventService(BaseEventService):
             )
 
             self.logger.info(
-                f"✅ Successfully created Knowledge Base connector instance '{connector_type}' "
+                f"✅ Successfully created Knowledge Base connector instance '{connector_name}' "
                 f"(id: {instance_key}) for org: {org_id}"
             )
             return instance_document
