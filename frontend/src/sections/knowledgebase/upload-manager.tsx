@@ -42,6 +42,10 @@ interface UploadManagerProps {
   folderId: string | null | undefined;
   onUploadSuccess: (message?: string, records?: any[], failedFiles?: Array<{fileName: string; filePath: string; error: string}>) => Promise<void>;
   onUploadStart?: (files: string[], kbId: string, folderId?: string) => void;
+  onFileUploadStart?: (uploadKey: string, fileName: string) => void;
+  onFileUploadProgress?: (uploadKey: string, fileName: string, progress: number) => void;
+  onFileUploadComplete?: (uploadKey: string, fileName: string, recordId: string) => void;
+  onFileUploadFailed?: (uploadKey: string, fileName: string, error: string) => void;
 }
 
 interface ProcessedFile {
@@ -70,6 +74,10 @@ export default function UploadManager({
   folderId,
   onUploadSuccess,
   onUploadStart,
+  onFileUploadStart,
+  onFileUploadProgress,
+  onFileUploadComplete,
+  onFileUploadFailed,
 }: UploadManagerProps) {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -276,10 +284,21 @@ export default function UploadManager({
       // Prepare batches
       const valid = fileStats.validFiles;
       
-      // Notify parent component that uploads have started
+      // Notify parent component that uploads have started and get upload key
+      let uploadKey: string | undefined;
       if (onUploadStart && knowledgeBaseId) {
         const fileNames = valid.map((f) => f.file.name || f.path);
-        onUploadStart(fileNames, knowledgeBaseId, folderId || undefined);
+        const returnValue = onUploadStart(fileNames, knowledgeBaseId, folderId || undefined);
+        // onUploadStart might return the upload key
+        if (typeof returnValue === 'string') {
+          uploadKey = returnValue;
+        } else {
+          // Fallback: generate upload key if not returned
+          uploadKey = `${knowledgeBaseId}-${folderId || 'root'}-${Date.now()}`;
+        }
+      } else {
+        // Fallback: generate upload key
+        uploadKey = `${knowledgeBaseId}-${folderId || 'root'}-${Date.now()}`;
       }
       
       // Close dialog immediately after upload starts to show notification instead
@@ -355,6 +374,14 @@ export default function UploadManager({
           const batch = batches[idx];
           const formData = buildFormDataForBatch(batch);
 
+          // Notify that files in this batch are starting to upload
+          if (uploadKey && onFileUploadStart) {
+            batch.forEach((processedFile) => {
+              const fileName = processedFile.file.name || processedFile.path;
+              onFileUploadStart(uploadKey!, fileName);
+            });
+          }
+
           try {
             // eslint-disable-next-line no-await-in-loop
             const response = await axios.post(url, formData, {
@@ -366,6 +393,14 @@ export default function UploadManager({
                   );
                   batchProgress[idx] = batchProgressPercent;
                   updateProgress();
+                  
+                  // Update progress for each file in this batch
+                  if (uploadKey && onFileUploadProgress) {
+                    batch.forEach((processedFile) => {
+                      const fileName = processedFile.file.name || processedFile.path;
+                      onFileUploadProgress(uploadKey!, fileName, batchProgressPercent);
+                    });
+                  }
                 }
               },
             });
@@ -373,10 +408,36 @@ export default function UploadManager({
             delete batchProgress[idx];
             updateProgress();
             
-            // Store response data for optimistic UI updates
-            results.push(response.data);
-          } catch (err) {
+            // Store response data with batch index for file mapping
+            results.push({ ...response.data, batchIndex: idx, batchFiles: batch });
+            
+            // Mark files as completed (successfully uploaded to backend)
+            if (uploadKey && onFileUploadComplete && response.data?.records) {
+              response.data.records.forEach((record: any, recordIndex: number) => {
+                // Map records back to files in this batch
+                const processedFile = batch[recordIndex];
+                if (processedFile && record) {
+                  const fileName = processedFile.file.name || processedFile.path;
+                  const recordId = record.id || record._key;
+                  if (recordId) {
+                    // This marks the upload as COMPLETED in the notification
+                    onFileUploadComplete(uploadKey!, fileName, recordId);
+                  }
+                }
+              });
+            }
+          } catch (err: any) {
             delete batchProgress[idx];
+            
+            // Mark files in this batch as failed
+            if (uploadKey && onFileUploadFailed) {
+              batch.forEach((processedFile) => {
+                const fileName = processedFile.file.name || processedFile.path;
+                const errorMsg = err?.response?.data?.message || err?.message || 'Upload failed';
+                onFileUploadFailed(uploadKey!, fileName, errorMsg);
+              });
+            }
+            
             throw err;
           }
         }
@@ -402,15 +463,25 @@ export default function UploadManager({
         fileName: string;
         filePath: string;
         error: string;
+        recordId?: string;
       }> = [];
       
       responses.forEach((response) => {
         if (response?.records && Array.isArray(response.records)) {
           allRecords.push(...response.records);
         }
-        // Collect failed files from response
+        // Collect failed files from response and mark them as failed
         if (response?.failedFilesDetails && Array.isArray(response.failedFilesDetails)) {
           allFailedFiles.push(...response.failedFilesDetails);
+          
+          // Mark these files as failed in the notification
+          if (uploadKey && onFileUploadFailed) {
+            response.failedFilesDetails.forEach((failedFile: any) => {
+              const fileName = failedFile.fileName || failedFile.filePath;
+              const error = failedFile.error || 'Upload failed';
+              onFileUploadFailed(uploadKey!, fileName, error);
+            });
+          }
         }
       });
 
