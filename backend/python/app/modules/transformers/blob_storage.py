@@ -23,6 +23,96 @@ class BlobStorage(Transformer):
         self.config_service = config_service
         self.arango_service = arango_service
 
+    def _compress_record(self, record: dict) -> tuple[str, int]:
+        """
+        Compress record data using zstd.
+        Returns: (base64_encoded_compressed_data, original_size)
+        """
+        import base64
+        import zstandard as zstd
+        
+        json_str = json.dumps(record)
+        original_size = len(json_str)
+        json_bytes = json_str.encode('utf-8')
+        
+        # Compression level 3: balanced speed/ratio
+        compressor = zstd.ZstdCompressor(level=10)
+        compressed = compressor.compress(json_bytes)
+        
+        compressed_size = len(compressed)
+        ratio = (1 - compressed_size / original_size) * 100
+        self.logger.info("📦 Compressed record: %d -> %d bytes (%.1f%% reduction)", 
+                        original_size, compressed_size, ratio)
+        
+        return base64.b64encode(compressed).decode('utf-8'), original_size
+
+    def _decompress_record(self, compressed_data: str) -> dict:
+        """
+        Decompress zstd-compressed record data.
+        """
+        import base64
+        import zstandard as zstd
+        
+        compressed_bytes = base64.b64decode(compressed_data)
+        
+        decompressor = zstd.ZstdDecompressor()
+        decompressed = decompressor.decompress(compressed_bytes)
+        
+        json_str = decompressed.decode('utf-8')
+        return json.loads(json_str)
+
+    def _decompress_bytes(self, compressed_bytes: bytes) -> bytes:
+        """
+        Decompress raw bytes using zstd.
+        Returns decompressed bytes.
+        """
+        import zstandard as zstd
+        
+        decompressor = zstd.ZstdDecompressor()
+        return decompressor.decompress(compressed_bytes)
+
+    def _process_downloaded_record(self, data: dict) -> dict:
+        """
+        Process downloaded record data, handling decompression if needed.
+        Supports new isCompressed flag format and backward compatibility with uncompressed records.
+        """
+        import base64
+        
+        # NEW FORMAT: Check for isCompressed flag
+        if data.get("isCompressed"):
+            self.logger.info("🔍 Decompressing compressed record")
+            compressed_base64 = data.get("record")
+            if not compressed_base64:
+                self.logger.error("❌ isCompressed is true but no record found")
+                raise Exception("Missing record in compressed record")
+            
+            try:
+                start_time = time.time()
+                # Decode base64 and decompress
+                compressed_bytes = base64.b64decode(compressed_base64)
+                decompressed_bytes = self._decompress_bytes(compressed_bytes)
+                decompression_time_ms = (time.time() - start_time) * 1000
+                
+                # Parse JSON
+                json_str = decompressed_bytes.decode('utf-8')
+                record = json.loads(json_str)
+                
+                self.logger.info("📦 Decompressed record in %.0fms", decompression_time_ms)
+                return record
+                
+            except Exception as e:
+                self.logger.error("❌ Failed to decompress record: %s", str(e))
+                raise Exception(f"Decompression failed: {str(e)}")
+        
+        # OLD FORMAT: Uncompressed record
+        elif data.get("record"):
+            return data.get("record")
+        
+        else:
+            # Unknown format
+            self.logger.error("❌ Unknown record format in S3")
+            raise Exception("Unknown record format")
+
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
@@ -222,12 +312,50 @@ class BlobStorage(Transformer):
                     self.logger.exception("Detailed error trace:")
                     raise e
             else:
-                # Use unique documentPath for each record to ensure separate S3 locations
-                placeholder_data = {
-                    "documentName": f"record_{record_id}",
-                    "documentPath": f"records/{virtual_record_id}",  # Make path unique per record
-                    "extension": "json"
-                }
+                # Compress record first for S3 storage
+                try:
+                    start_time = time.time()
+                    compressed_data, original_size = self._compress_record(record)
+                    compression_time_ms = (time.time() - start_time) * 1000
+                    self.logger.info("⏱️ Compression completed in %.0fms", compression_time_ms)
+                    
+                    # Prepare placeholder with compression metadata for MongoDB
+                    placeholder_data = {
+                        "documentName": f"record_{record_id}",
+                        "documentPath": f"records/{virtual_record_id}",
+                        "extension": "json",
+                        "customMetadata": [
+                            {
+                                "key": "compression",
+                                "value": {
+                                    "algorithm": "zstd",
+                                    "level": 10,
+                                    "originalSize": original_size,
+                                    "compressed": True
+                                }
+                            },
+                            {
+                                "key": "virtualRecordId",
+                                "value": virtual_record_id
+                            }
+                        ]
+                    }
+                    compressed_record = compressed_data
+                except Exception as e:
+                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
+                    # Fallback to uncompressed
+                    placeholder_data = {
+                        "documentName": f"record_{record_id}",
+                        "documentPath": f"records/{virtual_record_id}",
+                        "extension": "json",
+                        "customMetadata": [
+                            {
+                                "key": "virtualRecordId",
+                                "value": virtual_record_id
+                            }
+                        ]
+                    }
+                    compressed_record = None
 
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -257,12 +385,23 @@ class BlobStorage(Transformer):
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
 
-                        # Step 3: Upload to signed URL (now send the full record data)
+                        # Step 3: Upload to signed URL with new format
                         self.logger.info("📤 Uploading record to storage for document: %s", document_id)
-                        upload_data = {
-                            "record": record,
-                            "virtualRecordId": virtual_record_id
-                        }
+                        
+                        # Upload with isCompressed flag format
+                        if compressed_record:
+                            # Compressed format
+                            upload_data = {
+                                "isCompressed": True,
+                                "record": compressed_record
+                            }
+                        else:
+                            # Uncompressed fallback format
+                            upload_data = {
+                                "record": record,
+                                "virtualRecordId": virtual_record_id
+                            }
+                        
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
@@ -365,10 +504,14 @@ class BlobStorage(Transformer):
                             download_duration_ms = (time.time() - download_start_time) * 1000
                             if data.get("record"):
                                 self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", download_duration_ms, document_id)
+                                
+                                # Process record (handle decompression if needed)
+                                record = self._process_downloaded_record(data)
+                                
                                 overall_duration_ms = (time.time() - overall_start_time) * 1000
                                 self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
                                 self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
-                                return data.get("record")
+                                return record
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
                                 # Reuse the same session for signed URL fetch
@@ -382,10 +525,14 @@ class BlobStorage(Transformer):
                                         if data.get("record"):
                                             self.logger.info("⏱️ Signed URL fetch completed in %.0fms for document_id: %s", signed_url_duration_ms, document_id)
                                             self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", total_download_duration_ms, document_id)
+                                            
+                                            # Process record (handle decompression if needed)
+                                            record = self._process_downloaded_record(data)
+                                            
                                             overall_duration_ms = (time.time() - overall_start_time) * 1000
                                             self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
                                             self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
-                                            return data.get("record")
+                                            return record
                                         else:
                                             self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
                                             raise Exception("No record found for virtual_record_id")
