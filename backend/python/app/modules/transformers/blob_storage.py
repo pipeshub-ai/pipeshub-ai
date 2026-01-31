@@ -460,26 +460,42 @@ class BlobStorage(Transformer):
             self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 # Generate JWT token for authorization
+                auth_start_time = time.time()
                 payload = {
                     "orgId": org_id,
                     "scopes": [TokenScopes.STORAGE_TOKEN.value],
                 }
+                
+                config_start_time = time.time()
                 secret_keys = await self.config_service.get_config(
                     config_node_constants.SECRET_KEYS.value
                 )
+                config_duration_ms = (time.time() - config_start_time) * 1000
+                self.logger.info("⏱️ Secret keys config retrieval completed in %.0fms", config_duration_ms)
+                
                 scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
                 if not scoped_jwt_secret:
                     raise ValueError("Missing scoped JWT secret")
 
+                jwt_start_time = time.time()
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+                jwt_duration_ms = (time.time() - jwt_start_time) * 1000
+                self.logger.info("⏱️ JWT token generation completed in %.0fms", jwt_duration_ms)
+                
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
+                auth_duration_ms = (time.time() - auth_start_time) * 1000
+                self.logger.info("⏱️ Total authorization setup completed in %.0fms", auth_duration_ms)
 
                 # Get endpoint configuration
+                endpoint_config_start_time = time.time()
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
+                endpoint_config_duration_ms = (time.time() - endpoint_config_start_time) * 1000
+                self.logger.info("⏱️ Endpoints config retrieval completed in %.0fms", endpoint_config_duration_ms)
+                
                 nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
                     raise ValueError("Missing CM endpoint configuration")
@@ -498,15 +514,26 @@ class BlobStorage(Transformer):
                 download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
                 download_start_time = time.time()
                 async with aiohttp.ClientSession() as session:
+                    http_request_start_time = time.time()
                     async with session.get(download_url, headers=headers) as resp:
+                        http_request_duration_ms = (time.time() - http_request_start_time) * 1000
+                        self.logger.info("⏱️ HTTP request completed in %.0fms for document_id: %s", http_request_duration_ms, document_id)
+                        
                         if resp.status == HttpStatusCode.SUCCESS.value:
+                            json_parse_start_time = time.time()
                             data = await resp.json()
+                            json_parse_duration_ms = (time.time() - json_parse_start_time) * 1000
+                            self.logger.info("⏱️ JSON response parsing completed in %.0fms", json_parse_duration_ms)
+                            
                             download_duration_ms = (time.time() - download_start_time) * 1000
                             if data.get("record"):
                                 self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", download_duration_ms, document_id)
                                 
                                 # Process record (handle decompression if needed)
+                                process_start_time = time.time()
                                 record = self._process_downloaded_record(data)
+                                process_duration_ms = (time.time() - process_start_time) * 1000
+                                self.logger.info("⏱️ Record processing/decompression completed in %.0fms", process_duration_ms)
                                 
                                 overall_duration_ms = (time.time() - overall_start_time) * 1000
                                 self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
@@ -514,11 +541,21 @@ class BlobStorage(Transformer):
                                 return record
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
+                                self.logger.info("⏱️ Received signed URL, initiating secondary fetch")
+                                
                                 # Reuse the same session for signed URL fetch
                                 signed_url_start_time = time.time()
+                                signed_url_http_start_time = time.time()
                                 async with session.get(signed_url) as res:
+                                    signed_url_http_duration_ms = (time.time() - signed_url_http_start_time) * 1000
+                                    self.logger.info("⏱️ Signed URL HTTP request completed in %.0fms", signed_url_http_duration_ms)
+                                    
                                     if res.status == HttpStatusCode.SUCCESS.value:
+                                        signed_url_json_start_time = time.time()
                                         data = await res.json()
+                                        signed_url_json_duration_ms = (time.time() - signed_url_json_start_time) * 1000
+                                        self.logger.info("⏱️ Signed URL JSON parsing completed in %.0fms", signed_url_json_duration_ms)
+                                        
                                         signed_url_duration_ms = (time.time() - signed_url_start_time) * 1000
                                         total_download_duration_ms = (time.time() - download_start_time) * 1000
 
@@ -527,7 +564,10 @@ class BlobStorage(Transformer):
                                             self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", total_download_duration_ms, document_id)
                                             
                                             # Process record (handle decompression if needed)
+                                            signed_url_process_start_time = time.time()
                                             record = self._process_downloaded_record(data)
+                                            signed_url_process_duration_ms = (time.time() - signed_url_process_start_time) * 1000
+                                            self.logger.info("⏱️ Record processing/decompression completed in %.0fms", signed_url_process_duration_ms)
                                             
                                             overall_duration_ms = (time.time() - overall_start_time) * 1000
                                             self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
