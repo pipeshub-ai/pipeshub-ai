@@ -1,4 +1,5 @@
 import json
+import time
 
 import aiohttp
 import jwt
@@ -21,6 +22,96 @@ class BlobStorage(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.arango_service = arango_service
+
+    def _compress_record(self, record: dict) -> tuple[str, int]:
+        """
+        Compress record data using zstd.
+        Returns: (base64_encoded_compressed_data, original_size)
+        """
+        import base64
+        import zstandard as zstd
+        
+        json_str = json.dumps(record)
+        original_size = len(json_str)
+        json_bytes = json_str.encode('utf-8')
+        
+        # Compression level 3: balanced speed/ratio
+        compressor = zstd.ZstdCompressor(level=10)
+        compressed = compressor.compress(json_bytes)
+        
+        compressed_size = len(compressed)
+        ratio = (1 - compressed_size / original_size) * 100
+        self.logger.info("📦 Compressed record: %d -> %d bytes (%.1f%% reduction)", 
+                        original_size, compressed_size, ratio)
+        
+        return base64.b64encode(compressed).decode('utf-8'), original_size
+
+    def _decompress_record(self, compressed_data: str) -> dict:
+        """
+        Decompress zstd-compressed record data.
+        """
+        import base64
+        import zstandard as zstd
+        
+        compressed_bytes = base64.b64decode(compressed_data)
+        
+        decompressor = zstd.ZstdDecompressor()
+        decompressed = decompressor.decompress(compressed_bytes)
+        
+        json_str = decompressed.decode('utf-8')
+        return json.loads(json_str)
+
+    def _decompress_bytes(self, compressed_bytes: bytes) -> bytes:
+        """
+        Decompress raw bytes using zstd.
+        Returns decompressed bytes.
+        """
+        import zstandard as zstd
+        
+        decompressor = zstd.ZstdDecompressor()
+        return decompressor.decompress(compressed_bytes)
+
+    def _process_downloaded_record(self, data: dict) -> dict:
+        """
+        Process downloaded record data, handling decompression if needed.
+        Supports new isCompressed flag format and backward compatibility with uncompressed records.
+        """
+        import base64
+        
+        # NEW FORMAT: Check for isCompressed flag
+        if data.get("isCompressed"):
+            self.logger.info("🔍 Decompressing compressed record")
+            compressed_base64 = data.get("record")
+            if not compressed_base64:
+                self.logger.error("❌ isCompressed is true but no record found")
+                raise Exception("Missing record in compressed record")
+            
+            try:
+                start_time = time.time()
+                # Decode base64 and decompress
+                compressed_bytes = base64.b64decode(compressed_base64)
+                decompressed_bytes = self._decompress_bytes(compressed_bytes)
+                decompression_time_ms = (time.time() - start_time) * 1000
+                
+                # Parse JSON
+                json_str = decompressed_bytes.decode('utf-8')
+                record = json.loads(json_str)
+                
+                self.logger.info("📦 Decompressed record in %.0fms", decompression_time_ms)
+                return record
+                
+            except Exception as e:
+                self.logger.error("❌ Failed to decompress record: %s", str(e))
+                raise Exception(f"Decompression failed: {str(e)}")
+        
+        # OLD FORMAT: Uncompressed record
+        elif data.get("record"):
+            return data.get("record")
+        
+        else:
+            # Unknown format
+            self.logger.error("❌ Unknown record format in S3")
+            raise Exception("Unknown record format")
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
@@ -221,11 +312,50 @@ class BlobStorage(Transformer):
                     self.logger.exception("Detailed error trace:")
                     raise e
             else:
-                placeholder_data = {
-                    "documentName": f"record_{record_id}",
-                    "documentPath": "records",
-                    "extension": "json"
-                }
+                # Compress record first for S3 storage
+                try:
+                    start_time = time.time()
+                    compressed_data, original_size = self._compress_record(record)
+                    compression_time_ms = (time.time() - start_time) * 1000
+                    self.logger.info("⏱️ Compression completed in %.0fms", compression_time_ms)
+                    
+                    # Prepare placeholder with compression metadata for MongoDB
+                    placeholder_data = {
+                        "documentName": f"record_{record_id}",
+                        "documentPath": f"records/{virtual_record_id}",
+                        "extension": "json",
+                        "customMetadata": [
+                            {
+                                "key": "compression",
+                                "value": {
+                                    "algorithm": "zstd",
+                                    "level": 10,
+                                    "originalSize": original_size,
+                                    "compressed": True
+                                }
+                            },
+                            {
+                                "key": "virtualRecordId",
+                                "value": virtual_record_id
+                            }
+                        ]
+                    }
+                    compressed_record = compressed_data
+                except Exception as e:
+                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
+                    # Fallback to uncompressed
+                    placeholder_data = {
+                        "documentName": f"record_{record_id}",
+                        "documentPath": f"records/{virtual_record_id}",
+                        "extension": "json",
+                        "customMetadata": [
+                            {
+                                "key": "virtualRecordId",
+                                "value": virtual_record_id
+                            }
+                        ]
+                    }
+                    compressed_record = None
 
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -241,23 +371,37 @@ class BlobStorage(Transformer):
 
                         self.logger.info("📄 Created placeholder with ID: %s", document_id)
 
-                        # Step 2: Get signed URL
+                        # Step 2: Get signed URL (only send metadata, not the full record)
                         self.logger.info("🔑 Getting signed URL for document: %s", document_id)
-                        upload_data = {
-                            "record": record,
+                        signed_url_request = {
                             "virtualRecordId": virtual_record_id
                         }
 
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
-                        upload_result = await self._get_signed_url(session, upload_url, upload_data, headers)
+                        upload_result = await self._get_signed_url(session, upload_url, signed_url_request, headers)
 
                         signed_url = upload_result.get('signedUrl')
                         if not signed_url:
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
 
-                        # Step 3: Upload to signed URL
+                        # Step 3: Upload to signed URL with new format
                         self.logger.info("📤 Uploading record to storage for document: %s", document_id)
+                        
+                        # Upload with isCompressed flag format
+                        if compressed_record:
+                            # Compressed format
+                            upload_data = {
+                                "isCompressed": True,
+                                "record": compressed_record
+                            }
+                        else:
+                            # Uncompressed fallback format
+                            upload_data = {
+                                "record": record,
+                                "virtualRecordId": virtual_record_id
+                            }
+                        
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
@@ -312,52 +456,132 @@ class BlobStorage(Transformer):
             Returns:
                 str: The content of the record if found, else an empty string.
             """
+            overall_start_time = time.time()
             self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 # Generate JWT token for authorization
+                auth_start_time = time.time()
                 payload = {
                     "orgId": org_id,
                     "scopes": [TokenScopes.STORAGE_TOKEN.value],
                 }
+                
+                config_start_time = time.time()
                 secret_keys = await self.config_service.get_config(
                     config_node_constants.SECRET_KEYS.value
                 )
+                config_duration_ms = (time.time() - config_start_time) * 1000
+                self.logger.info("⏱️ Secret keys config retrieval completed in %.0fms", config_duration_ms)
+                
                 scoped_jwt_secret = secret_keys.get("scopedJwtSecret")
                 if not scoped_jwt_secret:
                     raise ValueError("Missing scoped JWT secret")
 
+                jwt_start_time = time.time()
                 jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+                jwt_duration_ms = (time.time() - jwt_start_time) * 1000
+                self.logger.info("⏱️ JWT token generation completed in %.0fms", jwt_duration_ms)
+                
                 headers = {
                     "Authorization": f"Bearer {jwt_token}"
                 }
+                auth_duration_ms = (time.time() - auth_start_time) * 1000
+                self.logger.info("⏱️ Total authorization setup completed in %.0fms", auth_duration_ms)
 
                 # Get endpoint configuration
+                endpoint_config_start_time = time.time()
                 endpoints = await self.config_service.get_config(
                     config_node_constants.ENDPOINTS.value
                 )
+                endpoint_config_duration_ms = (time.time() - endpoint_config_start_time) * 1000
+                self.logger.info("⏱️ Endpoints config retrieval completed in %.0fms", endpoint_config_duration_ms)
+                
                 nodejs_endpoint = endpoints.get("cm", {}).get("endpoint", DefaultEndpoints.NODEJS_ENDPOINT.value)
                 if not nodejs_endpoint:
                     raise ValueError("Missing CM endpoint configuration")
 
+                # Time the document ID lookup
+                lookup_start_time = time.time()
                 document_id = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+                lookup_duration_ms = (time.time() - lookup_start_time) * 1000
+                self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s", lookup_duration_ms, virtual_record_id)
+                
                 if not document_id:
                     self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
                     return None
 
                 # Build the download URL
                 download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+                download_start_time = time.time()
                 async with aiohttp.ClientSession() as session:
+                    http_request_start_time = time.time()
                     async with session.get(download_url, headers=headers) as resp:
+                        http_request_duration_ms = (time.time() - http_request_start_time) * 1000
+                        self.logger.info("⏱️ HTTP request completed in %.0fms for document_id: %s", http_request_duration_ms, document_id)
+                        
                         if resp.status == HttpStatusCode.SUCCESS.value:
+                            json_parse_start_time = time.time()
                             data = await resp.json()
-                            if(data.get("signedUrl")):
+                            json_parse_duration_ms = (time.time() - json_parse_start_time) * 1000
+                            self.logger.info("⏱️ JSON response parsing completed in %.0fms", json_parse_duration_ms)
+                            
+                            download_duration_ms = (time.time() - download_start_time) * 1000
+                            if data.get("record"):
+                                self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", download_duration_ms, document_id)
+                                
+                                # Process record (handle decompression if needed)
+                                process_start_time = time.time()
+                                record = self._process_downloaded_record(data)
+                                process_duration_ms = (time.time() - process_start_time) * 1000
+                                self.logger.info("⏱️ Record processing/decompression completed in %.0fms", process_duration_ms)
+                                
+                                overall_duration_ms = (time.time() - overall_start_time) * 1000
+                                self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
+                                self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
+                                return record
+                            elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
+                                self.logger.info("⏱️ Received signed URL, initiating secondary fetch")
+                                
                                 # Reuse the same session for signed URL fetch
-                                async with session.get(signed_url, headers=headers) as resp:
-                                        if resp.status == HttpStatusCode.OK.value:
-                                            data = await resp.json()
-                            self.logger.info("✅ Successfully retrieved record for virtual_record_id from blob storage: %s", virtual_record_id)
-                            return data.get("record")
+                                signed_url_start_time = time.time()
+                                signed_url_http_start_time = time.time()
+                                async with session.get(signed_url) as res:
+                                    signed_url_http_duration_ms = (time.time() - signed_url_http_start_time) * 1000
+                                    self.logger.info("⏱️ Signed URL HTTP request completed in %.0fms", signed_url_http_duration_ms)
+                                    
+                                    if res.status == HttpStatusCode.SUCCESS.value:
+                                        signed_url_json_start_time = time.time()
+                                        data = await res.json()
+                                        signed_url_json_duration_ms = (time.time() - signed_url_json_start_time) * 1000
+                                        self.logger.info("⏱️ Signed URL JSON parsing completed in %.0fms", signed_url_json_duration_ms)
+                                        
+                                        signed_url_duration_ms = (time.time() - signed_url_start_time) * 1000
+                                        total_download_duration_ms = (time.time() - download_start_time) * 1000
+
+                                        if data.get("record"):
+                                            self.logger.info("⏱️ Signed URL fetch completed in %.0fms for document_id: %s", signed_url_duration_ms, document_id)
+                                            self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", total_download_duration_ms, document_id)
+                                            
+                                            # Process record (handle decompression if needed)
+                                            signed_url_process_start_time = time.time()
+                                            record = self._process_downloaded_record(data)
+                                            signed_url_process_duration_ms = (time.time() - signed_url_process_start_time) * 1000
+                                            self.logger.info("⏱️ Record processing/decompression completed in %.0fms", signed_url_process_duration_ms)
+                                            
+                                            overall_duration_ms = (time.time() - overall_start_time) * 1000
+                                            self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
+                                            self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
+                                            return record
+                                        else:
+                                            self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                                            raise Exception("No record found for virtual_record_id")
+                                    else:
+                                        self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
+                                        raise Exception("Failed to retrieve record from storage")
+                            else:
+                                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                                raise Exception("No record found for virtual_record_id")
                         else:
                             self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
                             raise Exception("Failed to retrieve record from storage")

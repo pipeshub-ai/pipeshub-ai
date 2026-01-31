@@ -13,27 +13,37 @@ export interface KnowledgeBase {
 
 export interface Item {
   id: string;
+  _key?: string; // Support both id and _key for compatibility
   name: string;
   recordName?: string;
   type: 'folder' | 'file';
-  extension?: string;
+  extension?: string | null;
   sizeInBytes?: number;
-  webUrl:string;
+  webUrl: string;
   updatedAt: number;
   createdAt: number;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
-  indexingStatus?: 'NOT_STARTED' | 'PAUSED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'AUTO_INDEX_OFF' | 'EMPTY' | 'ENABLE_MULTIMODAL_MODELS' | 'QUEUED' | 'CONNECTOR_DISABLED';
+  indexingStatus?: 'NOT_STARTED' | 'PAUSED' | 'IN_PROGRESS' | 'COMPLETED' | 'FAILED' | 'FILE_TYPE_NOT_SUPPORTED' | 'AUTO_INDEX_OFF' | 'EMPTY' | 'ENABLE_MULTIMODAL_MODELS' | 'QUEUED' | 'CONNECTOR_DISABLED' | 'PROCESSING';
   parentFolderId?: string;
+  isProcessing?: boolean; // Flag for optimistic UI updates
+  recordType?: string;
+  origin?: string;
+  connectorName?: string;
+  externalRecordId?: string;
+  version?: number;
+  sourceCreatedAtTimestamp?: number;
+  sourceLastModifiedTimestamp?: number;
   fileRecord?: {
-    id: string;
+    id?: string;
+    _key?: string;
     name: string;
-    extension: string;
-    mimeType: string;
-    sizeInBytes: number;
-    webUrl: string;
-    path: string;
-    isFile: boolean;
+    extension?: string | null;
+    mimeType?: string | null;
+    sizeInBytes?: number;
+    webUrl?: string;
+    path?: string;
+    isFile?: boolean;
   };
 }
 

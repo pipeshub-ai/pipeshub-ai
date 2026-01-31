@@ -4,8 +4,6 @@ import { AuthenticatedUserRequest } from './../../../libs/middlewares/types';
 import { NextFunction, Response } from 'express';
 import { Logger } from '../../../libs/services/logger.service';
 import { RecordRelationService } from '../services/kb.relation.service';
-import { IRecordDocument } from '../types/record';
-import { IFileRecordDocument } from '../types/file_record';
 import {
   BadRequestError,
   ForbiddenError,
@@ -14,9 +12,14 @@ import {
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
-  saveFileToStorageAndGetDocumentId,
   uploadNextVersionToStorage,
+  createPlaceholderDocument,
+  processUploadsInBackground,
+  FileUploadMetadata,
+  PlaceholderResultWithMetadata,
 } from '../utils/utils';
+import { IRecordDocument } from '../types/record';
+import { IFileRecordDocument } from '../types/file_record';
 import {
   INDEXING_STATUS,
   ORIGIN_TYPE,
@@ -32,6 +35,7 @@ import {
   handleBackendError,
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
+import { NotificationService } from '../../notification/service/notification.service';
 import {
   safeParsePagination,
 } from '../../../utils/safe-integer';
@@ -695,9 +699,10 @@ export const deleteFolder =
  */
 export const uploadRecordsToKB =
   (
-    recordRelationService: RecordRelationService,
+    _recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
+    notificationService?: NotificationService,
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -730,7 +735,15 @@ export const uploadRecordsToKB =
       });
 
       const currentTime = Date.now();
-      const processedFiles = [];
+
+      // STEP 1: Create all placeholder documents first (fast operation)
+      // Track successful and failed files separately
+      const placeholderResults: PlaceholderResultWithMetadata[] = [];
+      const failedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+      }> = [];
 
       for (const file of fileBuffers) {
         const { originalname, mimetype, size, filePath, lastModified } = file;
@@ -757,13 +770,137 @@ export const uploadRecordsToKB =
             ? lastModified
             : currentTime;
 
+        // Create file metadata structure
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+
+        // Create placeholder document (fast, doesn't upload file yet)
+        // Wrap in try-catch to handle individual file failures
+        try {
+          const placeholderResult = await createPlaceholderDocument(
+            req,
+            file,
+            fileName,
+            isVersioned,
+            keyValueStoreService,
+            appConfig.storage,
+          );
+
+          placeholderResults.push({
+            placeholderResult,
+            metadata,
+          });
+        } catch (placeholderError: any) {
+          // Track failed file but continue processing others
+          // Handle different error response structures
+          const errorMessage = placeholderError?.response?.data?.error?.message ||
+                              placeholderError?.response?.data?.message || 
+                              placeholderError?.message || 
+                              'Failed to create placeholder document';
+          
+          failedFiles.push({
+            fileName,
+            filePath,
+            error: errorMessage,
+          });
+
+          logger.error('Failed to create placeholder document for file', {
+            fileName,
+            filePath,
+            error: errorMessage,
+            stack: placeholderError?.stack,
+          });
+          // Continue with next file
+        }
+      }
+
+      logger.info('✅ Placeholder creation completed', {
+        totalFiles: fileBuffers.length,
+        successful: placeholderResults.length,
+        failed: failedFiles.length,
+        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      });
+
+      // Send failed files notification immediately if any failed during placeholder creation
+      // Event-driven: Send immediately when failures are detected
+      // NotificationService handles connection state and queuing automatically
+      if (failedFiles.length > 0 && notificationService) {
+        try {
+          const failedFilesWithIds = failedFiles.map((ff) => ({
+            recordId: uuidv4(), // Generate a temporary ID for tracking
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          }));
+
+          const eventData = {
+            failedFiles: failedFilesWithIds,
+            orgId,
+            kbId,
+            folderId: undefined,
+            totalFailed: failedFiles.length,
+            timestamp: Date.now(),
+          };
+
+          // Send immediately - service handles connection state and queuing
+          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+          logger.info('Notification sent for failed files (placeholder creation)', {
+            userId,
+            totalFailed: failedFiles.length,
+            kbId,
+            sentImmediately,
+          });
+        } catch (socketError: unknown) {
+          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+          logger.error('Failed to send notification for failed files (placeholder creation)', {
+            error: error.message,
+            stack: error.stack,
+            userId,
+            kbId,
+          });
+          // Don't fail the upload if notification fails - this is a non-critical notification
+        }
+      }
+
+      // If no files succeeded, return early with error info
+      if (placeholderResults.length === 0) {
+        res.status(200).json({
+          message: 'All files failed to upload',
+          totalFiles: fileBuffers.length,
+          status: 'failed',
+          records: [],
+          failedFiles: failedFiles.map((ff) => ({
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          })),
+        });
+        return;
+      }
+
+      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
+      const placeholderRecords = placeholderResults.map((result) => {
+        const { placeholderResult, metadata } = result;
+        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+
+        // Create record structure matching the format expected by frontend
         // Create record structure
         const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
-          recordName: fileName,
-          externalRecordId: '',
+          recordName: placeholderResult.documentName,
+          externalRecordId: placeholderResult.documentId,
           recordType: RECORD_TYPE.FILE,
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
@@ -783,7 +920,7 @@ export const uploadRecordsToKB =
         const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
-          name: fileName,
+          name: placeholderResult.documentName,
           isFile: true,
           extension: extension,
           mimeType: correctMimeType,
@@ -791,57 +928,76 @@ export const uploadRecordsToKB =
           webUrl: webUrl,
         };
 
-        // Save file to storage and get document ID
-        const { documentId, documentName } =
-          await saveFileToStorageAndGetDocumentId(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            record,
-            fileRecord,
-            keyValueStoreService,
-            appConfig.storage,
-            recordRelationService,
-          );
-
-        // Update record and fileRecord with storage info
-        record.recordName = documentName;
-        record.externalRecordId = documentId;
-        fileRecord.name = documentName;
-
-        processedFiles.push({
+        return {
           record,
           fileRecord,
-          filePath,
+          filePath: metadata.filePath,
           lastModified: validLastModified,
-        });
-      }
-
-      logger.info('Files processed, sending to Python service', {
-        count: processedFiles.length,
+        };
       });
 
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        {
-          files: processedFiles.map((pf) => ({
-            record: pf.record,
-            fileRecord: pf.fileRecord,
-            filePath: pf.filePath,
-            lastModified: pf.lastModified,
-          })),
-        },
-      );
+      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
+      // Frontend can display these records immediately with a "processing" status
+      res.status(200).json({
+        message: failedFiles.length > 0 
+          ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
+          : 'Upload initiated successfully',
+        totalFiles: fileBuffers.length,
+        successfulFiles: placeholderResults.length,
+        failedFiles: failedFiles.length,
+        status: 'processing',
+        failedFilesDetails: failedFiles.map((ff) => ({
+          fileName: ff.fileName,
+          filePath: ff.filePath,
+          error: ff.error,
+        })),
+        records: placeholderRecords.map((pr) => ({
+          _key: pr.record._key,
+          recordName: pr.record.recordName,
+          externalRecordId: pr.record.externalRecordId,
+          recordType: pr.record.recordType,
+          origin: pr.record.origin,
+          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
+          createdAtTimestamp: pr.record.createdAtTimestamp,
+          updatedAtTimestamp: pr.record.updatedAtTimestamp,
+          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
+          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
+          version: pr.record.version,
+          webUrl: pr.record.webUrl,
+          mimeType: pr.record.mimeType,
+          fileRecord: {
+            _key: pr.fileRecord._key,
+            name: pr.fileRecord.name,
+            extension: pr.fileRecord.extension,
+            mimeType: pr.fileRecord.mimeType,
+            sizeInBytes: pr.fileRecord.sizeInBytes,
+            webUrl: pr.fileRecord.webUrl,
+          },
+        })),
+      });
 
-      handleConnectorResponse(
-        response,
-        res,
-        'Upload not found',
-        'Failed to process upload',
-      );
+      // STEP 4: Process uploads and call Python service in background (non-blocking)
+      // This runs after the response is sent - uploads sequentially, then calls Python
+      // For local storage, files are already uploaded, so this will just call Python API
+      processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        userId,
+        currentTime,
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/upload`,
+        req.headers as Record<string, string>,
+        logger,
+        notificationService,
+        kbId,
+        undefined, // folderId is undefined for KB root uploads
+      ).catch((error) => {
+        logger.error('Background processing error (non-fatal)', {
+          error: error.message,
+          stack: error.stack,
+          kbId,
+          userId,
+        });
+      });
     } catch (error: any) {
       logger.error('Record upload failed', {
         error: error.message,
@@ -860,9 +1016,10 @@ export const uploadRecordsToKB =
  */
 export const uploadRecordsToFolder =
   (
-    recordRelationService: RecordRelationService,
+    _recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
+    notificationService?: NotificationService,
   ) =>
   async (
     req: AuthenticatedUserRequest,
@@ -898,7 +1055,15 @@ export const uploadRecordsToFolder =
       });
 
       const currentTime = Date.now();
-      const processedFiles = [];
+
+      // STEP 1: Create all placeholder documents first (fast operation)
+      // Track successful and failed files separately
+      const placeholderResults: PlaceholderResultWithMetadata[] = [];
+      const failedFiles: Array<{
+        fileName: string;
+        filePath: string;
+        error: string;
+      }> = [];
 
       for (const file of fileBuffers) {
         const { originalname, mimetype, size, filePath, lastModified } = file;
@@ -925,13 +1090,139 @@ export const uploadRecordsToFolder =
             ? lastModified
             : currentTime;
 
+        // Create file metadata structure
+        const metadata: FileUploadMetadata = {
+          file,
+          filePath,
+          fileName,
+          extension,
+          correctMimeType,
+          key,
+          webUrl,
+          validLastModified,
+          size,
+        };
+
+        // Create placeholder document (fast, doesn't upload file yet)
+        // Wrap in try-catch to handle individual file failures
+        try {
+          const placeholderResult = await createPlaceholderDocument(
+            req,
+            file,
+            fileName,
+            isVersioned,
+            keyValueStoreService,
+            appConfig.storage,
+          );
+
+          placeholderResults.push({
+            placeholderResult,
+            metadata,
+          });
+        } catch (placeholderError: any) {
+          // Track failed file but continue processing others
+          // Handle different error response structures
+          const errorMessage = placeholderError?.response?.data?.error?.message ||
+                              placeholderError?.response?.data?.message || 
+                              placeholderError?.message || 
+                              'Failed to create placeholder document';
+          
+          failedFiles.push({
+            fileName,
+            filePath,
+            error: errorMessage,
+          });
+
+          logger.error('Failed to create placeholder document for file', {
+            fileName,
+            filePath,
+            error: errorMessage,
+            stack: placeholderError?.stack,
+          });
+          // Continue with next file
+        }
+      }
+
+      logger.info('✅ Placeholder creation completed', {
+        totalFiles: fileBuffers.length,
+        successful: placeholderResults.length,
+        failed: failedFiles.length,
+        uploadsRequired: placeholderResults.filter((r) => r.placeholderResult.uploadPromise).length,
+      });
+
+      // Send failed files notification immediately if any failed during placeholder creation
+      // Event-driven: Send immediately when failures are detected
+      // NotificationService handles connection state and queuing automatically
+      if (failedFiles.length > 0 && notificationService) {
+        try {
+          const failedFilesWithIds = failedFiles.map((ff) => ({
+            recordId: uuidv4(), // Generate a temporary ID for tracking
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          }));
+
+          const eventData = {
+            failedFiles: failedFilesWithIds,
+            orgId,
+            kbId,
+            folderId,
+            totalFailed: failedFiles.length,
+            timestamp: Date.now(),
+          };
+
+          // Send immediately - service handles connection state and queuing
+          const sentImmediately = notificationService.sendToUser(userId, 'records:failed', eventData);
+
+          logger.info('Notification sent for failed files (placeholder creation)', {
+            userId,
+            totalFailed: failedFiles.length,
+            kbId,
+            folderId,
+            sentImmediately,
+          });
+        } catch (socketError: unknown) {
+          const error = socketError instanceof Error ? socketError : new Error(String(socketError));
+          logger.error('Failed to send notification for failed files (placeholder creation)', {
+            error: error.message,
+            stack: error.stack,
+            userId,
+            kbId,
+            folderId,
+          });
+          // Don't fail the upload if notification fails - this is a non-critical notification
+        }
+      }
+
+      // If no files succeeded, return early with error info
+      if (placeholderResults.length === 0) {
+        res.status(200).json({
+          message: 'All files failed to upload',
+          totalFiles: fileBuffers.length,
+          status: 'failed',
+          records: [],
+          failedFiles: failedFiles.map((ff) => ({
+            fileName: ff.fileName,
+            filePath: ff.filePath,
+            error: ff.error,
+          })),
+        });
+        return;
+      }
+
+      // STEP 2: Build placeholder records for optimistic UI update (Google Drive-like experience)
+      const placeholderRecords = placeholderResults.map((result) => {
+        const { placeholderResult, metadata } = result;
+        const { extension, correctMimeType, key, webUrl, validLastModified, size } = metadata;
+
+        // Create record structure matching the format expected by frontend
         // Create record structure
         const connectorId = `knowledgeBase_${orgId}`;
         const record: IRecordDocument = {
           _key: key,
           orgId: orgId,
-          recordName: fileName,
-          externalRecordId: '',
+          recordName: placeholderResult.documentName,
+          externalRecordId: placeholderResult.documentId,
           recordType: RECORD_TYPE.FILE,
           origin: ORIGIN_TYPE.UPLOAD,
           createdAtTimestamp: currentTime,
@@ -950,7 +1241,7 @@ export const uploadRecordsToFolder =
         const fileRecord: IFileRecordDocument = {
           _key: key,
           orgId: orgId,
-          name: fileName,
+          name: placeholderResult.documentName,
           isFile: true,
           extension: extension,
           mimeType: correctMimeType,
@@ -958,60 +1249,79 @@ export const uploadRecordsToFolder =
           webUrl: webUrl,
         };
 
-        // Save file to storage and get document ID
-        const { documentId, documentName } =
-          await saveFileToStorageAndGetDocumentId(
-            req,
-            file,
-            fileName,
-            isVersioned,
-            record,
-            fileRecord,
-            keyValueStoreService,
-            appConfig.storage,
-            recordRelationService,
-          );
-
-        // Update record and fileRecord with storage info
-        record.recordName = documentName;
-        record.externalRecordId = documentId;
-        fileRecord.name = documentName;
-
-        processedFiles.push({
+        return {
           record,
           fileRecord,
-          filePath,
+          filePath: metadata.filePath,
           lastModified: validLastModified,
-        });
-      }
-
-      logger.info('Files processed, sending to Python service for folder upload', {
-        count: processedFiles.length,
-        folderId,
+        };
       });
 
-      const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
-        HttpMethod.POST,
-        req.headers as Record<string, string>,
-        {
-          files: processedFiles.map((pf) => ({
-            record: pf.record,
-            fileRecord: pf.fileRecord,
-            filePath: pf.filePath,
-            lastModified: pf.lastModified,
-          })),
-        },
-      );
+      // STEP 3: Return response to frontend immediately with placeholder records (unblock frontend)
+      // Frontend can display these records immediately with a "processing" status
+      res.status(200).json({
+        message: failedFiles.length > 0 
+          ? `Upload initiated: ${placeholderResults.length} succeeded, ${failedFiles.length} failed`
+          : 'Upload initiated successfully',
+        totalFiles: fileBuffers.length,
+        successfulFiles: placeholderResults.length,
+        failedFiles: failedFiles.length,
+        status: 'processing',
+        failedFilesDetails: failedFiles.map((ff) => ({
+          fileName: ff.fileName,
+          filePath: ff.filePath,
+          error: ff.error,
+        })),
+        records: placeholderRecords.map((pr) => ({
+          _key: pr.record._key,
+          recordName: pr.record.recordName,
+          externalRecordId: pr.record.externalRecordId,
+          recordType: pr.record.recordType,
+          origin: pr.record.origin,
+          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
+          createdAtTimestamp: pr.record.createdAtTimestamp,
+          updatedAtTimestamp: pr.record.updatedAtTimestamp,
+          sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
+          sourceLastModifiedTimestamp: pr.record.sourceLastModifiedTimestamp,
+          version: pr.record.version,
+          webUrl: pr.record.webUrl,
+          mimeType: pr.record.mimeType,
+          fileRecord: {
+            _key: pr.fileRecord._key,
+            name: pr.fileRecord.name,
+            extension: pr.fileRecord.extension,
+            mimeType: pr.fileRecord.mimeType,
+            sizeInBytes: pr.fileRecord.sizeInBytes,
+            webUrl: pr.fileRecord.webUrl,
+          },
+        })),
+      });
 
-      handleConnectorResponse(
-        response,
-        res,
-        'Uploading records to folder',
-        'Records not found',
-      );
+      // STEP 4: Process uploads and call Python service in background (non-blocking)
+      // This runs after the response is sent - uploads sequentially, then calls Python
+      // For local storage, files are already uploaded, so this will just call Python API
+      processUploadsInBackground(
+        placeholderResults,
+        orgId,
+        userId,
+        currentTime,
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/folder/${folderId}/upload`,
+        req.headers as Record<string, string>,
+        logger,
+        notificationService,
+        kbId,
+        folderId,
+      ).catch((error) => {
+        logger.error('Background processing error (non-fatal)', {
+          error: error.message,
+          stack: error.stack,
+          kbId,
+          folderId,
+          userId,
+        });
+      });
     } catch (error: any) {
-      logger.error('Folder record upload failed', {
+      logger.error('❌ Folder record upload failed', {
         error: error.message,
         userId: req.user?.userId,
         kbId: req.params.kbId,

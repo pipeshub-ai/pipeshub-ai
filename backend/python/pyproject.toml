@@ -112,6 +112,7 @@ dependencies = [
     "thrift>=0.16.0",
     "uuid==1.30",
     "uvicorn==0.30.6",
+    "zstandard==0.25.0",
 ]
 
 [tool.setuptools.packages.find]
