@@ -1321,12 +1321,21 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       renderCell: (params) => {
         const node = params.row;
 
+        // Check if node should have any actions
+        const hasActions = 
+          node.hasChildren || 
+          node.nodeType === 'record' || 
+          node.nodeType === 'recordGroup';
+
         const handleActionsClick = (event: React.MouseEvent<HTMLButtonElement>) => {
           event.stopPropagation();
 
-          const menuActions: ActionMenuItem[] = [
-            {
-              label: node.hasChildren ? 'Open' : 'View Details',
+          const menuActions: ActionMenuItem[] = [];
+
+          // Only show Open action if node has children or is a record
+          if (node.hasChildren || node.nodeType === 'record') {
+            menuActions.push({
+              label: node.hasChildren ? 'Open Folder' : 'Open',
               icon: eyeIcon,
               color: theme.palette.primary.main,
               onClick: () => {
@@ -1336,8 +1345,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                   onNavigateToRecord(node.id);
                 }
               },
-            },
-          ];
+            });
+          }
 
           // Add download option for records
           if (node.nodeType === 'record' && node.recordType === 'FILE') {
@@ -1404,6 +1413,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           showActionMenu(event.currentTarget, menuActions);
         };
+
+        // Only render action button if there are actions to show
+        if (!hasActions) {
+          return (<Typography variant="caption" color="text.secondary">
+            —
+          </Typography>)
+        }
 
         return (
           <IconButton
