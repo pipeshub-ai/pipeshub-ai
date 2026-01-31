@@ -16,17 +16,18 @@
 
 ---
 
-### Phase 1: Schema & Token Extraction
+### Phase 1: Schema & Token Extraction ✓
 **Goal:** Add infrastructure for tenant ID storage and extraction
-**Status:** Planned
+**Status:** Complete
+**Completed:** 2026-01-31
 
 **Deliverables:**
-1. Add `microsoftTenantId` field to OrgAuthConfig schema
-2. Add database index for efficient lookup
-3. Add `extractTenantIdFromToken()` helper function
+1. Add `microsoftTenantId` field to OrgAuthConfig schema ✓
+2. Add database index for efficient lookup ✓
+3. Add `extractTenantIdFromToken()` helper function ✓
 
 **Entry Criteria:** Research complete ✓
-**Exit Criteria:** Schema deployed, extraction helper tested
+**Exit Criteria:** Schema deployed, extraction helper tested ✓
 
 **Key Files:**
 - `backend/nodejs/apps/src/modules/auth/schema/orgAuthConfiguration.schema.ts`
@@ -34,7 +35,7 @@
 
 **Plans:** 1 plan
 Plans:
-- [ ] 01-01-PLAN.md — Add microsoftTenantId schema field and extractTenantIdFromToken helper
+- [x] 01-01-PLAN.md — Add microsoftTenantId schema field and extractTenantIdFromToken helper
 
 ---
 
