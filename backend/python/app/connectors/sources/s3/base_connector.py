@@ -856,7 +856,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             mime_type = get_mimetype_for_s3(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_external_id = (f"{bucket_name}/{parent_path}" if parent_path else None)
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
@@ -1280,7 +1280,7 @@ class S3CompatibleBaseConnector(BaseConnector):
             mime_type = get_mimetype_for_s3(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_external_id = (f"{bucket_name}/{parent_path}" if parent_path else None)
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
