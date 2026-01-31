@@ -973,13 +973,12 @@ class DropboxConnector(BaseConnector):
             return None
 
         is_file = isinstance(entry, FileMetadata)
-        record_type = RecordType.FILE if is_file else RecordType.FOLDER
         mime_type, _ = mimetypes.guess_type(entry.name) if is_file else (None, None)
 
         file_record = FileRecord(
             id=str(uuid.uuid4()),
             record_name=entry.name,
-            record_type=record_type,
+            record_type=RecordType.FILE,
             record_group_type=RecordGroupType.DRIVE.value,
             external_record_id=entry.id,
             external_revision_id=entry.rev if is_file else None,
