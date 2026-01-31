@@ -59,8 +59,8 @@ from app.connectors.sources.zammad.common.apps import ZammadApp
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (
     Block,
-    BlockContainerIndex,
     BlockGroup,
+    BlockGroupChildren,
     BlocksContainer,
     ChildRecord,
     ChildType,
@@ -2511,18 +2511,19 @@ class ZammadConnector(BaseConnector):
             )
             block_groups.append(minimal_block_group)
 
-        # Build children arrays for BlockGroups
+        # Populate children arrays for BlockGroups
+        # Build a map of parent_index -> list of child BlockGroup indices
         blockgroup_children_map: Dict[int, List[int]] = defaultdict(list)
         for bg in block_groups:
             if bg.parent_index is not None:
                 blockgroup_children_map[bg.parent_index].append(bg.index)
 
+        # Now populate the children arrays using range-based structure
         for bg in block_groups:
             if bg.index in blockgroup_children_map:
-                bg.children = [
-                    BlockContainerIndex(block_group_index=child_idx)
-                    for child_idx in sorted(blockgroup_children_map[bg.index])
-                ]
+                child_bg_indices = sorted(blockgroup_children_map[bg.index])
+                # Convert to range-based structure
+                bg.children = BlockGroupChildren.from_indices(block_group_indices=child_bg_indices)
 
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         return blocks_container.model_dump_json(indent=2).encode('utf-8')

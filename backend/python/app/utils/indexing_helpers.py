@@ -20,6 +20,9 @@ from app.modules.parsers.excel.prompt_template import RowDescriptions, row_text_
 from app.utils.llm import get_llm
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
+# Maximum number of table rows to include in summary prompts
+MAX_TABLE_ROWS_FOR_SUMMARY = 20
+
 
 class TableSummary(BaseModel):
     summary: str = Field(description="Summary of the table")
@@ -30,8 +33,8 @@ table_summary_prompt_template = """
 # Task:
 Provide a clear summary of this table's purpose and content. Also provide the column headers of the table.
 
-# Table Markdown:
-{{table_markdown}}
+# Table Data:
+{{table_data}}
 
 # Output Format:
 You must return a single valid JSON object with the following structure:
@@ -44,9 +47,15 @@ Return the JSON object only, no additional text or explanation.
 """
 
 
-async def get_table_summary_n_headers(config, table_markdown: str) -> Optional[TableSummary]:
+async def get_table_summary_n_headers(config, table_data) -> Optional[TableSummary]:
     """
-    Use LLM to generate a concise summary, mirroring the approach in Excel's get_table_summary.
+    Use LLM to generate a concise summary from table data (grid or structured data).
+
+    Args:
+        config: Configuration service
+        table_data: Can be:
+            - list[list[str]]: Grid representation of table (list of rows, each row is list of cell values)
+            - list[dict]: List of dictionaries with column headers as keys (CSV/Excel format)
 
     Returns:
         TableSummary Pydantic model with summary and headers, or None if parsing fails.
@@ -55,9 +64,39 @@ async def get_table_summary_n_headers(config, table_markdown: str) -> Optional[T
         # Get LLM
         llm, _ = await get_llm(config)
 
+        # Convert table data to text representation
+        if isinstance(table_data, list):
+            if len(table_data) > 0:
+                if isinstance(table_data[0], list):
+                    # Grid format: list of lists
+                    # Format as simple text table
+                    table_text_lines = []
+                    for row in table_data[:MAX_TABLE_ROWS_FOR_SUMMARY]:
+                        row_text = " | ".join(str(cell) if cell else "" for cell in row)
+                        table_text_lines.append(row_text)
+                    table_data_str = "\n".join(table_text_lines)
+                    if len(table_data) > MAX_TABLE_ROWS_FOR_SUMMARY:
+                        table_data_str += f"\n... ({len(table_data) - MAX_TABLE_ROWS_FOR_SUMMARY} more rows)"
+                elif isinstance(table_data[0], dict):
+                    # Structured format: list of dicts
+                    # Format as column: value pairs
+                    headers = list(table_data[0].keys())
+                    table_data_str = f"Headers: {', '.join(headers)}\n\n"
+                    for i, row in enumerate(table_data[:MAX_TABLE_ROWS_FOR_SUMMARY]):
+                        row_str = ", ".join(f"{k}: {v}" for k, v in row.items())
+                        table_data_str += f"Row {i+1}: {row_str}\n"
+                    if len(table_data) > MAX_TABLE_ROWS_FOR_SUMMARY:
+                        table_data_str += f"\n... ({len(table_data) - MAX_TABLE_ROWS_FOR_SUMMARY} more rows)"
+                else:
+                    table_data_str = str(table_data)
+            else:
+                table_data_str = "Empty table"
+        else:
+            table_data_str = str(table_data)
+
         # Prepare prompt
         template = Template(table_summary_prompt_template)
-        rendered_form = template.render(table_markdown=table_markdown)
+        rendered_form = template.render(table_data=table_data_str)
         messages = [
             {
                 "role": "system",
@@ -175,26 +214,30 @@ async def process_table_pymupdf(
     table_finder = page.find_tables()
     tables = table_finder.tables
     for table in tables:
-        table_markdown = table.to_markdown()
-        response = await get_table_summary_n_headers(config, table_markdown)
+        table_data = table.extract()
+        response = await get_table_summary_n_headers(config, table_data)
         table_summary = response.summary if response else ""
         column_headers = response.headers if response else []
-        table_data = table.extract()
         table_rows_text,table_rows = await get_rows_text(config, {"grid": table_data}, table_summary, column_headers)
         bbox = _normalize_bbox(table.bbox, page_width, page_height)
         bbox = [Point(x=p["x"], y=p["y"]) for p in bbox]
+
+        num_of_rows = len(table_data)
+        num_of_cols = table.col_count if table.col_count else (len(table_data[0]) if table_data and len(table_data) > 0 else None)
+        num_of_cells = num_of_rows * num_of_cols if num_of_cols else None
+
         block_group = BlockGroup(
             index=len(result["tables"]),
             type=GroupType.TABLE,
             description=None,
             table_metadata=TableMetadata(
-                num_of_rows=len(table_data),
-                num_of_cols=table.col_count if table.col_count else None,
+                num_of_rows=num_of_rows,
+                num_of_cols=num_of_cols,
+                num_of_cells=num_of_cells,
             ),
             data={
                 "table_summary": table_summary,
                 "column_headers": column_headers,
-                "table_markdown": table_markdown,
             },
             format=DataFormat.JSON,
             citation_metadata=CitationMetadata(
@@ -210,8 +253,7 @@ async def process_table_pymupdf(
                 parent_index=block_group.index,
                 data={
                     "row_natural_language_text": table_rows_text[i] if i<len(table_rows_text) else "",
-                    "row_number": i+1,
-                    "row":json.dumps(row)
+                    "row_number": i+1
                 },
                 citation_metadata=block_group.citation_metadata
             )
