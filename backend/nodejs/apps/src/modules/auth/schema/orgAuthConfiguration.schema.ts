@@ -22,6 +22,7 @@ interface IAuthStep {
 interface IOrgAuthConfig extends Document {
   orgId: Types.ObjectId;
   domain?: string;
+  microsoftTenantId?: string;
   authSteps: IAuthStep[];
   isDeleted?: boolean;
   createdAt?: Date;
@@ -52,6 +53,7 @@ const OrgAuthConfigSchema = new Schema<IOrgAuthConfig>(
   {
     orgId: { type: Schema.Types.ObjectId, required: true },
     domain: { type: String },
+    microsoftTenantId: { type: String, index: true, sparse: true },
     authSteps: {
       type: [AuthStepSchema],
       validate: [
@@ -74,6 +76,9 @@ const OrgAuthConfigSchema = new Schema<IOrgAuthConfig>(
   },
   { timestamps: true },
 );
+
+// Compound index for efficient tenant ID lookups
+OrgAuthConfigSchema.index({ microsoftTenantId: 1, isDeleted: 1 });
 
 // 🔹 Create and Export Mongoose Model
 export const OrgAuthConfig: Model<IOrgAuthConfig> =
