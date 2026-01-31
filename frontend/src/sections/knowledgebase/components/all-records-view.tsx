@@ -1335,7 +1335,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           // Only show Open action if node has children or is a record
           if (node.hasChildren || node.nodeType === 'record') {
             menuActions.push({
-              label: node.hasChildren ? 'Open Folder' : 'Open',
+              label: 'Open',
               icon: eyeIcon,
               color: theme.palette.primary.main,
               onClick: () => {
