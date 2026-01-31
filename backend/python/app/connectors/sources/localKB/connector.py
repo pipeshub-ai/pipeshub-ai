@@ -40,7 +40,7 @@ class KBApp(App):
         super().__init__(Connectors.KNOWLEDGE_BASE, AppGroups.LOCAL_STORAGE, connector_id)
 
 
-@ConnectorBuilder("KB")\
+@ConnectorBuilder("Collections")\
     .in_group("Local Storage")\
     .with_supported_auth_types("NONE")\
     .with_description("Local knowledge base for organizing and managing documents")\

@@ -518,15 +518,15 @@ class KnowledgeBaseToConnectorMigrationService:
                 return None, False, False
 
             metadata = KnowledgeBaseConnector._connector_metadata
-            connector_type = metadata.get('name', Connectors.KNOWLEDGE_BASE.value)
+            connector_name = metadata.get('name', "Collections")
             app_group = metadata.get('appGroup', AppGroups.LOCAL_STORAGE.value)
 
             current_timestamp = get_epoch_timestamp_in_ms()
 
             instance_document = {
                 '_key': instance_key,
-                'name': connector_type,
-                'type': connector_type,
+                'name': connector_name,
+                'type': Connectors.KNOWLEDGE_BASE.value,
                 'appGroup': app_group,
                 'authType': 'NONE',
                 'scope': ConnectorScopes.TEAM.value,
