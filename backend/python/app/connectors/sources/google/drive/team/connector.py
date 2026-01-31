@@ -1428,7 +1428,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 if "." in file_name:
                     file_extension = file_name.rsplit(".", 1)[-1].lower()
 
-            parent_external_record_id = parent_external_record_id = (metadata.get("parents") or [None])[0]
+            parent_external_record_id = (metadata.get("parents") or [None])[0]
 
             # Create FileRecord directly
             file_record = FileRecord(
