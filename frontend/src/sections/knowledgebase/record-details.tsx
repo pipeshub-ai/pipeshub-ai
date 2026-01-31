@@ -252,6 +252,14 @@ export default function RecordDetails() {
     record.sourceLastModifiedTimestamp || record.updatedAtTimestamp
   ).toLocaleString();
 
+  // Common chip base styles (DRY principle)
+  const chipBaseStyles = {
+    height: 20,
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    '& .MuiChip-label': { px: 1 },
+  };
+
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
   const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
@@ -735,26 +743,101 @@ export default function RecordDetails() {
                 </Grid>
 
                 <Grid item xs={12} sm={6} md={3}>
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
+                  <Box
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 1,
-                      fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                      gap: 0.75,
                       flexWrap: 'wrap',
                     }}
                   >
-                    <Icon
-                      icon={record?.origin === 'CONNECTOR' ? connectorIcon : databaseIcon}
-                      style={{ fontSize: '16px' }}
-                    />
-                    {knowledgeBase && `KB: ${knowledgeBase.name || 'Default'}`}
-                    {record?.origin === 'CONNECTOR' && record.connectorName && (
-                      <>{record.connectorName}</>
+                    {record.origin === 'CONNECTOR' ? (
+                      <>
+                        {/* Connector Section */}
+                        <Icon
+                          icon={connectorIcon}
+                          style={{ fontSize: '16px', color: theme.palette.text.secondary }}
+                        />
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}
+                        >
+                          Connector:
+                        </Typography>
+                        {record.connectorName && (
+                          <Chip
+                            label={record.connectorName}
+                            size="small"
+                            color="primary"
+                            variant="outlined"
+                            sx={chipBaseStyles}
+                          />
+                        )}
+                        {/* Record Group Section */}
+                        {knowledgeBase && (
+                          <>
+                            <Box
+                              component="span"
+                              sx={{
+                                color: 'text.disabled',
+                                fontSize: '0.875rem',
+                                mx: 0.25,
+                              }}
+                            >
+                              •
+                            </Box>
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}
+                            >
+                              Record Group:
+                            </Typography>
+                            <Chip
+                              label={knowledgeBase.name || 'Default'}
+                              size="small"
+                              color="info"
+                              variant="filled"
+                              sx={{
+                                ...chipBaseStyles,
+                                bgcolor: alpha(theme.palette.info.main, 0.05),
+                                color: theme.palette.info.dark,
+                              }}
+                            />
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {/* Collection Section for KB/Upload */}
+                        <Icon
+                          icon={databaseIcon}
+                          style={{ fontSize: '16px', color: theme.palette.text.secondary }}
+                        />
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}
+                        >
+                          Collection:
+                        </Typography>
+                        {knowledgeBase && (
+                          <Chip
+                            label={knowledgeBase.name || 'Default'}
+                            size="small"
+                            color="success"
+                            variant="filled"
+                            sx={{
+                              ...chipBaseStyles,
+                              bgcolor: alpha(theme.palette.success.main, 0.05),
+                              color: theme.palette.success.dark,
+                            }}
+                          />
+                        )}
+                      </>
                     )}
-                  </Typography>
+                  </Box>
                 </Grid>
               </Grid>
             </Box>
