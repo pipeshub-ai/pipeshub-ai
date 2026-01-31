@@ -44,13 +44,6 @@ class IndexingAppContainer(BaseAppContainer):
         container_utils.get_vector_db_service,
         config_service=config_service,
     )
-    indexing_pipeline = providers.Resource(
-        container_utils.create_indexing_pipeline,
-        logger=logger,
-        config_service=config_service,
-        arango_service=arango_service,
-        vector_db_service=vector_db_service,
-    )
 
     document_extractor = providers.Resource(
         container_utils.create_document_extractor,
@@ -93,16 +86,24 @@ class IndexingAppContainer(BaseAppContainer):
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
 
-    # Processor - depends on indexing_pipeline, and arango_service
+    # Email Metadata Injector
+    email_metadata_injector = providers.Resource(
+        container_utils.create_email_metadata_injector,
+        logger=logger,
+        arango_service=arango_service,
+        config_service=config_service,
+    )
+
+    # Processor - depends on arango_service
     processor = providers.Resource(
         container_utils.create_processor,
         logger=logger,
         config_service=config_service,
-        indexing_pipeline=indexing_pipeline,
         arango_service=arango_service,
         parsers=parsers,
         document_extractor=document_extractor,
         sink_orchestrator=sink_orchestrator,
+        email_metadata_injector=email_metadata_injector,
     )
 
     event_processor = providers.Resource(
@@ -120,11 +121,8 @@ class IndexingAppContainer(BaseAppContainer):
     )
 
     # Indexing-specific wiring configuration
-    wiring_config = containers.WiringConfiguration(
-        modules=[
-            "app.indexing_main"
-        ]
-    )
+    wiring_config = containers.WiringConfiguration(modules=["app.indexing_main"])
+
 
 async def initialize_container(container: IndexingAppContainer) -> bool:
     """Initialize container resources"""
