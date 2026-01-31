@@ -1,4 +1,5 @@
 import json
+import time
 
 import aiohttp
 import jwt
@@ -316,6 +317,7 @@ class BlobStorage(Transformer):
             Returns:
                 str: The content of the record if found, else an empty string.
             """
+            overall_start_time = time.time()
             self.logger.info("🔍 Retrieving record from storage for virtual_record_id: %s", virtual_record_id)
             try:
                 # Generate JWT token for authorization
@@ -343,28 +345,45 @@ class BlobStorage(Transformer):
                 if not nodejs_endpoint:
                     raise ValueError("Missing CM endpoint configuration")
 
+                # Time the document ID lookup
+                lookup_start_time = time.time()
                 document_id = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+                lookup_duration_ms = (time.time() - lookup_start_time) * 1000
+                self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s", lookup_duration_ms, virtual_record_id)
+                
                 if not document_id:
                     self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
                     return None
 
                 # Build the download URL
                 download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+                download_start_time = time.time()
                 async with aiohttp.ClientSession() as session:
                     async with session.get(download_url, headers=headers) as resp:
                         if resp.status == HttpStatusCode.SUCCESS.value:
                             data = await resp.json()
+                            download_duration_ms = (time.time() - download_start_time) * 1000
                             if data.get("record"):
+                                self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", download_duration_ms, document_id)
+                                overall_duration_ms = (time.time() - overall_start_time) * 1000
+                                self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
                                 self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
                                 return data.get("record")
                             elif data.get("signedUrl"):
                                 signed_url = data.get("signedUrl")
                                 # Reuse the same session for signed URL fetch
+                                signed_url_start_time = time.time()
                                 async with session.get(signed_url) as res:
                                     if res.status == HttpStatusCode.SUCCESS.value:
                                         data = await res.json()
+                                        signed_url_duration_ms = (time.time() - signed_url_start_time) * 1000
+                                        total_download_duration_ms = (time.time() - download_start_time) * 1000
 
                                         if data.get("record"):
+                                            self.logger.info("⏱️ Signed URL fetch completed in %.0fms for document_id: %s", signed_url_duration_ms, document_id)
+                                            self.logger.info("⏱️ Record download completed in %.0fms for document_id: %s", total_download_duration_ms, document_id)
+                                            overall_duration_ms = (time.time() - overall_start_time) * 1000
+                                            self.logger.info("⏱️ Storage fetch completed in %.0fms for virtual_record_id: %s", overall_duration_ms, virtual_record_id)
                                             self.logger.info("✅ Successfully retrieved record from storage for virtual_record_id: %s", virtual_record_id)
                                             return data.get("record")
                                         else:
