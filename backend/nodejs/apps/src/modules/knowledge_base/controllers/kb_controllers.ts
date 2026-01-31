@@ -957,7 +957,7 @@ export const uploadRecordsToKB =
           externalRecordId: pr.record.externalRecordId,
           recordType: pr.record.recordType,
           origin: pr.record.origin,
-          indexingStatus: 'PROCESSING', // Special status to indicate background processing
+          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
           createdAtTimestamp: pr.record.createdAtTimestamp,
           updatedAtTimestamp: pr.record.updatedAtTimestamp,
           sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,
@@ -1278,7 +1278,7 @@ export const uploadRecordsToFolder =
           externalRecordId: pr.record.externalRecordId,
           recordType: pr.record.recordType,
           origin: pr.record.origin,
-          indexingStatus: 'PROCESSING', // Special status to indicate background processing
+          indexingStatus: 'NOT_STARTED', // Special status to indicate background not started
           createdAtTimestamp: pr.record.createdAtTimestamp,
           updatedAtTimestamp: pr.record.updatedAtTimestamp,
           sourceCreatedAtTimestamp: pr.record.sourceCreatedAtTimestamp,

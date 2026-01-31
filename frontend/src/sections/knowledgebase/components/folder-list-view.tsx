@@ -555,7 +555,11 @@ export const ListView: React.FC<ListViewProps> = ({
       renderCell: (params) => {
         const item = params.row;
         const timestamp = item.sourceCreatedAtTimestamp;
-        const formatted = formatDate(timestamp);
+        let formatted = formatDate(timestamp);
+
+        if (!formatted){
+          formatted =  formatDate(item.createdAtTimestamp || item.updatedAtTimestamp)
+        }
 
         if (!formatted) {
           return (
@@ -591,7 +595,11 @@ export const ListView: React.FC<ListViewProps> = ({
       renderCell: (params) => {
         const item = params.row;
         const timestamp = item.sourceLastModifiedTimestamp;
-        const formatted = formatDate(timestamp);
+        let formatted = formatDate(timestamp);
+
+        if (!formatted){
+          formatted =  formatDate(item.updatedAtTimestamp || item.createdAtTimestamp)
+        }
 
         if (!formatted) {
           return (

@@ -22,11 +22,21 @@ import {
   Collapse,
 } from '@mui/material';
 
+// Enhanced file state tracking for granular upload progress
+export interface FileUploadState {
+  fileName: string;
+  status: 'queued' | 'uploading' | 'processing' | 'completed' | 'failed';
+  error?: string;
+  recordId?: string;
+  progress?: number; // 0-100 for upload progress
+}
+
 interface UploadNotificationProps {
   uploads: Map<string, {
     kbId: string;
     folderId?: string;
-    files: string[];
+    files: string[]; // Legacy support - file names
+    fileStates?: Map<string, FileUploadState>; // Granular file tracking
     startTime: number;
     recordIds?: string[];
     status?: 'uploading' | 'processing' | 'completed';
@@ -100,39 +110,81 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
       }}
     >
       {uploadsArray.map(([uploadKey, upload]) => {
-        const isUploading = upload.status === 'uploading' || (!upload.status && !upload.recordIds);
-        const isProcessing = upload.status === 'processing' || (upload.recordIds && upload.status !== 'completed' && !isUploading);
-        const isCompleted = upload.status === 'completed';
-        const hasFailures = upload.hasFailures || (upload.failedFiles && upload.failedFiles.length > 0);
-        const failedFiles = upload.failedFiles || [];
-        const failedFileNames = new Set(failedFiles.map((ff) => ff.fileName || ff.filePath));
-        const successfulFiles = upload.files.filter(
-          (fileName) => !failedFileNames.has(fileName)
-        );
-        const isExpanded = expanded.get(uploadKey) ?? false;
-        const totalFiles = upload.files.length;
-        const totalSuccessful = successfulFiles.length;
+        // Enhanced file state tracking
+        const fileStates = upload.fileStates || new Map();
+        
+        // Get file states from fileStates map or fallback to legacy logic
+        const fileStatesList: Array<FileUploadState> = [];
+        
+        if (fileStates.size > 0) {
+          // Use granular file states
+          fileStates.forEach((state, fileName) => {
+            fileStatesList.push(state);
+          });
+        } else {
+          // Fallback to legacy logic for backwards compatibility
+          const failedFiles = upload.failedFiles || [];
+          const failedFileNames = new Set(failedFiles.map((ff) => ff.fileName || ff.filePath));
+          
+          upload.files.forEach((fileName) => {
+            const failedFile = failedFiles.find((ff) => (ff.fileName || ff.filePath) === fileName);
+            if (failedFile) {
+              fileStatesList.push({
+                fileName,
+                status: 'failed',
+                error: failedFile.error,
+                recordId: failedFile.recordId,
+              });
+            } else if (upload.status === 'completed') {
+              fileStatesList.push({
+                fileName,
+                status: 'completed',
+              });
+            } else {
+              fileStatesList.push({
+                fileName,
+                status: 'uploading',
+              });
+            }
+          });
+        }
+        
+        // Categorize files by status
+        const queuedFiles = fileStatesList.filter((f) => f.status === 'queued');
+        const uploadingFiles = fileStatesList.filter((f) => f.status === 'uploading');
+        const completedFiles = fileStatesList.filter((f) => f.status === 'completed');
+        const failedFiles = fileStatesList.filter((f) => f.status === 'failed');
+        
+        const totalFiles = fileStatesList.length;
+        const totalQueued = queuedFiles.length;
+        const totalUploading = uploadingFiles.length;
+        const totalCompleted = completedFiles.length;
         const totalFailed = failedFiles.length;
         
-        // Show successful files first (prioritize showing successes), then failed files
-        // When collapsed, show successful files first to emphasize positive outcome
-        const maxFilesToShow = 3;
-        const successfulToShow = isExpanded 
-          ? successfulFiles 
-          : successfulFiles.slice(0, Math.min(maxFilesToShow, successfulFiles.length));
-        const failedToShow = isExpanded
-          ? failedFiles
-          : failedFiles.slice(0, Math.max(0, maxFilesToShow - successfulToShow.length));
+        // Determine overall status
+        const isCompleted = totalCompleted + totalFailed === totalFiles;
+        const isUploading = totalUploading > 0 || totalQueued > 0;
+        const hasFailures = totalFailed > 0;
         
-        const allFilesToShow: Array<{ name: string; isFailed: boolean; error?: string }> = [
-          ...successfulToShow.map((name) => ({ name, isFailed: false })),
-          ...failedToShow.map((ff) => ({ 
-            name: ff.fileName || ff.filePath, 
-            isFailed: true, 
-            error: ff.error 
-          }))
+        const isExpanded = expanded.get(uploadKey) ?? false;
+        
+        // Sort files: queued -> uploading -> completed -> failed
+        const sortedFiles = [
+          ...queuedFiles,
+          ...uploadingFiles,
+          ...completedFiles,
+          ...failedFiles,
         ];
-        const remainingCount = totalFiles > maxFilesToShow ? totalFiles - maxFilesToShow : 0;
+        
+        // Show files based on expansion state
+        const maxFilesToShow = 3;
+        const filesToShow = isExpanded 
+          ? sortedFiles 
+          : sortedFiles.slice(0, maxFilesToShow);
+        
+        const remainingCount = totalFiles > maxFilesToShow && !isExpanded 
+          ? totalFiles - maxFilesToShow 
+          : 0;
 
         return (
           <Slide direction="left" in mountOnEnter unmountOnExit key={uploadKey}>
@@ -182,14 +234,6 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                       height={18}
                       style={{ color: theme.palette.success.main }}
                     />
-                  ) : isProcessing ? (
-                    <CircularProgress
-                      size={18}
-                      thickness={4}
-                      sx={{
-                        color: theme.palette.info.main,
-                      }}
-                    />
                   ) : (
                     <Icon
                       icon={cloudUploadIcon}
@@ -205,21 +249,22 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                       fontSize: '0.8125rem',
                       color: isCompleted && !hasFailures
                         ? theme.palette.success.main
-                        : isCompleted && hasFailures && totalSuccessful === 0
+                        : isCompleted && hasFailures && totalCompleted === 0
                         ? theme.palette.error.main
                         : 'text.primary',
                     }}
                   >
-                    {isCompleted && hasFailures && totalSuccessful === 0
+                    {/* Enhanced status messages based on granular file states */}
+                    {isCompleted && hasFailures && totalCompleted === 0
                       ? `Upload failed`
                       : isCompleted && hasFailures
-                      ? `${totalSuccessful} succeeded`
+                      ? `${totalCompleted} succeeded`
                       : isCompleted
                       ? `${totalFiles} upload${totalFiles > 1 ? 's' : ''} complete`
-                      : isProcessing
-                      ? `Processing ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`
-                      : isUploading
-                      ? `Uploading ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`
+                      : isUploading && totalUploading > 0
+                      ? `Uploading ${totalUploading} of ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`
+                      : isUploading && totalQueued > 0
+                      ? `Queued ${totalQueued} of ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`
                       : `Uploading ${totalFiles} file${totalFiles > 1 ? 's' : ''}...`}
                     {isCompleted && hasFailures && totalFailed > 0 && (
                       <>
@@ -232,7 +277,7 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                             fontSize: '0.8125rem',
                           }}
                         >
-                          {totalSuccessful > 0 ? ',' : ''}
+                          {totalCompleted > 0 ? ',' : ''}
                         </Typography>
                         <Typography
                           component="span"
@@ -242,9 +287,23 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                             fontSize: '0.8125rem',
                           }}
                         >
-                          {totalFailed} {totalSuccessful === 0 ? 'file' : ''}{totalFailed > 1 ? 's' : ''} failed
+                          {totalFailed} {totalCompleted === 0 ? 'file' : ''}{totalFailed > 1 ? 's' : ''} failed
                         </Typography>
                       </>
+                    )}
+                    {/* Show progress for active uploads */}
+                    {!isCompleted && totalCompleted > 0 && (
+                      <Typography
+                        component="span"
+                        sx={{
+                          color: theme.palette.success.main,
+                          fontWeight: 500,
+                          ml: 0.5,
+                          fontSize: '0.75rem',
+                        }}
+                      >
+                        ({totalCompleted} done)
+                      </Typography>
                     )}
                   </Typography>
                 </Stack>
@@ -317,8 +376,52 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                   }}
                 >
                   <Stack spacing={0.5}>
-                    {allFilesToShow.map((fileInfo, index) => {
-                      const { name, isFailed, error } = fileInfo;
+                    {filesToShow.map((fileState, index) => {
+                      const getFileStatusIcon = () => {
+                        switch (fileState.status) {
+                          case 'completed':
+                            return checkCircleIcon;
+                          case 'failed':
+                            return alertCircleIcon;
+                          case 'uploading':
+                          case 'queued':
+                          default:
+                            return fileDocumentIcon;
+                        }
+                      };
+
+                      const getFileStatusColor = () => {
+                        switch (fileState.status) {
+                          case 'completed':
+                            return theme.palette.success.main;
+                          case 'failed':
+                            return theme.palette.error.main;
+                          case 'uploading':
+                            return theme.palette.primary.main;
+                          case 'queued':
+                          default:
+                            return theme.palette.text.secondary;
+                        }
+                      };
+
+                      const getFileStatusLabel = () => {
+                        switch (fileState.status) {
+                          case 'queued':
+                            return 'Queued';
+                          case 'uploading':
+                            return 'Uploading';
+                          case 'completed':
+                            return 'Completed';
+                          case 'failed':
+                            return null; // Error shown separately
+                          default:
+                            return null;
+                        }
+                      };
+
+                      const statusColor = getFileStatusColor();
+                      const statusLabel = getFileStatusLabel();
+                      const showSpinner = fileState.status === 'uploading';
                       
                       return (
                         <Stack
@@ -330,56 +433,78 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                             py: 0.5,
                             px: 0.75,
                             borderRadius: 0.75,
-                            backgroundColor: isCompleted && !isFailed
+                            backgroundColor: fileState.status === 'completed'
                               ? alpha(theme.palette.success.main, 0.05)
+                              : fileState.status === 'failed'
+                              ? alpha(theme.palette.error.main, 0.05)
                               : 'transparent',
                             '&:hover': {
-                              backgroundColor: isCompleted && !isFailed
+                              backgroundColor: fileState.status === 'completed'
                                 ? alpha(theme.palette.success.main, 0.1)
+                                : fileState.status === 'failed'
+                                ? alpha(theme.palette.error.main, 0.1)
                                 : alpha(theme.palette.action.hover, 0.3),
                             },
                           }}
                         >
-                          {/* Show green checkmark for successful files, neutral icon for failed files */}
-                          {isCompleted && !isFailed ? (
-                            <Icon
-                              icon={checkCircleIcon}
-                              width={16}
-                              height={16}
-                              style={{
-                                color: theme.palette.success.main,
+                          {/* Status icon or spinner */}
+                          {showSpinner ? (
+                            <CircularProgress
+                              size={16}
+                              thickness={4}
+                              sx={{
+                                color: statusColor,
                                 flexShrink: 0,
                               }}
                             />
                           ) : (
                             <Icon
-                              icon={fileDocumentIcon}
+                              icon={getFileStatusIcon()}
                               width={16}
                               height={16}
                               style={{
-                                color: isFailed ? theme.palette.error.main : theme.palette.text.secondary,
+                                color: statusColor,
                                 flexShrink: 0,
                               }}
                             />
                           )}
+                          
                           <Box sx={{ flex: 1, minWidth: 0 }}>
-                            <Typography
-                              variant="body2"
-                              sx={{
-                                fontSize: '0.8125rem',
-                                color: isCompleted && !isFailed
-                                  ? theme.palette.success.main
-                                  :  isFailed ? theme.palette.error.main : 'text.primary',
-                                fontWeight: isCompleted && !isFailed ? 500 : 400,
-                                overflow: 'hidden',
-                                textOverflow: 'ellipsis',
-                                whiteSpace: 'nowrap',
-                              }}
-                              title={name}
-                            >
-                              {name}
-                            </Typography>
-                            {isFailed && error && (
+                            <Stack direction="row" alignItems="center" spacing={0.5}>
+                              <Typography
+                                variant="body2"
+                                sx={{
+                                  fontSize: '0.8125rem',
+                                  color: fileState.status === 'completed'
+                                    ? theme.palette.success.main
+                                    : fileState.status === 'failed'
+                                    ? theme.palette.error.main
+                                    : 'text.primary',
+                                  fontWeight: fileState.status === 'completed' ? 500 : 400,
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                  flex: 1,
+                                }}
+                                title={fileState.fileName}
+                              >
+                                {fileState.fileName}
+                              </Typography>
+                              {statusLabel && (
+                                <Typography
+                                  variant="caption"
+                                  sx={{
+                                    fontSize: '0.7rem',
+                                    color: statusColor,
+                                    fontWeight: 500,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {statusLabel}
+                                </Typography>
+                              )}
+                            </Stack>
+                            {fileState.status === 'failed' && fileState.error && (
                               <Typography
                                 variant="caption"
                                 sx={{
@@ -392,9 +517,9 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                                   mt: 0.25,
                                   fontStyle: 'italic',
                                 }}
-                                title={error}
+                                title={fileState.error}
                               >
-                                {error}
+                                {fileState.error}
                               </Typography>
                             )}
                           </Box>
@@ -419,24 +544,64 @@ export const UploadNotification: React.FC<UploadNotificationProps> = ({
                   </Stack>
                 </Box>
 
-                {/* Progress bar */}
+                {/* Enhanced progress bar with accurate percentage */}
                 {!isCompleted && (
                   <Box sx={{ mt: 1.5 }}>
-                    <LinearProgress
-                      variant={isProcessing ? 'indeterminate' : 'determinate'}
-                      value={isProcessing ? undefined : 100}
-                      sx={{
-                        height: 2,
-                        borderRadius: 1,
-                        backgroundColor: alpha(theme.palette.primary.main, 0.1),
-                        '& .MuiLinearProgress-bar': {
+                    <Stack direction="row" alignItems="center" spacing={1} mb={0.5}>
+                      <LinearProgress
+                        variant="determinate"
+                        value={totalFiles > 0 ? ((totalCompleted + totalFailed) / totalFiles) * 100 : 0}
+                        sx={{
+                          flex: 1,
+                          height: 3,
                           borderRadius: 1,
-                          backgroundColor: isProcessing
-                            ? theme.palette.info.main
-                            : theme.palette.primary.main,
-                        },
-                      }}
-                    />
+                          backgroundColor: alpha(theme.palette.primary.main, 0.1),
+                          '& .MuiLinearProgress-bar': {
+                            borderRadius: 1,
+                            backgroundColor: hasFailures
+                              ? theme.palette.warning.main
+                              : theme.palette.primary.main,
+                          },
+                        }}
+                      />
+                      <Typography
+                        variant="caption"
+                        sx={{
+                          fontSize: '0.7rem',
+                          color: 'text.secondary',
+                          fontWeight: 500,
+                          minWidth: '45px',
+                          textAlign: 'right',
+                        }}
+                      >
+                        {totalFiles > 0 
+                          ? `${Math.round(((totalCompleted + totalFailed) / totalFiles) * 100)}%`
+                          : '0%'}
+                      </Typography>
+                    </Stack>
+                    {/* Status breakdown */}
+                    <Stack direction="row" spacing={1} flexWrap="wrap">
+                      {totalQueued > 0 && (
+                        <Typography variant="caption" sx={{ fontSize: '0.7rem', color: theme.palette.text.secondary }}>
+                          {totalQueued} queued
+                        </Typography>
+                      )}
+                      {totalUploading > 0 && (
+                        <Typography variant="caption" sx={{ fontSize: '0.7rem', color: theme.palette.primary.main }}>
+                          {totalUploading} uploading
+                        </Typography>
+                      )}
+                      {totalCompleted > 0 && (
+                        <Typography variant="caption" sx={{ fontSize: '0.7rem', color: theme.palette.success.main }}>
+                          {totalCompleted} done
+                        </Typography>
+                      )}
+                      {totalFailed > 0 && (
+                        <Typography variant="caption" sx={{ fontSize: '0.7rem', color: theme.palette.error.main }}>
+                          {totalFailed} failed
+                        </Typography>
+                      )}
+                    </Stack>
                   </Box>
                 )}
                 
