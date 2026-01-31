@@ -255,7 +255,7 @@ export default function UploadManager({
       return;
     }
     if (!knowledgeBaseId) {
-      setUploadError({ show: true, message: 'Knowledge base id missing. Please refresh' });
+      setUploadError({ show: true, message: 'Collection id missing. Please refresh' });
       return;
     }
 

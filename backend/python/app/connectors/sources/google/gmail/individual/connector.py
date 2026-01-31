@@ -1572,7 +1572,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 email=email_address,
                 full_name=email_address,  # Gmail profile doesn't provide display name
                 source_user_id=email_address,
-                app_name=Connectors.GOOGLE_MAIL.value,
+                app_name=self.connector_name,
                 connector_id=self.connector_id
             )
             await self.data_entities_processor.on_new_app_users([user])

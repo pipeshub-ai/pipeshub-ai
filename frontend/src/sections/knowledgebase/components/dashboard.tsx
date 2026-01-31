@@ -190,7 +190,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
           setHasMore(false);
         }
       } catch (err: any) {
-        console.error('Failed to fetch knowledge bases:', err);
+        console.error('Failed to fetch collections:', err);
         if (!isLoadMore) {
           setKnowledgeBases([]);
           setTotalCount(0);
@@ -261,10 +261,10 @@ const DashboardComponent: React.FC<DashboardProps> = ({
       try {
         const newKB = await KnowledgeBaseAPI.createKnowledgeBase(name);
         setKnowledgeBases((prev) => [...prev, newKB]);
-        setSuccess('Knowledge base created successfully');
+        setSuccess('Collection created successfully');
         setCreateKBDialog(false);
       } catch (err: any) {
-        setError(err.message || 'Failed to create knowledge base');
+        setError(err.message || 'Failed to create collection');
       } finally {
         setLoading(false);
       }
@@ -288,11 +288,11 @@ const DashboardComponent: React.FC<DashboardProps> = ({
         setKnowledgeBases((prev) =>
           prev.map((kb) => (kb.id === itemToEdit.id ? { ...kb, name } : kb))
         );
-        setSuccess('Knowledge base updated successfully');
+        setSuccess('Collection updated successfully');
         setEditKBDialog(false);
         setItemToEdit(null);
       } catch (err: any) {
-        setError(err.message || 'Failed to update knowledge base');
+        setError(err.message || 'Failed to update collection');
       } finally {
         setLoading(false);
       }
@@ -312,7 +312,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
     try {
       await KnowledgeBaseAPI.deleteKnowledgeBase(itemToDelete.id);
       setKnowledgeBases((prev) => prev.filter((kb) => kb.id !== itemToDelete.id));
-      setSuccess('Knowledge base deleted successfully');
+      setSuccess('Collection deleted successfully');
     } catch (err: any) {
       setError(err.message || 'Failed to delete item');
     } finally {
@@ -397,7 +397,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
                 lineHeight: 1.2,
               }}
             >
-              Knowledge Bases
+              Collections
             </Typography>
             {actualTotalCount > 0 && (
               <Typography
@@ -417,7 +417,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
 
           <Box sx={{ flexShrink: 0, minWidth: 300 }}>
             <TextField
-              placeholder="Search knowledge bases..."
+              placeholder="Search collections..."
               value={searchQuery}
               onChange={handleSearchChange}
               size="small"
@@ -532,29 +532,6 @@ const DashboardComponent: React.FC<DashboardProps> = ({
           <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
             <Button
               variant="outlined"
-              startIcon={<Icon icon={databaseIcon} fontSize={14} />}
-              onClick={() => routerNavigate('/all-records')}
-              sx={{
-                height: 32,
-                px: 1.5,
-                borderRadius: 1,
-                fontSize: '0.8125rem',
-                fontWeight: 500,
-                textTransform: 'none',
-                borderColor: 'divider',
-                color: 'text.secondary',
-                '&:hover': {
-                  borderColor: 'action.active',
-                  backgroundColor: 'action.hover',
-                  color: 'text.primary',
-                },
-              }}
-            >
-              <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>All Records</Box>
-            </Button>
-
-            <Button
-              variant="outlined"
               startIcon={<Icon icon={teamIcon} fontSize={14} />}
               onClick={() => setTeamManagementOpen(true)}
               sx={{
@@ -595,7 +572,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
                 },
               }}
             >
-              <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>Create KB</Box>
+              <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>Create Collection</Box>
             </Button>
           </Stack>
         </Stack>
@@ -683,7 +660,7 @@ const DashboardComponent: React.FC<DashboardProps> = ({
             }}
           >
             <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.75rem' }}>
-              Showing {displayCount} of {actualTotalCount} knowledge bases
+              Showing {displayCount} of {actualTotalCount} collections
               {hasMore && (
                 <Box
                   component="span"

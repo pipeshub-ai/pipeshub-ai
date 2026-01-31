@@ -1,14 +1,11 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { Icon } from '@iconify/react';
-import arrowUpIcon from '@iconify-icons/mdi/arrow-up';
 import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
-import sparklesIcon from '@iconify-icons/mdi/star-four-points';
 import plusIcon from '@iconify-icons/mdi/plus';
 import searchIcon from '@iconify-icons/mdi/magnify';
-import closeIcon from '@iconify-icons/mdi/close';
 import chevronUpIcon from '@iconify-icons/mdi/chevron-up';
 import appsIcon from '@iconify-icons/mdi/connection';
-import databaseIcon from '@iconify-icons/mdi/database-outline';
+import folderMultipleIcon from '@iconify-icons/mdi/folder-multiple';
 import filterIcon from '@iconify-icons/mdi/filter-variant';
 import { Theme } from '@mui/material/styles';
 
@@ -79,8 +76,8 @@ const SECTIONS = {
     type: 'SOURCE',
   },
   kb: {
-    icon: databaseIcon,
-    label: 'Knowledge',
+    icon: folderMultipleIcon,
+    label: 'Collections',
     type: 'KB',
   },
 } as const;
@@ -309,12 +306,15 @@ const ResourceItem = React.memo(
                 }}
               />
             ) : (
-              <Icon
-                icon={databaseIcon}
+              <img
+                src="/assets/icons/connectors/collections.svg"
+                alt="Collections"
                 width={12}
                 height={12}
-                style={{
-                  color: isDark ? 'rgba(255, 255, 255, 0.6)' : 'rgba(0, 0, 0, 0.6)',
+                style={{ opacity: 0.8 }}
+                onError={(e) => {
+                  (e.currentTarget as HTMLImageElement).src =
+                    '/assets/icons/connectors/collections.svg';
                 }}
               />
             )}

@@ -121,6 +121,7 @@ export interface KnowledgeSearchProps {
   onSearchQueryChange: (query: string) => void;
   onTopKChange: (callback: (prevTopK: number) => number) => void;
   onViewCitations: (recordId: string, extension: string, recordCitation?: SearchResult) => Promise<void>;
+  onManualSearch: () => void;
   recordsMap: Record<string, PipesHub.Record>;
   allConnectors: any[];
 }

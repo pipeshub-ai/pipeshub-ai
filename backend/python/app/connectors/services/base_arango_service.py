@@ -9053,9 +9053,29 @@ class BaseArangoService:
             self.logger.warning("⚠️ No valid files to create after conflict filtering")
             return []
 
-        # Step 2: Extract records and file records from valid files only
-        records = [f["record"] for f in valid_files]
+        # Step 2: Extract and enrich records and file records from valid files only
+        records = []
         file_records = [f["fileRecord"] for f in valid_files]
+
+        for file_data in valid_files:
+            record = file_data["record"].copy()  # Create a copy to avoid modifying original
+
+            # Enrich record with missing KB-specific fields
+            # Determine externalParentId: null for immediate children of KB, parent_folder_id for nested
+            external_parent_id = parent_folder_id if parent_folder_id else None
+
+            # Add missing fields (using setdefault to only add if not already present)
+            record.setdefault("externalGroupId", kb_id)
+            record.setdefault("externalParentId", external_parent_id)
+            record.setdefault("externalRootGroupId", kb_id)
+            record.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
+            record.setdefault("lastSyncTimestamp", timestamp)
+            record.setdefault("isVLMOcrProcessed", False)
+            record.setdefault("extractionStatus", "NOT_STARTED")  # Files need extraction, unlike folders
+            record.setdefault("isLatestVersion", True)
+            record.setdefault("isDirty", False)
+
+            records.append(record)
 
         # Step 3: Create records and file records
         await self.batch_upsert_nodes(records, CollectionNames.RECORDS.value, transaction)
@@ -10287,8 +10307,10 @@ class BaseArangoService:
                     }
 
                 # Step 3: Create RECORDS document for folder
-                # Determine parent: for root folders use KB ID, for nested folders use parent folder ID
-                external_parent_id = parent_folder_id if parent_folder_id else kb_id
+                # Determine parent: for immediate children of record group, externalParentId should be null
+                # For nested folders (under another folder), use parent folder ID
+                # Note: externalParentId is used to distinguish immediate children (null) from nested children (parent folder ID)
+                external_parent_id = parent_folder_id if parent_folder_id else None
                 kb_connector_id = f"knowledgeBase_{org_id}"
                 record_data = {
                     "_key": folder_id,

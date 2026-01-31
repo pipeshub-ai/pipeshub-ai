@@ -474,7 +474,7 @@ const StreamingContent = React.memo(
     // Render a grouped citation (filename [1, 2, 3])
     const renderGroupedCitation = useCallback(
       (
-        group: { citations: number[]; recordName: string; recordId?: string },
+        group: { citations: number[]; recordName: string; recordId?: string; connector?: string },
         lineIndex: number,
         groupIndex: number
       ) => {
@@ -501,7 +501,10 @@ const StreamingContent = React.memo(
         const gap = Math.max(CITATION_SIZE_CONFIG.MIN_GAP, CITATION_SIZE_CONFIG.BASE_GAP * sizeScale);
 
         const truncatedName = truncateFilename(group.recordName, filenameMaxLength);
-
+        let iconPath = '/assets/icons/connectors/collections.svg';
+        if (group.connector) {
+          iconPath = `/assets/icons/connectors/${group.connector.replace(' ', '').toLowerCase()}.svg`;
+        }
         return (
           <Box
             key={groupId}
@@ -520,27 +523,53 @@ const StreamingContent = React.memo(
             }}
           >
             {truncatedName && (
-              <Typography
+              <Box
                 component="span"
-                className={`citation-record-name citation-record-name-${groupId}`}
                 sx={{
-                  fontSize: `${fontSize}rem`,
-                  fontWeight: isGroupHovered ? 600 : 500,
-                  color: isGroupHovered ? 'primary.main' : 'text.secondary',
-                  transition: 'all 0.2s ease',
-                  lineHeight: 1.2,
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 0.5,
                   maxWidth,
                   overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  position: 'relative',
-                  zIndex: 1,
-                  pointerEvents: 'none',
-                  flexShrink: 1,
                 }}
               >
-                {truncatedName}
-              </Typography>
+                <img
+                  src={iconPath}
+                  alt={group.connector}
+                  width={20}
+                  height={20}
+                  style={{
+                    objectFit: 'contain',
+                    borderRadius: '2px',
+                    flexShrink: 0,
+                    opacity: isGroupHovered ? 1 : 0.8,
+                    transition: 'opacity 0.2s ease',
+                  }}
+                  onError={(e) => {
+                    e.currentTarget.src = '/assets/icons/connectors/collections.svg';
+                  }}
+                />
+                <Typography
+                  component="span"
+                  className={`citation-record-name citation-record-name-${groupId}`}
+                  sx={{
+                    fontSize: `${fontSize}rem`,
+                    fontWeight: isGroupHovered ? 600 : 500,
+                    color: isGroupHovered ? 'primary.main' : 'text.secondary',
+                    transition: 'all 0.2s ease',
+                    lineHeight: 1.2,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                    position: 'relative',
+                    zIndex: 1,
+                    pointerEvents: 'none',
+                    flexShrink: 1,
+                  }}
+                >
+                  {truncatedName}
+                </Typography>
+              </Box>
             )}
             <Box
               component="span"
@@ -603,7 +632,7 @@ const StreamingContent = React.memo(
         // Split by citations while keeping the citations
         const parts = text.split(/(\[\d+\])/g);
         const result: React.ReactNode[] = [];
-        let currentGroup: { citations: number[]; recordName: string; recordId?: string } | null = null;
+        let currentGroup: { citations: number[]; recordName: string; recordId?: string; connector?: string } | null = null;
         let groupIndex = 0;
 
         for (let i = 0; i < parts.length; i += 1) {
@@ -617,6 +646,7 @@ const StreamingContent = React.memo(
             if (citation) {
               const recordName = citation.metadata?.recordName || '';
               const recordId = citation.metadata?.recordId;
+              const connector = citation.metadata?.connector;
 
               // Check if this citation belongs to the current group
               if (
@@ -639,6 +669,7 @@ const StreamingContent = React.memo(
                   citations: [citationNumber],
                   recordName,
                   recordId,
+                  connector,
                 };
               }
             } else {

@@ -33,7 +33,7 @@ function getClientIp(req: Request): string {
 export function createGlobalRateLimiter(logger: Logger): RequestHandler {
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
-    max: process.env.MAX_REQUESTS_PER_MINUTE ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10) : 500,
+    max: process.env.MAX_REQUESTS_PER_MINUTE ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10) : 1000,
     standardHeaders: true,
     legacyHeaders: false,
 

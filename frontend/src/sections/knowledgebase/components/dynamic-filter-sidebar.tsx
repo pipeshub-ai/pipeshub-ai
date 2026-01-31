@@ -11,7 +11,7 @@ import filterVariantIcon from '@iconify-icons/mdi/filter-variant';
 import fileDocumentIcon from '@iconify-icons/mdi/file-document';
 import sourceBranchIcon from '@iconify-icons/mdi/source-branch';
 import connectionIcon from '@iconify-icons/mdi/connection';
-import bookOpenVariantIcon from '@iconify-icons/mdi/book-open-variant';
+import folderMultipleIcon from '@iconify-icons/mdi/folder-multiple';
 import sortIcon from '@iconify-icons/mdi/sort';
 import sortVariantIcon from '@iconify-icons/mdi/sort-variant';
 
@@ -62,6 +62,8 @@ import {
   IconButton,
   FormControlLabel,
   CircularProgress,
+  Skeleton,
+  Stack,
 } from '@mui/material';
 
 // Constants
@@ -76,7 +78,7 @@ const getFilterOptionIcon = (filterId: string): any => {
     record: fileIcon,
     recordGroup: folderOpenIcon,
     app: appsIcon,
-    kb: bookOpenVariantIcon,
+    kb: folderMultipleIcon,
     
     // Record Types
     FILE: fileIcon,
@@ -89,7 +91,7 @@ const getFilterOptionIcon = (filterId: string): any => {
     OTHERS: dotsHorizontalIcon,
     
     // Origins
-    KB: bookOpenVariantIcon,
+    KB: folderMultipleIcon,
     CONNECTOR: connectionIcon,
     
     // Indexing Status
@@ -448,8 +450,9 @@ export default function DynamicFilterSidebar({
   const [showCollapsedContent, setShowCollapsedContent] = useState(!open);
   const [showExpandedContent, setShowExpandedContent] = useState(open);
   const [isLoadingLocal, setIsLoadingLocal] = useState(false);
+  const [initialLoading, setInitialLoading] = useState(true);
   const isFilterChanging = useRef(false);
-  
+
   // Combine local and prop loading states
   const isLoading = isLoadingProp || isLoadingLocal;
 
@@ -463,6 +466,13 @@ export default function DynamicFilterSidebar({
       setTimeout(() => setShowCollapsedContent(true), 100);
     }
   }, [open]);
+
+  // Set initialLoading to false when filters are loaded
+  useEffect(() => {
+    if (Object.keys(availableFilters).length > 0) {
+      setInitialLoading(false);
+    }
+  }, [availableFilters]);
 
   const handleDrawerToggle = () => {
     const newState = !isOpen;
@@ -715,6 +725,66 @@ export default function DynamicFilterSidebar({
     );
   };
 
+  // Skeleton loader for filters
+  const renderFiltersSkeleton = () => (
+    <Box sx={{ p: 2 }}>
+      {[1, 2, 3, 4, 5].map((section) => (
+        <Box key={section} sx={{ mb: 3 }}>
+          {/* Filter Section Header Skeleton */}
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 1.5 }}>
+            <Skeleton
+              variant="circular"
+              width={20}
+              height={20}
+              sx={{ bgcolor: alpha(theme.palette.text.secondary, theme.palette.mode === 'dark' ? 0.1 : 0.08) }}
+            />
+            <Skeleton
+              variant="text"
+              width={120}
+              height={20}
+              sx={{ bgcolor: alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.1 : 0.08) }}
+            />
+          </Box>
+          {/* Filter Options Skeleton */}
+          {[1, 2, 3].map((item) => (
+            <Box
+              key={item}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                mb: 1,
+                ml: 1,
+              }}
+            >
+              <Skeleton
+                variant="circular"
+                width={18}
+                height={18}
+                sx={{ bgcolor: alpha(theme.palette.primary.main, 0.1) }}
+              />
+              <Skeleton
+                variant="rounded"
+                width={16}
+                height={16}
+                sx={{
+                  borderRadius: 0.5,
+                  bgcolor: alpha(theme.palette.text.secondary, theme.palette.mode === 'dark' ? 0.08 : 0.06),
+                }}
+              />
+              <Skeleton
+                variant="text"
+                width="60%"
+                height={16}
+                sx={{ bgcolor: alpha(theme.palette.text.secondary, theme.palette.mode === 'dark' ? 0.08 : 0.06) }}
+              />
+            </Box>
+          ))}
+        </Box>
+      ))}
+    </Box>
+  );
+
   const renderActiveFilters = () => {
     if (totalActiveFilterCount === 0) return null;
 
@@ -768,7 +838,7 @@ export default function DynamicFilterSidebar({
     { key: 'recordTypes', title: 'Record Type', icon: fileDocumentIcon, data: availableFilters.recordTypes, isSingleSelect: false },
     { key: 'origins', title: 'Origin', icon: sourceBranchIcon, data: availableFilters.origins, isSingleSelect: false },
     { key: 'connectors', title: 'Connectors', icon: connectionIcon, data: availableFilters.connectors, isSingleSelect: false },
-    { key: 'kbs', title: 'Knowledge Bases', icon: bookOpenVariantIcon, data: availableFilters.kbs, isSingleSelect: false },
+    { key: 'kbs', title: 'Collections', icon: folderMultipleIcon, data: availableFilters.kbs, isSingleSelect: false },
     { key: 'sortBy', title: 'Sort By', icon: sortIcon, data: availableFilters.sortBy, isSingleSelect: true },
     { key: 'sortOrder', title: 'Sort Order', icon: sortVariantIcon, data: availableFilters.sortOrder, isSingleSelect: true },
   ];
@@ -831,12 +901,18 @@ export default function DynamicFilterSidebar({
       ) : (
         <ExpandedContentContainer visible={showExpandedContent}>
           <FiltersContainer>
-            {renderActiveFilters()}
-            {filterSections.map(
-              (section) =>
-                section.data &&
-                section.data.length > 0 &&
-                renderFilterSection(section.key, section.title, section.icon, section.data, section.isSingleSelect)
+            {initialLoading ? (
+              renderFiltersSkeleton()
+            ) : (
+              <>
+                {renderActiveFilters()}
+                {filterSections.map(
+                  (section) =>
+                    section.data &&
+                    section.data.length > 0 &&
+                    renderFilterSection(section.key, section.title, section.icon, section.data, section.isSingleSelect)
+                )}
+              </>
             )}
           </FiltersContainer>
         </ExpandedContentContainer>
@@ -844,4 +920,3 @@ export default function DynamicFilterSidebar({
     </StyledDrawer>
   );
 }
-

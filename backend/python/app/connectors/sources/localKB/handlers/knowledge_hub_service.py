@@ -244,7 +244,7 @@ class KnowledgeHubService:
                     node_id=parent_id,
                     folder_mime_types=FOLDER_MIME_TYPES,
                 )
-                if parent_info:
+                if parent_info and parent_info.get('id') and parent_info.get('name'):
                     parent_node = CurrentNode(
                         id=parent_info['id'],
                         name=parent_info['name'],
@@ -666,7 +666,7 @@ class KnowledgeHubService:
                 FilterOption(
                     id=k['id'],
                     label=k['name'],
-                    iconPath='/assets/icons/connectors/default.svg'
+                    iconPath='/assets/icons/connectors/collections.svg'
                 )
                 for k in kbs_data
             ]
@@ -1054,13 +1054,13 @@ class KnowledgeHubService:
             node_id=node_id,
             folder_mime_types=FOLDER_MIME_TYPES,
         )
-        if node_info:
-                return CurrentNode(
+        if node_info and node_info.get('id') and node_info.get('name'):
+            return CurrentNode(
                 id=node_info['id'],
                 name=node_info['name'],
                 nodeType=node_info['nodeType'],
                 subType=node_info.get('subType'),
-                )
+            )
         return None
 
 

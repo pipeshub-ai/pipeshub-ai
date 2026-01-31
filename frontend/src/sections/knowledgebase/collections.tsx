@@ -85,7 +85,7 @@ const CompactCard = styled(Card)(({ theme }) => ({
   },
 }));
 
-export default function KnowledgeBaseComponent() {
+export default function Collections() {
   const theme = useTheme();
   const { route, navigate, isInitialized } = useRouter();
 
@@ -1056,7 +1056,7 @@ export default function KnowledgeBaseComponent() {
     try {
       if (itemToDelete.type === 'folder') {
         if (!currentKB) {
-          setError('No knowledge base selected');
+          setError('No collection selected');
           return;
         }
         await KnowledgeBaseAPI.deleteFolder(currentKB.id, itemToDelete.id);
@@ -1415,7 +1415,7 @@ export default function KnowledgeBaseComponent() {
 
     const name = `<strong>${itemToDelete.name}</strong>`;
     if (itemToDelete.type === 'kb') {
-      return `Are you sure you want to delete ${name}? This will permanently delete the knowledge base and all its contents. This action cannot be undone.`;
+      return `Are you sure you want to delete ${name}? This will permanently delete the collection and all its contents. This action cannot be undone.`;
     }
     if (itemToDelete.type === 'folder') {
       return `Are you sure you want to delete ${name}? This will permanently delete the folder and all its contents. This action cannot be undone.`;
