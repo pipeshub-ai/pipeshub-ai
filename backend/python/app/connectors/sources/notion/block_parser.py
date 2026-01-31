@@ -16,6 +16,7 @@ from app.models.blocks import (
     BlockComment,
     BlockContainerIndex,
     BlockGroup,
+    BlockGroupChildren,
     BlockSubType,
     BlockType,
     ChildRecord,
@@ -1367,6 +1368,7 @@ class NotionBlockParser:
             type=GroupType.COLUMN_LIST,
             source_group_id=notion_block.get("id"),
             description="Column Layout Container",
+            children=[],
         )
 
     async def _parse_column(
@@ -1389,6 +1391,7 @@ class NotionBlockParser:
             source_group_id=notion_block.get("id"),
             description=f"Column (width: {width_ratio:.1%})" if width_ratio else "Column",
             data={"width_ratio": width_ratio, "has_children": notion_block.get("has_children", False)} if width_ratio else None,
+            children=[],
         )
 
     async def _parse_toggle(
@@ -1423,6 +1426,7 @@ class NotionBlockParser:
             name=text[:50] if text else "Toggle",
             description="Toggle Block",  # Indicate this is a toggle
             format=DataFormat.MARKDOWN,
+            children=[],
         )
 
     async def _parse_synced_block(
@@ -1477,6 +1481,7 @@ class NotionBlockParser:
             name="Synced Block" + (" (Reference)" if is_reference else " (Original)"),
             description=f"Synced block {'reference' if is_reference else 'original'}",
             format=DataFormat.JSON,
+            children=[],
         )
 
     # ============================================================================
@@ -1524,6 +1529,7 @@ class NotionBlockParser:
             description=description,
             data={"has_row_header": has_row_header} if has_row_header else None,
             format=DataFormat.JSON,
+            children=[],
         )
 
     async def _parse_table_row(
@@ -1650,7 +1656,7 @@ class NotionBlockParser:
                 "column_headers": column_names,  # Will be LLM-enhanced during indexing
                 "table_markdown": table_markdown,  # Used by LLM for enhancement
             },
-            children=[],
+            children=BlockGroupChildren(),
         )
         block_groups.append(table_group)
 
@@ -1671,7 +1677,7 @@ class NotionBlockParser:
             table_row_metadata=TableRowMetadata(row_number=1, is_header=True),
         )
         blocks.append(header_block)
-        table_group.children.append(BlockContainerIndex(block_index=0))
+        table_group.children.add_block_index(0)
 
         # Extract cell values (LLM row descriptions will be generated during indexing)
         row_cell_values, row_dicts, relations_and_people_list = await self._extract_row_cell_values(
@@ -1927,7 +1933,7 @@ class NotionBlockParser:
                 )
 
             blocks.append(row_block)
-            table_group.children.append(BlockContainerIndex(block_index=row_block.index))
+            table_group.children.add_block_index(row_block.index)
 
     async def _extract_property_value_with_resolution(
         self,
@@ -2684,10 +2690,13 @@ class NotionBlockParser:
 
         # Create the group
         group_index = len(block_groups)
+        group_children = BlockGroupChildren()
+        for idx in group_block_indices:
+            group_children.add_block_index(idx)
         group = BlockGroup(
             index=group_index,
             type=GroupType.ORDERED_LIST if list_style == "numbered" else GroupType.LIST,
-            children=[BlockContainerIndex(block_index=idx) for idx in group_block_indices],
+            children=group_children,
             list_metadata=blocks[group_block_indices[0]].list_metadata,
         )
         block_groups.append(group)
@@ -2695,6 +2704,35 @@ class NotionBlockParser:
         # Update blocks to point to the group
         for idx in group_block_indices:
             blocks[idx].parent_index = group_index
+
+    def _convert_indices_to_block_group_children(
+        self,
+        indices: Optional[List[BlockContainerIndex]]
+    ) -> Optional[BlockGroupChildren]:
+        """
+        Convert List[BlockContainerIndex] to BlockGroupChildren.
+
+        Args:
+            indices: List of BlockContainerIndex objects or None
+
+        Returns:
+            BlockGroupChildren object or None if indices is empty/None
+        """
+        if not indices:
+            return None
+
+        children = BlockGroupChildren()
+        for idx in indices:
+            if idx.block_index is not None:
+                children.add_block_index(idx.block_index)
+            if idx.block_group_index is not None:
+                children.add_block_group_index(idx.block_group_index)
+
+        # Return None if empty (for cleaner JSON)
+        if not children.block_ranges and not children.block_group_ranges:
+            return None
+
+        return children
 
     # ============================================================================
     # Comment Parsing Methods
@@ -2830,7 +2868,7 @@ class NotionBlockParser:
             data=comment_data,
             format=DataFormat.JSON,  # Data is JSON-structured
             description=f"Comment by {block_comment.author_name or 'Unknown'}",
-            children=attachment_block_indices if attachment_block_indices else [],
+            children=self._convert_indices_to_block_group_children(attachment_block_indices) if attachment_block_indices else None,
             weburl=block_comment.weburl,
         )
 
@@ -2860,6 +2898,6 @@ class NotionBlockParser:
             sub_type=GroupSubType.COMMENT_THREAD,
             source_group_id=discussion_id,
             description=f"Comment thread ({len(comment_group_indices)} comments)",
-            children=comment_group_indices
+            children=self._convert_indices_to_block_group_children(comment_group_indices)
         )
 

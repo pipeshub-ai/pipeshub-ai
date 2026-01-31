@@ -672,23 +672,48 @@ class Processor:
                     row_dicts = []
 
                     if table_group.children:
-                        for child_idx in table_group.children:
-                            if child_idx.block_index is not None:
-                                block = block_containers.blocks[child_idx.block_index]
-                                if block.type == BlockType.TABLE_ROW:
-                                    row_blocks.append(block)
-                                    # Extract row dict from block data
-                                    if block.data and "cells" in block.data:
-                                        # Create row dict mapping column headers to cell values
-                                        cells = block.data["cells"]
-                                        if isinstance(cells, list) and column_headers:
-                                            row_dict = {
-                                                col: cells[i] if i < len(cells) else ""
-                                                for i, col in enumerate(column_headers)
-                                            }
-                                            row_dicts.append(row_dict)
-                                        else:
-                                            row_dicts.append({})
+                        # Handle new BlockGroupChildren format (range-based)
+                        if isinstance(table_group.children, BlockGroupChildren):
+                            # Iterate over block ranges and expand to individual indices
+                            for range_obj in table_group.children.block_ranges:
+                                for block_index in range(range_obj.start, range_obj.end + 1):
+                                    if 0 <= block_index < len(block_containers.blocks):
+                                        block = block_containers.blocks[block_index]
+                                        if block.type == BlockType.TABLE_ROW:
+                                            row_blocks.append(block)
+                                            # Extract row dict from block data
+                                            if block.data and "cells" in block.data:
+                                                # Create row dict mapping column headers to cell values
+                                                cells = block.data["cells"]
+                                                if isinstance(cells, list) and column_headers:
+                                                    row_dict = {
+                                                        col: cells[i] if i < len(cells) else ""
+                                                        for i, col in enumerate(column_headers)
+                                                    }
+                                                    row_dicts.append(row_dict)
+                                                else:
+                                                    row_dicts.append({})
+                        # Handle old format (list of BlockContainerIndex) for backward compatibility
+                        elif isinstance(table_group.children, list):
+                            for child_idx in table_group.children:
+                                if isinstance(child_idx, BlockContainerIndex) and child_idx.block_index is not None:
+                                    block_index = child_idx.block_index
+                                    if 0 <= block_index < len(block_containers.blocks):
+                                        block = block_containers.blocks[block_index]
+                                        if block.type == BlockType.TABLE_ROW:
+                                            row_blocks.append(block)
+                                            # Extract row dict from block data
+                                            if block.data and "cells" in block.data:
+                                                # Create row dict mapping column headers to cell values
+                                                cells = block.data["cells"]
+                                                if isinstance(cells, list) and column_headers:
+                                                    row_dict = {
+                                                        col: cells[i] if i < len(cells) else ""
+                                                        for i, col in enumerate(column_headers)
+                                                    }
+                                                    row_dicts.append(row_dict)
+                                                else:
+                                                    row_dicts.append({})
 
                     # Generate LLM row descriptions (skip header rows)
                     # Filter out header rows using is_header flag from table_row_metadata
