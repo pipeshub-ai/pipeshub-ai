@@ -6,6 +6,7 @@ object storage systems. The base classes and utilities here are used by both
 S3Connector and MinIOConnector to avoid code duplication.
 """
 
+import asyncio
 import mimetypes
 import uuid
 from abc import abstractmethod
@@ -187,13 +188,10 @@ def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str
 
 
 def make_s3_composite_revision(bucket_name: str, normalized_key: str, raw_etag: Optional[str]) -> str:
-    """Build a unique external_revision_id per record (key + etag) so ETags cannot collide across keys.
-
-    S3 ETags can be identical for different keys (e.g. same MD5 for identical content).
-    Use this composite only for storage and lookup; keep raw etag in FileRecord.etag for display/S3 semantics.
-    """
+    """Build external_revision_id for S3. Uses bucket/etag so move/rename can be detected
+    (same etag in same bucket). When etag is missing, falls back to bucket/key for uniqueness."""
     if raw_etag:
-        return f"{bucket_name}/{normalized_key}|{raw_etag}"
+        return f"{bucket_name}/{raw_etag}"
     return f"{bucket_name}/{normalized_key}|"
 
 
@@ -808,13 +806,22 @@ class S3CompatibleBaseConnector(BaseConnector):
         if not path_segments:
             return
         timestamp_ms = get_epoch_timestamp_in_ms()
+        external_ids = [f"{bucket_name}/{segment}" for segment in path_segments]
+        async with self.data_store_provider.transaction() as tx_store:
+            results = await asyncio.gather(
+                *[
+                    tx_store.get_record_by_external_id(
+                        connector_id=self.connector_id, external_id=eid
+                    )
+                    for eid in external_ids
+                ]
+            )
+        existing_external_ids = {
+            eid for eid, rec in zip(external_ids, results) if rec is not None
+        }
         for i, segment in enumerate(path_segments):
             external_id = f"{bucket_name}/{segment}"
-            async with self.data_store_provider.transaction() as tx_store:
-                existing = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id, external_id=external_id
-                )
-            if existing:
+            if external_id in existing_external_ids:
                 continue
             # Root folder: first segment has no parent. Others: parent is previous segment.
             parent_external_id = (
