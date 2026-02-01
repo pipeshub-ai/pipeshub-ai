@@ -25,32 +25,34 @@ class BlobStorage(Transformer):
 
     def _compress_record(self, record: dict) -> tuple[str, int]:
         """
-        Compress record data using zstd.
+        Compress record data using msgpack + zstd.
         Returns: (base64_encoded_compressed_data, original_size)
         """
         import base64
+        import msgpack
         import zstandard as zstd
         
-        json_str = json.dumps(record)
-        original_size = len(json_str)
-        json_bytes = json_str.encode('utf-8')
+        # Serialize directly to bytes using msgpack (faster than JSON)
+        msgpack_bytes = msgpack.packb(record)
+        original_size = len(msgpack_bytes)
         
-        # Compression level 3: balanced speed/ratio
+        # Compression level 10: maximum compression
         compressor = zstd.ZstdCompressor(level=10)
-        compressed = compressor.compress(json_bytes)
+        compressed = compressor.compress(msgpack_bytes)
         
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
-        self.logger.info("📦 Compressed record: %d -> %d bytes (%.1f%% reduction)", 
+        self.logger.info("📦 Compressed record (msgpack): %d -> %d bytes (%.1f%% reduction)", 
                         original_size, compressed_size, ratio)
         
         return base64.b64encode(compressed).decode('utf-8'), original_size
 
     def _decompress_record(self, compressed_data: str) -> dict:
         """
-        Decompress zstd-compressed record data.
+        Decompress zstd-compressed record data (msgpack format).
         """
         import base64
+        import msgpack
         import zstandard as zstd
         
         compressed_bytes = base64.b64decode(compressed_data)
@@ -58,8 +60,8 @@ class BlobStorage(Transformer):
         decompressor = zstd.ZstdDecompressor()
         decompressed = decompressor.decompress(compressed_bytes)
         
-        json_str = decompressed.decode('utf-8')
-        return json.loads(json_str)
+        # Direct msgpack parsing - no UTF-8 decode needed
+        return msgpack.unpackb(decompressed)
 
     def _decompress_bytes(self, compressed_bytes: bytes) -> bytes:
         """
@@ -77,10 +79,11 @@ class BlobStorage(Transformer):
         Supports new isCompressed flag format and backward compatibility with uncompressed records.
         """
         import base64
+        import msgpack
         
         # NEW FORMAT: Check for isCompressed flag
         if data.get("isCompressed"):
-            self.logger.info("🔍 Decompressing compressed record")
+            self.logger.info("🔍 Decompressing compressed record (msgpack format)")
             compressed_base64 = data.get("record")
             if not compressed_base64:
                 self.logger.error("❌ isCompressed is true but no record found")
@@ -101,21 +104,15 @@ class BlobStorage(Transformer):
                 decompress_duration_ms = (time.time() - decompress_start) * 1000
                 self.logger.info("⏱️ Decompression completed in %.0fms (decompressed size: %d bytes)", decompress_duration_ms, len(decompressed_bytes))
                 
-                # Step 3: UTF-8 decode
-                utf8_start = time.time()
-                json_str = decompressed_bytes.decode('utf-8')
-                utf8_duration_ms = (time.time() - utf8_start) * 1000
-                self.logger.info("⏱️ UTF-8 decode completed in %.0fms (string length: %d chars)", utf8_duration_ms, len(json_str))
-                
-                # Step 4: JSON parse
-                json_parse_start = time.time()
-                record = json.loads(json_str)
-                json_parse_duration_ms = (time.time() - json_parse_start) * 1000
-                self.logger.info("⏱️ JSON parsing completed in %.0fms", json_parse_duration_ms)
+                # Step 3: MessagePack parse (no UTF-8 decode needed - direct bytes to dict)
+                msgpack_parse_start = time.time()
+                record = msgpack.unpackb(decompressed_bytes)
+                msgpack_parse_duration_ms = (time.time() - msgpack_parse_start) * 1000
+                self.logger.info("⏱️ MessagePack parsing completed in %.0fms", msgpack_parse_duration_ms)
                 
                 overall_processing_ms = (time.time() - overall_processing_start) * 1000
-                self.logger.info("📦 Total record processing completed in %.0fms (base64: %.0fms, decompress: %.0fms, utf8: %.0fms, json: %.0fms)", 
-                                overall_processing_ms, base64_duration_ms, decompress_duration_ms, utf8_duration_ms, json_parse_duration_ms)
+                self.logger.info("📦 Total record processing completed in %.0fms (base64: %.0fms, decompress: %.0fms, msgpack: %.0fms)", 
+                                overall_processing_ms, base64_duration_ms, decompress_duration_ms, msgpack_parse_duration_ms)
                 return record
                 
             except Exception as e:
@@ -342,13 +339,15 @@ class BlobStorage(Transformer):
                     placeholder_data = {
                         "documentName": f"record_{record_id}",
                         "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
+                        "extension": "msgpack",
                         "customMetadata": [
                             {
                                 "key": "compression",
                                 "value": {
                                     "algorithm": "zstd",
                                     "level": 10,
+                                    "format": "msgpack",
+                                    "version": "v0",
                                     "originalSize": original_size,
                                     "compressed": True
                                 }
