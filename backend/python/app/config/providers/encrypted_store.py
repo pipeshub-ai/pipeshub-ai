@@ -204,10 +204,9 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                         decrypted_value = self.encryption_service.decrypt(
                             encrypted_stored_value
                         )
+                        stored_value = json.loads(decrypted_value)
                     else:
-                        decrypted_value = encrypted_stored_value
-                    # decrypted_value is always a JSON string, parse it
-                    stored_value = json.loads(decrypted_value)
+                        stored_value = encrypted_stored_value
 
                     if stored_value != value:
                         self.logger.warning("Verification failed for key: %s", key)

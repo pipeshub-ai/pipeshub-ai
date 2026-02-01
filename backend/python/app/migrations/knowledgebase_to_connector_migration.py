@@ -111,6 +111,8 @@ class KnowledgeBaseToConnectorMigrationService:
                     "kb_app_edges_created": 0,
                     "record_relations_deleted": 0,
                     "records_updated": 0,
+                    "file_records_enriched": 0,
+                    "folders_external_parent_id_fixed": 0,
                     "errors": []
                 }
 
@@ -128,6 +130,8 @@ class KnowledgeBaseToConnectorMigrationService:
                     "kb_app_edges_created": 0,
                     "record_relations_deleted": 0,
                     "records_updated": 0,
+                    "file_records_enriched": 0,
+                    "folders_external_parent_id_fixed": 0,
                     "errors": []
                 }
 
@@ -143,6 +147,8 @@ class KnowledgeBaseToConnectorMigrationService:
             total_kb_app_edges = 0
             total_record_relations_deleted = 0
             total_records_updated = 0
+            total_file_records_enriched = 0
+            total_folders_external_parent_id_fixed = 0
             errors = []
 
             for org in orgs:
@@ -156,6 +162,8 @@ class KnowledgeBaseToConnectorMigrationService:
                         total_kb_app_edges += result.get("kb_app_edges_created", 0)
                         total_record_relations_deleted += result.get("record_relations_deleted", 0)
                         total_records_updated += result.get("records_updated", 0)
+                        total_file_records_enriched += result.get("file_records_enriched", 0)
+                        total_folders_external_parent_id_fixed += result.get("folders_external_parent_id_fixed", 0)
                         self.logger.info(
                             f"✅ Successfully migrated KBs for org {org_id}: "
                             f"{result.get('apps_created', 0)} apps created, "
@@ -163,7 +171,9 @@ class KnowledgeBaseToConnectorMigrationService:
                             f"{result.get('user_app_relations_created', 0)} user-app relations, "
                             f"{result.get('kb_app_edges_created', 0)} kb-app edges, "
                             f"{result.get('record_relations_deleted', 0)} record_relations deleted, "
-                            f"{result.get('records_updated', 0)} records updated"
+                            f"{result.get('records_updated', 0)} records updated, "
+                            f"{result.get('file_records_enriched', 0)} file records enriched, "
+                            f"{result.get('folders_external_parent_id_fixed', 0)} folders externalParentId fixed"
                         )
                     else:
                         errors.append({
@@ -188,6 +198,8 @@ class KnowledgeBaseToConnectorMigrationService:
                 "kb_app_edges_created": total_kb_app_edges,
                 "record_relations_deleted": total_record_relations_deleted,
                 "records_updated": total_records_updated,
+                "file_records_enriched": total_file_records_enriched,
+                "folders_external_parent_id_fixed": total_folders_external_parent_id_fixed,
                 "errors": errors
             }
 
@@ -204,6 +216,8 @@ class KnowledgeBaseToConnectorMigrationService:
                 f"{summary['kb_app_edges_created']} kb-app edges, "
                 f"{summary['record_relations_deleted']} record_relations deleted, "
                 f"{summary['records_updated']} records updated, "
+                f"{summary['file_records_enriched']} file records enriched, "
+                f"{summary['folders_external_parent_id_fixed']} folders externalParentId fixed, "
                 f"{len(errors)} errors"
             )
 
@@ -290,6 +304,7 @@ class KnowledgeBaseToConnectorMigrationService:
         total_record_relations_to_delete = 0
         total_kb_app_edges_to_create = 0
         total_records_to_update = 0
+        total_file_records_to_enrich = 0
         total_user_app_relations_to_create = 0
 
         for org in orgs:
@@ -348,6 +363,10 @@ class KnowledgeBaseToConnectorMigrationService:
                 records_count = await self._count_kb_records(kb_id)
                 total_records_to_update += records_count
 
+                # Count file records that need enrichment
+                file_records_count = await self._count_kb_file_records(kb_id)
+                total_file_records_to_enrich += file_records_count
+
         return {
             "success": True,
             "dry_run": True,
@@ -358,6 +377,7 @@ class KnowledgeBaseToConnectorMigrationService:
             "record_relations_to_delete": total_record_relations_to_delete,
             "kb_app_edges_to_create": total_kb_app_edges_to_create,
             "records_to_update": total_records_to_update,
+            "file_records_to_enrich": total_file_records_to_enrich,
             "orgs_needing_apps_list": orgs_needing_apps
         }
 
@@ -425,16 +445,25 @@ class KnowledgeBaseToConnectorMigrationService:
                         "user_app_relations_created": user_app_relations_created,
                         "kb_app_edges_created": 0,
                         "record_relations_deleted": 0,
-                        "records_updated": 0
+                        "records_updated": 0,
+                        "file_records_enriched": 0,
+                        "folders_external_parent_id_fixed": 0
                     }
 
                 # Step 4: For each KB, process migration
                 kb_app_edges_created = 0
                 record_relations_deleted = 0
                 records_updated = 0
+                file_records_enriched = 0
+                folders_external_parent_id_fixed = 0
 
                 for kb in kbs:
                     kb_id = kb.get('_key')
+
+                    # Skip if kb_id is missing or None
+                    if not kb_id:
+                        self.logger.warning(f"Skipping KB record with missing _key: {kb}")
+                        continue
 
                     # 3a. Create belongs_to edge from KB record group to KB app
                     if await self._create_kb_to_app_edge(kb_id, kb_app_id, transaction):
@@ -442,7 +471,13 @@ class KnowledgeBaseToConnectorMigrationService:
                     # 3b. Update records' connectorId to KB app ID
                     updated_count = await self._update_records_connector_id(kb_id, kb_app_id, transaction)
                     records_updated += updated_count
-                    # 3c. Delete record_relations edges from KB to records
+                    # 3c. Enrich KB file records with missing fields
+                    enriched_count = await self._enrich_kb_file_records(kb_id, kb_app_id, transaction)
+                    file_records_enriched += enriched_count
+                    # 3c.1. Fix externalParentId for immediate children folders
+                    fixed_folders_count = await self._fix_kb_folder_external_parent_id(kb_id, transaction)
+                    folders_external_parent_id_fixed += fixed_folders_count
+                    # 3d. Delete record_relations edges from KB to records
                     deleted_count = await self._delete_record_relations_edges(kb_id, transaction)
                     record_relations_deleted += deleted_count
 
@@ -457,7 +492,9 @@ class KnowledgeBaseToConnectorMigrationService:
                     "user_app_relations_created": user_app_relations_created,
                     "kb_app_edges_created": kb_app_edges_created,
                     "record_relations_deleted": record_relations_deleted,
-                    "records_updated": records_updated
+                    "records_updated": records_updated,
+                    "file_records_enriched": file_records_enriched,
+                    "folders_external_parent_id_fixed": folders_external_parent_id_fixed
                 }
 
             except Exception:
@@ -904,6 +941,294 @@ class KnowledgeBaseToConnectorMigrationService:
             self.logger.error(f"Failed to update records connectorId: {str(e)}")
             raise
 
+    async def _enrich_kb_file_records(self, kb_id: str, kb_app_id: str, transaction) -> int:
+        """
+        Enrich KB file records with missing fields.
+
+        Adds fields that are present in folder records but missing in file records.
+        Sets externalParentId to null for immediate children of KB record groups.
+
+        Args:
+            kb_id: Knowledge Base record group ID
+            kb_app_id: Knowledge Base app ID (for validation)
+            transaction: Database transaction
+
+        Returns:
+            Number of file records updated
+        """
+        if not kb_id:
+            self.logger.warning("Cannot enrich KB file records: kb_id is missing or empty")
+            return 0
+        try:
+            current_timestamp = get_epoch_timestamp_in_ms()
+            kb_doc_id = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+
+            # Find all KB records via both belongsTo (new) and recordRelations (old) edges
+            query = f"""
+            LET kb_records = UNION_DISTINCT(
+                // New structure: via belongsTo edges
+                FOR edge IN {CollectionNames.BELONGS_TO.value}
+                    FILTER edge._to == @kb_doc_id
+                        AND edge.entityType == @entity_type
+                    LET record = DOCUMENT(edge._from)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+                ,
+                // Old structure: via recordRelations edges (during migration)
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == @kb_doc_id
+                        AND edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+            )
+
+            // Filter to file records only (not folders)
+            FOR record_id IN kb_records
+                LET record = DOCUMENT(record_id)
+                FILTER record != null
+
+                // Check if it's a file record (not a folder)
+                LET file_info = FIRST(
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET file = DOCUMENT(edge._to)
+                        FILTER file != null AND file.isFile == true
+                        RETURN file
+                )
+                FILTER file_info != null
+
+                // Determine if immediate child: has recordRelations edge FROM KB record group TO this record
+                // In old format, immediate children had both belongsTo and recordRelations edges from KB
+                LET is_immediate_child = LENGTH(
+                    FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                        FILTER edge._from == @kb_doc_id
+                            AND edge._to == record._id
+                            AND edge.relationshipType == "PARENT_CHILD"
+                        RETURN 1
+                ) > 0
+
+                // Determine parent folder ID for nested files (recordRelations from another record)
+                LET parent_folder_id = !is_immediate_child ? FIRST(
+                    FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                        FILTER edge._to == record._id
+                            AND edge.relationshipType == "PARENT_CHILD"
+                            AND edge._from != @kb_doc_id
+                        LET parent = DOCUMENT(edge._from)
+                        FILTER parent != null
+                        FILTER IS_SAME_COLLECTION(@records_collection, parent._id)
+                        RETURN PARSE_IDENTIFIER(parent._id).key
+                ) : null
+
+                // Update record with missing fields (only if not already set)
+                UPDATE record WITH {{
+                    externalGroupId: record.externalGroupId != null ? record.externalGroupId : @kb_id,
+                    externalParentId: record.externalParentId != null ? record.externalParentId : (is_immediate_child ? null : parent_folder_id),
+                    externalRootGroupId: record.externalRootGroupId != null ? record.externalRootGroupId : @kb_id,
+                    connectorName: record.connectorName != null ? record.connectorName : @kb_connector,
+                    lastSyncTimestamp: record.lastSyncTimestamp != null ? record.lastSyncTimestamp : @timestamp,
+                    isVLMOcrProcessed: record.isVLMOcrProcessed != null ? record.isVLMOcrProcessed : false,
+                    extractionStatus: record.extractionStatus != null ? record.extractionStatus : "NOT_STARTED",
+                    isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true,
+                    isDirty: record.isDirty != null ? record.isDirty : false,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.RECORDS.value}
+                RETURN 1
+            """
+            bind_vars = {
+                "kb_id": kb_id,
+                "kb_doc_id": kb_doc_id,
+                "records_collection": CollectionNames.RECORDS.value,
+                "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "timestamp": current_timestamp,
+            }
+            cursor = transaction.aql.execute(query, bind_vars=bind_vars)
+            enriched_count = len(list(cursor))
+
+            if enriched_count > 0:
+                self.logger.debug(f"Enriched {enriched_count} file records in KB {kb_id}")
+
+            return enriched_count
+
+        except Exception as e:
+            self.logger.error(f"Failed to enrich KB file records: {str(e)}")
+            raise
+
+    async def _fix_kb_folder_external_parent_id(self, kb_id: str, transaction) -> int:
+        """
+        Fix externalParentId for immediate children folders of KB record groups.
+
+        Sets externalParentId to null for immediate children folders (those with belongsTo to KB
+        and no parent folder via recordRelations).
+
+        Args:
+            kb_id: Knowledge Base record group ID
+            transaction: Database transaction
+
+        Returns:
+            Number of folder records updated
+        """
+        if not kb_id:
+            self.logger.warning("Cannot fix KB folder externalParentId: kb_id is missing or empty")
+            return 0
+        try:
+            current_timestamp = get_epoch_timestamp_in_ms()
+            kb_doc_id = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+
+            # Find all KB records via both belongsTo (new) and recordRelations (old) edges
+            query = f"""
+            LET kb_records = UNION_DISTINCT(
+                // New structure: via belongsTo edges
+                FOR edge IN {CollectionNames.BELONGS_TO.value}
+                    FILTER edge._to == @kb_doc_id
+                        AND edge.entityType == @entity_type
+                    LET record = DOCUMENT(edge._from)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+                ,
+                // Old structure: via recordRelations edges (during migration)
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == @kb_doc_id
+                        AND edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+            )
+
+            // Filter to folder records only (not files)
+            FOR record_id IN kb_records
+                LET record = DOCUMENT(record_id)
+                FILTER record != null
+
+                // Check if it's a folder record (not a file)
+                LET folder_info = FIRST(
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET file = DOCUMENT(edge._to)
+                        FILTER file != null AND file.isFile == false
+                        RETURN file
+                )
+                FILTER folder_info != null
+
+                // Determine if immediate child: has recordRelations edge FROM KB record group TO this record
+                // In old format, immediate children had both belongsTo and recordRelations edges from KB
+                LET is_immediate_child = LENGTH(
+                    FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                        FILTER edge._from == @kb_doc_id
+                            AND edge._to == record._id
+                            AND edge.relationshipType == "PARENT_CHILD"
+                        RETURN 1
+                ) > 0
+
+                // Determine parent folder ID for nested folders (recordRelations from another record)
+                LET parent_folder_id = !is_immediate_child ? FIRST(
+                    FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                        FILTER edge._to == record._id
+                            AND edge.relationshipType == "PARENT_CHILD"
+                            AND edge._from != @kb_doc_id
+                        LET parent = DOCUMENT(edge._from)
+                        FILTER parent != null
+                        FILTER IS_SAME_COLLECTION(@records_collection, parent._id)
+                        RETURN PARSE_IDENTIFIER(parent._id).key
+                ) : null
+
+                // Fix externalParentId: set to null for immediate children, parent folder ID for nested
+                // Also fix if it's incorrectly set to kb_id (recordGroupId)
+                // Update if: externalParentId is incorrectly set to kb_id OR it's an immediate child that should be null
+                FILTER (record.externalParentId != null AND record.externalParentId == @kb_id) OR is_immediate_child
+                UPDATE record WITH {{
+                    externalParentId: is_immediate_child ? null : parent_folder_id,
+                    updatedAtTimestamp: @timestamp
+                }} IN {CollectionNames.RECORDS.value}
+                RETURN 1
+            """
+            bind_vars = {
+                "kb_id": kb_id,
+                "kb_doc_id": kb_doc_id,
+                "records_collection": CollectionNames.RECORDS.value,
+                "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                "timestamp": current_timestamp,
+            }
+            cursor = transaction.aql.execute(query, bind_vars=bind_vars)
+            fixed_count = len(list(cursor))
+
+            if fixed_count > 0:
+                self.logger.debug(f"Fixed externalParentId for {fixed_count} folder records in KB {kb_id}")
+
+            return fixed_count
+
+        except Exception as e:
+            self.logger.error(f"Failed to fix KB folder externalParentId: {str(e)}")
+            raise
+
+    async def _count_kb_file_records(self, kb_id: str) -> int:
+        """
+        Count KB file records (not folders) that may need enrichment.
+
+        Args:
+            kb_id: Knowledge Base record group ID
+
+        Returns:
+            Number of file records
+        """
+        try:
+            kb_doc_id = f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+
+            query = f"""
+            LET kb_records = UNION_DISTINCT(
+                // New structure: via belongsTo edges
+                FOR edge IN {CollectionNames.BELONGS_TO.value}
+                    FILTER edge._to == @kb_doc_id
+                        AND edge.entityType == @entity_type
+                    LET record = DOCUMENT(edge._from)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+                ,
+                // Old structure: via recordRelations edges
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == @kb_doc_id
+                        AND edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER IS_SAME_COLLECTION(@records_collection, record._id)
+                    RETURN record._id
+            )
+
+            // Count file records only
+            FOR record_id IN kb_records
+                LET record = DOCUMENT(record_id)
+                FILTER record != null
+
+                // Check if it's a file record (not a folder)
+                LET is_file = LENGTH(
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET file = DOCUMENT(edge._to)
+                        FILTER file != null AND file.isFile == true
+                        RETURN 1
+                ) > 0
+
+                FILTER is_file
+                RETURN 1
+            """
+            bind_vars = {
+                "kb_id": kb_id,
+                "kb_doc_id": kb_doc_id,
+                "records_collection": CollectionNames.RECORDS.value,
+                "entity_type": Connectors.KNOWLEDGE_BASE.value,
+            }
+            cursor = self.arango.db.aql.execute(query, bind_vars=bind_vars)
+            return len(list(cursor))
+        except Exception as e:
+            self.logger.error(f"Failed to count KB file records: {str(e)}")
+            raise
+
 
 # Integration function for container initialization
 async def run_kb_to_connector_migration(container) -> Dict:
@@ -944,5 +1269,7 @@ async def run_kb_to_connector_migration(container) -> Dict:
             "kb_app_edges_created": 0,
             "record_relations_deleted": 0,
             "records_updated": 0,
+            "file_records_enriched": 0,
+            "folders_external_parent_id_fixed": 0,
             "errors": [{"error": str(e)}]
         }
