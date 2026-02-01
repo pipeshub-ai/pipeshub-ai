@@ -820,13 +820,13 @@ class S3CompatibleBaseConnector(BaseConnector):
             parent_external_id = (
                 f"{bucket_name}/{path_segments[i - 1]}" if i > 0 else None
             )
-            parent_record_type = RecordType.FOLDER if parent_external_id else None
+            parent_record_type = RecordType.FILE if parent_external_id else None
             record_name = segment.split("/")[-1] if segment else segment
             web_url = self._generate_web_url(bucket_name, segment + "/")
             folder_record = FileRecord(
                 id=str(uuid.uuid4()),
                 record_name=record_name,
-                record_type=RecordType.FOLDER,
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=external_id,
@@ -949,15 +949,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                 else:
                     self.logger.debug(f"New document: {normalized_key}")
 
-            # Prepare record data
-            record_type = RecordType.FOLDER if is_folder else RecordType.FILE
+            # Prepare record data: all items are RecordType.FILE; folders have is_file=False
+            record_type = RecordType.FILE
 
             extension = get_file_extension(normalized_key) if is_file else None
             mime_type = get_mimetype_for_s3(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = (f"{bucket_name}/{parent_path}" if parent_path else None)
-            parent_record_type = RecordType.FOLDER if parent_path else None
+            parent_record_type = RecordType.FILE if parent_path else None
             # Root-level items: parent must be null, not the bucket
             if parent_external_id == bucket_name:
                 parent_external_id = None
@@ -1387,7 +1387,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = (f"{bucket_name}/{parent_path}" if parent_path else None)
-            parent_record_type = RecordType.FOLDER if parent_path else None
+            parent_record_type = RecordType.FILE if parent_path else None
             # Root-level items: parent must be null, not the bucket
             if parent_external_id == bucket_name:
                 parent_external_id = None
@@ -1401,10 +1401,11 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             updated_external_record_id = f"{bucket_name}/{normalized_key}"
 
+            # All items are RecordType.FILE; folders have is_file=False
             updated_record = FileRecord(
                 id=record.id,
                 record_name=record_name,
-                record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
