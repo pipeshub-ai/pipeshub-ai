@@ -1105,6 +1105,15 @@ class Processor:
                     if new_block.parent_index == final_index:
                         bg.children.append(BlockContainerIndex(block_index=new_block.index))
 
+                # Sort children: all block_groups first (sorted by index), then all blocks (sorted by index)
+                if bg.children:
+                    bg.children.sort(key=lambda c: (
+                        0 if c.block_group_index is not None else 1,  # block_groups first, blocks second
+                        c.block_group_index if c.block_group_index is not None
+                        else c.block_index if c.block_index is not None
+                        else float('inf')
+                    ))
+
                 # Update block offset for next iteration
                 block_index_offset += len(new_blocks_list)
 
@@ -1116,10 +1125,23 @@ class Processor:
             if block.parent_index is not None and block.parent_index in index_shift_map:
                 block.parent_index += index_shift_map[block.parent_index]
 
+        # Sort block_groups by index to ensure list position matches index value
+        sorted_block_groups = sorted(
+            new_block_groups,
+            key=lambda bg: bg.index if bg.index is not None else float('inf')
+        )
+
+        # Sort blocks by index to ensure list position matches index value
+        all_blocks = list(block_containers.blocks) + new_blocks
+        sorted_blocks = sorted(
+            all_blocks,
+            key=lambda b: b.index if b.index is not None else float('inf')
+        )
+
         # Build final BlocksContainer
         return BlocksContainer(
-            block_groups=new_block_groups,
-            blocks=list(block_containers.blocks) + new_blocks
+            block_groups=sorted_block_groups,
+            blocks=sorted_blocks
         )
 
     async def _process_blockgroups_through_docling(
