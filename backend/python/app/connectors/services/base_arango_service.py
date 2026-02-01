@@ -13509,7 +13509,9 @@ class BaseArangoService:
                 records_with_details = inventory.get("records_with_details", [])
                 all_record_keys = inventory.get("record_keys", [])
 
-                self.logger.info(f"inventory: {inventory}")
+                self.logger.info(f"folder_keys: {inventory.get('folder_keys', [])}")
+                self.logger.info(f"total_folders: {inventory.get('total_folders', 0)}")
+
 
                 # Step 2: Delete ALL edges first (prevents foreign key issues)
                 self.logger.info("🗑️ Step 2: Deleting all edges...")
@@ -13603,6 +13605,7 @@ class BaseArangoService:
                         "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value
                     }
                 )
+                list(cursor)  # Consume cursor to ensure query completes and locks are released
                 # Step 6: Commit transaction
                 if should_commit:
                     self.logger.info("💾 Committing complete deletion transaction...")
