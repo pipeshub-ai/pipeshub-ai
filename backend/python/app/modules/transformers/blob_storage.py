@@ -87,17 +87,35 @@ class BlobStorage(Transformer):
                 raise Exception("Missing record in compressed record")
             
             try:
-                start_time = time.time()
-                # Decode base64 and decompress
+                overall_processing_start = time.time()
+                
+                # Step 1: Base64 decode
+                base64_start = time.time()
                 compressed_bytes = base64.b64decode(compressed_base64)
+                base64_duration_ms = (time.time() - base64_start) * 1000
+                self.logger.info("⏱️ Base64 decode completed in %.0fms (decoded size: %d bytes)", base64_duration_ms, len(compressed_bytes))
+                
+                # Step 2: Decompress
+                decompress_start = time.time()
                 decompressed_bytes = self._decompress_bytes(compressed_bytes)
-                decompression_time_ms = (time.time() - start_time) * 1000
+                decompress_duration_ms = (time.time() - decompress_start) * 1000
+                self.logger.info("⏱️ Decompression completed in %.0fms (decompressed size: %d bytes)", decompress_duration_ms, len(decompressed_bytes))
                 
-                # Parse JSON
+                # Step 3: UTF-8 decode
+                utf8_start = time.time()
                 json_str = decompressed_bytes.decode('utf-8')
-                record = json.loads(json_str)
+                utf8_duration_ms = (time.time() - utf8_start) * 1000
+                self.logger.info("⏱️ UTF-8 decode completed in %.0fms (string length: %d chars)", utf8_duration_ms, len(json_str))
                 
-                self.logger.info("📦 Decompressed record in %.0fms", decompression_time_ms)
+                # Step 4: JSON parse
+                json_parse_start = time.time()
+                record = json.loads(json_str)
+                json_parse_duration_ms = (time.time() - json_parse_start) * 1000
+                self.logger.info("⏱️ JSON parsing completed in %.0fms", json_parse_duration_ms)
+                
+                overall_processing_ms = (time.time() - overall_processing_start) * 1000
+                self.logger.info("📦 Total record processing completed in %.0fms (base64: %.0fms, decompress: %.0fms, utf8: %.0fms, json: %.0fms)", 
+                                overall_processing_ms, base64_duration_ms, decompress_duration_ms, utf8_duration_ms, json_parse_duration_ms)
                 return record
                 
             except Exception as e:
@@ -106,6 +124,7 @@ class BlobStorage(Transformer):
         
         # OLD FORMAT: Uncompressed record
         elif data.get("record"):
+            self.logger.info("📄 Processing uncompressed record (no decompression needed)")
             return data.get("record")
         
         else:
