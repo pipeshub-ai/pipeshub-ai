@@ -31,7 +31,7 @@ import { AuthSessionRequest } from '../middlewares/types';
 import { SessionService } from '../services/session.service';
 import mongoose from 'mongoose';
 import { OAuth2Client } from 'google-auth-library';
-import { validateAzureAdUser } from '../utils/azureAdTokenValidation';
+import { extractTenantIdFromToken, validateAzureAdUser } from '../utils/azureAdTokenValidation';
 import { IamService } from '../services/iam.service';
 import { MailService } from '../services/mail.service';
 
@@ -1376,12 +1376,48 @@ export class UserAccountController {
 
         // JIT is enabled - validate credentials and provision user
         const orgId = sessionInfo.orgId;
-        if (!orgId) {
+
+        // For Microsoft SSO, try tenant ID-based org lookup first
+        let effectiveOrgId = orgId;
+        let matchedBy: 'microsoftTenantId' | 'domain' = 'domain';
+
+        if (method === AuthMethodType.MICROSOFT || method === AuthMethodType.AZURE_AD) {
+          const idToken = credentials?.idToken;
+          if (idToken) {
+            const extractedTenantId = extractTenantIdFromToken(idToken);
+
+            if (extractedTenantId) {
+              // Try tenant ID lookup first (handles multi-domain orgs)
+              const tenantOrgConfig = await OrgAuthConfig.findOne({
+                microsoftTenantId: extractedTenantId,
+                isDeleted: false,
+              });
+
+              if (tenantOrgConfig) {
+                effectiveOrgId = tenantOrgConfig.orgId.toString();
+                matchedBy = 'microsoftTenantId';
+                this.logger.info('Org matched by Microsoft tenant ID', {
+                  tenantId: extractedTenantId,
+                  orgId: effectiveOrgId?.toString(),
+                  email: sessionInfo.email,
+                });
+              } else {
+                this.logger.debug('No org found for tenant ID, using domain fallback', {
+                  tenantId: extractedTenantId,
+                  fallbackOrgId: orgId?.toString(),
+                  email: sessionInfo.email,
+                });
+              }
+            }
+          }
+        }
+
+        if (!effectiveOrgId) {
           throw new BadRequestError('Organization not found for JIT provisioning');
         }
 
         // Create mock user for fetching config
-        const newUser = { orgId, email: sessionInfo.email };
+        const newUser = { orgId: effectiveOrgId, email: sessionInfo.email };
         
         // Authenticate and provision based on method
         let userDetails: { firstName?: string; lastName?: string; fullName: string };
@@ -1483,7 +1519,7 @@ export class UserAccountController {
         user = await this.jitProvisioningService.provisionUser(
           sessionInfo.email,
           userDetails,
-          orgId,
+          effectiveOrgId,
           method === AuthMethodType.AZURE_AD ? 'azureAd' : method as 'google' | 'microsoft' | 'oauth',
         );
 
@@ -1501,7 +1537,12 @@ export class UserAccountController {
           loginMode: loginModeMap[method] || 'OAUTH',
         });
 
-        this.logger.info('JIT provisioning completed', { email: sessionInfo.email, method });
+        this.logger.info('JIT provisioning completed', {
+          email: sessionInfo.email,
+          method,
+          matchedBy,
+          orgId: effectiveOrgId?.toString(),
+        });
       } else {
         // Existing user flow
         const currentStepConfig = sessionInfo.authConfig[sessionInfo.currentStep];
