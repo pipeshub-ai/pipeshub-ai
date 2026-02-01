@@ -39,25 +39,26 @@ Plans:
 
 ---
 
-### Phase 2: Org Lookup by Tenant ID
+### Phase 2: Org Lookup by Tenant ID ✓
 **Goal:** Match organizations by Microsoft tenant ID instead of email domain
-**Status:** Planned
+**Status:** Complete
+**Completed:** 2026-02-01
 
 **Deliverables:**
-1. Modify JIT provisioning flow to extract tenant ID from validated token
-2. Add org lookup by `microsoftTenantId` in OrgAuthConfig
-3. Implement fallback to domain-based lookup for backward compatibility
-4. Add logging for tenant ID matching
+1. Modify JIT provisioning flow to extract tenant ID from validated token ✓
+2. Add org lookup by `microsoftTenantId` in OrgAuthConfig ✓
+3. Implement fallback to domain-based lookup for backward compatibility ✓
+4. Add logging for tenant ID matching ✓
 
 **Entry Criteria:** Phase 1 complete ✓
-**Exit Criteria:** Multi-domain users can SSO successfully
+**Exit Criteria:** Multi-domain users can SSO successfully ✓
 
 **Key Files:**
 - `backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.ts`
 
 **Plans:** 1 plan
 Plans:
-- [ ] 02-01-PLAN.md — Add tenant ID org lookup in JIT Microsoft flow
+- [x] 02-01-PLAN.md — Add tenant ID org lookup in JIT Microsoft flow
 
 ---
 
@@ -80,9 +81,9 @@ Plans:
 ```
 Phase 1 (Schema & Extraction) ✓
     │
-    └──> Phase 2 (Org Lookup) ← CURRENT
+    └──> Phase 2 (Org Lookup) ✓
               │
-              └──> Phase 3 (Validation)
+              └──> Phase 3 (Validation) ← CURRENT
 ```
 
 ## Risk Assessment
