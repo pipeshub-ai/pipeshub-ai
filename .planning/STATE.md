@@ -8,12 +8,12 @@
 ## Current Position
 
 **Milestone:** 1 of 1 — Multi-Domain SSO Support
-**Phase:** 1 of 3 — Schema & Token Extraction
+**Phase:** 2 of 3 — Org Lookup by Tenant ID
 **Status:** Phase complete
-**Last activity:** 2026-01-31 — Completed 01-01-PLAN.md
+**Last activity:** 2026-02-01 — Completed 02-01-PLAN.md
 
 ```
-Progress: [███░░░░░░░] 33%
+Progress: [██████░░░░] 67%
 ```
 
 ## Recent Decisions
@@ -26,6 +26,8 @@ Progress: [███░░░░░░░] 33%
 | Add to OrgAuthConfig, not Org | Separates auth config from org identity | 2026-01-31 |
 | Use sparse index for microsoftTenantId | Field is optional; sparse index only indexes non-null values | 2026-01-31 |
 | Extract tenant ID without signature validation | Need tenant ID to lookup org before knowing which tenant to validate against | 2026-01-31 |
+| Tenant ID lookup first, domain fallback second | Multi-domain orgs benefit from tenant match; single-domain orgs still work via fallback | 2026-02-01 |
+| matchedBy logging field | Essential for debugging and audit trail to know org resolution method | 2026-02-01 |
 
 ## Pending Todos
 
@@ -37,10 +39,10 @@ None currently.
 
 ## Session Continuity
 
-**Last session:** 2026-01-31T03:38:55Z
-**Stopped at:** Completed 01-01-PLAN.md (Phase 1 complete)
+**Last session:** 2026-02-01
+**Stopped at:** Completed 02-01-PLAN.md (Phase 2 complete)
 **Resume file:** None
-**Next:** Ready for Phase 2 (Auth Flow Integration)
+**Next:** Ready for Phase 3 (Migration & Testing)
 
 ---
 *Auto-updated by GSD workflow*
