@@ -146,11 +146,6 @@ class DataSourceEntitiesProcessor:
         Returns:
             A placeholder Record instance of the appropriate type
         """
-        # Derive grandparent so placeholder has parent_external_record_id (e.g. path-based: bucket/a/b -> bucket/a)
-        parent_of_placeholder = None
-        if "/" in parent_external_id:
-            parent_of_placeholder = parent_external_id.rsplit("/", 1)[0] or None
-
         base_params = {
             "org_id": self.org_id,
             "external_record_id": parent_external_id,
@@ -160,8 +155,6 @@ class DataSourceEntitiesProcessor:
             "connector_id": record.connector_id,
             "record_type": parent_record_type,
             "record_group_type": record.record_group_type,
-            "external_record_group_id": record.external_record_group_id,
-            "parent_external_record_id": parent_of_placeholder,
             "version": 0,
             "mime_type": MimeTypes.UNKNOWN.value,
             "source_created_at": 0,  # Will be updated when real parent is synced
@@ -169,10 +162,11 @@ class DataSourceEntitiesProcessor:
         }
 
         # Map RecordType to appropriate Record class
-        if parent_record_type == RecordType.FILE:
+        if parent_record_type in [RecordType.FILE, RecordType.FOLDER]:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
             return FileRecord(
                 **file_params,
+                external_record_group_id=record.external_record_group_id,
                 is_file=False,
                 extension=None,
                 mime_type=MimeTypes.FOLDER.value,
@@ -209,6 +203,15 @@ class DataSourceEntitiesProcessor:
             )
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
+        # Root items: do not create or link to a "bucket" parent (e.g. S3 bucket)
+        if (
+            record.parent_external_record_id
+            and getattr(record, "external_record_group_id", None)
+            and record.parent_external_record_id == record.external_record_group_id
+        ):
+            record.parent_external_record_id = None
+            record.parent_record_type = None
+            return
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
@@ -223,10 +226,7 @@ class DataSourceEntitiesProcessor:
                     record=record,
                 )
                 self.logger.debug(f"parent_record: {parent_record}")
-                record_group_id = await self._handle_record_group(parent_record, tx_store)
                 await tx_store.batch_upsert_records([parent_record])
-                if record_group_id:
-                    await self._link_record_to_group(parent_record, record_group_id, tx_store)
 
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
@@ -303,10 +303,7 @@ class DataSourceEntitiesProcessor:
                     parent_record_type=record_type,
                     record=record,
                 )
-                record_group_id = await self._handle_record_group(related_record, tx_store)
                 await tx_store.batch_upsert_records([related_record])
-                if record_group_id:
-                    await self._link_record_to_group(related_record, record_group_id, tx_store)
 
             # Create relation using the specific relation_type
             if related_record and isinstance(related_record, Record):
