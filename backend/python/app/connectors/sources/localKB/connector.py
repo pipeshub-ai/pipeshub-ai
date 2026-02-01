@@ -32,6 +32,7 @@ from app.models.entities import Record
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 
+KB_CONNECTOR_NAME = "Collections"
 
 class KBApp(App):
     """App class for Knowledge Base connector"""
@@ -40,7 +41,7 @@ class KBApp(App):
         super().__init__(Connectors.KNOWLEDGE_BASE, AppGroups.LOCAL_STORAGE, connector_id)
 
 
-@ConnectorBuilder("Collections")\
+@ConnectorBuilder(KB_CONNECTOR_NAME)\
     .in_group("Local Storage")\
     .with_supported_auth_types("NONE")\
     .with_description("Local knowledge base for organizing and managing documents")\

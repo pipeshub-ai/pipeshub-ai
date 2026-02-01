@@ -510,7 +510,10 @@ class KnowledgeBaseToConnectorMigrationService:
                 return existing_kb_app, False, False
 
             # Create new KB app with the standard key format
-            from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
+            from app.connectors.sources.localKB.connector import (
+                KB_CONNECTOR_NAME,
+                KnowledgeBaseConnector,
+            )
 
             # Get KB connector metadata
             if not hasattr(KnowledgeBaseConnector, '_connector_metadata'):
@@ -518,7 +521,7 @@ class KnowledgeBaseToConnectorMigrationService:
                 return None, False, False
 
             metadata = KnowledgeBaseConnector._connector_metadata
-            connector_name = metadata.get('name', "Collections")
+            connector_name = metadata.get('name', KB_CONNECTOR_NAME)
             app_group = metadata.get('appGroup', AppGroups.LOCAL_STORAGE.value)
 
             current_timestamp = get_epoch_timestamp_in_ms()

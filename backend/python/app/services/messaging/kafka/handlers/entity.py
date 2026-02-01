@@ -561,7 +561,10 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📦 Creating Knowledge Base connector instance for org: {org_id}")
 
             # Get KB connector metadata from the connector class
-            from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
+            from app.connectors.sources.localKB.connector import (
+                KB_CONNECTOR_NAME,
+                KnowledgeBaseConnector,
+            )
 
             # Check if KB connector metadata exists
             if not hasattr(KnowledgeBaseConnector, '_connector_metadata'):
@@ -569,7 +572,7 @@ class EntityEventService(BaseEventService):
                 return None
 
             metadata = KnowledgeBaseConnector._connector_metadata
-            connector_name = metadata.get('name', "Collections")
+            connector_name = metadata.get('name', KB_CONNECTOR_NAME)
             app_group = metadata.get('appGroup', 'Local Storage')
 
             # Check if KB connector instance already exists for this org
