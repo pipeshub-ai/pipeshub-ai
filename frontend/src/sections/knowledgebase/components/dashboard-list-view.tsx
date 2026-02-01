@@ -251,7 +251,7 @@ const ListViewComponent = memo<{
             getRowId={(row) => row.id}
             rowHeight={64}
             localeText={{
-              noRowsLabel: 'No knowledge bases found',
+              noRowsLabel: 'No collections found',
             }}
             sx={{
               border: 'none',
@@ -321,8 +321,8 @@ const ListViewComponent = memo<{
         >
           <Typography variant="body2" color="text.secondary">
             {totalCount === 0
-              ? 'No knowledge bases found'
-              : `Showing ${page * rowsPerPage + 1}-${Math.min((page + 1) * rowsPerPage, totalCount)} of ${totalCount} knowledge bases`}
+              ? 'No collections found'
+              : `Showing ${page * rowsPerPage + 1}-${Math.min((page + 1) * rowsPerPage, totalCount)} of ${totalCount} collections`}
           </Typography>
 
           <TablePagination

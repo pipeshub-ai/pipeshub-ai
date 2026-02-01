@@ -526,7 +526,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center', }}
               >
                 {/* Unified Resources selector with badge */}
-                <Tooltip title="Select apps and knowledge bases">
+                <Tooltip title="Select apps and collections">
                   <Badge
                     badgeContent={selectedApps.length + selectedKbIds.length}
                     color="primary"

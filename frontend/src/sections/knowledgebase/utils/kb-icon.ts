@@ -9,7 +9,7 @@ import campaignIcon from '@iconify-icons/mdi/bullhorn-outline';
 import accountBalanceIcon from '@iconify-icons/mdi/bank-outline';
 import analyticsOutlineIcon from '@iconify-icons/mdi/chart-line';
 // Icon imports - Add these at the top of your file
-import folderOutlineIcon from '@iconify-icons/mdi/folder-outline';
+import folderOutlineIcon from '@iconify-icons/mdi/folder-multiple';
 import schoolOutlineIcon from '@iconify-icons/mdi/school-outline';
 import autoStoriesIcon from '@iconify-icons/mdi/book-open-outline';
 import paletteOutlineIcon from '@iconify-icons/mdi/palette-outline';

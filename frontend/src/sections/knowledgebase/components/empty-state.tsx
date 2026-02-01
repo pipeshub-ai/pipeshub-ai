@@ -23,12 +23,12 @@ export const EmptyState = memo<{
     >
       <Icon icon={searchIcon} fontSize={48} color="rgba(0,0,0,0.3)" />
       <Typography variant="h6" color="text.secondary" sx={{ mt: 2, mb: 1 }}>
-        No knowledge bases found
+        No Collections found
       </Typography>
       <Typography variant="body2" color="text.secondary">
         {isSearchResult
           ? `No results found for "${searchQuery}"`
-          : 'Create your first knowledge base to get started'}
+          : 'Create your first collection to get started'}
       </Typography>
       {isSearchResult && onClearSearch && (
         <Button
@@ -65,7 +65,7 @@ export const EmptyState = memo<{
           }}
           startIcon={<Icon icon={addIcon} fontSize={16} />}
         >
-          Create Knowledge Base
+          Create Collection
         </Button>
       )}
     </Paper>

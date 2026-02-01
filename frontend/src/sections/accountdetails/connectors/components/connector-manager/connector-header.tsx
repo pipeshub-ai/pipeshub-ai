@@ -14,6 +14,7 @@ import { Iconify } from 'src/components/iconify';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import arrowBackIcon from '@iconify-icons/mdi/arrow-left';
 import { useAccountType } from 'src/hooks/use-account-type';
+import { useAdmin } from 'src/context/AdminContext';
 import { Connector } from '../../types/types';
 
 interface ConnectorHeaderProps {
@@ -30,13 +31,18 @@ const ConnectorHeader: React.FC<ConnectorHeaderProps> = ({
   const theme = useTheme();
   const navigate = useNavigate();
   const { isBusiness, loading: accountTypeLoading } = useAccountType();
+  const { isAdmin, loading: adminLoading } = useAdmin();
   const isActive = connector.isActive || false;
   const handleBack = () => {
-    if (accountTypeLoading) return; // Avoid navigation until account type is known
+    // Avoid navigation until account type and admin status are known
+    if (accountTypeLoading || adminLoading) return;
     const basePath = isBusiness
       ? '/account/company-settings/settings/connector'
       : '/account/individual/settings/connector';
-    navigate(basePath);
+    
+    // Determine scope based on connector or admin status
+    const scope = connector.scope || (isAdmin ? 'team' : 'personal');
+    navigate(`${basePath}?scope=${scope}`);
   };
 
   return (

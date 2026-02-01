@@ -17,7 +17,7 @@ import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import formatListIcon from '@iconify-icons/mdi/format-list-bulleted';
 import closeCircleIcon from '@iconify-icons/mdi/close-circle-outline';
 import databaseIcon from '@iconify-icons/mdi/database';
-import bookOpenIcon from '@iconify-icons/mdi/book-open-outline';
+import folderMultipleIcon from '@iconify-icons/mdi/folder-multiple';
 
 import { alpha, styled, useTheme } from '@mui/material/styles';
 import {
@@ -406,7 +406,7 @@ const getKBIcon = (name: string) => {
     return formatListIcon;
   }
 
-  return bookOpenIcon;
+  return folderMultipleIcon;
 };
 
 // Intersection Observer Hook for Infinite Scroll
@@ -604,7 +604,7 @@ const KnowledgeBaseFilter: React.FC<{
           setHasMore(false);
         }
       } catch (error) {
-        console.error('Failed to fetch knowledge bases:', error);
+        console.error('Failed to fetch collections:', error);
         if (!isLoadMore) {
           setKnowledgeBases([]);
           setTotalPages(1);
@@ -703,13 +703,13 @@ const KnowledgeBaseFilter: React.FC<{
       <FilterHeader expanded={expanded} onClick={onToggle}>
         <FilterLabel>
           <Icon
-            icon={databaseIcon}
+            icon={folderMultipleIcon}
             fontSize="small"
             style={{
               color: expanded ? theme.palette.primary.main : alpha(theme.palette.text.primary, 0.7),
             }}
           />
-          Knowledge Bases
+          Collections
           {activeKBCount > 0 && <FilterCount badgeContent={activeKBCount} color="primary" />}
         </FilterLabel>
         <Icon
@@ -725,7 +725,7 @@ const KnowledgeBaseFilter: React.FC<{
           size="small"
           value={kbSearch}
           onChange={handleKbSearchChange}
-          placeholder="Search knowledge bases..."
+          placeholder="Search collections..."
           variant="outlined"
           InputProps={{
             startAdornment: (
@@ -765,6 +765,7 @@ const KnowledgeBaseFilter: React.FC<{
                     <ListItemIcon sx={{ minWidth: 32 }}>
                       <FilterCheckbox
                         checked={isChecked}
+                        onClick={() => handleKBToggle(kb.id)}
                         size="small"
                         disableRipple
                         sx={{ p: 0 }}
@@ -791,7 +792,12 @@ const KnowledgeBaseFilter: React.FC<{
               {/* Infinite Scroll Trigger */}
               {paginationMode === 'infinite' && hasMore && !loading && (
                 <InfiniteScrollTrigger ref={loadMoreRef}>
-                  {loadingMore && <CircularProgress size={16} thickness={4} />}
+                  {loadingMore && (
+                    <Box sx={{ display: 'flex', alignItems: 'center', py: 0.5 }}>
+                      <Skeleton variant="circular" width={16} height={16} sx={{ mr: 1 }} />
+                      <Skeleton variant="text" width="60%" height={16} />
+                    </Box>
+                  )}
                 </InfiniteScrollTrigger>
               )}
             </List>
@@ -800,7 +806,7 @@ const KnowledgeBaseFilter: React.FC<{
           {!loading && knowledgeBases.length === 0 && (
             <Box sx={{ textAlign: 'center', py: 2 }}>
               <Typography variant="body2" color="text.secondary" sx={{ fontSize: '0.8rem' }}>
-                {kbSearch ? 'No knowledge bases found' : 'No knowledge bases available'}
+                {kbSearch ? 'No collections found' : 'No collections available'}
               </Typography>
             </Box>
           )}
@@ -812,7 +818,7 @@ const KnowledgeBaseFilter: React.FC<{
           <LoadMoreButton
             onClick={handleLoadMoreClick}
             disabled={loadingMore}
-            startIcon={loadingMore ? <CircularProgress size={12} /> : null}
+            startIcon={loadingMore ? <Skeleton variant="circular" width={12} height={12} /> : null}
           >
             {loadingMore
               ? 'Loading...'
@@ -1100,7 +1106,7 @@ export default function KnowledgeSearchSideBar({
         </IconButtonStyled>
       </Tooltip>
 
-      <Tooltip title="Knowledge Bases" placement="right">
+      <Tooltip title="Collections" placement="right">
         <IconButtonStyled
           color="primary"
           sx={{ mb: 2 }}
@@ -1109,45 +1115,6 @@ export default function KnowledgeSearchSideBar({
         >
           <Badge badgeContent={getActiveFilterCount('kb')} color="primary">
             <Icon icon={databaseIcon} />
-          </Badge>
-        </IconButtonStyled>
-      </Tooltip>
-
-      <Tooltip title="Department Filters" placement="right">
-        <IconButtonStyled
-          color="primary"
-          sx={{ mb: 2 }}
-          onClick={() => handleCollapsedFilterClick('departments', 'department')}
-          disableRipple
-        >
-          <Badge badgeContent={getActiveFilterCount('department')} color="primary">
-            <Icon icon={officeBuildingIcon} />
-          </Badge>
-        </IconButtonStyled>
-      </Tooltip>
-
-      <Tooltip title="Module Filters" placement="right">
-        <IconButtonStyled
-          color="primary"
-          sx={{ mb: 2 }}
-          onClick={() => handleCollapsedFilterClick('modules', 'moduleId')}
-          disableRipple
-        >
-          <Badge badgeContent={getActiveFilterCount('moduleId')} color="primary">
-            <Icon icon={viewModuleIcon} />
-          </Badge>
-        </IconButtonStyled>
-      </Tooltip>
-
-      <Tooltip title="Category Filters" placement="right">
-        <IconButtonStyled
-          color="primary"
-          sx={{ mb: 2 }}
-          onClick={() => handleCollapsedFilterClick('categories', 'appSpecificRecordType')}
-          disableRipple
-        >
-          <Badge badgeContent={getActiveFilterCount('appSpecificRecordType')} color="primary">
-            <Icon icon={formatListIcon} />
           </Badge>
         </IconButtonStyled>
       </Tooltip>
@@ -1219,8 +1186,13 @@ export default function KnowledgeSearchSideBar({
           {children || (
             <>
               {loading ? (
-                <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
-                  <CircularProgress size={24} />
+                <Box sx={{ px: 1, py: 1 }}>
+                  {[1, 2, 3].map((item) => (
+                    <Box key={item} sx={{ display: 'flex', alignItems: 'center', py: 0.75 }}>
+                      <Skeleton variant="circular" width={18} height={18} sx={{ mr: 1.5 }} />
+                      <Skeleton variant="text" width="75%" height={16} />
+                    </Box>
+                  ))}
                 </Box>
               ) : (
                 <FormGroup>

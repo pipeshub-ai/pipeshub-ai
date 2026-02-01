@@ -610,7 +610,7 @@ class FolderHierarchyMigrationService:
 
                 # If parent is KB (recordGroups), this is a root folder
                 if parent_collection == CollectionNames.RECORD_GROUPS.value:
-                    external_parent_id = kb_id  # Root folder's parent is KB
+                    external_parent_id = None  # Immediate children of record group have null externalParentId
                     self.logger.debug(f"  - Root folder (parent: KB {kb_id})")
                 elif parent_collection == CollectionNames.RECORDS.value:
                     # Parent is already migrated RECORDS document (folder)
@@ -638,7 +638,7 @@ class FolderHierarchyMigrationService:
                 )
                 belongs_info = next(belongs_cursor, None)
 
-                external_parent_id = kb_id  # Default to KB as parent
+                external_parent_id = None  # Immediate children of record group have null externalParentId
                 created_timestamp = belongs_info.get("created_at", get_epoch_timestamp_in_ms()) if belongs_info else get_epoch_timestamp_in_ms()
                 updated_timestamp = belongs_info.get("updated_at", get_epoch_timestamp_in_ms()) if belongs_info else get_epoch_timestamp_in_ms()
                 self.logger.debug(f"  - Root folder (no parent edge, using KB {kb_id})")
@@ -658,7 +658,7 @@ class FolderHierarchyMigrationService:
                 "externalRecordId": f"kb_folder_{folder_key}",
                 "connectorId": kb_id,  # Required field - must not be null
                 "externalGroupId": kb_id,
-                "externalParentId": external_parent_id,  # KB ID for root, parent folder ID for nested
+                "externalParentId": external_parent_id,  # null for immediate children of record group, parent folder ID for nested
                 "externalRootGroupId": kb_id,  # Always KB ID
                 "recordType": RecordType.FILE.value,
                 "version": 0,

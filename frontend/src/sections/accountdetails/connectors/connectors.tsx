@@ -34,7 +34,7 @@ import {
   Tab,
   CircularProgress,
 } from '@mui/material';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
 import infoIcon from '@iconify-icons/mdi/info-circle';
 import plusCircleIcon from '@iconify-icons/mdi/plus-circle';
@@ -89,8 +89,9 @@ const Connectors: React.FC = () => {
   // Hooks
   const theme = useTheme();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { isBusiness } = useAccountType();
-  const { isAdmin } = useAdmin();
+  const { isAdmin, loading: adminLoading } = useAdmin();
   const isDark = theme.palette.mode === 'dark';
 
   // ============================================================================
@@ -119,13 +120,17 @@ const Connectors: React.FC = () => {
   // Filter State
   const [searchInput, setSearchInput] = useState('');
   const [activeSearchQuery, setActiveSearchQuery] = useState(''); // What's actually being searched
-  // Initialize scope: admins default to 'team', others to 'personal'
+  // Initialize scope from URL params, fallback to default based on admin status
   const [selectedScope, setSelectedScope] = useState<'personal' | 'team'>(() => {
-    // Use lazy initializer to check admin status immediately
-    if (isAdmin) {
-      return 'team'; // Admins default to team
+    const scopeParam = searchParams.get('scope');
+    if (scopeParam === 'team' || scopeParam === 'personal') {
+      return scopeParam;
     }
-    return 'personal'; // Everyone else defaults to personal
+    // Fallback: admins default to 'team', others to 'personal'
+    if (isAdmin) {
+      return 'team';
+    }
+    return 'personal';
   });
   const [selectedFilter, setSelectedFilter] = useState<FilterType>('all');
   const [pageByScope, setPageByScope] = useState<PageState>({
@@ -258,11 +263,11 @@ const Connectors: React.FC = () => {
   }, [searchInput, activeSearchQuery]);
 
   // ============================================================================
-  // AUTO-SET SCOPE - Based on admin status
+  // AUTO-SET SCOPE - Based on admin status and URL params
   // ============================================================================
 
   // Auto-set scope when admin status changes
-  // Admins default to personal (but can switch to team)
+  // Admins default to team (but can switch to personal)
   // Non-admins are always locked to personal
   useEffect(() => {
     // Only initialize once to avoid overriding user selections or causing duplicate API calls
@@ -270,15 +275,26 @@ const Connectors: React.FC = () => {
       return;
     }
 
+    const scopeParam = searchParams.get('scope');
+    let targetScope: 'personal' | 'team' = 'personal';
+
     if (isAdmin) {
-      // Admins default to team (already set in initializer, but ensure it's set)
-      setSelectedScope('team');
-      scopeInitializedRef.current = true;
+      // Admins: use URL param if valid, otherwise default to team
+      targetScope = scopeParam === 'personal' ? 'personal' : 'team';
     } else if (!isBusiness || !isAdmin) {
-      setSelectedScope('personal');
-      scopeInitializedRef.current = true;
+      // Non-admins: always personal
+      targetScope = 'personal';
     }
-  }, [isBusiness, isAdmin]);
+
+    setSelectedScope(targetScope);
+    
+    // Update URL if it doesn't match
+    if (scopeParam !== targetScope) {
+      setSearchParams({ scope: targetScope }, { replace: true });
+    }
+    
+    scopeInitializedRef.current = true;
+  }, [isBusiness, isAdmin, searchParams, setSearchParams]);
 
   // ============================================================================
   // RESET PAGINATION - When filters change
@@ -465,13 +481,16 @@ const Connectors: React.FC = () => {
       setSearchInput('');
       setActiveSearchQuery('');
       setSelectedFilter('all');
+      
+      // Update URL with new scope
+      setSearchParams({ scope: newScope }, { replace: true });
 
       // Clear switching state after transition
       setTimeout(() => {
         setIsSwitchingScope(false);
       }, 400);
     },
-    [isBusiness, isAdmin]
+    [isBusiness, isAdmin, setSearchParams]
   );
 
   const handleFilterChange = useCallback((filter: FilterType) => {
@@ -501,6 +520,16 @@ const Connectors: React.FC = () => {
   // ============================================================================
   // RENDER
   // ============================================================================
+
+  // Show loading screen while admin status is being determined
+  // This must be after all hooks to comply with Rules of Hooks
+  if (adminLoading) {
+    return (
+      <Container maxWidth="xl" sx={{ py: 2, display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 400 }}>
+        <CircularProgress size={48} />
+      </Container>
+    );
+  }
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>

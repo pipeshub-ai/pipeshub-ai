@@ -341,10 +341,10 @@ const CitationHoverCard = ({
                 transition: 'color 0.2s ease-in-out',
                 '&:hover': hasRecordId
                   ? {
-                      color: 'primary.main',
-                    }
+                    color: 'primary.main',
+                  }
                   : {},
-                pb:1,
+                pb: 1,
               }}
             >
               <Icon
@@ -360,7 +360,7 @@ const CitationHoverCard = ({
                 title={citation.metadata?.recordName}
                 arrow
                 placement="top"
-                sx={{ zIndex: 2999,}}
+                sx={{ zIndex: 2999, }}
               >
                 <Box
                   component="span"
@@ -424,18 +424,39 @@ const CitationHoverCard = ({
           </Box>
 
           {/* Document Metadata - Fixed with safe access */}
-          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
-            {pageNumber && <MetaChip size="small" label={`Page ${pageNumber}`} />}
-            {sheetName && extension && ['xlsx', 'csv', 'xls'].includes(extension) && (
-              <MetaChip size="small" label={`${sheetName}`} />
-            )}
-            {extension && ['xlsx', 'csv', 'xls'].includes(extension) && blockNumber && (
-              <MetaChip
-                size="small"
-                label={`Row ${extension === 'csv' ? blockNumber + 1 : blockNumber}`}
+          <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between' }}>
+
+            <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap' }}>
+              {pageNumber && <MetaChip size="small" label={`Page ${pageNumber}`} />}
+              {sheetName && extension && ['xlsx', 'csv', 'xls'].includes(extension) && (
+                <MetaChip size="small" label={`${sheetName}`} />
+              )}
+              {extension && ['xlsx', 'csv', 'xls'].includes(extension) && blockNumber && (
+                <MetaChip
+                  size="small"
+                  label={`Row ${extension === 'csv' ? blockNumber + 1 : blockNumber}`}
+                />
+              )}
+              {extension && <MetaChip size="small" label={extension.toUpperCase()} />}
+            </Box>
+
+            <Box>
+
+              <img
+                src={`/assets/icons/connectors/${(citation.metadata?.connector || 'collections').replace(' ', '').toLowerCase()}.svg`}
+                alt={citation.metadata?.connector}
+                width={20}
+                height={20}
+                style={{
+                  objectFit: 'contain',
+                  borderRadius: '2px',
+                  flexShrink: 0,
+                }}
+                onError={(e) => {
+                  e.currentTarget.src = '/assets/icons/connectors/collections.svg';
+                }}
               />
-            )}
-            {extension && <MetaChip size="small" label={extension.toUpperCase()} />}
+            </Box>
           </Box>
 
           {/* Citation Content */}

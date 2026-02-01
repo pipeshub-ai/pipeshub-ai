@@ -5,6 +5,7 @@ import { Navigate } from 'react-router-dom';
 import { useAdmin } from 'src/context/AdminContext';
 
 import { useAuthContext } from 'src/auth/hooks';
+import { LoadingScreen } from 'src/components/loading-screen';
 
 // ----------------------------------------------------------------------
 
@@ -13,8 +14,13 @@ type Props = {
 };
 
 export function AdminGuard({ children }: Props) {
-  const { isAdmin } = useAdmin();
-  const { user } = useAuthContext();
+  const { isAdmin, loading: adminLoading, isInitialized } = useAdmin();
+  const { user, loading: authLoading } = useAuthContext();
+  
+  // Show loading screen while auth or admin status is being checked
+  if (authLoading || adminLoading || !isInitialized) {
+    return <LoadingScreen />;
+  }
   
   // Check if user is a business account
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';

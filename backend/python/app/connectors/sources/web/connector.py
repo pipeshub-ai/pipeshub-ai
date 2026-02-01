@@ -32,6 +32,7 @@ from app.models.entities import (
     AppUser,
     FileRecord,
     Record,
+    RecordGroup,
     RecordGroupType,
     RecordType,
     User,
@@ -276,6 +277,57 @@ class WebConnector(BaseConnector):
             if user.email
         ]
 
+    async def create_record_group(self, app_users: List[AppUser]) -> None:
+        """
+        Create a record group with external_group_id as self.url and give permissions to all app_users.
+
+        Args:
+            app_users: List of AppUser objects to grant permissions to
+        """
+        try:
+            if not self.url:
+                self.logger.warning("⚠️ Cannot create record group: URL not set")
+                return
+
+            # Extract title from URL for the record group name
+            parsed_url = urlparse(self.url)
+            record_group_name = parsed_url.netloc or self.url
+
+            # Create record group
+            record_group = RecordGroup(
+                org_id=self.data_entities_processor.org_id,
+                name=record_group_name,
+                external_group_id=self.url,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.WEB,
+                web_url=self.url,
+                created_at=get_epoch_timestamp_in_ms(),
+                updated_at=get_epoch_timestamp_in_ms(),
+            )
+
+            # Create READ permissions for all app_users
+            permissions = [
+                Permission(
+                    email=app_user.email,
+                    type=PermissionType.READ,
+                    entity_type=EntityType.USER,
+                )
+                for app_user in app_users
+                if app_user.email
+            ]
+
+            # Create/update record group with permissions
+            await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+
+            self.logger.info(
+                f"✅ Created record group '{record_group_name}' with permissions for {len(permissions)} users"
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create record group: {e}", exc_info=True)
+            raise
+
     async def run_sync(self) -> None:
         """Main sync method to crawl and index web pages."""
         try:
@@ -286,6 +338,9 @@ class WebConnector(BaseConnector):
             all_active_users = await self.data_entities_processor.get_all_active_users()
             app_users = self.get_app_users(all_active_users)
             await self.data_entities_processor.on_new_app_users(app_users)
+
+            # Step 2: create record group with permissions
+            await self.create_record_group(app_users)
 
             # Reset state for new sync
             self.visited_urls.clear()
