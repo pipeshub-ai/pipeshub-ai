@@ -597,7 +597,8 @@ class ConnectorRegistry:
             for document in all_documents:
                 connector_type = document['type']
                 is_active = document.get('isActive', False)
-
+                if connector_type == Connectors.KNOWLEDGE_BASE.value:
+                    continue
                 if connector_type not in self._connectors and is_active:
                     keys_to_deactivate.append(document['_key'])
 
