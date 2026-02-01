@@ -64,6 +64,7 @@ Plans:
 
 ### Phase 3: Validation & Integration
 **Goal:** Verify multi-domain SSO works end-to-end
+**Status:** In Progress
 
 **Deliverables:**
 1. Test with users from multiple domains (aktor.ai, aktor.gr, biosar.gr)
@@ -71,8 +72,17 @@ Plans:
 3. Confirm existing users still work
 4. Update org's Microsoft config with tenant ID (if not already present)
 
-**Entry Criteria:** Phase 2 complete
+**Entry Criteria:** Phase 2 complete ✓
 **Exit Criteria:** All acceptance criteria pass
+
+**Key Files:**
+- `backend/nodejs/apps/src/modules/auth/utils/azureAdTokenValidation.spec.ts`
+- `backend/nodejs/apps/src/modules/auth/controller/userAccount.controller.spec.ts`
+
+**Plans:** 2 plans
+Plans:
+- [ ] 03-01-PLAN.md — Write integration tests for tenant ID org lookup
+- [ ] 03-02-PLAN.md — Manual SSO verification and tenant ID config update
 
 ---
 
