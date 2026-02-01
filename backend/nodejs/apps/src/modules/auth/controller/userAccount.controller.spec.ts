@@ -137,7 +137,7 @@ describe('UserAccountController - Tenant ID Org Lookup', () => {
       const domainBasedOrgId = 'domain-based-org-456';
 
       // Simulate the tenant lookup logic for Google SSO
-      const method = AuthMethodType.GOOGLE;
+      const method = AuthMethodType.GOOGLE as AuthMethodType;
       const credentials = { idToken: 'some-google-token' };
       const sessionInfo = { orgId: domainBasedOrgId, email: 'user@example.com' };
 
@@ -145,7 +145,10 @@ describe('UserAccountController - Tenant ID Org Lookup', () => {
       let effectiveOrgId = sessionInfo.orgId;
       let matchedBy: 'microsoftTenantId' | 'domain' = 'domain';
 
-      if (method === AuthMethodType.MICROSOFT || method === AuthMethodType.AZURE_AD) {
+      // For non-Microsoft methods, the condition is false, so tenant lookup is skipped
+      const isMicrosoftMethod = method === AuthMethodType.MICROSOFT || method === AuthMethodType.AZURE_AD;
+
+      if (isMicrosoftMethod) {
         const idToken = credentials?.idToken;
         if (idToken) {
           const extractedTenantId = extractTenantIdFromToken(idToken);
@@ -163,6 +166,9 @@ describe('UserAccountController - Tenant ID Org Lookup', () => {
           }
         }
       }
+
+      // Verify method is not Microsoft
+      expect(isMicrosoftMethod).to.be.false;
 
       // Verify OrgAuthConfig.findOne was NOT called
       expect(findOneStub.called).to.be.false;
@@ -190,7 +196,7 @@ describe('UserAccountController - Tenant ID Org Lookup', () => {
         isDeleted: false,
       });
 
-      const method = AuthMethodType.AZURE_AD;
+      const method = AuthMethodType.AZURE_AD as AuthMethodType;
       const credentials = { idToken: mockIdToken };
       const sessionInfo = { orgId: 'domain-based-org-456', email: 'user@example.com' };
 
@@ -233,7 +239,7 @@ describe('UserAccountController - Tenant ID Org Lookup', () => {
 
       // Simulate the tenant lookup logic with no idToken
       const method = AuthMethodType.MICROSOFT;
-      const credentials = {}; // No idToken
+      const credentials: Record<string, any> = {}; // No idToken
       const sessionInfo = { orgId: domainBasedOrgId, email: 'user@example.com' };
 
       let effectiveOrgId = sessionInfo.orgId;
