@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.services.base_arango_service import (
     BaseArangoService as ArangoService,
 )
@@ -635,6 +636,25 @@ class EntityEventService(BaseEventService):
                 [edge_document],
                 CollectionNames.ORG_APP_RELATION.value,
             )
+
+            # Create connector instance and add to connectors_map so it is available in-process
+            config_service = self.app_container.config_service()
+            data_store_provider = await self.app_container.data_store()
+            if not hasattr(self.app_container, 'connectors_map'):
+                self.logger.info(f"Creating connectors_map for org: {org_id}")
+                self.app_container.connectors_map = {}
+            connector = await ConnectorFactory.create_and_start_sync(
+                name="kb",
+                logger=self.logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=instance_key,
+            )
+            if connector:
+                self.app_container.connectors_map[instance_key] = connector
+                self.logger.info(
+                    f"✅ KB connector instance (id: {instance_key}) added to connectors_map for org: {org_id}"
+                )
 
             self.logger.info(
                 f"✅ Successfully created Knowledge Base connector instance '{connector_name}' "
