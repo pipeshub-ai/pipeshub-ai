@@ -57,6 +57,7 @@ from app.models.blocks import (
     BlockComment,
     BlockContainerIndex,
     BlockGroup,
+    BlockGroupChildren,
     BlocksContainer,
     BlockSubType,
     BlockType,
@@ -482,7 +483,7 @@ class NotionConnector(BaseConnector):
 
                 # Stream blocks container as JSON in chunks
                 async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                    json_str = blocks_container.model_dump_json(indent=2)
+                    json_str = blocks_container.model_dump_json(indent=2, exclude_none=True)
                     # Yield in chunks of 8KB for efficient streaming
                     chunk_size = 8192
                     encoded = json_str.encode('utf-8')
@@ -524,7 +525,7 @@ class NotionConnector(BaseConnector):
 
                 # Stream blocks container as JSON in chunks
                 async def generate_blocks_json() -> AsyncGenerator[bytes, None]:
-                    json_str = blocks_container.model_dump_json(indent=2)
+                    json_str = blocks_container.model_dump_json(indent=2, exclude_none=True)
                     # Yield in chunks of 8KB for efficient streaming
                     chunk_size = 8192
                     encoded = json_str.encode('utf-8')
@@ -944,8 +945,29 @@ class NotionConnector(BaseConnector):
                     if last_edited_time and (not latest_edit_time or last_edited_time > latest_edit_time):
                         latest_edit_time = last_edited_time
 
+                    # For data sources, fetch the database's parent ID
+                    database_parent_id = None
+                    if object_type == "data_source":
+                        parent = obj_data.get("parent", {})
+                        if parent.get("type") == "database_id":
+                            database_id = parent.get("database_id")
+                            if database_id:
+                                try:
+                                    database_parent_id = await self._get_database_parent_page_id(database_id)
+                                    # None is valid when database parent is workspace
+                                except Exception as e:
+                                    self.logger.error(
+                                        f"Error fetching database parent for data source {obj_id}: {e}. "
+                                        f"Parent will be None."
+                                    )
+                                    # Leave database_parent_id as None - direct connection to record group
+
                     # Transform (returns tuple for both types)
-                    record = self._transform_to_webpage_record(obj_data, object_type)
+                    record = await self._transform_to_webpage_record(
+                        obj_data,
+                        object_type,
+                        database_parent_id=database_parent_id
+                    )
 
                     if record:
                         # Set indexing status based on filter
@@ -1653,8 +1675,10 @@ class NotionConnector(BaseConnector):
                     # Update block's parent to point to wrapper
                     parsed_block.parent_index = wrapper_group.index
 
+                    # Initialize children as BlockGroupChildren (optimized range-based format)
+                    wrapper_group.children = BlockGroupChildren()
                     # The wrapper's first child is the block itself
-                    wrapper_children = [BlockContainerIndex(block_index=block_index)]
+                    wrapper_group.children.add_block_index(block_index)
 
                     # Special handling for synced_block references
                     # If this is a synced_block reference, fetch children from the original block
@@ -1682,8 +1706,12 @@ class NotionConnector(BaseConnector):
                         parent_page_id  # Pass parent page ID
                     )
 
-                    # Combine block and its children
-                    wrapper_group.children = wrapper_children + child_indices
+                    # Add child indices directly to BlockGroupChildren (ranges are built incrementally)
+                    for child_idx in child_indices:
+                        if child_idx.block_index is not None:
+                            wrapper_group.children.add_block_index(child_idx.block_index)
+                        if child_idx.block_group_index is not None:
+                            wrapper_group.children.add_block_group_index(child_idx.block_group_index)
 
                     # Add wrapper group to current level indices (not the block)
                     current_level_indices.append(BlockContainerIndex(block_group_index=wrapper_group.index))
@@ -1716,6 +1744,9 @@ class NotionConnector(BaseConnector):
                                         f"fetching children from original block"
                                     )
 
+                    # Initialize children as BlockGroupChildren (optimized range-based format)
+                    parsed_group.children = BlockGroupChildren()
+
                     child_indices = await self._process_blocks_recursive(
                         children_block_id,
                         parser,
@@ -1725,8 +1756,13 @@ class NotionConnector(BaseConnector):
                         parent_page_url,  # Pass parent page URL
                         parent_page_id  # Pass parent page ID
                     )
-                    # Set children on the nested group
-                    parsed_group.children = child_indices
+
+                    # Add child indices directly to BlockGroupChildren (ranges are built incrementally)
+                    for child_idx in child_indices:
+                        if child_idx.block_index is not None:
+                            parsed_group.children.add_block_index(child_idx.block_index)
+                        if child_idx.block_group_index is not None:
+                            parsed_group.children.add_block_group_index(child_idx.block_group_index)
 
             # Fix #3: Handle unknown/ignored blocks with children
             elif has_children and block_id:
@@ -1939,11 +1975,21 @@ class NotionConnector(BaseConnector):
                         origin=OriginTypes.CONNECTOR,
                         inherit_permissions=True,
                         parent_external_record_id=parent_ext_id,
+                        parent_record_type=RecordType.WEBPAGE,  # Files are attached to pages
                         is_file=True,
                         size_in_bytes=0,
                         weburl="",
                     )
                 else:
+                    # Determine parent_record_type based on record_type
+                    # For datasources, parent is a webpage (WEBPAGE)
+                    parent_record_type = None
+                    if parent_ext_id:
+                        if record_type == RecordType.DATASOURCE:
+                            # Datasources have pages as parents
+                            parent_record_type = RecordType.WEBPAGE
+                        # For other record types, parent_record_type can be determined when the parent is synced
+
                     minimal_record = WebpageRecord(
                         org_id=self.data_entities_processor.org_id,
                         record_name=name,
@@ -1960,6 +2006,7 @@ class NotionConnector(BaseConnector):
                         origin=OriginTypes.CONNECTOR,
                         inherit_permissions=True,
                         parent_external_record_id=parent_ext_id,
+                        parent_record_type=parent_record_type,
                     )
 
                 records_to_create.append((minimal_record, []))
@@ -2005,6 +2052,25 @@ class NotionConnector(BaseConnector):
                 self.logger.debug(f"Database {database_id} has no data_sources")
                 return []
 
+            # Extract the database's parent ID
+            database_parent = database_data.get("parent", {})
+            database_parent_id = None
+
+            parent_type = database_parent.get("type")
+            if parent_type == "page_id":
+                database_parent_id = database_parent.get("page_id")
+            elif parent_type == "database_id":
+                database_parent_id = database_parent.get("database_id")
+            elif parent_type == "block_id":
+                # Recursively resolve block_id to find the actual page/database/datasource parent
+                block_id = database_parent.get("block_id")
+                if block_id:
+                    resolved_parent_id, _ = await self._resolve_block_parent_recursive(block_id)
+                    database_parent_id = resolved_parent_id
+            elif parent_type == "data_source_id":
+                database_parent_id = database_parent.get("data_source_id")
+            # If parent_type is None or workspace, database_parent_id remains None
+
             # Batch resolve all data_sources to ChildRecords
             # Collect data_sources to resolve
             data_sources_to_resolve: Dict[str, Tuple[str, RecordType, Optional[str]]] = {}
@@ -2016,10 +2082,11 @@ class NotionConnector(BaseConnector):
                     continue
 
                 # Use DATASOURCE as the record type for data sources
+                # Pass the database's parent ID in the tuple
                 data_sources_to_resolve[data_source_id] = (
                     data_source_name,
                     RecordType.DATASOURCE,
-                    None  # No parent for data sources
+                    database_parent_id  # Use database's parent ID instead of None
                 )
 
             # Batch resolve/create all data_sources using the same logic as other child records
@@ -2741,17 +2808,148 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ Failed to transform user: {e}", exc_info=True)
             return None
 
-    def _transform_to_webpage_record(
+    async def _resolve_block_parent_recursive(
+        self,
+        block_id: str,
+        max_depth: int = 10,
+        visited: Optional[set] = None
+    ) -> Tuple[Optional[str], Optional[RecordType]]:
+        """
+        Recursively resolve a block_id parent until we find a page_id, database_id, or data_source_id.
+
+        This handles the case where a page/database/datasource has a block_id as parent,
+        and we need to traverse up the block hierarchy to find the actual page/database/datasource parent.
+
+        Args:
+            block_id: Notion block ID to resolve
+            max_depth: Maximum recursion depth to prevent infinite loops (default: 10)
+            visited: Set of visited block IDs to detect cycles (internal use)
+
+        Returns:
+            Tuple of (parent_id, parent_record_type) where:
+            - parent_id: The resolved parent ID (page_id, database_id, or data_source_id)
+            - parent_record_type: The RecordType enum (WEBPAGE, DATABASE, or DATASOURCE)
+            Returns (None, None) if no parent found, error occurred, or max depth reached
+        """
+        if visited is None:
+            visited = set()
+
+        # Prevent infinite loops
+        if max_depth <= 0:
+            self.logger.warning(f"Max depth reached while resolving block parent for {block_id}")
+            return None, None
+
+        # Detect cycles
+        if block_id in visited:
+            self.logger.warning(f"Cycle detected while resolving block parent: {block_id} (visited: {visited})")
+            return None, None
+
+        visited.add(block_id)
+
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_block(block_id)
+
+            if not response.success or not response.data:
+                self.logger.warning(
+                    f"Failed to retrieve block {block_id}: "
+                    f"{response.error if response else 'No response'}"
+                )
+                return None, None
+
+            block_data = response.data.json()
+            parent = block_data.get("parent", {})
+            parent_type = parent.get("type")
+
+            if parent_type == "page_id":
+                return parent.get("page_id"), RecordType.WEBPAGE
+            elif parent_type == "database_id":
+                return parent.get("database_id"), RecordType.DATABASE
+            elif parent_type == "data_source_id":
+                return parent.get("data_source_id"), RecordType.DATASOURCE
+            elif parent_type == "block_id":
+                # Recursively resolve the parent block
+                next_block_id = parent.get("block_id")
+                if next_block_id:
+                    return await self._resolve_block_parent_recursive(
+                        next_block_id,
+                        max_depth=max_depth - 1,
+                        visited=visited
+                    )
+                else:
+                    return None, None
+            else:
+                # No parent or workspace parent
+                return None, None
+
+        except Exception as e:
+            self.logger.warning(
+                f"Error resolving block parent for {block_id}: {e}",
+                exc_info=True
+            )
+            return None, None
+
+    async def _get_database_parent_page_id(self, database_id: str) -> Optional[str]:
+        """
+        Fetch a database and return its parent ID (page_id, database_id, block_id, or data_source_id).
+
+        Args:
+            database_id: Notion database ID
+
+        Returns:
+            Parent ID if database has a parent, None otherwise
+        """
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.retrieve_database(database_id)
+
+            if not response.success or not response.data:
+                self.logger.warning(
+                    f"Failed to retrieve database {database_id}: "
+                    f"{response.error if response else 'No response'}"
+                )
+                return None
+
+            database_data = response.data.json()
+            database_parent = database_data.get("parent", {})
+
+            parent_type = database_parent.get("type")
+            if parent_type == "page_id":
+                return database_parent.get("page_id")
+            elif parent_type == "database_id":
+                return database_parent.get("database_id")
+            elif parent_type == "block_id":
+                # Recursively resolve block_id to find the actual page/database/datasource parent
+                block_id = database_parent.get("block_id")
+                if block_id:
+                    resolved_parent_id, _ = await self._resolve_block_parent_recursive(block_id)
+                    return resolved_parent_id
+                return None
+            elif parent_type == "data_source_id":
+                return database_parent.get("data_source_id")
+
+            # If parent_type is None or workspace, return None
+            return None
+
+        except Exception as e:
+            self.logger.warning(
+                f"Error fetching database {database_id} to get parent: {e}"
+            )
+            return None
+
+    async def _transform_to_webpage_record(
         self,
         obj_data: Dict[str, Any],
-        object_type: str
-    ) -> WebpageRecord:
+        object_type: str,
+        database_parent_id: Optional[str] = None
+    ) -> Optional[WebpageRecord]:
         """
         Unified transform for pages, databases, and data_sources to WebpageRecord.
 
         Args:
             obj_data: Raw data from Notion API (page, database, or data_source)
             object_type: "page", "database", or "data_source"
+            database_parent_id: Optional parent ID for data sources (when parent is a database)
 
         Returns:
             For database/data_source: (WebpageRecord)
@@ -2785,12 +2983,17 @@ class NotionConnector(BaseConnector):
 
             # Determine parent based on type
             parent_id = None
+            parent_record_type = None
 
             if object_type == "data_source":
-                # Data Source: parent is in parent.database_id
-                parent = obj_data.get("parent", {})
-                if parent.get("type") == "database_id":
-                    parent_id = parent.get("database_id")
+                # Data Source: use the database's parent ID if provided
+                if database_parent_id:
+                    parent_id = database_parent_id
+                    # For datasources, parent is typically a page (WEBPAGE)
+                    # This allows _handle_parent_record to create a placeholder if parent doesn't exist yet
+                    parent_record_type = RecordType.WEBPAGE
+                # When database_parent_id is None (e.g., database parent is workspace),
+                # parent_id and parent_record_type remain None - datasource connects only to record group
             else:
                 # Page/Database: standard parent structure
                 parent = obj_data.get("parent", {})
@@ -2798,12 +3001,26 @@ class NotionConnector(BaseConnector):
 
                 if parent_type == "page_id":
                     parent_id = parent.get("page_id")
+                    parent_record_type = RecordType.WEBPAGE
                 elif parent_type == "database_id":
                     parent_id = parent.get("database_id")
+                    parent_record_type = RecordType.DATABASE
                 elif parent_type == "block_id":
-                    parent_id = parent.get("block_id")
+                    # Recursively resolve block_id to find the actual page/database/datasource parent
+                    block_id = parent.get("block_id")
+                    if block_id:
+                        resolved_parent_id, resolved_parent_type = await self._resolve_block_parent_recursive(block_id)
+                        if resolved_parent_id and resolved_parent_type:
+                            parent_id = resolved_parent_id
+                            parent_record_type = resolved_parent_type
+                        else:
+                            self.logger.warning(
+                                f"Failed to resolve block parent for {obj_id}: block_id={block_id}"
+                            )
+                    # If resolution fails, parent_id and parent_record_type remain None
                 elif parent_type == "data_source_id":
                     parent_id = parent.get("data_source_id")
+                    parent_record_type = RecordType.DATASOURCE
 
             # Create WebpageRecord
             workspace_group_id = self.workspace_id if self.workspace_id else None
@@ -2817,6 +3034,7 @@ class NotionConnector(BaseConnector):
                 external_record_group_id=workspace_group_id,
                 external_revision_id=last_edited_time,
                 parent_external_record_id=parent_id,
+                parent_record_type=parent_record_type,
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.NOTION,
@@ -3265,6 +3483,7 @@ class NotionConnector(BaseConnector):
                     origin=OriginTypes.CONNECTOR,
                     inherit_permissions=True,
                     parent_external_record_id=parent_data_source_id,
+                    parent_record_type=RecordType.DATASOURCE,  # Parent is a datasource
                 )
 
                 await self.data_entities_processor.on_new_records([(minimal_record, [])])

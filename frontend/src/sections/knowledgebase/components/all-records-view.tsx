@@ -117,6 +117,7 @@ interface HubNode {
   origin: 'KB' | 'CONNECTOR';
   connector: string;
   recordType?: string;
+  recordGroupType?: string;
   indexingStatus?: string;
   hasChildren: boolean;
   createdAt?: number;
@@ -768,13 +769,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     }
   };
 
-  const handleRetryIndexingRecordGroup = async (recordGroupId: string) => {
+  const handleRetryIndexingRecordGroup = async (node: HubNode) => {
     try {
-      const response = await KnowledgeBaseAPI.reindexRecordGroup(recordGroupId, false, 100);
+      const response = await KnowledgeBaseAPI.reindexRecordGroup(node.id, false, 100);
       setSnackbar({
         open: true,
         message: response.success
-          ? 'Record group indexing started successfully'
+          ? `${node.name} indexing started successfully`
           : response.message || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
@@ -1020,7 +1021,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           app: 'Connector',
           kb: 'Collection',
           folder: 'Folder',
-          recordGroup: 'Record Group',
+          recordGroup: params.row.recordGroupType?.split('_').map((word: string) => word.charAt(0) + word.slice(1).toLowerCase()).join(' ') || 'Record Group',
           record: params.row.recordType?.split('_').join(' ') || 'File',
         };
         return (
@@ -1350,12 +1351,21 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
       renderCell: (params) => {
         const node = params.row;
 
+        // Check if node should have any actions
+        const hasActions = 
+          node.hasChildren || 
+          node.nodeType === 'record' || 
+          node.nodeType === 'recordGroup';
+
         const handleActionsClick = (event: React.MouseEvent<HTMLButtonElement>) => {
           event.stopPropagation();
 
-          const menuActions: ActionMenuItem[] = [
-            {
-              label: node.hasChildren ? 'Open' : 'View Details',
+          const menuActions: ActionMenuItem[] = [];
+
+          // Only show Open action if node has children or is a record
+          if (node.hasChildren || node.nodeType === 'record') {
+            menuActions.push({
+              label: 'Open',
               icon: eyeIcon,
               color: theme.palette.primary.main,
               onClick: () => {
@@ -1365,8 +1375,8 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                   onNavigateToRecord(node.id);
                 }
               },
-            },
-          ];
+            });
+          }
 
           // Add download option for records
           if (node.nodeType === 'record' && node.recordType === 'FILE') {
@@ -1410,7 +1420,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 label: 'Manual index',
                 icon: refreshIcon,
                 color: theme.palette.warning.main,
-                onClick: () => handleRetryIndexingRecordGroup(node.id),
+                onClick: () => handleRetryIndexingRecordGroup(node),
               });
             
           }
@@ -1433,6 +1443,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           showActionMenu(event.currentTarget, menuActions);
         };
+
+        // Only render action button if there are actions to show
+        if (!hasActions) {
+          return (<Typography variant="caption" color="text.secondary">
+            —
+          </Typography>)
+        }
 
         return (
           <IconButton

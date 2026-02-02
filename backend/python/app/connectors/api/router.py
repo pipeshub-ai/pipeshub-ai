@@ -711,7 +711,7 @@ async def download_file(
                     detail=f"Connector '{connector_id}' not found"
                 )
 
-            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
                 buffer = await connector_obj.stream_record(record, user_id)
             else:
                 buffer = await connector_obj.stream_record(record)
@@ -821,7 +821,7 @@ async def stream_record(
                 )
 
             # Pass user_id for google drive
-            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
+            if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
                 buffer = await connector_obj.stream_record(record, user_id)
             else:
                 buffer = await connector_obj.stream_record(record)

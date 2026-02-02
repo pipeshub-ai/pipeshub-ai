@@ -8,6 +8,7 @@ from app.config.constants.arangodb import (
     ConnectorScopes,
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.services.base_arango_service import (
     BaseArangoService as ArangoService,
 )
@@ -561,7 +562,10 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"📦 Creating Knowledge Base connector instance for org: {org_id}")
 
             # Get KB connector metadata from the connector class
-            from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
+            from app.connectors.sources.localKB.connector import (
+                KB_CONNECTOR_NAME,
+                KnowledgeBaseConnector,
+            )
 
             # Check if KB connector metadata exists
             if not hasattr(KnowledgeBaseConnector, '_connector_metadata'):
@@ -569,13 +573,13 @@ class EntityEventService(BaseEventService):
                 return None
 
             metadata = KnowledgeBaseConnector._connector_metadata
-            connector_type = metadata.get('name', Connectors.KNOWLEDGE_BASE.value)
+            connector_name = metadata.get('name', KB_CONNECTOR_NAME)
             app_group = metadata.get('appGroup', 'Local Storage')
 
             # Check if KB connector instance already exists for this org
             org_apps = await self.arango_service.get_org_apps(org_id)
             existing_kb_app = next(
-                (app for app in org_apps if app.get('type') == connector_type),
+                (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
                 None
             )
 
@@ -600,8 +604,8 @@ class EntityEventService(BaseEventService):
 
             instance_document = {
                 '_key': instance_key,
-                'name': connector_type,  # Use connector type as instance name
-                'type': connector_type,
+                'name': connector_name,
+                'type': Connectors.KNOWLEDGE_BASE.value,
                 'appGroup': app_group,
                 'authType': selected_auth_type,
                 'scope': scope,
@@ -633,8 +637,27 @@ class EntityEventService(BaseEventService):
                 CollectionNames.ORG_APP_RELATION.value,
             )
 
+            # Create connector instance and add to connectors_map so it is available in-process
+            config_service = self.app_container.config_service()
+            data_store_provider = await self.app_container.data_store()
+            if not hasattr(self.app_container, 'connectors_map'):
+                self.logger.info(f"Creating connectors_map for org: {org_id}")
+                self.app_container.connectors_map = {}
+            connector = await ConnectorFactory.create_and_start_sync(
+                name="kb",
+                logger=self.logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=instance_key,
+            )
+            if connector:
+                self.app_container.connectors_map[instance_key] = connector
+                self.logger.info(
+                    f"✅ KB connector instance (id: {instance_key}) added to connectors_map for org: {org_id}"
+                )
+
             self.logger.info(
-                f"✅ Successfully created Knowledge Base connector instance '{connector_type}' "
+                f"✅ Successfully created Knowledge Base connector instance '{connector_name}' "
                 f"(id: {instance_key}) for org: {org_id}"
             )
             return instance_document
