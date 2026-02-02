@@ -1862,4 +1862,47 @@ export class UserAccountController {
       next(error);
     }
   }
+
+  async getDirectSsoConfig(
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      // Find any org with Microsoft auth configured
+      const orgAuthConfig = await OrgAuthConfig.findOne({
+        isDeleted: false,
+        'authSteps.allowedMethods.type': 'microsoft',
+      });
+
+      if (!orgAuthConfig) {
+        res.json({ skipEmailScreen: false });
+        return;
+      }
+
+      // Get Microsoft config
+      const newUser = { orgId: orgAuthConfig.orgId, email: '' };
+      const configManagerResponse = await this.configurationManagerService.getConfig(
+        this.config.cmBackend,
+        MICROSOFT_AUTH_CONFIG_PATH,
+        newUser,
+        this.config.scopedJwtSecret,
+      );
+
+      if (configManagerResponse.data?.skipEmailScreen) {
+        res.json({
+          skipEmailScreen: true,
+          microsoft: {
+            clientId: configManagerResponse.data.clientId,
+            tenantId: configManagerResponse.data.tenantId,
+            authority: configManagerResponse.data.authority,
+          },
+        });
+      } else {
+        res.json({ skipEmailScreen: false });
+      }
+    } catch (error) {
+      next(error);
+    }
+  }
 }

@@ -36,6 +36,7 @@ import InputAdornment from '@mui/material/InputAdornment';
 import { Tab, Tabs, Fade, Grow, useTheme, Snackbar } from '@mui/material';
 
 import { ErrorType, withErrorHandling } from 'src/utils/axios';
+import axios from 'src/utils/axios';
 
 import { setEmail } from 'src/store/auth-slice';
 
@@ -215,6 +216,8 @@ export const AuthenticationView = () => {
   const navigate = useNavigate();
   const searchParams = useSearchParams();
   const returnTo = searchParams.get('returnTo');
+  const [directMicrosoftSso, setDirectMicrosoftSso] = useState(false);
+  const [microsoftConfig, setMicrosoftConfig] = useState<any>(null);
 
   const [snackbar, setSnackbar] = useState({
     open: false,
@@ -451,26 +454,89 @@ export const AuthenticationView = () => {
   }, [currentStep, selectedTab]);
 
   useEffect(() => {
-    const checkOrgExists = async () => {
+    const checkOrgAndSsoConfig = async () => {
       try {
-        const response = await OrgExists();
+        const [orgResponse, ssoConfigResponse] = await Promise.all([
+          OrgExists(),
+          axios.get('/api/v1/auth/directSsoConfig').catch(() => ({ data: null })),
+        ]);
+
         // Preserve query params when navigating
         const queryString = searchParams.toString();
         const suffix = queryString ? `?${queryString}` : '';
 
-        if (response.exists === false) {
+        if (orgResponse.exists === false) {
           navigate(`/auth/sign-up${suffix}`);
+        } else if (ssoConfigResponse.data?.skipEmailScreen && ssoConfigResponse.data?.microsoft) {
+          // Direct SSO mode - skip email screen
+          setDirectMicrosoftSso(true);
+          setMicrosoftConfig(ssoConfigResponse.data.microsoft);
         } else {
           navigate(`/auth/sign-in${suffix}`);
         }
       } catch (err) {
-        console.error('Error checking if organization exists:', err);
+        console.error('Error checking org/SSO config:', err);
       }
     };
 
-    checkOrgExists();
+    checkOrgAndSsoConfig();
     // eslint-disable-next-line
   }, []);
+
+  // Direct Microsoft SSO mode
+  if (directMicrosoftSso && microsoftConfig) {
+    return (
+      <Fade in timeout={450}>
+        <Card
+          sx={{
+            width: '100%',
+            maxWidth: 480,
+            mx: 'auto',
+            mt: 4,
+            backdropFilter: 'blur(6px)',
+            bgcolor: (theme1) => alpha(theme1.palette.background.paper, 0.9),
+            boxShadow: (theme1) => `0 0 2px ${alpha(theme1.palette.grey[500], 0.2)},
+                                 0 12px 24px -4px ${alpha(theme1.palette.grey[500], 0.12)}`,
+          }}
+        >
+          <CardContent sx={{ pt: 5, pb: 5 }}>
+            <Box sx={{ mb: 5, textAlign: 'center' }}>
+              <Typography variant="h4" sx={{ mb: 1, fontWeight: 700 }}>
+                Welcome
+              </Typography>
+              <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+                Sign in with your organization account
+              </Typography>
+            </Box>
+
+            {error && (
+              <Grow in>
+                <Alert
+                  severity="error"
+                  onClose={() => setError('')}
+                  sx={{
+                    mb: 3,
+                    '& .MuiAlert-message': { width: '100%' },
+                  }}
+                >
+                  {error}
+                </Alert>
+              </Grow>
+            )}
+
+            <MicrosoftLoginButton
+              config={socialConfig.microsoft}
+              method="microsoft"
+              clientId={microsoftConfig.clientId}
+              authority={microsoftConfig.authority || `https://login.microsoftonline.com/${microsoftConfig.tenantId}`}
+              onSuccess={handleMsalLoginSuccess}
+              onError={(errorMessage) => setError(errorMessage)}
+            />
+          </CardContent>
+        </Card>
+      </Fade>
+    );
+  }
 
   // Initial email form
   if (authSteps.length === 0) {
@@ -484,7 +550,7 @@ export const AuthenticationView = () => {
             mt: 4,
             backdropFilter: 'blur(6px)',
             bgcolor: (theme1) => alpha(theme1.palette.background.paper, 0.9),
-            boxShadow: (theme1) => `0 0 2px ${alpha(theme1.palette.grey[500], 0.2)}, 
+            boxShadow: (theme1) => `0 0 2px ${alpha(theme1.palette.grey[500], 0.2)},
                                  0 12px 24px -4px ${alpha(theme1.palette.grey[500], 0.12)}`,
           }}
         >
