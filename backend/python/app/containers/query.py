@@ -27,6 +27,14 @@ class QueryAppContainer(BaseAppContainer):
         BaseAppContainer._create_redis_client, config_service=config_service
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in query service
+
+    # Graph Database Provider via Factory (HTTP mode - fully async)
+    graph_provider = providers.Resource(
+        container_utils.create_graph_provider,
+        logger=logger,
+        config_service=config_service,
+    )
+
     arango_service = providers.Resource(
         container_utils.create_arango_service,
         logger=logger,
@@ -43,7 +51,7 @@ class QueryAppContainer(BaseAppContainer):
         container_utils.create_blob_storage,
         logger=logger,
         config_service=config_service,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
     )
 
     retrieval_service = providers.Resource(
@@ -51,7 +59,7 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
         logger=logger,
         vector_db_service=vector_db_service,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         blob_store=blob_store,
     )
     reranker_service = providers.Singleton(

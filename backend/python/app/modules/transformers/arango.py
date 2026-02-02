@@ -3,18 +3,18 @@ import uuid
 from app.config.constants.arangodb import (
     CollectionNames,
 )
-from app.connectors.core.base.data_store.arango_data_store import ArangoDataStore
-from app.connectors.services.base_arango_service import BaseArangoService
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class Arango(Transformer):
-    def __init__(self, arango_service: BaseArangoService, logger) -> None:
+    def __init__(self, graph_provider: IGraphDBProvider, logger) -> None:
         super().__init__()
         self.logger = logger
-        self.arango_data_store = ArangoDataStore(logger, arango_service)
+        self.graph_data_store = GraphDataStore(logger, graph_provider)
 
     async def apply(self, ctx: TransformContext) -> None:
         record = ctx.record
@@ -30,12 +30,12 @@ class Arango(Transformer):
         self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
     ) -> None:
         """
-        Extract metadata from a document in ArangoDB and create department relationships
+        Extract metadata from a document and create department relationships
         """
-        self.logger.info("🚀 Saving metadata to ArangoDB")
-        async with self.arango_data_store.transaction() as tx_store:
+        self.logger.info("🚀 Saving metadata to graph database")
+        async with self.graph_data_store.transaction() as tx_store:
             try:
-                # Retrieve the document content from ArangoDB
+                # Retrieve the document content from graph database
                 record = await tx_store.get_record_by_key(
                     record_id
                 )
@@ -48,29 +48,50 @@ class Arango(Transformer):
                 # Create relationships with departments
                 for department in metadata.departments:
                     try:
-                        dept_query = f"FOR d IN {CollectionNames.DEPARTMENTS.value} FILTER d.departmentName == @department RETURN d"
-                        cursor = tx_store.txn.aql.execute(
-                            dept_query, bind_vars={"department": department}
+                        # Find department by name using graph_provider
+                        dept_nodes = await tx_store.get_nodes_by_filters(
+                            CollectionNames.DEPARTMENTS.value,
+                            {"departmentName": department}
                         )
-                        dept_doc = cursor.next()
+
+                        if not dept_nodes:
+                            self.logger.warning(f"⚠️ No department found for: {department}")
+                            continue
+
+                        dept_doc = dept_nodes[0]
+                        # Handle both id and _key formats
+                        dept_key = dept_doc.get("_key") or dept_doc.get("id")
                         self.logger.info(f"🚀 Department: {dept_doc}")
 
-                        if dept_doc:
-                            edge = {
-                                "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                                "_to": f"{CollectionNames.DEPARTMENTS.value}/{dept_doc['_key']}",
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
-                            await tx_store.batch_create_edges(
-                                [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
-                            )
-                            self.logger.info(
-                                f"🔗 Created relationship between document {record_id} and department {department}"
+                        if dept_key:
+                            # Check if edge already exists
+                            existing_edge = await tx_store.get_edge(
+                                from_id=record_id,
+                                from_collection=CollectionNames.RECORDS.value,
+                                to_id=dept_key,
+                                to_collection=CollectionNames.DEPARTMENTS.value,
+                                collection=CollectionNames.BELONGS_TO_DEPARTMENT.value
                             )
 
-                    except StopIteration:
-                        self.logger.warning(f"⚠️ No department found for: {department}")
-                        continue
+                            if not existing_edge:
+                                edge = {
+                                    "from_id": record_id,
+                                    "from_collection": CollectionNames.RECORDS.value,
+                                    "to_id": dept_key,
+                                    "to_collection": CollectionNames.DEPARTMENTS.value,
+                                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                                }
+                                await tx_store.batch_create_edges(
+                                    [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
+                                )
+                                self.logger.info(
+                                    f"🔗 Created relationship between document {record_id} and department {department}"
+                                )
+                            else:
+                                self.logger.info(
+                                    f"🔗 Relationship between document {record_id} and department {department} already exists"
+                                )
+
                     except Exception as e:
                         self.logger.error(
                             f"❌ Error creating relationship with department {department}: {str(e)}"
@@ -78,227 +99,225 @@ class Arango(Transformer):
                         continue
 
                 # Handle single category
-                category_query = f"FOR c IN {CollectionNames.CATEGORIES.value} FILTER c.name == @name RETURN c"
-                cursor = tx_store.txn.aql.execute(
-                    category_query, bind_vars={"name": metadata.categories[0]}
+                category_nodes = await tx_store.get_nodes_by_filters(
+                    CollectionNames.CATEGORIES.value,
+                    {"name": metadata.categories[0]}
                 )
-                try:
-                    category_doc = cursor.next()
-                    if category_doc is None:
-                        raise KeyError("No category found")
-                    category_key = category_doc["_key"]
-                except (StopIteration, KeyError, TypeError):
+
+                if category_nodes:
+                    category_doc = category_nodes[0]
+                    category_key = category_doc.get("_key") or category_doc.get("id")
+                else:
                     category_key = str(uuid.uuid4())
-                    tx_store.txn.collection(
+                    # Create category node
+                    category_node = {
+                        "id": category_key,
+                        "name": metadata.categories[0],
+                    }
+                    await tx_store.batch_upsert_nodes(
+                        [category_node],
                         CollectionNames.CATEGORIES.value
-                    ).insert(
-                        {
-                            "_key": category_key,
-                            "name": metadata.categories[0],
-                        }
                     )
 
                 # Create category relationship if it doesn't exist
-                edge_query = f"""
-                FOR e IN {CollectionNames.BELONGS_TO_CATEGORY.value}
-                FILTER e._from == @from AND e._to == @to
-                RETURN e
-                """
-                cursor = tx_store.txn.aql.execute(
-                    edge_query,
-                    bind_vars={
-                        "from": f"records/{record_id}",
-                        "to": f"categories/{category_key}",
-                    },
+                existing_category_edge = await tx_store.get_edge(
+                    from_id=record_id,
+                    from_collection=CollectionNames.RECORDS.value,
+                    to_id=category_key,
+                    to_collection=CollectionNames.CATEGORIES.value,
+                    collection=CollectionNames.BELONGS_TO_CATEGORY.value
                 )
-                if not cursor.count():
-                    tx_store.txn.collection(
+
+                if not existing_category_edge:
+                    category_edge = {
+                        "from_id": record_id,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": category_key,
+                        "to_collection": CollectionNames.CATEGORIES.value,
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    await tx_store.batch_create_edges(
+                        [category_edge],
                         CollectionNames.BELONGS_TO_CATEGORY.value
-                    ).insert(
-                        {
-                            "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                            "_to": f"{CollectionNames.CATEGORIES.value}/{category_key}",
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        }
                     )
 
                 # Handle subcategories with similar pattern
-                def handle_subcategory(name, level, parent_key, parent_collection) -> str:
+                async def handle_subcategory(name, level, parent_key, parent_collection) -> str:
                     collection_name = getattr(
                         CollectionNames, f"SUBCATEGORIES{level}"
                     ).value
-                    query = f"FOR s IN {collection_name} FILTER s.name == @name RETURN s"
-                    cursor = tx_store.txn.aql.execute(
-                        query, bind_vars={"name": name}
+
+                    # Find subcategory by name
+                    subcategory_nodes = await tx_store.get_nodes_by_filters(
+                        collection_name,
+                        {"name": name}
                     )
-                    try:
-                        doc = cursor.next()
-                        if doc is None:
-                            raise KeyError("No subcategory found")
-                        key = doc["_key"]
-                    except (StopIteration, KeyError, TypeError):
+
+                    if subcategory_nodes:
+                        doc = subcategory_nodes[0]
+                        key = doc.get("_key") or doc.get("id")
+                    else:
                         key = str(uuid.uuid4())
-                        tx_store.txn.collection(collection_name).insert(
-                            {
-                                "_key": key,
-                                "name": name,
-                            }
+                        # Create subcategory node
+                        subcategory_node = {
+                            "id": key,
+                            "name": name,
+                        }
+                        await tx_store.batch_upsert_nodes(
+                            [subcategory_node],
+                            collection_name
                         )
 
-                    # Create belongs_to relationship
-                    edge_query = f"""
-                    FOR e IN {CollectionNames.BELONGS_TO_CATEGORY.value}
-                    FILTER e._from == @from AND e._to == @to
-                    RETURN e
-                    """
-                    cursor = tx_store.txn.aql.execute(
-                        edge_query,
-                        bind_vars={
-                            "from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                            "to": f"{collection_name}/{key}",
-                        },
+                    # Create belongs_to relationship if it doesn't exist
+                    existing_belongs_edge = await tx_store.get_edge(
+                        from_id=record_id,
+                        from_collection=CollectionNames.RECORDS.value,
+                        to_id=key,
+                        to_collection=collection_name,
+                        collection=CollectionNames.BELONGS_TO_CATEGORY.value
                     )
-                    if not cursor.count():
-                        tx_store.txn.collection(
+
+                    if not existing_belongs_edge:
+                        belongs_edge = {
+                            "from_id": record_id,
+                            "from_collection": CollectionNames.RECORDS.value,
+                            "to_id": key,
+                            "to_collection": collection_name,
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        }
+                        await tx_store.batch_create_edges(
+                            [belongs_edge],
                             CollectionNames.BELONGS_TO_CATEGORY.value
-                        ).insert(
-                            {
-                                "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                                "_to": f"{collection_name}/{key}",
+                        )
+
+                    # Create hierarchy relationship if parent exists
+                    if parent_key:
+                        existing_hierarchy_edge = await tx_store.get_edge(
+                            from_id=key,
+                            from_collection=collection_name,
+                            to_id=parent_key,
+                            to_collection=parent_collection,
+                            collection=CollectionNames.INTER_CATEGORY_RELATIONS.value
+                        )
+
+                        if not existing_hierarchy_edge:
+                            hierarchy_edge = {
+                                "from_id": key,
+                                "from_collection": collection_name,
+                                "to_id": parent_key,
+                                "to_collection": parent_collection,
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                             }
-                        )
-
-                    # Create hierarchy relationship
-                    if parent_key:
-                        edge_query = f"""
-                        FOR e IN {CollectionNames.INTER_CATEGORY_RELATIONS.value}
-                        FILTER e._from == @from AND e._to == @to
-                        RETURN e
-                        """
-                        cursor = tx_store.txn.aql.execute(
-                            edge_query,
-                            bind_vars={
-                                "from": f"{collection_name}/{key}",
-                                "to": f"{parent_collection}/{parent_key}",
-                            },
-                        )
-                        if not cursor.count():
-                            tx_store.txn.collection(
+                            await tx_store.batch_create_edges(
+                                [hierarchy_edge],
                                 CollectionNames.INTER_CATEGORY_RELATIONS.value
-                            ).insert(
-                                {
-                                    "_from": f"{collection_name}/{key}",
-                                    "_to": f"{parent_collection}/{parent_key}",
-                                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                }
                             )
                     return key
 
                 # Process subcategories
+                sub1_key = None
+                sub2_key = None
                 if metadata.sub_category_level_1:
-                    sub1_key = handle_subcategory(
+                    sub1_key = await handle_subcategory(
                         metadata.sub_category_level_1, "1", category_key, "categories"
                     )
                 if metadata.sub_category_level_2 and sub1_key:
-                    sub2_key = handle_subcategory(
+                    sub2_key = await handle_subcategory(
                         metadata.sub_category_level_2, "2", sub1_key, "subcategories1"
                     )
                 if metadata.sub_category_level_3 and sub2_key:
-                    handle_subcategory(
+                    await handle_subcategory(
                         metadata.sub_category_level_3, "3", sub2_key, "subcategories2"
                     )
 
                 # Handle languages
                 for language in metadata.languages:
-                    query = f"FOR l IN {CollectionNames.LANGUAGES.value} FILTER l.name == @name RETURN l"
-                    cursor = tx_store.txn.aql.execute(
-                        query, bind_vars={"name": language}
+                    # Find language by name
+                    language_nodes = await tx_store.get_nodes_by_filters(
+                        CollectionNames.LANGUAGES.value,
+                        {"name": language}
                     )
-                    try:
-                        lang_doc = cursor.next()
-                        if lang_doc is None:
-                            raise KeyError("No language found")
-                        lang_key = lang_doc["_key"]
-                    except (StopIteration, KeyError, TypeError):
+
+                    if language_nodes:
+                        lang_doc = language_nodes[0]
+                        lang_key = lang_doc.get("_key") or lang_doc.get("id")
+                    else:
                         lang_key = str(uuid.uuid4())
-                        tx_store.txn.collection(
+                        # Create language node
+                        language_node = {
+                            "id": lang_key,
+                            "name": language,
+                        }
+                        await tx_store.batch_upsert_nodes(
+                            [language_node],
                             CollectionNames.LANGUAGES.value
-                        ).insert(
-                            {
-                                "_key": lang_key,
-                                "name": language,
-                            }
                         )
 
                     # Create relationship if it doesn't exist
-                    edge_query = f"""
-                    FOR e IN {CollectionNames.BELONGS_TO_LANGUAGE.value}
-                    FILTER e._from == @from AND e._to == @to
-                    RETURN e
-                    """
-                    cursor = tx_store.txn.aql.execute(
-                        edge_query,
-                        bind_vars={
-                            "from": f"records/{record_id}",
-                            "to": f"languages/{lang_key}",
-                        },
+                    existing_lang_edge = await tx_store.get_edge(
+                        from_id=record_id,
+                        from_collection=CollectionNames.RECORDS.value,
+                        to_id=lang_key,
+                        to_collection=CollectionNames.LANGUAGES.value,
+                        collection=CollectionNames.BELONGS_TO_LANGUAGE.value
                     )
-                    if not cursor.count():
-                        tx_store.txn.collection(
+
+                    if not existing_lang_edge:
+                        lang_edge = {
+                            "from_id": record_id,
+                            "from_collection": CollectionNames.RECORDS.value,
+                            "to_id": lang_key,
+                            "to_collection": CollectionNames.LANGUAGES.value,
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        }
+                        await tx_store.batch_create_edges(
+                            [lang_edge],
                             CollectionNames.BELONGS_TO_LANGUAGE.value
-                        ).insert(
-                            {
-                                "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                                "_to": f"{CollectionNames.LANGUAGES.value}/{lang_key}",
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
                         )
 
                 # Handle topics
                 for topic in metadata.topics:
-                    query = f"FOR t IN {CollectionNames.TOPICS.value} FILTER t.name == @name RETURN t"
-                    cursor = tx_store.txn.aql.execute(
-                        query, bind_vars={"name": topic}
+                    # Find topic by name
+                    topic_nodes = await tx_store.get_nodes_by_filters(
+                        CollectionNames.TOPICS.value,
+                        {"name": topic}
                     )
-                    try:
-                        topic_doc = cursor.next()
-                        if topic_doc is None:
-                            raise KeyError("No topic found")
-                        topic_key = topic_doc["_key"]
-                    except (StopIteration, KeyError, TypeError):
+
+                    if topic_nodes:
+                        topic_doc = topic_nodes[0]
+                        topic_key = topic_doc.get("_key") or topic_doc.get("id")
+                    else:
                         topic_key = str(uuid.uuid4())
-                        tx_store.txn.collection(
+                        # Create topic node
+                        topic_node = {
+                            "id": topic_key,
+                            "name": topic,
+                        }
+                        await tx_store.batch_upsert_nodes(
+                            [topic_node],
                             CollectionNames.TOPICS.value
-                        ).insert(
-                            {
-                                "_key": topic_key,
-                                "name": topic,
-                            }
                         )
 
                     # Create relationship if it doesn't exist
-                    edge_query = f"""
-                    FOR e IN {CollectionNames.BELONGS_TO_TOPIC.value}
-                    FILTER e._from == @from AND e._to == @to
-                    RETURN e
-                    """
-                    cursor = tx_store.txn.aql.execute(
-                        edge_query,
-                        bind_vars={
-                            "from": f"records/{record_id}",
-                            "to": f"topics/{topic_key}",
-                        },
+                    existing_topic_edge = await tx_store.get_edge(
+                        from_id=record_id,
+                        from_collection=CollectionNames.RECORDS.value,
+                        to_id=topic_key,
+                        to_collection=CollectionNames.TOPICS.value,
+                        collection=CollectionNames.BELONGS_TO_TOPIC.value
                     )
-                    if not cursor.count():
-                        tx_store.txn.collection(
+
+                    if not existing_topic_edge:
+                        topic_edge = {
+                            "from_id": record_id,
+                            "from_collection": CollectionNames.RECORDS.value,
+                            "to_id": topic_key,
+                            "to_collection": CollectionNames.TOPICS.value,
+                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        }
+                        await tx_store.batch_create_edges(
+                            [topic_edge],
                             CollectionNames.BELONGS_TO_TOPIC.value
-                        ).insert(
-                            {
-                                "_from": f"{CollectionNames.RECORDS.value}/{record_id}",
-                                "_to": f"{CollectionNames.TOPICS.value}/{topic_key}",
-                                "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
                         )
 
                 self.logger.info(
@@ -307,8 +326,9 @@ class Arango(Transformer):
 
                 # Update extraction status for the record in ArangoDB
                 timestamp = get_epoch_timestamp_in_ms()
+                # Update extraction status for the record
                 status_doc = {
-                    "_key": record_id,
+                    "id": record_id,
                     "extractionStatus": "COMPLETED",
                     "lastExtractionTimestamp": timestamp,
                     "indexingStatus": "COMPLETED",
@@ -329,6 +349,6 @@ class Arango(Transformer):
 
 
             except Exception as e:
-                self.logger.error(f"❌ Error saving metadata to ArangoDB: {str(e)}")
+                self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
                 raise
 

@@ -50,7 +50,7 @@ async def get_initialized_container() -> IndexingAppContainer:
                 get_initialized_container.initialized = True
     return container
 
-async def recover_in_progress_records(app_container: IndexingAppContainer) -> None:
+async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider) -> None:
     """
     Recover and process records that were in progress when the service crashed.
     This ensures that any incomplete indexing operations are completed before
@@ -65,13 +65,10 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
     results = {"success": 0, "partial": 0, "incomplete": 0, "skipped": 0, "error": 0}
 
     try:
-        # Get the arango service and event processor
-        arango_service = await app_container.arango_service()
-
         # Query for records that are in IN_PROGRESS status
-        in_progress_records = await arango_service.get_documents_by_status(
+        in_progress_records = await graph_provider.get_nodes_by_filters(
             CollectionNames.RECORDS.value,
-            ProgressStatus.IN_PROGRESS.value
+            {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
         )
         queued_records = await arango_service.get_documents_by_status(
                 CollectionNames.RECORDS.value,
@@ -276,9 +273,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.info("🚀 Starting application")
 
+    # Get the already-resolved graph_provider from container (set during initialization)
+    # This avoids coroutine reuse error
+    graph_provider = getattr(app_container, '_graph_provider', None)
+    if not graph_provider:
+        # Fallback: if not set during initialization, resolve it now
+        graph_provider = await app_container.graph_provider()
+    app.state.graph_provider = graph_provider
+
     # Recover in-progress records before starting Kafka consumers
+    # Pass already-resolved graph_provider to avoid coroutine reuse
     try:
-        await recover_in_progress_records(app_container)
+        await recover_in_progress_records(app_container, graph_provider)
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Continue even if recovery fails

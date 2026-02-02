@@ -8,6 +8,7 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.models.entities import RecordType
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -122,12 +123,13 @@ class ConnectorRegistry:
     - Pagination for large connector lists
     """
 
-    def __init__(self, container: ConnectorAppContainer) -> None:
+    def __init__(self, container: ConnectorAppContainer, graph_provider: Optional[IGraphDBProvider] = None) -> None:
         """
         Initialize the connector registry.
 
         Args:
             container: Dependency injection container
+            graph_provider: Optional pre-resolved graph provider to avoid coroutine reuse
         """
         self.container = container
         self.logger = container.logger()

@@ -64,14 +64,14 @@ class VectorStore(Transformer):
         self,
         logger,
         config_service,
-        arango_service,
+        graph_provider,
         collection_name: str,
         vector_db_service: IVectorDBService,
     ) -> None:
         super().__init__()
         self.logger = logger
         self.config_service = config_service
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         # Reuse a single spaCy pipeline across instances to avoid memory bloat
         self.nlp = _get_shared_nlp()
         self.vector_db_service = vector_db_service
@@ -815,7 +815,6 @@ class VectorStore(Transformer):
                     f"Failed to store document batch {i} in vector store: {str(result)}",
                     details={"error": str(result), "batch_index": i},
                 )
-
 
 
     async def _create_embeddings(

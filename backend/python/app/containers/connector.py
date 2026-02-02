@@ -56,10 +56,26 @@ class ConnectorAppContainer(BaseAppContainer):
         KafkaService, logger=logger, config_service=config_service
     )
 
-    # First create an async factory for the connected BaseArangoService
+    # ArangoService is kept for backward compatibility and ArangoDB-specific migrations
+    # It will only be created when ArangoDB is the configured provider
     @staticmethod
-    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
-        """Async factory to create and connect BaseArangoService (with schema init allowed)"""
+    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> Optional[BaseArangoService]:
+        """Async factory to create and connect BaseArangoService (only for ArangoDB-specific operations)"""
+        # Check which provider is configured
+        try:
+            graphdb_config = await config_service.get_config("/services/graphdb")
+            provider_type = graphdb_config.get("provider", "neo4j") if graphdb_config else "neo4j"
+        except Exception:
+            # Config doesn't exist, set it to neo4j as default
+            logger.info("📝 /services/graphdb not found in etcd, setting default to neo4j...")
+            await config_service.set_config("/services/graphdb", {"provider": "neo4j"})
+            provider_type = "neo4j"
+
+        # Only create ArangoService if ArangoDB is the configured provider
+        if provider_type != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoService initialization (provider is {provider_type})")
+            return None
+
         service = BaseArangoService(
             logger,
             arango_client,
@@ -69,7 +85,6 @@ class ConnectorAppContainer(BaseAppContainer):
         )
         await service.connect()
         return service
-
 
     arango_service = providers.Resource(
         _create_arango_service,
@@ -154,6 +169,20 @@ async def run_connector_migration(container) -> bool:
     logger = container.logger()
 
     try:
+        # Check which provider is configured - migrations are ArangoDB-specific
+        config_service = container.config_service()
+        try:
+            graphdb_config = await config_service.get_config("/services/graphdb")
+            provider_type = graphdb_config.get("provider", "arangodb") if graphdb_config else "arangodb"
+        except Exception:
+            provider_type = "arangodb"
+
+        provider_type = "neo4j"
+
+        if provider_type != "arangodb":
+            logger.info(f"⏭️ Skipping Connector UUID migration (provider is {provider_type}, migration is ArangoDB-specific)")
+            return True
+
         logger.info("🔍 Checking if Connector UUID migration is needed...")
 
         # Get required services
@@ -285,6 +314,20 @@ async def run_knowledge_base_migration(container) -> bool:
     logger = container.logger()
 
     try:
+        # Check which provider is configured - migrations are ArangoDB-specific
+        config_service = container.config_service()
+        try:
+            graphdb_config = await config_service.get_config("/services/graphdb")
+            provider_type = graphdb_config.get("provider", "arangodb") if graphdb_config else "arangodb"
+        except Exception:
+            provider_type = "arangodb"
+
+        provider_type = "neo4j"
+
+        if provider_type != "arangodb":
+            logger.info(f"⏭️ Skipping Knowledge Base migration (provider is {provider_type}, migration is ArangoDB-specific)")
+            return True
+
         logger.info("🔍 Checking if Knowledge Base migration is needed...")
 
         # Run the migration
@@ -328,11 +371,29 @@ async def initialize_container(container) -> bool:
     try:
         await Health.system_health_check(container)
 
-        logger.info("Ensuring ArangoDB service is initialized")
-        arango_service = await container.arango_service()
-        if not arango_service:
-            raise Exception("Failed to initialize ArangoDB service")
-        logger.info("✅ ArangoDB service initialized")
+        # Check which provider is configured, and set default to neo4j if not exists
+        try:
+            graphdb_config = await config_service.get_config("/services/graphdb")
+            provider_type = graphdb_config.get("provider", "neo4j") if graphdb_config else "neo4j"
+        except Exception:
+            # Config doesn't exist, set it to neo4j
+            logger.info("📝 /services/graphdb not found in etcd, setting default to neo4j...")
+            await config_service.set_config("/services/graphdb", {"provider": "neo4j"})
+            provider_type = "neo4j"
+
+        # Only require ArangoDB service if ArangoDB is the configured provider
+        arango_service = None
+        if provider_type == "arangodb":
+            logger.info("Ensuring ArangoDB service is initialized")
+            arango_service = await container.arango_service()
+            if not arango_service:
+                raise Exception("Failed to initialize ArangoDB service")
+            logger.info("✅ ArangoDB service initialized")
+        else:
+            logger.info(f"Ensuring {provider_type} provider is initialized")
+            # Don't await here - it will be resolved in lifespan function
+            # Just verify the provider factory exists
+            logger.info(f"✅ {provider_type} provider will be initialized in lifespan")
 
         logger.info("Ensuring graph database provider is initialized")
         data_store = await container.data_store()
@@ -402,13 +463,15 @@ async def initialize_container(container) -> bool:
 
         migration_state = await get_migration_state()
 
-        if migration_completed(migration_state, "permissionsEdge"):
-            logger.info("⏭️ Permissions Edge migration already completed, skipping.")
-        else:
-            logger.info("🔄 Running Permissions Edge migration...")
-            result_permissions_migration = await run_permissions_edge_migration(
-                arango_service, logger, dry_run=False, batch_size=1000
-            )
+        # Permissions Edge migration is ArangoDB-specific
+        if provider_type == "arangodb":
+            if migration_completed(migration_state, "permissionsEdge"):
+                logger.info("⏭️ Permissions Edge migration already completed, skipping.")
+            else:
+                logger.info("🔄 Running Permissions Edge migration...")
+                result_permissions_migration = await run_permissions_edge_migration(
+                    arango_service, logger, dry_run=False, batch_size=1000
+                )
             if result_permissions_migration.get("success"):
                 logger.info(f"Migrated: {result_permissions_migration.get('migrated_edges')} edges")
                 logger.info(f"Deleted: {result_permissions_migration.get('deleted_edges')} edges")
@@ -418,45 +481,49 @@ async def initialize_container(container) -> bool:
 
         migration_state = await get_migration_state()
 
-        if migration_completed(migration_state, "permissionsToKb"):
-            logger.info("⏭️ Permissions To KB migration already completed, skipping.")
-        else:
-            logger.info("🔄 Running Permissions To KB migration...")
-            result_permissions_to_kb_migration = await run_permissions_to_kb_migration(
-                arango_service, logger, dry_run=False, batch_size=1000
-            )
-            if result_permissions_to_kb_migration.get("success"):
-                logger.info(f"Migrated: {result_permissions_to_kb_migration.get('migrated_edges')} edges")
-                logger.info(f"Deleted: {result_permissions_to_kb_migration.get('deleted_edges')} edges")
-                await mark_migration_completed("permissionsToKb", result_permissions_to_kb_migration)
+        # Permissions To KB migration is ArangoDB-specific
+        if provider_type == "arangodb":
+            if migration_completed(migration_state, "permissionsToKb"):
+                logger.info("⏭️ Permissions To KB migration already completed, skipping.")
             else:
-                logger.error(f"Failed: {result_permissions_to_kb_migration.get('message')}")
+                logger.info("🔄 Running Permissions To KB migration...")
+                result_permissions_to_kb_migration = await run_permissions_to_kb_migration(
+                    arango_service, logger, dry_run=False, batch_size=1000
+                )
+                if result_permissions_to_kb_migration.get("success"):
+                    logger.info(f"Migrated: {result_permissions_to_kb_migration.get('migrated_edges')} edges")
+                    logger.info(f"Deleted: {result_permissions_to_kb_migration.get('deleted_edges')} edges")
+                    await mark_migration_completed("permissionsToKb", result_permissions_to_kb_migration)
+                else:
+                    logger.error(f"Failed: {result_permissions_to_kb_migration.get('message')}")
 
         migration_state = await get_migration_state()
 
-        if migration_completed(migration_state, "folderHierarchy"):
-            logger.info("⏭️ Folder Hierarchy migration already completed, skipping.")
-        else:
-            logger.info("🔄 Running Folder Hierarchy migration...")
-            result_folder_hierarchy_migration = await run_folder_hierarchy_migration(
-                arango_service, config_service, logger, dry_run=False
-            )
-            if result_folder_hierarchy_migration.get("success"):
-                folders_migrated = result_folder_hierarchy_migration.get('folders_migrated', 0)
-                edges_created = result_folder_hierarchy_migration.get('edges_created', 0)
-                edges_updated = result_folder_hierarchy_migration.get('edges_updated', 0)
-
-                if result_folder_hierarchy_migration.get('skipped'):
-                    logger.info("⏭️ Folder Hierarchy migration already completed (checked by service)")
-                else:
-                    logger.info(f"✅ Migrated: {folders_migrated} folders")
-                    logger.info(f"✅ Edges created: {edges_created}")
-                    logger.info(f"✅ Edges updated: {edges_updated}")
-
-                await mark_migration_completed("folderHierarchy", result_folder_hierarchy_migration)
+        # Folder Hierarchy migration is ArangoDB-specific
+        if provider_type == "arangodb":
+            if migration_completed(migration_state, "folderHierarchy"):
+                logger.info("⏭️ Folder Hierarchy migration already completed, skipping.")
             else:
-                error_msg = result_folder_hierarchy_migration.get('error') or result_folder_hierarchy_migration.get('message', 'Unknown error')
-                logger.error(f"❌ Folder Hierarchy migration failed: {error_msg}")
+                logger.info("🔄 Running Folder Hierarchy migration...")
+                result_folder_hierarchy_migration = await run_folder_hierarchy_migration(
+                    arango_service, config_service, logger, dry_run=False
+                )
+                if result_folder_hierarchy_migration.get("success"):
+                    folders_migrated = result_folder_hierarchy_migration.get('folders_migrated', 0)
+                    edges_created = result_folder_hierarchy_migration.get('edges_created', 0)
+                    edges_updated = result_folder_hierarchy_migration.get('edges_updated', 0)
+
+                    if result_folder_hierarchy_migration.get('skipped'):
+                        logger.info("⏭️ Folder Hierarchy migration already completed (checked by service)")
+                    else:
+                        logger.info(f"✅ Migrated: {folders_migrated} folders")
+                        logger.info(f"✅ Edges created: {edges_created}")
+                        logger.info(f"✅ Edges updated: {edges_updated}")
+
+                    await mark_migration_completed("folderHierarchy", result_folder_hierarchy_migration)
+                else:
+                    error_msg = result_folder_hierarchy_migration.get('error') or result_folder_hierarchy_migration.get('message', 'Unknown error')
+                    logger.error(f"❌ Folder Hierarchy migration failed: {error_msg}")
 
         return True
 
