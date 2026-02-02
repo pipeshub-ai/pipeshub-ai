@@ -32,6 +32,8 @@ Progress: [██████████] 100%
 | Mock database, use real utility functions in tests | Isolates external dependencies while testing actual parsing logic with crafted inputs | 2026-02-01 |
 | Tenant ID fallback in initAuth | Show Microsoft SSO button even for unknown domains; let tenant ID matching handle org resolution | 2026-02-02 |
 | Auto-sync tenantId on config save | Eliminates manual DB updates when admin saves Microsoft auth config | 2026-02-02 |
+| skipEmailScreen defaults to false | Ensures backward compatibility; admins must explicitly enable direct SSO | 2026-02-03 |
+| Direct SSO config endpoint | GET /api/v1/auth/directSsoConfig checks for skipEmailScreen on unauthenticated page load | 2026-02-03 |
 
 ## Pending Todos
 
@@ -43,10 +45,10 @@ None.
 
 ## Session Continuity
 
-**Last session:** 2026-02-02
-**Stopped at:** Milestone complete - all phases verified
+**Last session:** 2026-02-03
+**Stopped at:** Quick task 001 complete - skip email screen for direct Microsoft SSO
 **Resume file:** None
-**Next:** Create PR for merge to main
+**Next:** Test skip email screen feature and prepare for deployment
 
 ---
 *Auto-updated by GSD workflow*
