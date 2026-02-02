@@ -10,6 +10,33 @@ const logger = Logger.getInstance({
   service: 'Azure Ad Token Validation',
 });
 
+/**
+ * Extracts the Microsoft Entra ID tenant ID (tid) from an ID token.
+ *
+ * SECURITY NOTE: This function decodes WITHOUT validating the signature.
+ * Only use the result for org lookup, then validate with validateAzureAdUser().
+ * The tid is untrusted until full validation completes.
+ *
+ * @param idToken - The Microsoft ID token (JWT string)
+ * @returns The tenant ID (GUID) or null if extraction fails
+ */
+export const extractTenantIdFromToken = (idToken: string): string | null => {
+  try {
+    const decoded = jwt.decode(idToken, { complete: true });
+    if (!decoded || !decoded.payload) {
+      return null;
+    }
+
+    const payload = decoded.payload as JwtPayload;
+    return payload.tid || null;
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.error('Error extracting tenant ID from token:', error.message);
+    }
+    return null;
+  }
+};
+
 export const validateAzureAdUser = async (
   credentials: Record<string, any>,
   tenantId: string,

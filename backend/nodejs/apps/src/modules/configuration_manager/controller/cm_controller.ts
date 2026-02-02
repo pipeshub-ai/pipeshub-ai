@@ -29,6 +29,7 @@ import {
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { loadConfigurationManagerConfig } from '../config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { OrgAuthConfig } from '../../auth/schema/orgAuthConfiguration.schema';
 
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -561,12 +562,23 @@ export const setMicrosoftAuthConfig =
         encryptedAuthConfig,
       );
 
+      // Sync microsoftTenantId to OrgAuthConfig for multi-domain SSO support
+      // This enables users from any domain to SSO if their Microsoft tenant matches
+      const orgId = req.user?.orgId;
+      if (orgId && tenantId && tenantId !== 'common') {
+        await OrgAuthConfig.updateOne(
+          { orgId, isDeleted: false },
+          { $set: { microsoftTenantId: tenantId } },
+        );
+        logger.info('Synced microsoftTenantId to OrgAuthConfig', { orgId, tenantId });
+      }
+
       res
         .status(200)
         .json({ message: 'Microsoft Auth config created successfully' })
         .end();
     } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
+      logger.error('Error creating Microsoft auth config', { error });
       next(error);
     }
   };
