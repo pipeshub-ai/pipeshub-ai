@@ -78,7 +78,7 @@ dependencies = [
     "markdown==3.8",
     "mmh3==4.1.0",
     "monday-api-python-sdk>=0.1.0",
-    "msgpack==1.1.2",
+    "ormsgpack==1.12.2",
     "snowflake-connector-python",
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
