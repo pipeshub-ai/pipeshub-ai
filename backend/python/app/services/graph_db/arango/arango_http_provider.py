@@ -5623,13 +5623,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        filter_clause: str,
-        bind_vars: Dict[str, Any],
-        only_containers: bool,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Unified method to get children of any node type.
+
+        ArangoDB implementation: Converts structured parameters to AQL.
 
         Args:
             parent_id: The ID of the parent node.
@@ -5640,8 +5650,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             limit: Maximum number of items to return.
             sort_field: Field to sort by.
             sort_dir: Sort direction ('ASC' or 'DESC').
-            filter_clause: AQL filter clause string.
-            bind_vars: Bind variables for the filter clause.
+            search_query: Optional search query to filter by name.
+            node_types: Optional list of node types to filter by.
+            record_types: Optional list of record types to filter by.
+            origins: Optional list of origins to filter by (KB/CONNECTOR).
+            connector_ids: Optional list of connector IDs to filter by.
+            kb_ids: Optional list of KB IDs to filter by.
+            indexing_status: Optional list of indexing statuses to filter by.
+            created_at: Optional date range filter for creation date.
+            updated_at: Optional date range filter for update date.
+            size: Optional size range filter.
             only_containers: If True, only return nodes that can have children.
             transaction: Optional transaction ID.
         """
@@ -5655,13 +5673,101 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             return {"nodes": [], "total": 0}
 
+        # Build AQL filter conditions from structured parameters
+        filter_conditions = []
+        bind_vars = {
+            "org_id": org_id,
+            "user_key": user_key,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+            **parent_bind_vars,
+        }
+
+        # Search query filter
+        if search_query:
+            bind_vars["search_query"] = search_query.lower()
+            filter_conditions.append("LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
+
+        # Node type filter
+        if node_types:
+            type_conditions = []
+            for nt in node_types:
+                if nt == "folder":
+                    type_conditions.append('node.nodeType == "folder"')
+                elif nt == "record":
+                    type_conditions.append('node.nodeType == "record"')
+                elif nt == "recordGroup":
+                    type_conditions.append('node.nodeType == "recordGroup"')
+            if type_conditions:
+                filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+        # Record type filter
+        if record_types:
+            bind_vars["record_types"] = record_types
+            filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
+
+        # Indexing status filter
+        if indexing_status:
+            bind_vars["indexing_status"] = indexing_status
+            filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
+
+        # Created date filter
+        if created_at:
+            if created_at.get("gte"):
+                bind_vars["created_at_gte"] = created_at["gte"]
+                filter_conditions.append("node.createdAt >= @created_at_gte")
+            if created_at.get("lte"):
+                bind_vars["created_at_lte"] = created_at["lte"]
+                filter_conditions.append("node.createdAt <= @created_at_lte")
+
+        # Updated date filter
+        if updated_at:
+            if updated_at.get("gte"):
+                bind_vars["updated_at_gte"] = updated_at["gte"]
+                filter_conditions.append("node.updatedAt >= @updated_at_gte")
+            if updated_at.get("lte"):
+                bind_vars["updated_at_lte"] = updated_at["lte"]
+                filter_conditions.append("node.updatedAt <= @updated_at_lte")
+
+        # Size filter
+        if size:
+            if size.get("gte"):
+                bind_vars["size_gte"] = size["gte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
+            if size.get("lte"):
+                bind_vars["size_lte"] = size["lte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
+
+        # Origins filter
+        if origins:
+            bind_vars["origins"] = origins
+            filter_conditions.append("node.source IN @origins")
+
+        # Connector/KB IDs filter
+        if connector_ids and kb_ids:
+            bind_vars["connector_ids"] = connector_ids
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("(node.appId IN @connector_ids OR node.kbId IN @kb_ids)")
+        elif connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            filter_conditions.append("node.appId IN @connector_ids")
+        elif kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("node.kbId IN @kb_ids")
+
+        # Build final filter clause
+        filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
+
         # Common template for filtering, sorting, pagination
         query = f"""
         {sub_query}
 
         LET filtered_children = (
             FOR node IN raw_children
-                FILTER {filter_clause if filter_clause else "true"}
+                FILTER {filter_clause}
                 // Include all container types (app, kb, recordGroup, folder) even if empty
                 FILTER @only_containers == false OR node.hasChildren == true OR node.nodeType IN ["app", "kb", "recordGroup", "folder"]
                 RETURN node
@@ -5673,18 +5779,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         RETURN {{ nodes: paginated_children, total: total_count }}
         """
 
-        all_bind_vars = {
-            "org_id": org_id,
-            "skip": skip,
-            "limit": limit,
-            "sort_field": sort_field,
-            "sort_dir": sort_dir,
-            "only_containers": only_containers,
-            **parent_bind_vars,
-            **bind_vars,
-        }
-
-        result = await self.http_client.execute_aql(query, bind_vars=all_bind_vars, txn_id=transaction)
+        result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
         return result[0] if result else {"nodes": [], "total": 0}
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
@@ -6436,15 +6531,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        search_query: Optional[str],
-        filter_clause: str,
-        bind_vars: Dict[str, Any],
-        only_containers: bool,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Search recursively within a parent node and all its descendants.
         Uses graph traversal to find all nested children.
+
+        ArangoDB implementation: Converts structured parameters to AQL.
         """
         # Determine the starting node ID
         if parent_type in ("kb", "recordGroup"):
@@ -6456,11 +6560,97 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             return {"nodes": [], "total": 0}
 
-        # Build search filter for name
+        # Build AQL filter conditions from structured parameters
+        filter_conditions = []
+        bind_vars = {
+            "parent_doc_id": parent_doc_id,
+            "org_id": org_id,
+            "user_key": user_key,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+        }
+
+        # Search query filter (handled separately in recursive search)
         search_filter = ""
         if search_query:
             bind_vars["search_query"] = search_query.lower()
             search_filter = "FILTER LOWER(node.name) LIKE CONCAT('%', @search_query, '%')"
+
+        # Node type filter
+        if node_types:
+            type_conditions = []
+            for nt in node_types:
+                if nt == "folder":
+                    type_conditions.append('node.nodeType == "folder"')
+                elif nt == "record":
+                    type_conditions.append('node.nodeType == "record"')
+                elif nt == "recordGroup":
+                    type_conditions.append('node.nodeType == "recordGroup"')
+            if type_conditions:
+                filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+        # Record type filter
+        if record_types:
+            bind_vars["record_types"] = record_types
+            filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
+
+        # Indexing status filter
+        if indexing_status:
+            bind_vars["indexing_status"] = indexing_status
+            filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
+
+        # Created date filter
+        if created_at:
+            if created_at.get("gte"):
+                bind_vars["created_at_gte"] = created_at["gte"]
+                filter_conditions.append("node.createdAt >= @created_at_gte")
+            if created_at.get("lte"):
+                bind_vars["created_at_lte"] = created_at["lte"]
+                filter_conditions.append("node.createdAt <= @created_at_lte")
+
+        # Updated date filter
+        if updated_at:
+            if updated_at.get("gte"):
+                bind_vars["updated_at_gte"] = updated_at["gte"]
+                filter_conditions.append("node.updatedAt >= @updated_at_gte")
+            if updated_at.get("lte"):
+                bind_vars["updated_at_lte"] = updated_at["lte"]
+                filter_conditions.append("node.updatedAt <= @updated_at_lte")
+
+        # Size filter
+        if size:
+            if size.get("gte"):
+                bind_vars["size_gte"] = size["gte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
+            if size.get("lte"):
+                bind_vars["size_lte"] = size["lte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
+
+        # Origins filter
+        if origins:
+            bind_vars["origins"] = origins
+            filter_conditions.append("node.source IN @origins")
+
+        # Connector/KB IDs filter
+        if connector_ids and kb_ids:
+            bind_vars["connector_ids"] = connector_ids
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append(
+                "((node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids) OR "
+                "(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids))"
+            )
+        elif connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            filter_conditions.append("(node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
+        elif kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
+
+        # Build final filter clause
+        filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
 
         # Build recordGroup query based on parent type
         source_value = "KB" if parent_type == "kb" else "CONNECTOR"
@@ -6477,8 +6667,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # For folder/record types, set dummy value (won't be used but required by AQL)
             bind_vars["parent_id_for_rg"] = parent_id
             rg_parent_filter = "false"
-
-        bind_vars["user_key"] = user_key
 
         query = f"""
         LET parent = DOCUMENT(@parent_doc_id)
