@@ -49,6 +49,7 @@ from app.models.blocks import (
     BlockComment,
     BlockGroup,
     BlocksContainer,
+    BlockSubType,
     BlockType,
     ChildRecord,
     ChildType,
@@ -690,7 +691,7 @@ class GithubConnector(BaseConnector):
             name=record.record_name,
             type=GroupType.TEXT_SECTION.value,
             format=DataFormat.MARKDOWN.value,
-            sub_type=GroupSubType.ISSUE_CONTENT.value,
+            sub_type=GroupSubType.CONTENT.value,
             source_group_id=record.weburl,
             data=markdown_content_with_images_base64,
             source_modified_date=str(self.datetime_to_epoch_ms(issue.updated_at)),
@@ -972,7 +973,7 @@ class GithubConnector(BaseConnector):
             data=markdown_with_base64,
             format=DataFormat.MARKDOWN,
             weburl=pull_request.html_url,
-            sub_type=GroupSubType.PR_CONTENT,
+            sub_type=GroupSubType.CONTENT.value,
             requires_processing=True,
             table_row_metadata=table_row_metadata,
             source_modified_date=str(
@@ -996,7 +997,8 @@ class GithubConnector(BaseConnector):
                 block = Block(
                     index=block_number,
                     parent_index=block_group_number,
-                    type=BlockType.COMMIT,
+                    type=BlockType.TEXT.value,
+                    sub_type=BlockSubType.COMMIT.value,
                     weburl=commit.html_url,
                     format=DataFormat.MARKDOWN,
                     data=commit.commit.message,
@@ -1012,7 +1014,7 @@ class GithubConnector(BaseConnector):
             name="block group for pull request commits",
             type=GroupType.COMMITS,
             description=f"List of commits for pull request : {pr_number}",
-            weburl=record.weburl,
+            weburl=pull_request.commits_url,
             # TODO: ask is group subtype needed here
         )
         block_groups.append(bg_1)
@@ -1054,7 +1056,7 @@ class GithubConnector(BaseConnector):
                         review_comments_map[r_comment.path].append([block_comment])
                     else:
                         review_comments_map[r_comment.path] = [[block_comment]]
-
+            changes_url = pull_request.html_url + "/changes"
             for file in files:
                 self.logger.info(f"Fetching content for file: {file.filename}")
                 # file content details
@@ -1089,6 +1091,7 @@ class GithubConnector(BaseConnector):
                         + str(file_content),
                         comments=review_comments_map.get(file.filename, []),
                         requires_processing=True,
+                        weburl=changes_url,
                     )
                     block_groups.append(bg_n)
                     block_group_number += 1

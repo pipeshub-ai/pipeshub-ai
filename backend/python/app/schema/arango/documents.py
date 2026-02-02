@@ -412,6 +412,7 @@ ticket_record_schema = {
                 "default": [],
             },
             "reporter_source_id":{"type": ["string", "null"]},
+            "is_email_hidden": {"type": "boolean", "default": False},
         },
     },
 }

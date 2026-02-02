@@ -38,7 +38,6 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
-    COMMIT = "commit"
 
 class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
@@ -51,6 +50,7 @@ class BlockSubType(str, Enum):
     EQUATION = "equation"
     DIVIDER = "divider"
     LINK = "link"
+    COMMIT = "commit"
 
 class DataFormat(str, Enum):
     TXT = "txt"
@@ -79,9 +79,9 @@ class BlockComment(BaseModel):
     author_name: Optional[str] = Field(default=None, description="Name of the user who created the comment")
     thread_id: Optional[str] = None
     resolution_status: Optional[str] = Field(default=None, description="Status of the comment (e.g., 'resolved', 'open')")
-    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in Linear)")
-    created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created in Linear")
-    updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated in Linear")
+    weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the comment (e.g., direct link to comment in the source system)")
+    created_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was created")
+    updated_at: Optional[datetime] = Field(default=None, description="Timestamp when the comment was updated")
     attachments: Optional[List[CommentAttachment]] = Field(default=None, description="List of attachments associated with the comment")
     quoted_text: Optional[str] = Field(default=None, description="Quoted text for inline comments")
 
@@ -253,8 +253,6 @@ class GroupSubType(str, Enum):
     QUOTE = "quote"
     SYNCED_BLOCK = "synced_block"
     NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
-    ISSUE_CONTENT = "issue_content"
-    PR_CONTENT = "pr_content"
     PR_FILE_CHANGE = "pr_file_change"
 
 class SemanticMetadata(BaseModel):
