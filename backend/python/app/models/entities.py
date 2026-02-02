@@ -42,7 +42,6 @@ class RecordGroupType(str, Enum):
 
 class RecordType(str, Enum):
     FILE = "FILE"
-    FOLDER = "FOLDER"
     DRIVE = "DRIVE"
     WEBPAGE = "WEBPAGE"
     DATABASE = "DATABASE"

@@ -162,7 +162,7 @@ class DataSourceEntitiesProcessor:
         }
 
         # Map RecordType to appropriate Record class
-        if parent_record_type in [RecordType.FILE, RecordType.FOLDER]:
+        if parent_record_type == RecordType.FILE:
             file_params = {k: v for k, v in base_params.items() if k != "mime_type"}
             return FileRecord(
                 **file_params,
@@ -203,15 +203,6 @@ class DataSourceEntitiesProcessor:
             )
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
-        # Root items: do not create or link to a "bucket" parent (e.g. S3 bucket)
-        if (
-            record.parent_external_record_id
-            and getattr(record, "external_record_group_id", None)
-            and record.parent_external_record_id == record.external_record_group_id
-        ):
-            record.parent_external_record_id = None
-            record.parent_record_type = None
-            return
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,

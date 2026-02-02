@@ -664,10 +664,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                     if not response.success:
                         error_msg = response.error or "Unknown error"
                         if "AccessDenied" in error_msg or "not authorized" in error_msg:
-                            self.logger.error(
+                            self.logger.warning(
                                 f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
                             )
-                            self.logger.error(
+                            self.logger.warning(
                                 f"Please verify your IAM policy includes the following permissions for bucket '{bucket_name}':\n"
                                 f"  - s3:ListBucket on arn:aws:s3:::{bucket_name}\n"
                                 f"  - s3:GetBucketLocation on arn:aws:s3:::{bucket_name}\n"
@@ -1016,6 +1016,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                 mime_type=mime_type,
                 etag=current_etag,
             )
+
+            # Root-level items: do not link to the bucket as a parent
+            if (
+                file_record.parent_external_record_id
+                and file_record.external_record_group_id
+                and file_record.parent_external_record_id == file_record.external_record_group_id
+            ):
+                file_record.parent_external_record_id = None
+                file_record.parent_record_type = None
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
@@ -1437,6 +1446,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                 mime_type=mime_type,
                 etag=current_etag,
             )
+
+            # Root-level items: do not link to the bucket as a parent
+            if (
+                updated_record.parent_external_record_id
+                and updated_record.external_record_group_id
+                and updated_record.parent_external_record_id == updated_record.external_record_group_id
+            ):
+                updated_record.parent_external_record_id = None
+                updated_record.parent_record_type = None
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
