@@ -19,11 +19,11 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import config_node_constants
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.exceptions.embedding_exceptions import EmbeddingModelCreationError
 from app.exceptions.fastapi_responses import Status
 from app.models.blocks import GroupType
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.sources.client.http.exception.exception import VectorDBEmptyError
 from app.utils.aimodels import (
@@ -50,7 +50,7 @@ class RetrievalService:
         config_service: ConfigurationService,
         collection_name: str,
         vector_db_service: IVectorDBService,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
         blob_store: BlobStorage,
     ) -> None:
         """
@@ -60,12 +60,13 @@ class RetrievalService:
             collection_name: Name of the collection
             vector_db_service: Vector DB service
             config_service: Configuration service
+            graph_provider: Graph database provider
         """
 
         self.logger = logger
         self.config_service = config_service
         self.llm = None
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.blob_store = blob_store
         # Initialize sparse embeddings
         try:
@@ -241,7 +242,7 @@ class RetrievalService:
         filter_groups: Optional[Dict[str, List[str]]] = None,
         limit: int = 20,
         virtual_record_ids_from_tool: Optional[List[str]] = None,
-        arango_service: Optional[BaseArangoService] = None,
+        graph_provider: Optional[IGraphDBProvider] = None,
         knowledge_search:bool = False,
         is_agent:bool = False,
     ) -> Dict[str, Any]:
@@ -249,24 +250,24 @@ class RetrievalService:
 
         try:
             # Get accessible records
-            if not self.arango_service:
-                raise ValueError("ArangoService is required for permission checking")
+            if not self.graph_provider:
+                raise ValueError("GraphProvider is required for permission checking")
 
             filter_groups = filter_groups or {}
 
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
             # Convert filter_groups to format expected by get_accessible_records
-            arango_filters = {}
+            filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
                     # Convert key to match collection naming
                     metadata_key = (
                         key.lower()
                     )  # e.g., 'departments', 'categories', etc.
-                    arango_filters[metadata_key] = values
+                    filters[metadata_key] = values
 
             init_tasks = [
-                self._get_accessible_records_task(user_id, org_id, filter_groups, self.arango_service),
+                self._get_accessible_records_task(user_id, org_id, filter_groups, self.graph_provider),
                 self._get_vector_store_task(),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
@@ -419,7 +420,7 @@ class RetrievalService:
                 try:
                     # Fetch files in parallel
                     file_results = await asyncio.gather(*[
-                        self.arango_service.get_document(record_id, CollectionNames.FILES.value)
+                        self.graph_provider.get_document(record_id, CollectionNames.FILES.value)
                         for record_id in file_record_ids_to_fetch
                     ], return_exceptions=True)
                     return {
@@ -437,7 +438,7 @@ class RetrievalService:
                 try:
                     # Fetch mails in parallel
                     mail_results = await asyncio.gather(*[
-                        self.arango_service.get_document(record_id, CollectionNames.MAILS.value)
+                        self.graph_provider.get_document(record_id, CollectionNames.MAILS.value)
                         for record_id in mail_record_ids_to_fetch
                     ], return_exceptions=True)
                     return {
@@ -562,18 +563,18 @@ class RetrievalService:
                 return {}
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
 
-    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, arango_service: BaseArangoService) -> List[Dict[str, Any]]:
+    async def _get_accessible_records_task(self, user_id, org_id, filter_groups, graph_provider: IGraphDBProvider) -> List[Dict[str, Any]]:
         """Separate task for getting accessible records"""
         filter_groups = filter_groups or {}
-        arango_filters = {}
+        filters = {}
 
         if filter_groups:
             for key, values in filter_groups.items():
                 metadata_key = key.lower()
-                arango_filters[metadata_key] = values
+                filters[metadata_key] = values
 
-        return await arango_service.get_accessible_records(
-            user_id=user_id, org_id=org_id, filters=arango_filters
+        return await graph_provider.get_accessible_records(
+            user_id=user_id, org_id=org_id, filters=filters
         )
 
     async def _get_user_cached(self, user_id: str) -> Optional[Dict[str, Any]]:
@@ -595,7 +596,7 @@ class RetrievalService:
 
         # Cache miss - fetch from database
         self.logger.debug(f"User cache miss for user_id: {user_id}")
-        user_data = await self.arango_service.get_user_by_user_id(user_id)
+        user_data = await self.graph_provider.get_user_by_user_id(user_id)
 
         # Store in cache
         _user_cache[user_id] = (user_data, time.time())

@@ -591,6 +591,17 @@ class GraphTransactionStore(TransactionStore):
             collection, field, value, transaction=self.txn
         )
 
+    async def get_nodes_by_filters(
+        self,
+        collection: str,
+        filters: Dict,
+        return_fields: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """Get nodes from a collection matching multiple field filters."""
+        return await self.graph_provider.get_nodes_by_filters(
+            collection, filters, return_fields, transaction=self.txn
+        )
+
 
 class GraphDataStore(DataStoreProvider):
     """

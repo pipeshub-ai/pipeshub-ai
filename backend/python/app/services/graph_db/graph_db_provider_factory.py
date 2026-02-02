@@ -16,6 +16,7 @@ from logging import Logger
 from app.config.configuration_service import ConfigurationService
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 
 class GraphDBProviderFactory:
@@ -70,12 +71,18 @@ class GraphDBProviderFactory:
         try:
             logger.info("🏭 GraphDBProviderFactory: Creating database provider...")
 
-            # TODO: In future, read from config to determine provider type
-            # graphdb_config = await config_service.get_config("/services/graphdb")
-            # provider_type = graphdb_config.get("provider", "arangodb")
+            # Read from config to determine provider type
+            # If not found, set default to neo4j
+            try:
+                graphdb_config = await config_service.get_config("/services/graphdb")
+                provider_type = graphdb_config.get("provider", "neo4j") if graphdb_config else "neo4j"
+            except Exception:
+                # Config doesn't exist, set it to neo4j as default
+                logger.info("📝 /services/graphdb not found in etcd, setting default to neo4j...")
+                await config_service.set_config("/services/graphdb", {"provider": "neo4j"})
+                provider_type = "neo4j"
 
-            provider_type = "arangodb"
-            logger.info(f"📦 Creating {provider_type} HTTP provider (fully async)...")
+            logger.info(f"📦 Creating {provider_type} provider...")
 
             # Create HTTP-based ArangoDB provider
             if provider_type == "arangodb":
@@ -85,13 +92,13 @@ class GraphDBProviderFactory:
                 )
                 return provider
 
-            # Future: Add Neo4j support
-            # elif provider_type == "neo4j":
-            #     provider = await GraphDBProviderFactory._create_neo4j_provider(
-            #         logger=logger,
-            #         config_service=config_service
-            #     )
-            #     return provider
+            # Neo4j support
+            elif provider_type == "neo4j":
+                provider = await GraphDBProviderFactory._create_neo4j_provider(
+                    logger=logger,
+                    config_service=config_service
+                )
+                return provider
 
             else:
                 raise ValueError(f"Unsupported graph database provider: {provider_type}")
@@ -139,51 +146,47 @@ class GraphDBProviderFactory:
             logger.error(f"❌ Failed to create ArangoDB HTTP provider: {str(e)}")
             raise
 
-    # Future: Neo4j provider creation
-    # @staticmethod
-    # async def _create_neo4j_provider(
-    #     logger: Logger,
-    #     config_service: ConfigurationService,
-    # ) -> Neo4jProvider:
-    #     """
-    #     Create and connect a Neo4j provider.
-    #
-    #     Args:
-    #         logger: Logger instance
-    #         config_service: Configuration service
-    #
-    #     Returns:
-    #         Neo4jProvider: Connected Neo4j provider
-    #     """
-    #     try:
-    #         logger.debug("🔧 Creating Neo4j provider...")
-    #
-    #         # Get Neo4j configuration
-    #         neo4j_config = await config_service.get_config("/services/neo4j")
-    #
-    #         if not neo4j_config:
-    #             raise ValueError("Neo4j configuration not found")
-    #
-    #         # Create provider instance
-    #         provider = Neo4jProvider(
-    #             logger=logger,
-    #             config=neo4j_config
-    #         )
-    #
-    #         logger.debug("🔌 Connecting Neo4j provider...")
-    #
-    #         # Connect to database
-    #         connected = await provider.connect()
-    #
-    #         if not connected:
-    #             raise ConnectionError("Failed to connect Neo4j provider to database")
-    #
-    #         logger.info("✅ Neo4j provider created and connected successfully")
-    #         return provider
-    #
-    #     except Exception as e:
-    #         logger.error(f"❌ Failed to create Neo4j provider: {str(e)}")
-    #         raise
+    @staticmethod
+    async def _create_neo4j_provider(
+        logger: Logger,
+        config_service: ConfigurationService,
+    ) -> Neo4jProvider:
+        """
+        Create and connect a Neo4j provider.
+
+        Args:
+            logger: Logger instance
+            config_service: Configuration service
+
+        Returns:
+            Neo4jProvider: Connected Neo4j provider
+
+        Raises:
+            ConnectionError: If unable to connect to Neo4j
+        """
+        try:
+            logger.debug("🔧 Creating Neo4j provider...")
+
+            # Create provider instance
+            provider = Neo4jProvider(
+                logger=logger,
+                config_service=config_service
+            )
+
+            logger.debug("🔌 Connecting Neo4j provider...")
+
+            # Connect to database
+            connected = await provider.connect()
+
+            if not connected:
+                raise ConnectionError("Failed to connect Neo4j provider to database")
+
+            logger.info("✅ Neo4j provider created and connected successfully")
+            return provider
+
+        except Exception as e:
+            logger.error(f"❌ Failed to create Neo4j provider: {str(e)}")
+            raise
 
 
 

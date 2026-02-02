@@ -71,6 +71,7 @@ from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.services.featureflag.config.config import CONFIG
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
@@ -779,7 +780,6 @@ async def stream_record(
             record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
-
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
@@ -5243,8 +5243,9 @@ async def _ensure_connector_initialized(
     logger.info(f"Initializing connector {connector_id} before use")
     try:
         config_service = container.config_service()
-        # Use the container's data store (GraphDataStore with graph_provider)
-        data_store_provider = await container.data_store()
+        # Create data_store manually using already-resolved graph_provider to avoid coroutine reuse
+        from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+        data_store_provider = GraphDataStore(logger, graph_provider)
 
         connector_type = connector_type.replace(" ", "").lower()
 

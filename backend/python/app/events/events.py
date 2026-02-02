@@ -13,15 +13,17 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EventProcessor:
-    def __init__(self, logger, processor, arango_service, config_service: ConfigurationService = None) -> None:
+    def __init__(self, logger, processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService = None) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.config_service = config_service
 
 
@@ -183,7 +185,7 @@ class EventProcessor:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
 

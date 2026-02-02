@@ -323,19 +323,19 @@ class IndexingPipeline:
         self,
         logger,
         config_service: ConfigurationService,
-        arango_service,
+        graph_provider,
         collection_name: str,
         vector_db_service: IVectorDBService,
     ) -> None:
         self.logger = logger
         self.config_service = config_service
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         """
         Initialize the indexing pipeline with necessary configurations.
 
         Args:
             config_service: Configuration service
-            arango_service: Arango service
+            graph_provider: Arango service
             collection_name: Name for the collection
             vector_db_service: Vector DB service
         """
@@ -568,7 +568,7 @@ class IndexingPipeline:
 
             # Update record with indexing status
             try:
-                record = await self.arango_service.get_document(
+                record = await self.graph_provider.get_document(
                     meta["recordId"], CollectionNames.RECORDS.value
                 )
                 if not record:
@@ -589,7 +589,7 @@ class IndexingPipeline:
 
                 docs = [doc]
 
-                success = await self.arango_service.batch_upsert_nodes(
+                success = await self.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
                 if not success:
@@ -645,7 +645,7 @@ class IndexingPipeline:
             self.logger.info(f"🔍 Checking other records with virtual_record_id {virtual_record_id}")
 
             # Get other records with same virtual_record_id
-            other_records = await self.arango_service.get_records_by_virtual_record_id(
+            other_records = await self.graph_provider.get_records_by_virtual_record_id(
                 virtual_record_id=virtual_record_id
             )
 
@@ -662,7 +662,7 @@ class IndexingPipeline:
             self.logger.info("🗑️ Proceeding with deletion as no other records exist")
 
             try:
-                await self.arango_service.delete_nodes(keys=[virtual_record_id], collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+                await self.graph_provider.delete_nodes(keys=[virtual_record_id], collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
 
                 filter_dict = await self.vector_db_service.filter_collection(
                     must={"virtualRecordId": virtual_record_id}
@@ -884,7 +884,7 @@ class IndexingPipeline:
                 )
 
             if len(documents) == 0:
-                record_dict = await self.arango_service.get_document(
+                record_dict = await self.graph_provider.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
 
@@ -906,7 +906,7 @@ class IndexingPipeline:
                 )
 
                 docs = [record_dict]
-                success = await self.arango_service.batch_upsert_nodes(
+                success = await self.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
                 if not success:

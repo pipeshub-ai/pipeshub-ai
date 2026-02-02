@@ -1,7 +1,7 @@
 # router.py fixes - Add return type annotations
 from typing import Any, Dict, List, Optional, Union
 
-from dependency_injector.wiring import Provide, inject
+from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.connectors.sources.localKB.api.models import (
@@ -45,6 +45,21 @@ HTTP_MAX_STATUS = 600
 HTTP_INTERNAL_SERVER_ERROR = 500
 
 kb_router = APIRouter(prefix="/api/v1/kb", tags=["Knowledge Base"])
+
+async def get_kb_service(request: Request) -> KnowledgeBaseService:
+    """Get KB service using already-resolved graph_provider from app.state"""
+    container: ConnectorAppContainer = request.app.container
+    # Use already-resolved graph_provider from app.state to avoid coroutine reuse
+    if hasattr(request.app.state, 'graph_provider'):
+        graph_provider = request.app.state.graph_provider
+    else:
+        # Fallback to container if state is not available (shouldn't happen in normal flow)
+        graph_provider = await container.graph_provider()
+
+    # Create KB service manually using already-resolved dependencies
+    logger = container.logger()
+    kafka_service = container.kafka_service()
+    return KnowledgeBaseService(logger, graph_provider, kafka_service)
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""

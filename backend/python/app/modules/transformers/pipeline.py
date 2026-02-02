@@ -19,7 +19,7 @@ class IndexingPipeline:
 
             if blocks is not None and len(blocks) == 0 and block_groups is not None and len(block_groups) == 0:
                 record_id = record.id
-                record_dict = await self.document_extraction.arango_service.get_document(
+                record_dict = await self.document_extraction.graph_provider.get_document(
                     record_id, CollectionNames.RECORDS.value
                 )
 
@@ -32,7 +32,7 @@ class IndexingPipeline:
                 )
 
                 docs = [record_dict]
-                success = await self.document_extraction.arango_service.batch_upsert_nodes(
+                success = await self.document_extraction.graph_provider.batch_upsert_nodes(
                     docs, CollectionNames.RECORDS.value
                 )
                 if not success:

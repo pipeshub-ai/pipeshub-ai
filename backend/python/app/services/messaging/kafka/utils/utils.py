@@ -115,15 +115,15 @@ class KafkaUtils:
         return config
 
     @staticmethod
-    async def create_entity_message_handler(app_container: ConnectorAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
+    async def create_entity_message_handler(app_container: ConnectorAppContainer, graph_provider) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
         """Create a message handler for entity events"""
         logger = app_container.logger()
-        arango_service = await app_container.arango_service()
+        # Use graph_provider passed as parameter (already resolved in lifespan)
 
         # Create the entity event service
         entity_event_service = EntityEventService(
             logger=logger,
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             app_container=app_container
         )
 

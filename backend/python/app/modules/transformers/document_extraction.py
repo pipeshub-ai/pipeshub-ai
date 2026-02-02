@@ -9,6 +9,7 @@ from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.llm import get_llm
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
@@ -42,10 +43,10 @@ class DocumentClassification(BaseModel):
     summary: str = Field(description="Summary of the document")
 
 class DocumentExtraction(Transformer):
-    def __init__(self, logger, base_arango_service, config_service) -> None:
+    def __init__(self, logger, graph_provider: IGraphDBProvider, config_service) -> None:
         super().__init__()
         self.logger = logger
-        self.arango_service = base_arango_service
+        self.graph_provider = graph_provider
         self.config_service = config_service
 
     async def apply(self, ctx: TransformContext) -> None:
@@ -181,7 +182,7 @@ class DocumentExtraction(Transformer):
 
         try:
             self.logger.info(f"🎯 Extracting departments for org_id: {org_id}")
-            departments = await self.arango_service.get_departments(org_id)
+            departments = await self.graph_provider.get_departments(org_id)
             if not departments:
                 departments = [dept.value for dept in DepartmentNames]
 

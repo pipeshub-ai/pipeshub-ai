@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -57,7 +58,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
     return container
 
 
-async def resume_sync_services(app_container: ConnectorAppContainer, data_store: GraphDataStore = None) -> bool:
+async def resume_sync_services(app_container: ConnectorAppContainer, graph_provider, data_store_provider) -> bool:
     """Resume sync services for users with active sync states"""
     logger = app_container.logger()
     logger.debug("🔄 Checking for sync services to resume")
@@ -72,6 +73,10 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             return True
 
         logger.info("Found %d organizations in the system", len(orgs))
+
+        # Use config_service and data_store_provider passed as parameters (already resolved)
+        config_service = app_container.config_service()
+
         # Process each organization
         for org in orgs:
             org_id = org.get("_key") or org.get("id")
@@ -95,7 +100,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             config_service = app_container.config_service()
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
-            data_store_provider = data_store if data_store else await app_container.data_store()
+            # data_store_provider = data_store if data_store else await app_container.data_store()
 
             # Initialize connectors_map if not already initialized
             if not hasattr(app_container, 'connectors_map'):
@@ -122,15 +127,16 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         return True
     except Exception as e:
         logger.error("❌ Error during sync service resumption: %s", str(e))
+        logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
-async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
+async def initialize_connector_registry(app_container: ConnectorAppContainer, graph_provider) -> ConnectorRegistry:
     """Initialize and sync connector registry with database"""
     logger = app_container.logger()
     logger.info("🔧 Initializing Connector Registry...")
 
     try:
-        registry = ConnectorRegistry(app_container)
+        registry = ConnectorRegistry(app_container, graph_provider)
 
         ConnectorFactory.initialize_beta_connector_registry()
         # Register connectors using generic factory
@@ -176,7 +182,7 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error starting messaging producer: {str(e)}")
         raise
 
-async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
+async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> List:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -190,7 +196,7 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
             logger=logger,
             config=entity_kafka_config
         )
-        entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container)
+        entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container, graph_provider)
         await entity_kafka_consumer.start(entity_message_handler)
         consumers.append(("entity", entity_kafka_consumer))
         logger.info("✅ Entity Kafka consumer started")
@@ -289,8 +295,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.graph_provider = data_store.graph_provider
 
     # Initialize connector registry
+    # Use the already-resolved graph_provider from data_store to avoid coroutine reuse
     logger = app_container.logger()
-    registry = await initialize_connector_registry(app_container)
+    graph_provider = data_store.graph_provider
+
+    # Start token refresh service at app startup (database-agnostic)
+    try:
+        await startup_service.initialize(app_container.key_value_store(), graph_provider)
+        logger.info("✅ Startup services initialized successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")
+
+    # Initialize connector registry - pass already-resolved graph_provider
+    registry = await initialize_connector_registry(app_container, graph_provider)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
 
@@ -336,6 +353,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Don't fail startup - migration is idempotent and can be retried
 
     logger.debug("🚀 Starting application")
+
     # Start messaging producer first
     try:
         await start_messaging_producer(app_container)
@@ -344,17 +362,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
-    # Start all Kafka consumers centrally
+    # Start all Kafka consumers centrally - pass already resolved graph_provider
     try:
-        consumers = await start_kafka_consumers(app_container)
+        consumers = await start_kafka_consumers(app_container, graph_provider)
         app_container.kafka_consumers = consumers
         logger.info("✅ All Kafka consumers started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
         raise
 
-    # Resume sync services (pass pre-resolved data_store)
-    asyncio.create_task(resume_sync_services(app_container, data_store))
+    # Resume sync services - pass already resolved graph_provider and data_store
+    asyncio.create_task(resume_sync_services(app_container, graph_provider, data_store))
 
     yield
     logger.info("🔄 Shut down application started")
