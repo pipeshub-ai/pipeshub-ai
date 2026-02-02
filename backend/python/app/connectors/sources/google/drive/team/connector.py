@@ -715,6 +715,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         permissions: List[Permission] = []
         page_token: Optional[str] = None
+        anyone_with_link_permission_type: Optional[PermissionType] = None
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
@@ -767,6 +768,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                             entity_type=entity_type
                         )
                         permissions.append(permission)
+
+                        # Track "anyone with link" permission type for fallback
+                        if entity_type == EntityType.ANYONE:
+                            anyone_with_link_permission_type = permission_type
 
                     except Exception as e:
                         resource_type = "drive" if is_drive else "file"
@@ -834,6 +839,24 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # For files, return empty list on error instead of raising, to allow processing to continue
                     self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}", exc_info=True)
                     return (permissions, False)
+
+        # If we found an "anyone with link" permission and have a user_email, create a fallback permission
+        if anyone_with_link_permission_type is not None and user_email:
+            # Check if user_email is already in the permissions list
+            user_already_has_permission = any(
+                perm.email == user_email for perm in permissions
+            )
+
+            self.logger.info(f"\n\n\nUser already has permission: {user_already_has_permission}")
+
+            if not user_already_has_permission:
+                fallback_permission = Permission(
+                    email=user_email,
+                    type=anyone_with_link_permission_type,
+                    entity_type=EntityType.USER
+                )
+                self.logger.info("Anyone with link permission found for file")
+                return ([fallback_permission], True)
 
         return (permissions, False)
 
