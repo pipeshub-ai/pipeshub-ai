@@ -1010,6 +1010,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                 source_created_at=user.source_created_at
             )
 
+            # Create record group for the user's shared with me files
+            shared_with_me_record_group = RecordGroup(
+                name=f"{user.full_name}'s Shared with Me",
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=f"0S:{user.source_user_id}",
+                description="Shared with Me",
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.DRIVE,
+                is_internal=True,
+            )
+
             # Create owner permission for the user
             owner_permission = Permission(
                 email=user.email,
@@ -1019,9 +1031,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Submit to processor
             await self.data_entities_processor.on_new_record_groups(
-                [(my_drive_record_group, [owner_permission])]
+                [(my_drive_record_group, [owner_permission]), (shared_with_me_record_group, [owner_permission])]
             )
-            self.logger.debug(f"Created 'My Drive' record group for user {user.email} with drive ID {drive_id}")
+            self.logger.debug(f"Created 'My Drive' and 'Shared with Me' record groups for user {user.email} with drive ID {drive_id}")
 
         except Exception as e:
             self.logger.error(
@@ -1383,13 +1395,13 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             if existing_record:
 
+                if existing_record.record_name == "colors.csv":
+                    print("\n\n\n\n\n\n\n!!!!!!!!!Existing record name is colors.csv !!!!!!!!1")
+                    print(existing_record)
+
                 if existing_record.record_name != metadata.get("name", "Untitled"):
                     metadata_changed = True
                     is_updated = True
-
-                if existing_record.external_record_group_id is None:
-                    is_updated = True
-                    metadata_changed = True
 
                 external_revision_id = metadata.get("headRevisionId") or metadata.get("version")
                 if existing_record.external_revision_id != external_revision_id:
@@ -1408,9 +1420,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             owner_emails = [owner.get("emailAddress") for owner in owners if owner.get("emailAddress")]
             is_shared_with_me = is_shared and user_email not in owner_emails
 
-            if not is_shared_drive:
+            if not is_shared_drive and not is_shared_with_me:
 
-                if existing_record and drive_id != existing_record.external_record_group_id:
+                if existing_record and existing_record.external_record_group_id == None:
                     is_updated = True
                     metadata_changed = True
 
@@ -1471,6 +1483,25 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
+
+            
+            if file_record.record_name == "colors.csv":
+                print("\n\n\n\n\n\n\n\n!!!!!!!!!File name is colors.csv !!!!!!!!1")
+                print(file_record)
+            
+            if is_shared_with_me:
+                print("\n\n\n!!!!!!!!!Creating shared with me record group edge !!!!!!!!1")
+                file_record.external_record_group_id = None
+
+                async with self.data_store_provider.transaction() as tx_store:
+                    shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=self.connector_id, external_id=user_email)
+                    if shared_with_me_record_group:
+                        print("!!!!!!!!!Shared with me record group found !!!!!!!!1")
+                        print(shared_with_me_record_group)
+                    else:
+                        print("!!!!!!!!!Shared with me record group not found !!!!!!!!1")
+                        print(user_email)
+                    await tx_store.create_record_group_relation(file_record.id, shared_with_me_record_group.id)
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
@@ -1793,13 +1824,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-
                         existing_record = None
                         async with self.data_store_provider.transaction() as tx_store:
                             existing_record = await tx_store.get_record_by_external_id(
                                 connector_id=self.connector_id,
                                 external_id=change.get("fileId")
                             )
+                        
+                        self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
 
                         if existing_record and existing_record.id:
                             await self.data_entities_processor.delete_permission_from_record(

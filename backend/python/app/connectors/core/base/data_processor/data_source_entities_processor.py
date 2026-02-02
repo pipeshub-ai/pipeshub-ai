@@ -331,6 +331,11 @@ class DataSourceEntitiesProcessor:
         Returns:
             record_group_id if record group was found/created, None otherwise
         """
+
+        if record.record_name == "colors.csv":
+            print("\n\n!!!!!!!!!Record name is colors.csv in _handle_record_group !!!!!!!!1")
+            print(record)
+
         if record.external_record_group_id is None:
             return None
 
@@ -361,6 +366,11 @@ class DataSourceEntitiesProcessor:
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
         """
+
+        if record.record_name == "colors.csv":
+            print("\n\n!!!!!!!!!Record name is colors.csv in _link_record_to_group !!!!!!!!1")
+            print(record)
+
         if not record.id or not record_group_id:
             return
 
@@ -557,6 +567,11 @@ class DataSourceEntitiesProcessor:
         record.org_id = self.org_id
         self.logger.info("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
+
+        if record.record_name == "colors.csv":
+            print("\n\n!!!!!!!!!Record name is colors.csv in _handle_updated_record !!!!!!!!1")
+            print(record)
+
         await tx_store.batch_upsert_records([record])
 
     async def _handle_record_permissions(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> None:
@@ -857,7 +872,9 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
-            await self._handle_updated_record(record, existing_record, tx_store)
+            processed_record = await self._process_record(record, [], tx_store)
+            if processed_record:
+                await self._handle_updated_record(processed_record, existing_record, tx_store)
 
     async def on_record_deleted(self, record_id: str) -> None:
         async with self.data_store_provider.transaction() as tx_store:

@@ -6205,6 +6205,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR edge IN belongsTo
                 FILTER edge._from LIKE "records/%" AND edge._to == @rg_doc_id
                 LET record = DOCUMENT(edge._from)
+
                 FILTER record != null AND record.isDeleted != true AND record.externalParentId == null
 
                 // Check if user has permission to this record via 6 paths:
