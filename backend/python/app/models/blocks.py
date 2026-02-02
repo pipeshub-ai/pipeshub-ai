@@ -155,6 +155,7 @@ class TableMetadata(BaseModel):
     """Metadata specific to table blocks"""
     num_of_rows: Optional[int] = None
     num_of_cols: Optional[int] = None
+    num_of_cells: Optional[int] = None
     has_header: bool = False
     column_names: Optional[List[str]] = None
     captions: Optional[List[str]] = Field(default_factory=list)
@@ -299,8 +300,99 @@ class Blocks(BaseModel):
     blocks: List[Block] = Field(default_factory=list)
 
 class BlockContainerIndex(BaseModel):
+    """Legacy model for backward compatibility - use BlockGroupChildren instead"""
     block_index: Optional[int] = None
     block_group_index: Optional[int] = None
+
+class IndexRange(BaseModel):
+    """Represents a range of indices (inclusive)"""
+    start: int = Field(description="Starting index (inclusive)")
+    end: int = Field(description="Ending index (inclusive)")
+
+class BlockGroupChildren(BaseModel):
+    """Container for child block and block group references using ranges"""
+    block_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block indices")
+    block_group_ranges: List[IndexRange] = Field(default_factory=list, description="Ranges of block group indices")
+
+    def add_block_index(self, index: int) -> None:
+        """Add a block index, merging into existing ranges if contiguous"""
+        if not self.block_ranges:
+            self.block_ranges.append(IndexRange(start=index, end=index))
+            return
+
+        # Try to merge with existing ranges
+        for range_obj in self.block_ranges:
+            if index == range_obj.end + 1:
+                range_obj.end = index
+                return
+            elif index == range_obj.start - 1:
+                range_obj.start = index
+                return
+            elif range_obj.start <= index <= range_obj.end:
+                # Already in range
+                return
+
+        # Add new range and sort
+        self.block_ranges.append(IndexRange(start=index, end=index))
+        self.block_ranges.sort(key=lambda r: r.start)
+
+    def add_block_group_index(self, index: int) -> None:
+        """Add a block group index, merging into existing ranges if contiguous"""
+        if not self.block_group_ranges:
+            self.block_group_ranges.append(IndexRange(start=index, end=index))
+            return
+
+        # Try to merge with existing ranges
+        for range_obj in self.block_group_ranges:
+            if index == range_obj.end + 1:
+                range_obj.end = index
+                return
+            elif index == range_obj.start - 1:
+                range_obj.start = index
+                return
+            elif range_obj.start <= index <= range_obj.end:
+                # Already in range
+                return
+
+        # Add new range and sort
+        self.block_group_ranges.append(IndexRange(start=index, end=index))
+        self.block_group_ranges.sort(key=lambda r: r.start)
+
+    @staticmethod
+    def from_indices(block_indices: Optional[List[int]] = None,
+                     block_group_indices: Optional[List[int]] = None) -> 'BlockGroupChildren':
+        """Create BlockGroupChildren from lists of indices by grouping into ranges"""
+        def indices_to_ranges(indices: List[int]) -> List[IndexRange]:
+            if not indices:
+                return []
+
+            # Sort and remove duplicates
+            sorted_indices = sorted(set(indices))
+            ranges = []
+            start = sorted_indices[0]
+            end = sorted_indices[0]
+
+            for i in range(1, len(sorted_indices)):
+                if sorted_indices[i] == end + 1:
+                    # Contiguous, extend current range
+                    end = sorted_indices[i]
+                else:
+                    # Gap found, save current range and start new one
+                    ranges.append(IndexRange(start=start, end=end))
+                    start = sorted_indices[i]
+                    end = sorted_indices[i]
+
+            # Add the last range
+            ranges.append(IndexRange(start=start, end=end))
+            return ranges
+
+        block_ranges = indices_to_ranges(block_indices or [])
+        block_group_ranges = indices_to_ranges(block_group_indices or [])
+
+        return BlockGroupChildren(
+            block_ranges=block_ranges,
+            block_group_ranges=block_group_ranges
+        )
 
 class BlockGroup(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid4()))
@@ -323,8 +415,42 @@ class BlockGroup(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
     children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
-    children: Optional[List[BlockContainerIndex]] = None
+    children: Optional[BlockGroupChildren] = None
     data: Optional[Any] = None
+
+    @field_validator('children', mode='before')
+    @classmethod
+    def convert_children_format(cls, v:Optional[BlockGroupChildren|dict|list]) -> Optional[BlockGroupChildren|dict|list]:
+        """Convert old List[BlockContainerIndex] format to new BlockGroupChildren format"""
+        if v is None:
+            return None
+
+        # If it's already a BlockGroupChildren instance or dict with the new format, return as-is
+        if isinstance(v, BlockGroupChildren):
+            return v
+        if isinstance(v, dict) and ('block_ranges' in v or 'block_group_ranges' in v):
+            return v
+
+        # If it's a list, it's the old format (List[BlockContainerIndex])
+        if isinstance(v, list):
+            block_indices = []
+            block_group_indices = []
+
+            for item in v:
+                if isinstance(item, dict):
+                    if item.get('block_index') is not None:
+                        block_indices.append(item['block_index'])
+                    if item.get('block_group_index') is not None:
+                        block_group_indices.append(item['block_group_index'])
+                elif hasattr(item, 'block_index') or hasattr(item, 'block_group_index'):
+                    if hasattr(item, 'block_index') and item.block_index is not None:
+                        block_indices.append(item.block_index)
+                    if hasattr(item, 'block_group_index') and item.block_group_index is not None:
+                        block_group_indices.append(item.block_group_index)
+
+            return BlockGroupChildren.from_indices(block_indices, block_group_indices)
+
+        return v
     format: Optional[DataFormat] = None
     weburl: Optional[HttpUrl] = Field(default=None, description="Web URL for the original source context (e.g., Linear project page). This will be used as primary webUrl in citations for all generated blocks")
     comments: List[List[BlockComment]] = Field(default_factory=list, description="2D list of comments grouped by thread_id, with each thread's comments sorted by created_at")
