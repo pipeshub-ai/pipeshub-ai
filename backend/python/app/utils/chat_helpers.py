@@ -1,5 +1,5 @@
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Union
 from uuid import uuid4
 
 from jinja2 import Template
@@ -613,9 +613,7 @@ def create_block_from_metadata(metadata: Dict[str, Any],page_content: str) -> Di
 MAX_CELLS_IN_TABLE_THRESHOLD = 250  # Equivalent to ~700 words assuming ~2-3 words per cell
 
 
-
-
-def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children) -> int | None:
+def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], children: Union[Dict[str, Any], List[Dict[str, Any]]]) -> int | None:
     """Recursively search through the first child to find the first block_index.
 
     Args:
@@ -666,7 +664,7 @@ def _find_first_block_index_recursive(block_groups: List[Dict[str, Any]], childr
 def _extract_text_content_recursive(
     block_groups: List[Dict[str, Any]],
     blocks: List[Dict[str, Any]],
-    children,
+    children: Union[Dict[str, Any], List[Dict[str, Any]]],
     virtual_record_id: str = None,
     seen_chunks: set = None,
     depth: int = 0,
