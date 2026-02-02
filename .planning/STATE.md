@@ -43,6 +43,12 @@ None.
 
 None.
 
+## Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 001 | Skip email screen for direct Microsoft SSO | 2026-02-03 | 65d87f9d | [001-skip-email-screen-direct-microsoft-sso](./quick/001-skip-email-screen-direct-microsoft-sso/) |
+
 ## Session Continuity
 
 **Last session:** 2026-02-03
