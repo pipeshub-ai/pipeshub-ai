@@ -5969,11 +5969,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
     def _generate_record_permission_check_aql(self, record_var: str = "record", user_from_var: str = "user_from") -> str:
         """
         Generate AQL code to check if user has permission to a record via 6 paths.
-        
+
         Args:
             record_var: Name of the record variable in AQL
             user_from_var: Name of the user_from variable in AQL
-            
+
         Returns:
             AQL code snippet that evaluates to a boolean
         """
@@ -6048,7 +6048,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """Generate AQL sub-query to fetch children of a KB or RecordGroup with permission filtering."""
         rg_doc_id = f"recordGroups/{rg_id}"
         source = "KB" if parent_type == "kb" else "CONNECTOR"
-        
+
         # Generate the permission check AQL code once
         permission_check = self._generate_record_permission_check_aql("record", "user_from")
 
