@@ -1079,12 +1079,20 @@ class Processor:
             # Update children references
             if bg.children:
                 # Shift block_group ranges that reference shifted block groups
-                for range_obj in bg.children.block_group_ranges:
-                    # For each index in the range, check if it needs shifting
-                    if range_obj.start in index_shift_map:
-                        shift_amount = index_shift_map[range_obj.start]
-                        range_obj.start += shift_amount
-                        range_obj.end += shift_amount
+                # Must expand ranges, apply individual shifts, then reconstruct
+                # (different indices within a range may need different shifts)
+                if bg.children.block_group_ranges:
+                    shifted_indices = []
+                    for range_obj in bg.children.block_group_ranges:
+                        for idx in range(range_obj.start, range_obj.end + 1):
+                            if idx in index_shift_map:
+                                shifted_indices.append(idx + index_shift_map[idx])
+                            else:
+                                shifted_indices.append(idx)
+                    # Reconstruct ranges from shifted indices
+                    bg.children.block_group_ranges = BlockGroupChildren.from_indices(
+                        block_group_indices=shifted_indices
+                    ).block_group_ranges
 
             # Add the block_group to the result
             new_block_groups.append(bg)
