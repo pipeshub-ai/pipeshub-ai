@@ -1145,14 +1145,9 @@ class Processor:
                     if new_block.parent_index == final_index:
                         bg.children.add_block_index(new_block.index)
 
-                # Sort children: all block_groups first (sorted by index), then all blocks (sorted by index)
-                if bg.children:
-                    bg.children.sort(key=lambda c: (
-                        0 if c.block_group_index is not None else 1,  # block_groups first, blocks second
-                        c.block_group_index if c.block_group_index is not None
-                        else c.block_index if c.block_index is not None
-                        else float('inf')
-                    ))
+                # Note: Sorting is handled automatically by BlockGroupChildren.add_block_index()
+                # and add_block_group_index() methods which sort ranges internally.
+                # The structure also inherently separates block_group_ranges from block_ranges.
 
                 # Update block offset for next iteration
                 block_index_offset += len(new_blocks_list)
