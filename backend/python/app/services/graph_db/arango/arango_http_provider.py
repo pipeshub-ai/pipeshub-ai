@@ -6987,7 +6987,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         // Flatten all_descendants since App traversal may return nested arrays
         LET flat_descendants = FLATTEN(all_descendants, 2)
-        LET all_nodes = UNION(flat_descendants, FLATTEN(nested_record_groups, 2), direct_app_records)
+        LET all_nodes_union = UNION(flat_descendants, FLATTEN(nested_record_groups, 2), direct_app_records)
+
+        // Deduplicate by ID - keep the first occurrence of each record
+        // This prevents duplicates when the same record appears in multiple query paths
+        LET all_nodes = (
+            FOR node IN all_nodes_union
+                COLLECT id = node.id INTO groups
+                RETURN groups[0].node
+        )
 
         // Apply search and other filters
         LET filtered_nodes = (
