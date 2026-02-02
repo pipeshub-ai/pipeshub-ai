@@ -35,8 +35,7 @@ import CardContent from '@mui/material/CardContent';
 import InputAdornment from '@mui/material/InputAdornment';
 import { Tab, Tabs, Fade, Grow, useTheme, Snackbar } from '@mui/material';
 
-import { ErrorType, withErrorHandling } from 'src/utils/axios';
-import axios from 'src/utils/axios';
+import axios, { ErrorType, withErrorHandling } from 'src/utils/axios';
 
 import { setEmail } from 'src/store/auth-slice';
 
@@ -461,18 +460,31 @@ export const AuthenticationView = () => {
           axios.get('/api/v1/auth/directSsoConfig').catch(() => ({ data: null })),
         ]);
 
+        // Debug logging
+        console.log('[Auth] SSO Config Response:', ssoConfigResponse.data);
+        console.log('[Auth] skipEmailScreen:', ssoConfigResponse.data?.skipEmailScreen);
+        console.log('[Auth] microsoft config:', ssoConfigResponse.data?.microsoft);
+
         // Preserve query params when navigating
         const queryString = searchParams.toString();
         const suffix = queryString ? `?${queryString}` : '';
+        const currentPath = window.location.pathname;
 
         if (orgResponse.exists === false) {
           navigate(`/auth/sign-up${suffix}`);
         } else if (ssoConfigResponse.data?.skipEmailScreen && ssoConfigResponse.data?.microsoft) {
           // Direct SSO mode - skip email screen
+          console.log('[Auth] Activating direct Microsoft SSO mode');
           setDirectMicrosoftSso(true);
           setMicrosoftConfig(ssoConfigResponse.data.microsoft);
         } else {
-          navigate(`/auth/sign-in${suffix}`);
+          // Only navigate if not already on /auth/sign-in to prevent unnecessary re-renders
+          if (currentPath !== '/auth/sign-in') {
+            console.log('[Auth] Navigating to sign-in from:', currentPath);
+            navigate(`/auth/sign-in${suffix}`);
+          } else {
+            console.log('[Auth] Already on /auth/sign-in, staying on page');
+          }
         }
       } catch (err) {
         console.error('Error checking org/SSO config:', err);

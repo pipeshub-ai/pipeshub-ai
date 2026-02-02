@@ -1876,9 +1876,12 @@ export class UserAccountController {
       });
 
       if (!orgAuthConfig) {
+        logger.debug('getDirectSsoConfig: No org with Microsoft auth found');
         res.json({ skipEmailScreen: false });
         return;
       }
+
+      logger.debug('getDirectSsoConfig: Found org with Microsoft auth', { orgId: orgAuthConfig.orgId });
 
       // Get Microsoft config
       const newUser = { orgId: orgAuthConfig.orgId, email: '' };
@@ -1889,7 +1892,15 @@ export class UserAccountController {
         this.config.scopedJwtSecret,
       );
 
+      logger.debug('getDirectSsoConfig: Config manager response', {
+        hasData: !!configManagerResponse.data,
+        skipEmailScreen: configManagerResponse.data?.skipEmailScreen,
+        hasClientId: !!configManagerResponse.data?.clientId,
+        hasTenantId: !!configManagerResponse.data?.tenantId,
+      });
+
       if (configManagerResponse.data?.skipEmailScreen) {
+        logger.info('getDirectSsoConfig: Returning direct SSO config (skipEmailScreen=true)');
         res.json({
           skipEmailScreen: true,
           microsoft: {
@@ -1899,9 +1910,13 @@ export class UserAccountController {
           },
         });
       } else {
+        logger.info('getDirectSsoConfig: Returning skipEmailScreen=false', {
+          skipEmailScreenValue: configManagerResponse.data?.skipEmailScreen,
+        });
         res.json({ skipEmailScreen: false });
       }
     } catch (error) {
+      logger.error('getDirectSsoConfig: Error', { error });
       next(error);
     }
   }
