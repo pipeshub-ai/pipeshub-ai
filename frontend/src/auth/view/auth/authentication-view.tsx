@@ -457,7 +457,7 @@ export const AuthenticationView = () => {
       try {
         const [orgResponse, ssoConfigResponse] = await Promise.all([
           OrgExists(),
-          axios.get('/api/v1/auth/directSsoConfig').catch(() => ({ data: null })),
+          axios.get('/api/v1/userAccount/directSsoConfig').catch(() => ({ data: null })),
         ]);
 
         // Debug logging
