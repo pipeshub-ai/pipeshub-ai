@@ -477,14 +477,12 @@ export const AuthenticationView = () => {
           console.log('[Auth] Activating direct Microsoft SSO mode');
           setDirectMicrosoftSso(true);
           setMicrosoftConfig(ssoConfigResponse.data.microsoft);
-        } else {
+        } else if (currentPath !== '/auth/sign-in') {
           // Only navigate if not already on /auth/sign-in to prevent unnecessary re-renders
-          if (currentPath !== '/auth/sign-in') {
-            console.log('[Auth] Navigating to sign-in from:', currentPath);
-            navigate(`/auth/sign-in${suffix}`);
-          } else {
-            console.log('[Auth] Already on /auth/sign-in, staying on page');
-          }
+          console.log('[Auth] Navigating to sign-in from:', currentPath);
+          navigate(`/auth/sign-in${suffix}`);
+        } else {
+          console.log('[Auth] Already on /auth/sign-in, staying on page');
         }
       } catch (err) {
         console.error('Error checking org/SSO config:', err);
