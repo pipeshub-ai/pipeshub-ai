@@ -133,7 +133,7 @@ class BlobStorage(Transformer):
 
     async def _get_content_length(self, session: aiohttp.ClientSession, url: str) -> int:
         """
-        Get content length of S3 object using HEAD request.
+        Get content length of S3 object using Range GET request to fetch only headers.
         
         Args:
             session: aiohttp session
@@ -143,12 +143,23 @@ class BlobStorage(Transformer):
             Content length in bytes, or 0 if not available
         """
         try:
-            async with session.head(url) as response:
-                content_length = response.headers.get('Content-Length', '0')
-                return int(content_length)
+            # Use Range header to request only the first byte to avoid downloading entire file
+            headers = {'Range': 'bytes=0-0'}
+            async with session.get(url, headers=headers) as response:
+                # For Range requests, Content-Range header contains the total size
+                # Format: "bytes 0-0/total_size"
+                if response.status == 206:  # Partial Content
+                    content_range = response.headers.get('Content-Range', '')
+                    if content_range and '/' in content_range:
+                        total_size = content_range.split('/')[-1]
+                        return int(total_size)
+                
+                # Fallback to Content-Length if available (status 200)
+                content_length = response.headers.get('Content-Length', None)
+                return int(content_length) if content_length else None
         except Exception as e:
             self.logger.warning("⚠️ Failed to get content length: %s", str(e))
-            return 0
+            return None
 
     async def _download_chunk_with_retry(
         self, 
@@ -234,7 +245,7 @@ class BlobStorage(Transformer):
         self.logger.info("⏱️ File size check completed in %.0fms: %.2f MB", 
                         size_check_duration_ms, total_size / (1024 * 1024))
         
-        if total_size == 0:
+        if total_size is None or total_size == 0:
             raise Exception("Could not determine file size for parallel download")
         
         # Calculate chunk ranges
@@ -346,11 +357,11 @@ class BlobStorage(Transformer):
         # Use exclude_none=True to skip None values, then clean empty values
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
-        document_id = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
+        document_id, file_size_bytes = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
 
         # Store the mapping if we have both IDs and arango_service is available
         if document_id and self.arango_service:
-            await self.store_virtual_record_mapping(virtual_record_id, document_id)
+            await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
 
         ctx.record = record
         return ctx
@@ -433,11 +444,11 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unexpected error creating placeholder: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict) -> str | None:
+    async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict) -> tuple[str | None, int | None]:
         """
         Save document to storage using FormData upload
         Returns:
-            str | None: document_id if successful, None if failed
+            tuple[str | None, int | None]: (document_id, file_size_bytes) if successful, (None, None) if failed
         """
         try:
             self.logger.info("🚀 Starting storage process for record: %s", record_id)
@@ -491,6 +502,11 @@ class BlobStorage(Transformer):
                             "virtualRecordId": virtual_record_id
                         }
                         json_data = json.dumps(upload_data).encode('utf-8')
+                        
+                        # Calculate file size
+                        file_size_bytes = len(json_data)
+                        self.logger.info("📏 Calculated local storage file size: %d bytes (%.2f MB)", 
+                                        file_size_bytes, file_size_bytes / (1024 * 1024))
 
                         # Create form data
                         form_data = aiohttp.FormData()
@@ -530,7 +546,7 @@ class BlobStorage(Transformer):
                                 raise Exception("No document ID in upload response")
 
                             self.logger.info("✅ Successfully uploaded record for document: %s", document_id)
-                            return document_id
+                            return document_id, file_size_bytes
                 except aiohttp.ClientError as e:
                     self.logger.error("❌ Network error during upload process: %s", str(e))
                     raise e
@@ -631,10 +647,16 @@ class BlobStorage(Transformer):
                                 "virtualRecordId": virtual_record_id
                             }
                         
+                        # Calculate actual S3 file size (JSON serialized)
+                        upload_data_json = json.dumps(upload_data)
+                        file_size_bytes = len(upload_data_json.encode('utf-8'))
+                        self.logger.info("📏 Calculated S3 file size: %d bytes (%.2f MB)", 
+                                        file_size_bytes, file_size_bytes / (1024 * 1024))
+                        
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
-                        return document_id
+                        return document_id, file_size_bytes
 
                 except aiohttp.ClientError as e:
                     self.logger.error("❌ Network error during storage process: %s", str(e))
@@ -649,11 +671,11 @@ class BlobStorage(Transformer):
             self.logger.exception("Detailed error trace:")
             raise e
 
-    async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> str:
+    async def get_document_id_by_virtual_record_id(self, virtual_record_id: str) -> tuple[str | None, int | None]:
         """
-        Get the document ID by virtual record ID from ArangoDB.
+        Get the document ID and file size by virtual record ID from ArangoDB.
         Returns:
-            str: The document ID if found, else None.
+            tuple[str | None, int | None]: (document_id, file_size_bytes) if found, else (None, None).
         """
         if not self.arango_service:
             self.logger.error("❌ ArangoService not initialized, cannot get document ID by virtual record ID.")
@@ -661,7 +683,7 @@ class BlobStorage(Transformer):
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            query = 'FOR doc IN @@collection FILTER doc.virtualRecordId == @virtualRecordId OR doc._key == @virtualRecordId RETURN doc.documentId'
+            query = 'FOR doc IN @@collection FILTER doc.virtualRecordId == @virtualRecordId OR doc._key == @virtualRecordId RETURN {documentId: doc.documentId, fileSizeBytes: doc.fileSizeBytes}'
             bind_vars = {
                 '@collection': collection_name,
                 'virtualRecordId': virtual_record_id
@@ -671,10 +693,13 @@ class BlobStorage(Transformer):
             # Check if cursor has any results before calling next()
             results = list(cursor)
             if results:
-                return results[0]  # Return first document ID
+                result = results[0]
+                document_id = result.get('documentId')
+                file_size_bytes = result.get('fileSizeBytes')
+                return document_id, file_size_bytes
             else:
                 self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
-                return None
+                return None, None
         except Exception as e:
             self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
             raise e
@@ -731,9 +756,14 @@ class BlobStorage(Transformer):
 
                 # Time the document ID lookup
                 lookup_start_time = time.time()
-                document_id = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+                document_id, file_size_bytes = await self.get_document_id_by_virtual_record_id(virtual_record_id)
                 lookup_duration_ms = (time.time() - lookup_start_time) * 1000
-                self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s", lookup_duration_ms, virtual_record_id)
+                if file_size_bytes is not None:
+                    self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s (size: %d bytes)", 
+                                    lookup_duration_ms, virtual_record_id, file_size_bytes)
+                else:
+                    self.logger.info("⏱️ Document ID lookup completed in %.0fms for virtual_record_id: %s (size: unknown)", 
+                                    lookup_duration_ms, virtual_record_id)
                 
                 if not document_id:
                     self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
@@ -775,19 +805,25 @@ class BlobStorage(Transformer):
                                 # Reuse the same session for signed URL fetch
                                 signed_url_start_time = time.time()
                                 
-                                # Check file size to determine download strategy
-                                content_length = await self._get_content_length(session, signed_url)
-                                file_size_mb = content_length / (1024 * 1024)
-                                
-                                # Use parallel download for files >= 5MB
-                                MIN_SIZE_FOR_PARALLEL = 5 * 1024 * 1024  # 5 MB
-                                use_parallel = content_length >= MIN_SIZE_FOR_PARALLEL
+                                # Determine download strategy based on stored size
+                                if file_size_bytes is None:
+                                    # Old records without stored size - use single download (no HEAD request needed)
+                                    self.logger.info("⚠️ No stored file size, using single download")
+                                    use_parallel = False
+                                else:
+                                    file_size_mb = file_size_bytes / (1024 * 1024)
+                                    
+                                    # Use parallel download for files >= 5MB
+                                    MIN_SIZE_FOR_PARALLEL = 5 * 1024 * 1024  # 5 MB
+                                    use_parallel = file_size_bytes >= MIN_SIZE_FOR_PARALLEL
                                 
                                 try:
                                     if use_parallel:
+                                        # Type assertion: use_parallel is only True when file_size_bytes is not None
+                                        assert file_size_bytes is not None, "file_size_bytes must not be None for parallel download"
                                         self.logger.info("📦 Using parallel download for %.2f MB file", file_size_mb)
                                         
-                                        # Download with parallel range requests
+                                        # Download with parallel range requests - pass size to eliminate HEAD request
                                         file_bytes = await self._download_with_range_requests(
                                             session, 
                                             signed_url,
@@ -802,7 +838,10 @@ class BlobStorage(Transformer):
                                         self.logger.info("⏱️ JSON parsing completed in %.0fms", json_parse_duration_ms)
                                         
                                     else:
-                                        self.logger.info("📦 Using single download for %.2f MB file", file_size_mb)
+                                        if file_size_bytes is not None:
+                                            self.logger.info("📦 Using single download for %.2f MB file", file_size_mb)
+                                        else:
+                                            self.logger.info("📦 Using single download (size unknown)")
                                         
                                         # Standard single download
                                         signed_url_http_start_time = time.time()
@@ -878,9 +917,13 @@ class BlobStorage(Transformer):
                 self.logger.exception("Detailed error trace:")
                 raise e
 
-    async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str) -> bool:
+    async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
         """
         Stores the mapping between virtual_record_id and document_id in ArangoDB.
+        Args:
+            virtual_record_id: The virtual record ID
+            document_id: The document ID
+            file_size_bytes: Optional file size in bytes
         Returns:
             bool: True if successful, False otherwise.
         """
@@ -896,6 +939,10 @@ class BlobStorage(Transformer):
                 "documentId": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
+            
+            # Add file size if provided
+            if file_size_bytes is not None:
+                mapping_document["fileSizeBytes"] = file_size_bytes
 
             success = await self.arango_service.batch_upsert_nodes(
                 [mapping_document],
@@ -903,7 +950,8 @@ class BlobStorage(Transformer):
             )
 
             if success:
-                self.logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s", virtual_record_id, document_id)
+                size_info = f", file_size={file_size_bytes} bytes" if file_size_bytes is not None else ""
+                self.logger.info("✅ Successfully stored virtual record mapping: virtual_record_id=%s, document_id=%s%s", virtual_record_id, document_id, size_info)
                 return True
             else:
                 self.logger.error("❌ Failed to store virtual record mapping")
