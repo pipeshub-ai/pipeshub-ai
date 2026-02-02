@@ -220,12 +220,30 @@ export class UserAccountController {
           domain,
           isDeleted: false,
         }) : null;
-        
 
-        const orgAuthConfig = domain ? await OrgAuthConfig.findOne({
+        let orgAuthConfig = domain ? await OrgAuthConfig.findOne({
           orgId: org?._id,
           isDeleted: false,
         }) : null;
+
+        // If no org found by domain, check for tenant ID-configured orgs for Microsoft SSO fallback
+        // This enables multi-domain orgs where users from any domain can SSO via tenant ID matching
+        let usingTenantIdFallback = false;
+        if (!org && !orgAuthConfig) {
+          const tenantIdConfig = await OrgAuthConfig.findOne({
+            microsoftTenantId: { $exists: true, $ne: null },
+            isDeleted: false,
+          });
+          if (tenantIdConfig) {
+            orgAuthConfig = tenantIdConfig;
+            usingTenantIdFallback = true;
+            this.logger.debug('Using tenant ID fallback for unknown domain', {
+              email,
+              domain,
+              fallbackOrgId: tenantIdConfig.orgId?.toString(),
+            });
+          }
+        }
 
         // Check for JIT-enabled auth methods
         const jitEnabledMethods: string[] = [];
@@ -316,6 +334,8 @@ export class UserAccountController {
         // Create session with JIT info if available
         // Always provide a valid authConfig structure - use org's authSteps if JIT is enabled,
         // otherwise create a default structure with password method (for consistent error handling)
+        // Note: When using tenant ID fallback, orgId is a placeholder - actual org is determined
+        // during JIT provisioning via tenant ID matching from the Microsoft token
         const defaultAuthSteps = [
           {
             order: 1,
@@ -326,11 +346,13 @@ export class UserAccountController {
           userId: "NOT_FOUND",
           email: email,
           orgId: orgAuthConfig ? orgAuthConfig.orgId.toString() : "",
-          authConfig: orgAuthConfig && jitEnabledMethods.length > 0 
-            ? orgAuthConfig.authSteps 
+          authConfig: orgAuthConfig && jitEnabledMethods.length > 0
+            ? orgAuthConfig.authSteps
             : defaultAuthSteps,
           currentStep: 0,
-          jitConfig: jitEnabledMethods.length > 0 ? jitConfig : undefined,
+          jitConfig: jitEnabledMethods.length > 0
+            ? { ...jitConfig, usingTenantIdFallback }
+            : undefined,
         });
         if (!session) {
           throw new InternalServerError('Failed to create session');
