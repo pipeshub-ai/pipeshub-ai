@@ -549,13 +549,13 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, tenantId, enableJit } = req.body;
+      const { clientId, tenantId, enableJit, skipEmailScreen } = req.body;
       const authority = `https://login.microsoftonline.com/${tenantId}`;
 
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
+      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true, skipEmailScreen: skipEmailScreen ?? false }));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.microsoft,

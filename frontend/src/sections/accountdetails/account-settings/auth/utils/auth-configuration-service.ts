@@ -16,6 +16,7 @@ export interface MicrosoftAuthConfig {
   clientId: string;
   tenantId: string;
   enableJit?: boolean;
+  skipEmailScreen?: boolean;
 }
 
 export interface SamlSsoConfig {
