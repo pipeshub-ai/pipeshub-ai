@@ -59,6 +59,7 @@ import {
   aiModelsConfigSchema,
   storageValidationSchema,
   azureAdConfigSchema,
+  microsoftConfigSchema,
   googleAuthConfigSchema,
   oauthConfigSchema,
   ssoConfigSchema,
@@ -371,7 +372,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     userAdminCheck,
     metricsMiddleware(container),
-    ValidationMiddleware.validate(azureAdConfigSchema),
+    ValidationMiddleware.validate(microsoftConfigSchema),
     setMicrosoftAuthConfig(keyValueStoreService),
   );
 

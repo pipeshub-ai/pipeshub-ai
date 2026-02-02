@@ -125,10 +125,12 @@ export const oauthConfigSchema = z.object({
 });
 
 export const microsoftConfigSchema = z.object({
-  clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
-  tenantId: z.string().optional().default('common'),
-  enableJit: z.boolean().optional().default(false),
-  skipEmailScreen: z.boolean().optional().default(false),
+  body: z.object({
+    clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
+    tenantId: z.string().optional().default('common'),
+    enableJit: z.boolean().optional().default(false),
+    skipEmailScreen: z.boolean().optional().default(false),
+  }),
 });
 
 export const mongoDBConfigSchema = z.object({
