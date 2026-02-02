@@ -332,10 +332,6 @@ class DataSourceEntitiesProcessor:
             record_group_id if record group was found/created, None otherwise
         """
 
-        if record.record_name == "colors.csv":
-            print("\n\n!!!!!!!!!Record name is colors.csv in _handle_record_group !!!!!!!!1")
-            print(record)
-
         if record.external_record_group_id is None:
             return None
 
@@ -366,10 +362,6 @@ class DataSourceEntitiesProcessor:
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
         """
-
-        if record.record_name == "colors.csv":
-            print("\n\n!!!!!!!!!Record name is colors.csv in _link_record_to_group !!!!!!!!1")
-            print(record)
 
         if not record.id or not record_group_id:
             return
@@ -567,10 +559,6 @@ class DataSourceEntitiesProcessor:
         record.org_id = self.org_id
         self.logger.info("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
-
-        if record.record_name == "colors.csv":
-            print("\n\n!!!!!!!!!Record name is colors.csv in _handle_updated_record !!!!!!!!1")
-            print(record)
 
         await tx_store.batch_upsert_records([record])
 
