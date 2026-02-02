@@ -6,6 +6,7 @@ class config_node_constants(Enum):
 
     # Service paths
     ARANGODB = "/services/arangodb"
+    NEO4J = "/services/neo4j"
     QDRANT = "/services/qdrant"
     REDIS = "/services/redis"
     AI_MODELS = "/services/aiModels"

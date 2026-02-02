@@ -50,7 +50,6 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
@@ -73,6 +72,7 @@ from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
 from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
 from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.services.featureflag.config.config import CONFIG
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
@@ -227,10 +227,17 @@ async def get_validated_connector_instance(
     return instance
 
 
-async def get_arango_service(request: Request) -> BaseArangoService:
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
+    # Use already-resolved graph_provider from app.state to avoid coroutine reuse
+    # (graph_provider is resolved once in lifespan and stored in app.state)
+    if hasattr(request.app.state, 'graph_provider'):
+        return request.app.state.graph_provider
+    # Fallback to container if state is not available (shouldn't happen in normal flow)
     container: ConnectorAppContainer = request.app.container
-    arango_service = await container.arango_service()
-    return arango_service
+    # Note: This will cause coroutine reuse error if graph_provider was already resolved
+    # This is a fallback only and indicates a configuration issue
+    graph_provider = await container.graph_provider()
+    return graph_provider
 
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
@@ -519,10 +526,10 @@ async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesPar
 @router.delete("/api/v1/delete/record/{record_id}")
 @inject
 async def handle_record_deletion(
-    record_id: str, arango_service=Depends(Provide[ConnectorAppContainer.arango_service])
+    record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Optional[dict]:
     try:
-        response = await arango_service.delete_records_and_relations(
+        response = await graph_provider.delete_records_and_relations(
             record_id, hard_delete=True
         )
         if not response:
@@ -548,7 +555,7 @@ async def handle_record_deletion(
 async def stream_record_internal(
     request: Request,
     record_id: str,
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     """
@@ -572,8 +579,8 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_record_by_id(
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = graph_provider.get_record_by_id(
             record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
@@ -636,7 +643,7 @@ async def download_file(
     connector: str,
     token: str,
     signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
@@ -658,12 +665,12 @@ async def download_file(
             )
 
         # Get org details to determine account type
-        org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+        org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await arango_service.get_record_by_id(
+        record = await graph_provider.get_record_by_id(
             record_id
         )
         if not record:
@@ -673,7 +680,7 @@ async def download_file(
         connector_id = record.connector_id
         creds = None
         # Get connector instance to check scope
-        connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None)
         if connector_type is None:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
@@ -685,7 +692,7 @@ async def download_file(
             if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
                 connector_scope == ConnectorScope.TEAM.value):
                 # Use service account credentials for team scope in enterprise accounts
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container, connector, connector_id)
+                creds = await get_service_account_credentials(org_id, user_id, logger, graph_provider, google_token_handler, request.app.container, connector, connector_id)
             else:
                 # Use user credentials for personal scope or individual accounts
                 creds = await get_user_credentials(org_id, user_id, logger, google_token_handler, request.app.container,connector,connector_id)
@@ -697,7 +704,7 @@ async def download_file(
                 # Build the Drive service
                 drive_service = build("drive", "v3", credentials=creds)
 
-                file = await arango_service.get_document(
+                file = await graph_provider.get_document(
                     record_id, CollectionNames.FILES.value
                 )
                 if not file:
@@ -802,19 +809,12 @@ async def download_file(
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
                 gmail_service = build("gmail", "v1", credentials=creds)
 
-                # Get the related message's externalRecordId using AQL
-                aql_query = f"""
-                FOR v, e IN 1..1 ANY '{CollectionNames.RECORDS.value}/{record_id}' {CollectionNames.RECORD_RELATIONS.value}
-                    FILTER e.relationType == '{RecordRelations.ATTACHMENT.value}'
-                    RETURN {{
-                        messageId: v.externalRecordId,
-                        _key: v._key,
-                        relationType: e.relationType
-                    }}
-                """
-
-                cursor = arango_service.db.aql.execute(aql_query)
-                messages = list(cursor)
+                # Get the related message's externalRecordId using graph_provider
+                messages = await graph_provider.get_related_records_by_relation_type(
+                    record_id=record_id,
+                    relation_type=RecordRelations.ATTACHMENT.value,
+                    edge_collection=CollectionNames.RECORD_RELATIONS.value
+                )
 
                 async def attachment_stream() -> AsyncGenerator[bytes, None]:
                     try:
@@ -849,15 +849,16 @@ async def download_file(
                                             logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                             # Get messageIdHeader from the original mail
-                                            file_key = await arango_service.get_key_by_external_message_id(message_id)
-                                            aql_query = """
-                                            FOR mail IN mails
-                                                FILTER mail._key == @file_key
-                                                RETURN mail.messageIdHeader
-                                            """
-                                            bind_vars = {"file_key": file_key}
-                                            cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                            message_id_header = next(cursor, None)
+                                            # Use graph_provider method if available, or get_record_by_external_id
+                                            record = await graph_provider.get_record_by_external_id(
+                                                external_id=message_id,
+                                                connector_id=connector_id
+                                            )
+                                            file_key = record.get("id") if record else None
+                                            message_id_header = await graph_provider.get_message_id_header_by_key(
+                                                record_key=file_key,
+                                                collection=CollectionNames.RECORDS.value
+                                            )
 
                                             if not message_id_header:
                                                 raise HTTPException(
@@ -866,20 +867,16 @@ async def download_file(
                                                 )
 
                                             # Find all mails with the same messageIdHeader
-                                            aql_query = """
-                                            FOR mail IN mails
-                                                FILTER mail.messageIdHeader == @message_id_header
-                                                AND mail._key != @file_key
-                                                RETURN mail._key
-                                            """
-                                            bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
-                                            cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                            related_mail_keys = list(cursor)
+                                            related_mail_keys = await graph_provider.get_related_mails_by_message_id_header(
+                                                message_id_header=message_id_header,
+                                                exclude_key=file_key,
+                                                collection=CollectionNames.RECORDS.value
+                                            )
 
                                             # Try each related mail ID until we find one that works
                                             message = None
                                             for related_key in related_mail_keys:
-                                                related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
+                                                related_mail = await graph_provider.get_document(related_key, CollectionNames.RECORDS.value)
                                                 related_message_id = related_mail.get("externalRecordId")
                                                 try:
                                                     message = (
@@ -1027,8 +1024,9 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
-    google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    google_token_handler: IGraphDBProvider = Depends(get_graph_provider),
+    # google_token_handler: GoogleTokenHandler = Depends(Provide[ConnectorAppContainer.google_token_handler]),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     """
@@ -1063,12 +1061,11 @@ async def stream_record(
             logger.error("Unexpected error during token validation: %s", str(e))
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
 
-        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_record_by_id(
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = graph_provider.get_record_by_id(
             record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
-
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
@@ -1084,14 +1081,14 @@ async def stream_record(
 
         if connector.lower() == Connectors.GOOGLE_DRIVE.value.lower() or connector.lower() == Connectors.GOOGLE_MAIL.value.lower():
             # Get connector instance to check scope
-            connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
             connector_scope = connector_instance.get("scope", ConnectorScope.PERSONAL.value) if connector_instance else ConnectorScope.PERSONAL.value
             # Use service account credentials only for TEAM scope connectors in enterprise/business accounts
             # Personal scope connectors always use user credentials regardless of account type
             if (org["accountType"] in [AccountType.ENTERPRISE.value, AccountType.BUSINESS.value] and
                 connector_scope == ConnectorScope.TEAM.value):
                 # Use service account credentials for team scope in enterprise accounts
-                creds = await get_service_account_credentials(org_id, user_id, logger, arango_service, google_token_handler, request.app.container,connector, connector_id)
+                creds = await get_service_account_credentials(org_id, user_id, logger, graph_provider, google_token_handler, request.app.container,connector, connector_id)
             else:
                 # Use user credentials for personal scope or individual accounts
                 creds = await get_user_credentials(org_id, user_id,logger, google_token_handler, request.app.container,connector=connector, connector_id=connector_id)
@@ -1102,7 +1099,7 @@ async def stream_record(
                 logger.info(f"Downloading Drive file: {file_id}")
                 drive_service = build("drive", "v3", credentials=creds)
                 file_name = record.record_name
-                file = await arango_service.get_document(
+                file = await graph_provider.get_document(
                     record_id, CollectionNames.FILES.value
                 )
                 if not file:
@@ -1312,15 +1309,11 @@ async def stream_record(
                                 logger.info(f"Message not found with ID {file_id}, searching for related messages...")
 
                                 # Get messageIdHeader from the original mail
-                                file_key = await arango_service.get_key_by_external_message_id(file_id)
-                                aql_query = """
-                                FOR mail IN mails
-                                    FILTER mail._key == @file_key
-                                    RETURN mail.messageIdHeader
-                                """
-                                bind_vars = {"file_key": file_key}
-                                cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                message_id_header = next(cursor, None)
+                                file_key = await graph_provider.get_key_by_external_message_id(file_id)
+                                message_id_header = await graph_provider.get_message_id_header_by_key(
+                                    record_key=file_key,
+                                    collection=CollectionNames.RECORDS.value
+                                )
 
                                 if not message_id_header:
                                     raise HTTPException(
@@ -1329,20 +1322,16 @@ async def stream_record(
                                     )
 
                                 # Find all mails with the same messageIdHeader
-                                aql_query = """
-                                FOR mail IN mails
-                                    FILTER mail.messageIdHeader == @message_id_header
-                                    AND mail._key != @file_key
-                                    RETURN mail._key
-                                """
-                                bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
-                                cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                related_mail_keys = list(cursor)
+                                related_mail_keys = await graph_provider.get_related_mails_by_message_id_header(
+                                    message_id_header=message_id_header,
+                                    exclude_key=file_key,
+                                    collection=CollectionNames.RECORDS.value
+                                )
 
                                 # Try each related mail ID until we find one that works
                                 message = None
                                 for related_key in related_mail_keys:
-                                    related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
+                                    related_mail = await graph_provider.get_document(related_key, CollectionNames.RECORDS.value)
                                     related_id = related_mail.get("externalRecordId")
                                     try:
                                         message = (
@@ -1416,7 +1405,7 @@ async def stream_record(
                 logger.info(f"Downloading Gmail attachment for record_id: {record_id}")
 
                 # Get file metadata first
-                file = await arango_service.get_document(
+                file = await graph_provider.get_document(
                     record_id, CollectionNames.FILES.value
                 )
                 if not file:
@@ -1425,19 +1414,12 @@ async def stream_record(
                 file_name = file.get("name", "")
                 mime_type = file.get("mimeType", "application/octet-stream")
 
-                # Get the related message's externalRecordId using AQL
-                aql_query = f"""
-                FOR v, e IN 1..1 ANY '{CollectionNames.RECORDS.value}/{record_id}' {CollectionNames.RECORD_RELATIONS.value}
-                    FILTER e.relationType == '{RecordRelations.ATTACHMENT.value}'
-                    RETURN {{
-                        messageId: v.externalRecordId,
-                        _key: v._key,
-                        relationType: e.relationType
-                    }}
-                """
-
-                cursor = arango_service.db.aql.execute(aql_query)
-                messages = list(cursor)
+                # Get the related message's externalRecordId using graph_provider
+                messages = await graph_provider.get_related_records_by_relation_type(
+                    record_id=record_id,
+                    relation_type=RecordRelations.ATTACHMENT.value,
+                    edge_collection=CollectionNames.RECORD_RELATIONS.value
+                )
 
                 # First try getting the attachment from Gmail
                 try:
@@ -1468,15 +1450,11 @@ async def stream_record(
                                     logger.info(f"Message not found with ID {message_id}, searching for related messages...")
 
                                     # Get messageIdHeader from the original mail
-                                    file_key = await arango_service.get_key_by_external_message_id(message_id)
-                                    aql_query = """
-                                    FOR mail IN mails
-                                        FILTER mail._key == @file_key
-                                        RETURN mail.messageIdHeader
-                                    """
-                                    bind_vars = {"file_key": file_key}
-                                    cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                    message_id_header = next(cursor, None)
+                                    file_key = await graph_provider.get_key_by_external_message_id(message_id)
+                                    message_id_header = await graph_provider.get_message_id_header_by_key(
+                                        record_key=file_key,
+                                        collection=CollectionNames.RECORDS.value
+                                    )
 
                                     if not message_id_header:
                                         raise HTTPException(
@@ -1485,20 +1463,16 @@ async def stream_record(
                                         )
 
                                     # Find all mails with the same messageIdHeader
-                                    aql_query = """
-                                    FOR mail IN mails
-                                        FILTER mail.messageIdHeader == @message_id_header
-                                        AND mail._key != @file_key
-                                        RETURN mail._key
-                                    """
-                                    bind_vars = {"message_id_header": message_id_header, "file_key": file_key}
-                                    cursor = arango_service.db.aql.execute(aql_query, bind_vars=bind_vars)
-                                    related_mail_keys = list(cursor)
+                                    related_mail_keys = await graph_provider.get_related_mails_by_message_id_header(
+                                        message_id_header=message_id_header,
+                                        exclude_key=file_key,
+                                        collection=CollectionNames.RECORDS.value
+                                    )
 
                                     # Try each related mail ID until we find one that works
                                     message = None
                                     for related_key in related_mail_keys:
-                                        related_mail = await arango_service.get_document(related_key, CollectionNames.RECORDS.value)
+                                        related_mail = await graph_provider.get_document(related_key, CollectionNames.RECORDS.value)
                                         related_message_id = related_mail.get("externalRecordId")
                                         try:
                                             message = (
@@ -1930,7 +1904,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
 
-async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
+async def get_service_account_credentials(org_id: str, user_id: str, logger, graph_provider: IGraphDBProvider, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
     """Helper function to get service account credentials"""
     try:
         service_creds_lock = container.service_creds_lock()
@@ -1941,7 +1915,7 @@ async def get_service_account_credentials(org_id: str, user_id: str, logger, ara
                 logger.info("Created service credentials cache")
 
             # Get user email
-            user = await arango_service.get_user_by_user_id(user_id)
+            user = await graph_provider.get_user_by_user_id(user_id)
             if not user:
                 raise Exception(f"User not found: {user_id}")
 
@@ -2087,7 +2061,7 @@ async def get_user_credentials(org_id: str, user_id: str, logger, google_token_h
 @inject
 async def get_records(
     request:Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
     search: Optional[str] = None,
@@ -2113,7 +2087,7 @@ async def get_records(
         org_id = request.state.user.get("orgId")
 
         logger.info(f"Looking up user by user_id: {user_id}")
-        user = await arango_service.get_user_by_user_id(user_id=user_id)
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
 
         if not user:
             logger.warning(f"⚠️ User not found for user_id: {user_id}")
@@ -2137,7 +2111,7 @@ async def get_records(
         parsed_indexing_status = _parse_comma_separated_str(indexing_status)
         parsed_permissions = _parse_comma_separated_str(permissions)
 
-        records, total_count, available_filters = await arango_service.get_records(
+        records, total_count, available_filters = await graph_provider.list_all_records(
             user_id=user_key,
             org_id=org_id,
             skip=skip,
@@ -2196,7 +2170,7 @@ async def get_records(
 async def get_record_by_id(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Optional[Dict]:
     """
     Check if the current user has access to a specific record
@@ -2207,7 +2181,7 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await arango_service.check_record_access_with_details(
+        has_access = await graph_provider.check_record_access_with_details(
             user_id=user_id,
             org_id=org_id,
             record_id=record_id,
@@ -2228,7 +2202,7 @@ async def get_record_by_id(
 async def delete_record(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Dict:
     """
     Delete a specific record with permission validation
@@ -2239,7 +2213,7 @@ async def delete_record(
         user_id = request.state.user.get("userId")
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
-        result = await arango_service.delete_record(
+        result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id
         )
@@ -2274,7 +2248,7 @@ async def delete_record(
 async def reindex_single_record(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Dict:
     """
     Reindex a single record with permission validation.
@@ -2301,7 +2275,7 @@ async def reindex_single_record(
 
         logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
-        result = await arango_service.reindex_single_record(
+        result = await graph_provider.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
@@ -2342,10 +2316,10 @@ async def get_connector_stats_endpoint(
     request: Request,
     org_id: str,
     connector_id: str,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> Dict[str, Any]:
     try:
-        result = await arango_service.get_connector_stats(org_id, connector_id)
+        result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
         if result["success"]:
              return {"success": True, "data": result["data"]}
@@ -2362,7 +2336,7 @@ async def get_connector_stats_endpoint(
 async def reindex_record_group(
     record_group_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
@@ -2386,7 +2360,7 @@ async def reindex_record_group(
         logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
 
         # Get record group data and validate permissions (does not publish events)
-        result = await arango_service.reindex_record_group_records(
+        result = await graph_provider.reindex_record_group_records(
             record_group_id=record_group_id,
             depth=depth,
             user_id=user_id,
@@ -2550,19 +2524,21 @@ def _get_config_path_for_instance(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/config"
 
 
-async def _get_settings_base_path(arango_service: BaseArangoService) -> str:
+async def _get_settings_base_path(graph_provider: IGraphDBProvider) -> str:
     """
     Determine frontend settings base path based on organization account type.
 
     Args:
-        arango_service: ArangoDB service instance
+        graph_provider: Graph database provider instance
 
     Returns:
         Settings base path URL
     """
     try:
-        organizations = await arango_service.get_all_documents(
-            CollectionNames.ORGS.value
+        # Get all organizations using get_nodes_by_filters
+        organizations = await graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.ORGS.value,
+            filters={}
         )
 
         if isinstance(organizations, list) and len(organizations) > 0:
@@ -2609,7 +2585,7 @@ async def get_connector_registry(
     connector_registry = request.app.state.connector_registry
     container = request.app.container
     logger = container.logger()
-    arango_service = await get_arango_service(request)
+    graph_provider = await get_graph_provider(request)
 
     try:
         # Validate scope
@@ -2625,7 +2601,7 @@ async def get_connector_registry(
         try:
             user = getattr(request.state, 'user', None)
             if user and user.get("orgId"):
-                account_type = await arango_service.get_account_type(user.get("orgId"))
+                account_type = await graph_provider.get_account_type(user.get("orgId"))
         except Exception as e:
             # If we can't get account type, log but don't fail (fail-open)
             logger.debug(f"Could not get account type: {e}")
@@ -3147,7 +3123,7 @@ async def _prepare_connector_config(
 @router.post("/api/v1/connectors/")
 async def create_connector_instance(
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Create a new connector instance.
@@ -3225,7 +3201,7 @@ async def create_connector_instance(
         # ============================================================
         account_type = None
         try:
-            account_type = await arango_service.get_account_type(org_id)
+            account_type = await graph_provider.get_account_type(org_id)
         except Exception as e:
             logger.debug(f"Could not get account type: {e}")
 
@@ -4325,7 +4301,7 @@ async def update_connector_instance_config(
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Delete a connector instance and its configuration.
@@ -4400,15 +4376,17 @@ async def delete_connector_instance(
             logger.warning(f"Could not delete config for {connector_id}: {e}")
 
         # Delete instance from database
-        await arango_service.delete_nodes(
+        await graph_provider.delete_nodes(
             [connector_id],
             CollectionNames.APPS.value
         )
 
-        await arango_service.delete_edge(
-            org_id,
-            connector_id,
-            CollectionNames.ORG_APP_RELATION.value
+        await graph_provider.delete_edge(
+            from_id=org_id,
+            from_collection=CollectionNames.ORGS.value,
+            to_id=connector_id,
+            to_collection=CollectionNames.APPS.value,
+            collection=CollectionNames.ORG_APP_RELATION.value
         )
 
         logger.info(f"Deleted connector instance {connector_id}")
@@ -4432,7 +4410,7 @@ async def delete_connector_instance(
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Update the display name for a connector instance.
@@ -4913,7 +4891,7 @@ async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
     base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Get OAuth authorization URL for a connector instance.
@@ -5083,7 +5061,7 @@ async def handle_oauth_callback(
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Handle OAuth callback and exchange code for tokens.
@@ -5107,8 +5085,8 @@ async def handle_oauth_callback(
     config_service = container.config_service()
     connector_registry = request.app.state.connector_registry
 
-    settings_base_path = await _get_settings_base_path(arango_service)
     connector_id = None  # For error handling
+    settings_base_path = await _get_settings_base_path(graph_provider)
 
     try:
         # ============================================================
@@ -5300,7 +5278,10 @@ async def handle_oauth_callback(
                 from app.connectors.core.base.token_service.token_refresh_service import (
                     TokenRefreshService,
                 )
-                temp_service = TokenRefreshService(container.key_value_store(), arango_service)
+                temp_service = TokenRefreshService(
+                    container.key_value_store(),
+                    graph_provider
+                )
                 await temp_service.schedule_token_refresh(connector_id, connector_type, token)
                 logger.info("✅ Scheduled token refresh using temporary service")
         except Exception as sched_err:
@@ -5630,7 +5611,7 @@ async def _get_fallback_filter_options(
 async def get_connector_instance_filters(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Get filter options for a connector instance.
@@ -5741,7 +5722,7 @@ async def get_filter_field_options(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search text to filter options"),
     cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Get dynamic options for a specific filter field with pagination support.
@@ -5836,7 +5817,7 @@ async def get_filter_field_options(
                 connector_id=connector_id,
                 connector_type=connector_type,
                 connector_registry=connector_registry,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
                 user_id=user_context["user_id"],
                 org_id=user_context["org_id"],
                 is_admin=user_context["is_admin"],
@@ -5910,7 +5891,7 @@ def _find_filter_field_config(
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Save filter selections for a connector instance.
@@ -5997,7 +5978,7 @@ async def _ensure_connector_initialized(
     connector_id: str,
     connector_type: str,
     connector_registry,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     user_id: str,
     org_id: str,
     is_admin: bool,
@@ -6045,8 +6026,9 @@ async def _ensure_connector_initialized(
     logger.info(f"Initializing connector {connector_id} before use")
     try:
         config_service = container.config_service()
-        # Use the container's data store (GraphDataStore with graph_provider)
-        data_store_provider = await container.data_store()
+        # Create data_store manually using already-resolved graph_provider to avoid coroutine reuse
+        from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+        data_store_provider = GraphDataStore(logger, graph_provider)
 
         connector_type = connector_type.replace(" ", "").lower()
 
@@ -6150,7 +6132,7 @@ async def _ensure_connector_initialized(
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Toggle connector instance active status and trigger sync events.
@@ -6191,7 +6173,7 @@ async def toggle_connector_instance(
 
 
         # Get organization
-        org = await arango_service.get_document(
+        org = await graph_provider.get_document(
             user_info["orgId"],
             CollectionNames.ORGS.value
         )
@@ -6305,7 +6287,7 @@ async def toggle_connector_instance(
                 connector_id=connector_id,
                 connector_type=connector_type,
                 connector_registry=connector_registry,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
                 user_id=user_id,
                 org_id=org_id,
                 is_admin=is_admin,

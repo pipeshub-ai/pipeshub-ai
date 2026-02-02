@@ -11,8 +11,8 @@ from pydantic import BaseModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType
 from app.config.constants.service import config_node_constants
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
@@ -55,10 +55,12 @@ async def get_retrieval_service(request: Request) -> RetrievalService:
     return retrieval_service
 
 
-async def get_arango_service(request: Request) -> BaseArangoService:
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
+    """Get graph provider from app.state or container"""
+    if hasattr(request.app.state, 'graph_provider'):
+        return request.app.state.graph_provider
     container: QueryAppContainer = request.app.container
-    arango_service = await container.arango_service()
-    return arango_service
+    return await container.graph_provider()
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -218,7 +220,7 @@ async def process_chat_query_with_status(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger,
@@ -295,7 +297,7 @@ async def process_chat_query_with_status(
     if yield_status:
         await yield_status("status", {"status": "processing", "message": "Processing search results..."})
 
-    blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+    blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=await get_graph_provider(request))
 
     virtual_record_id_to_result = {}
     flattened_results = await get_flattened_results(
@@ -322,7 +324,7 @@ async def process_chat_query_with_status(
 
     if send_user_info:
         # Use cached user/org info for better performance (saves 0.5-1s per request)
-        user_info, org_info = await get_cached_user_info(arango_service, user_id, org_id)
+        user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
 
         if (org_info is not None and (
             org_info.get("accountType") == AccountType.ENTERPRISE.value
@@ -362,7 +364,7 @@ async def process_chat_query_with_status(
 
     tool_runtime_kwargs = {
         "blob_store": blob_store,
-        "arango_service": arango_service,
+        "graph_provider": graph_provider,
         "org_id": org_id,
     }
 
@@ -373,14 +375,14 @@ async def process_chat_query(
     query_info: ChatQuery,
     request: Request,
     retrieval_service: RetrievalService,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     logger
 ) -> Tuple[BaseChatModel, List[dict], List[dict], dict, dict]:
     """Wrapper for non-streaming endpoint (without status updates)"""
     return await process_chat_query_with_status(
-        query_info, request, retrieval_service, arango_service,
+        query_info, request, retrieval_service, graph_provider,
         reranker_service, config_service, logger, yield_status=None
     )
 
@@ -484,7 +486,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 async def askAIStream(
     request: Request,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     reranker_service: RerankerService = Depends(get_reranker_service),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> StreamingResponse:
@@ -569,7 +571,7 @@ async def askAIStream(
 
                 yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
 
-                blob_store = BlobStorage(logger=logger, config_service=config_service, arango_service=arango_service)
+                blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=await get_graph_provider(request))
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(
@@ -595,7 +597,7 @@ async def askAIStream(
 
                 if send_user_info:
                     from app.utils.cache_helpers import get_cached_user_info
-                    user_info, org_info = await get_cached_user_info(arango_service, user_id, org_id)
+                    user_info, org_info = await get_cached_user_info(graph_provider, user_id, org_id)
 
                     if (org_info is not None and (
                         org_info.get("accountType") == AccountType.ENTERPRISE.value
@@ -643,7 +645,7 @@ async def askAIStream(
 
                 tool_runtime_kwargs = {
                     "blob_store": blob_store,
-                    "arango_service": arango_service,
+                    "graph_provider": graph_provider,
                     "org_id": org_id,
                 }
 
@@ -712,7 +714,7 @@ async def askAI(
     request: Request,
     query_info: ChatQuery,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     reranker_service: RerankerService = Depends(get_reranker_service),
     config_service: ConfigurationService = Depends(get_config_service),
 ) -> JSONResponse:
@@ -723,7 +725,7 @@ async def askAI(
 
         # Process query using shared logic
         llm, messages, tools, tool_runtime_kwargs, final_results, all_queries, virtual_record_id_to_result, blob_store, is_multimodal_llm = await process_chat_query(
-            query_info, request, retrieval_service, arango_service, reranker_service, config_service, logger
+            query_info, request, retrieval_service, graph_provider, reranker_service, config_service, logger
         )
 
         # Make async LLM call with tools

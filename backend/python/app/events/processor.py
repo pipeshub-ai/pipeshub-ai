@@ -33,6 +33,7 @@ from app.modules.parsers.pdf.ocr_handler import OCRHandler
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
@@ -86,7 +87,7 @@ class Processor:
         logger,
         config_service,
         indexing_pipeline,
-        arango_service,
+        graph_provider: IGraphDBProvider,
         parsers,
         document_extractor,
         sink_orchestrator,
@@ -94,7 +95,7 @@ class Processor:
         self.logger = logger
         self.logger.info("🚀 Initializing Processor")
         self.indexing_pipeline = indexing_pipeline
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.parsers = parsers
         self.config_service = config_service
         self.document_extraction = document_extractor
@@ -111,7 +112,7 @@ class Processor:
             if not content:
                 raise Exception("No image data provided")
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -135,7 +136,7 @@ class Processor:
                         })
 
                     docs = [record]
-                    success = await self.arango_service.batch_upsert_nodes(
+                    success = await self.graph_provider.batch_upsert_nodes(
                         docs, CollectionNames.RECORDS.value
                     )
                     if not success:
@@ -239,7 +240,7 @@ class Processor:
                 self.logger.error(f"❌ External Docling service failed to create blocks for {recordName}")
                 raise Exception(f"External Docling service failed to create blocks for {recordName}")
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
 
@@ -429,7 +430,7 @@ class Processor:
                 self.logger.info(f"📦 Combined {len(all_blocks)} blocks and {len(all_block_groups)} block groups from all pages")
 
                 # Get record and run indexing pipeline
-                record = await self.arango_service.get_document(recordId, CollectionNames.RECORDS.value)
+                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
                 if record is None:
                     self.logger.error(f"❌ Record {recordId} not found in database")
                     yield {"event": "indexing_complete", "data": {"record_id": recordId}}
@@ -500,7 +501,7 @@ class Processor:
             block_groups = ocr_result.get("tables", [])
             for block_group in block_groups:
                 block_group.children = table_rows.get(block_group.index, [])
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -574,7 +575,7 @@ class Processor:
             block_containers = await processor.create_blocks(conv_res)
 
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
 
@@ -628,9 +629,11 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for summaries)
             blocks_containers = await parser.create_blocks(llm)
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
+            blocks_containers = await parser.parse(excel_binary, llm)
+
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 # Must yield indexing_complete to release indexing semaphore properly
@@ -744,7 +747,7 @@ class Processor:
             self.logger.info("🎯 Extracting domain metadata")
             if csv_result:
 
-                record = await self.arango_service.get_document(
+                record = await self.graph_provider.get_document(
                     recordId, CollectionNames.RECORDS.value
                     )
                 if record is None:
@@ -778,7 +781,7 @@ class Processor:
 
 
     async def _mark_record(self, record_id, indexing_status: ProgressStatus) -> None:
-        record = await self.arango_service.get_document(
+        record = await self.graph_provider.get_document(
                         record_id, CollectionNames.RECORDS.value
                     )
         if not record:
@@ -800,7 +803,7 @@ class Processor:
 
         docs = [doc]
 
-        success = await self.arango_service.batch_upsert_nodes(
+        success = await self.graph_provider.batch_upsert_nodes(
             docs, CollectionNames.RECORDS.value
         )
         if not success:
@@ -952,7 +955,7 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
@@ -1070,7 +1073,7 @@ class Processor:
             # Phase 2: Create blocks (involves LLM calls for tables)
             block_containers = await processor.create_blocks(conv_res)
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
             if record is None:
