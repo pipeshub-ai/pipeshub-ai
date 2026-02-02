@@ -407,80 +407,7 @@ class KnowledgeHubService:
         sort_field = sort_field_map.get(sort_by, "name")
         sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
 
-        # Build filter conditions manually for unified query (uses 'node' variable)
-        filter_conditions = []
-        bind_vars = {}
-
-        # Search query filter (search within children by name)
-        if q:
-            bind_vars["search_query"] = q.lower()
-            filter_conditions.append("LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
-
-        # Node type filter (folder vs record)
-        if node_types:
-            type_conditions = []
-            for nt in node_types:
-                if nt == "folder":
-                    type_conditions.append('node.nodeType == "folder"')
-                elif nt == "record":
-                    type_conditions.append('node.nodeType == "record"')
-                elif nt == "recordGroup":
-                    type_conditions.append('node.nodeType == "recordGroup"')
-            if type_conditions:
-                filter_conditions.append(f"({' OR '.join(type_conditions)})")
-
-        if record_types:
-            bind_vars["record_types"] = record_types
-            filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
-
-        if indexing_status:
-            bind_vars["indexing_status"] = indexing_status
-            filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
-
-        if created_at:
-            if created_at.get("gte"):
-                bind_vars["created_at_gte"] = created_at["gte"]
-                filter_conditions.append("node.createdAt >= @created_at_gte")
-            if created_at.get("lte"):
-                bind_vars["created_at_lte"] = created_at["lte"]
-                filter_conditions.append("node.createdAt <= @created_at_lte")
-
-        if updated_at:
-            if updated_at.get("gte"):
-                bind_vars["updated_at_gte"] = updated_at["gte"]
-                filter_conditions.append("node.updatedAt >= @updated_at_gte")
-            if updated_at.get("lte"):
-                bind_vars["updated_at_lte"] = updated_at["lte"]
-                filter_conditions.append("node.updatedAt <= @updated_at_lte")
-
-        if size:
-            if size.get("gte"):
-                bind_vars["size_gte"] = size["gte"]
-                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
-            if size.get("lte"):
-                bind_vars["size_lte"] = size["lte"]
-                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
-
-        if origins:
-            bind_vars["origins"] = origins
-            filter_conditions.append("node.source IN @origins")
-
-        # Handle connector_ids and kb_ids with OR logic when both are provided
-        # This ensures we get results from both connectors AND knowledge bases (union)
-        if connector_ids and kb_ids:
-            bind_vars["connector_ids"] = connector_ids
-            bind_vars["kb_ids"] = kb_ids
-            filter_conditions.append("(node.appId IN @connector_ids OR node.kbId IN @kb_ids)")
-        elif connector_ids:
-            bind_vars["connector_ids"] = connector_ids
-            filter_conditions.append("node.appId IN @connector_ids")
-        elif kb_ids:
-            bind_vars["kb_ids"] = kb_ids
-            filter_conditions.append("node.kbId IN @kb_ids")
-
-        filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
-
-        # Use unified provider method
+        # Use unified provider method - pass structured parameters directly
         result = await self.graph_provider.get_knowledge_hub_children(
             parent_id=parent_id,
             parent_type=parent_type,
@@ -490,8 +417,16 @@ class KnowledgeHubService:
             limit=limit,
             sort_field=sort_field,
             sort_dir=sort_dir,
-            filter_clause=filter_clause,
-            bind_vars=bind_vars,
+            search_query=q,
+            node_types=node_types,
+            record_types=record_types,
+            origins=origins,
+            connector_ids=connector_ids,
+            kb_ids=kb_ids,
+            indexing_status=indexing_status,
+            created_at=created_at,
+            updated_at=updated_at,
+            size=size,
             only_containers=only_containers,
         )
 
@@ -830,80 +765,7 @@ class KnowledgeHubService:
             sort_field = sort_field_map.get(sort_by, "name")
             sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
 
-            # Build filter conditions
-            filter_conditions = []
-            bind_vars = {}
-
-            if node_types:
-                type_conditions = []
-                for nt in node_types:
-                    if nt == "folder":
-                        type_conditions.append('node.nodeType == "folder"')
-                    elif nt == "record":
-                        type_conditions.append('node.nodeType == "record"')
-                    elif nt == "recordGroup":
-                        type_conditions.append('node.nodeType == "recordGroup"')
-                if type_conditions:
-                    filter_conditions.append(f"({' OR '.join(type_conditions)})")
-
-            if record_types:
-                bind_vars["record_types"] = record_types
-                filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
-
-            if indexing_status:
-                bind_vars["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
-
-            if created_at:
-                if created_at.get("gte"):
-                    bind_vars["created_at_gte"] = created_at["gte"]
-                    filter_conditions.append("node.createdAt >= @created_at_gte")
-                if created_at.get("lte"):
-                    bind_vars["created_at_lte"] = created_at["lte"]
-                    filter_conditions.append("node.createdAt <= @created_at_lte")
-
-            if updated_at:
-                if updated_at.get("gte"):
-                    bind_vars["updated_at_gte"] = updated_at["gte"]
-                    filter_conditions.append("node.updatedAt >= @updated_at_gte")
-                if updated_at.get("lte"):
-                    bind_vars["updated_at_lte"] = updated_at["lte"]
-                    filter_conditions.append("node.updatedAt <= @updated_at_lte")
-
-            if size:
-                if size.get("gte"):
-                    bind_vars["size_gte"] = size["gte"]
-                    filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
-                if size.get("lte"):
-                    bind_vars["size_lte"] = size["lte"]
-                    filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
-
-            if origins:
-                bind_vars["origins"] = origins
-                filter_conditions.append("node.source IN @origins")
-
-            # Handle connector_ids and kb_ids with OR logic when both are provided
-            # This ensures we get results from both connectors AND knowledge bases (union)
-            if connector_ids and kb_ids:
-                bind_vars["connector_ids"] = connector_ids
-                bind_vars["kb_ids"] = kb_ids
-                # Match App/KB nodes by ID or records/recordGroups by connectorId/kbId
-                filter_conditions.append(
-                    "((node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids) OR "
-                    "(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids))"
-                )
-            elif connector_ids:
-                bind_vars["connector_ids"] = connector_ids
-                # Match App nodes by ID or records/recordGroups by connectorId
-                filter_conditions.append("(node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
-            elif kb_ids:
-                bind_vars["kb_ids"] = kb_ids
-                # Match KB nodes by ID or records/recordGroups by kbId
-                filter_conditions.append("(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
-
-            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
-
-            # Use the provider method for recursive search
+            # Use the provider method for recursive search - pass structured parameters directly
             result = await self.graph_provider.get_knowledge_hub_recursive_search(
                 parent_id=parent_id,
                 parent_type=parent_type,
@@ -914,8 +776,15 @@ class KnowledgeHubService:
                 sort_field=sort_field,
                 sort_dir=sort_dir,
                 search_query=q,
-                filter_clause=filter_clause,
-                bind_vars=bind_vars,
+                node_types=node_types,
+                record_types=record_types,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids,
+                indexing_status=indexing_status,
+                created_at=created_at,
+                updated_at=updated_at,
+                size=size,
                 only_containers=only_containers,
             )
 
