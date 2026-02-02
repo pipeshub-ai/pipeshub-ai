@@ -117,6 +117,7 @@ interface HubNode {
   origin: 'KB' | 'CONNECTOR';
   connector: string;
   recordType?: string;
+  recordGroupType?: string;
   indexingStatus?: string;
   hasChildren: boolean;
   createdAt?: number;
@@ -768,13 +769,13 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     }
   };
 
-  const handleRetryIndexingRecordGroup = async (recordGroupId: string) => {
+  const handleRetryIndexingRecordGroup = async (node: HubNode) => {
     try {
-      const response = await KnowledgeBaseAPI.reindexRecordGroup(recordGroupId, false, 100);
+      const response = await KnowledgeBaseAPI.reindexRecordGroup(node.id, false, 100);
       setSnackbar({
         open: true,
         message: response.success
-          ? 'Record group indexing started successfully'
+          ? `${node.name} indexing started successfully`
           : response.message || 'Failed to start reindexing',
         severity: response.success ? 'success' : 'error',
       });
@@ -1020,7 +1021,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
           app: 'Connector',
           kb: 'Collection',
           folder: 'Folder',
-          recordGroup: 'Record Group',
+          recordGroup: params.row.recordGroupType?.split('_').map((word: string) => word.charAt(0) + word.slice(1).toLowerCase()).join(' ') || 'Record Group',
           record: params.row.recordType?.split('_').join(' ') || 'File',
         };
         return (
@@ -1381,7 +1382,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
                 label: 'Manual index',
                 icon: refreshIcon,
                 color: theme.palette.warning.main,
-                onClick: () => handleRetryIndexingRecordGroup(node.id),
+                onClick: () => handleRetryIndexingRecordGroup(node),
               });
             
           }
