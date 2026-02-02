@@ -1486,10 +1486,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 async with self.data_store_provider.transaction() as tx_store:
                     shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=self.connector_id, external_id=f"0S:{user_email}")
                     if not shared_with_me_record_group:
-                        raise HTTPException(
-                            status_code=HttpStatusCode.NOT_FOUND.value,
-                            detail="Create a shared with me record group first"
-                        )
+                        raise ValueError("Create a shared with me record group first")
                     await tx_store.create_record_group_relation(file_record.id, shared_with_me_record_group.id)
 
             # Handle Permissions - fetch new permissions
