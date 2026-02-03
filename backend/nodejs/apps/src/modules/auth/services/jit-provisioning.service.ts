@@ -9,7 +9,6 @@ import {
   UserAddedEvent,
   SyncAction,
 } from '../../user_management/services/entity_events.service';
-import { GlobalReaderTeamService } from '../../user_management/services/globalReaderTeam.service';
 
 export interface JitUserDetails {
   firstName?: string;
@@ -28,7 +27,6 @@ export class JitProvisioningService {
   constructor(
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer') private eventService: EntitiesEventProducer,
-    @inject('GlobalReaderTeamService') private globalReaderTeamService: GlobalReaderTeamService,
   ) {}
 
   /**
@@ -71,7 +69,7 @@ export class JitProvisioningService {
       { $addToSet: { users: newUser._id } },
     );
 
-    // Publish user creation event
+    // Publish user creation event (Global Reader team membership handled by Kafka consumer)
     try {
       await this.eventService.start();
       await this.eventService.publishEvent({
@@ -83,6 +81,7 @@ export class JitProvisioningService {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
+          isAdmin: false,
         } as UserAddedEvent,
       });
     } catch (eventError) {
@@ -93,13 +92,6 @@ export class JitProvisioningService {
     } finally {
       await this.eventService.stop();
     }
-
-    // Add user to Global Reader team (non-blocking)
-    await this.globalReaderTeamService.addUserToGlobalReader(
-      orgId,
-      String(newUser._id),
-      {}, // Empty headers - internal call, auth context from org
-    );
 
     this.logger.info(`User auto-provisioned successfully via ${provider}`, {
       userId: newUser._id,

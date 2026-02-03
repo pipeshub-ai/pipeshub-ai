@@ -320,6 +320,7 @@ export class OrgController {
           fullName: adminUser.fullName,
           email: adminUser.email,
           syncAction: 'none',
+          isAdmin: true,
         } as UserAddedEvent,
       };
       await this.eventService.publishEvent(event);

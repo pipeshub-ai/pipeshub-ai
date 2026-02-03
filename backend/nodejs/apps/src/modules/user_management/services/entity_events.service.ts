@@ -21,6 +21,7 @@ export enum EventType {
   NewUserEvent = 'userAdded',
   UpdateUserEvent = 'userUpdated',
   DeleteUserEvent = 'userDeleted',
+  UserLoggedInEvent = 'userLoggedIn',
 }
 
 export interface Event {
@@ -32,7 +33,8 @@ export interface Event {
     | OrgUpdatedEvent
     | UserAddedEvent
     | UserDeletedEvent
-    | UserUpdatedEvent;
+    | UserUpdatedEvent
+    | UserLoggedInEvent;
 }
 
 export interface OrgAddedEvent {
@@ -59,6 +61,7 @@ export interface UserAddedEvent {
   email: string;
   designation?: string;
   syncAction: SyncAction;
+  isAdmin?: boolean;
 }
 
 export interface UserDeletedEvent {
@@ -76,6 +79,13 @@ export interface UserUpdatedEvent {
   fullName?: string;
   designation?: string;
   email: string;
+}
+
+export interface UserLoggedInEvent {
+  orgId: string;
+  userId: string;
+  email: string;
+  isAdmin: boolean;
 }
 
 @injectable()

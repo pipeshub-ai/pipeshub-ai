@@ -15,6 +15,11 @@ from app.containers.connector import (
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# Constants for the Global Reader team
+GLOBAL_READER_TEAM_NAME = "Global Reader"
+READER_ROLE = "READER"
+OWNER_ROLE = "OWNER"
+
 
 class EntityEventService(BaseEventService):
     def __init__(self, logger,
@@ -44,6 +49,8 @@ class EntityEventService(BaseEventService):
                 return await self.__handle_app_enabled(payload)
             elif event_type == "appDisabled":
                 return await self.__handle_app_disabled(payload)
+            elif event_type == "userLoggedIn":
+                return await self.__handle_user_logged_in(payload)
             else:
                 self.logger.error(f"Unknown entity event type: {event_type}")
                 return False
@@ -269,6 +276,14 @@ class EntityEventService(BaseEventService):
                         },
                     )
 
+            # Add user to Global Reader team (non-blocking)
+            is_admin = payload.get("isAdmin", False)
+            await self.__add_user_to_global_reader_team(
+                user_key=user_data["_key"],
+                org_id=payload["orgId"],
+                is_admin=is_admin,
+            )
+
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
             )
@@ -276,6 +291,188 @@ class EntityEventService(BaseEventService):
 
         except Exception as e:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
+            return False
+
+    async def __add_user_to_global_reader_team(
+        self,
+        user_key: str,
+        org_id: str,
+        is_admin: bool = False,
+    ) -> bool:
+        """
+        Add user to the Global Reader team with appropriate role.
+        Admin users get OWNER role, regular users get READER role.
+        This is non-blocking - errors are logged but don't fail user creation.
+        """
+        try:
+            # Find the Global Reader team for this org
+            query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+                FILTER team.orgId == @orgId AND team.name == @teamName
+                RETURN team
+            """
+            bind_vars = {
+                "orgId": org_id,
+                "teamName": GLOBAL_READER_TEAM_NAME,
+            }
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
+            teams = list(cursor)
+
+            if not teams:
+                self.logger.warn(
+                    f"Global Reader team not found for org {org_id}, skipping user addition"
+                )
+                return False
+
+            team = teams[0]
+            team_key = team["_key"]
+            role = OWNER_ROLE if is_admin else READER_ROLE
+
+            # Create permission edge from user to team (UPSERT prevents duplicates)
+            current_timestamp = get_epoch_timestamp_in_ms()
+            permission_edge = {
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+
+            await self.arango_service.batch_create_edges(
+                [permission_edge],
+                CollectionNames.PERMISSION.value,
+            )
+
+            self.logger.info(
+                f"✅ Added user {user_key} to Global Reader team with role {role}"
+            )
+            return True
+
+        except Exception as e:
+            # Non-blocking: log error but don't fail user creation
+            self.logger.error(
+                f"❌ Failed to add user to Global Reader team: {str(e)}"
+            )
+            return False
+
+    async def __handle_user_logged_in(self, payload: dict) -> bool:
+        """
+        Handle user login event for Global Reader team membership sync.
+        This handles:
+        1. Existing users not in team - add them
+        2. Admin promotions - upgrade READER to OWNER
+        3. Admin demotions - downgrade OWNER to READER
+        """
+        try:
+            self.logger.info(f"📥 Processing user logged in event: {payload}")
+
+            org_id = payload.get("orgId")
+            user_id = payload.get("userId")
+            is_admin = payload.get("isAdmin", False)
+
+            if not org_id or not user_id:
+                self.logger.error("Missing orgId or userId in userLoggedIn event")
+                return False
+
+            # Get user from ArangoDB
+            user = await self.arango_service.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warn(f"User {user_id} not found in ArangoDB, skipping Global Reader sync")
+                return False
+
+            user_key = user["_key"]
+
+            # Find the Global Reader team
+            query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+                FILTER team.orgId == @orgId AND team.name == @teamName
+                RETURN team
+            """
+            bind_vars = {
+                "orgId": org_id,
+                "teamName": GLOBAL_READER_TEAM_NAME,
+            }
+            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
+            teams = list(cursor)
+
+            if not teams:
+                self.logger.warn(
+                    f"Global Reader team not found for org {org_id}, skipping membership sync"
+                )
+                return False
+
+            team = teams[0]
+            team_key = team["_key"]
+            expected_role = OWNER_ROLE if is_admin else READER_ROLE
+
+            # Check if user is already in team
+            permission_query = f"""
+            FOR perm IN {CollectionNames.PERMISSION.value}
+                FILTER perm._from == @userVertex AND perm._to == @teamVertex
+                RETURN perm
+            """
+            perm_bind_vars = {
+                "userVertex": f"{CollectionNames.USERS.value}/{user_key}",
+                "teamVertex": f"{CollectionNames.TEAMS.value}/{team_key}",
+            }
+            perm_cursor = self.arango_service.db.aql.execute(permission_query, bind_vars=perm_bind_vars)
+            existing_perms = list(perm_cursor)
+
+            current_timestamp = get_epoch_timestamp_in_ms()
+
+            if existing_perms:
+                # User is in team - check if role needs updating
+                current_perm = existing_perms[0]
+                current_role = current_perm.get("role")
+
+                if current_role != expected_role:
+                    # Update the role
+                    update_query = f"""
+                    UPDATE @key WITH {{ role: @role, updatedAtTimestamp: @timestamp }}
+                    IN {CollectionNames.PERMISSION.value}
+                    """
+                    self.arango_service.db.aql.execute(
+                        update_query,
+                        bind_vars={
+                            "key": current_perm["_key"],
+                            "role": expected_role,
+                            "timestamp": current_timestamp,
+                        }
+                    )
+                    self.logger.info(
+                        f"✅ Updated user {user_key} role in Global Reader team: {current_role} → {expected_role}"
+                    )
+                else:
+                    self.logger.debug(
+                        f"User {user_key} already has correct role {current_role} in Global Reader team"
+                    )
+            else:
+                # User not in team - add them
+                permission_edge = {
+                    "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                    "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+                    "type": "USER",
+                    "role": expected_role,
+                    "createdAtTimestamp": current_timestamp,
+                    "updatedAtTimestamp": current_timestamp,
+                }
+
+                await self.arango_service.batch_create_edges(
+                    [permission_edge],
+                    CollectionNames.PERMISSION.value,
+                )
+                self.logger.info(
+                    f"✅ Added existing user {user_key} to Global Reader team with role {expected_role}"
+                )
+
+            return True
+
+        except Exception as e:
+            # Non-blocking: log error but don't fail login
+            self.logger.error(
+                f"❌ Failed to sync Global Reader team membership on login: {str(e)}"
+            )
             return False
 
     async def __handle_user_updated(self, payload: dict) -> bool:

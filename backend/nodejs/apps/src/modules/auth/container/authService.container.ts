@@ -103,10 +103,10 @@ export class AuthServiceContainer {
         .toConstantValue(globalReaderTeamService);
 
       // JIT Provisioning Service - shared service for user provisioning
+      // Note: Global Reader team membership is handled by Kafka consumer in Python
       const jitProvisioningService = new JitProvisioningService(
         logger,
         entityEventsService,
-        globalReaderTeamService,
       );
       container
         .bind<JitProvisioningService>('JitProvisioningService')
@@ -127,6 +127,7 @@ export class AuthServiceContainer {
             configurationService,
             logger,
             jitProvisioningService,
+            entityEventsService,
           );
         })
         .inSingletonScope();

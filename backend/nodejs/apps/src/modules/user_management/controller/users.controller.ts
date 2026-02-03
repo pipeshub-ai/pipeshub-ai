@@ -269,6 +269,7 @@ export class UserController {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
+          isAdmin: false,
         } as UserAddedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -333,6 +334,7 @@ export class UserController {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
+          isAdmin: false,
         } as UserAddedEvent,
       });
     } catch (eventError) {
@@ -401,6 +403,7 @@ export class UserController {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
+          isAdmin: false,
         } as UserAddedEvent,
       });
     } catch (eventError) {
@@ -1263,6 +1266,7 @@ export class UserController {
             userId: userId,
             email: email,
             syncAction: SyncAction.Immediate,
+            isAdmin: false,
           } as UserAddedEvent,
         };
         await this.eventService.publishEvent(event);
@@ -1350,6 +1354,7 @@ export class UserController {
             userId: userId,
             email: email,
             syncAction: SyncAction.Immediate,
+            isAdmin: false,
           } as UserAddedEvent,
         };
         await this.eventService.publishEvent(event);

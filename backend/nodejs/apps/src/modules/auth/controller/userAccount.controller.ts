@@ -55,8 +55,14 @@ import {
 } from '../services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
+import { UserGroups } from '../../user_management/schema/userGroup.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
+import {
+  EntitiesEventProducer,
+  EventType,
+  UserLoggedInEvent,
+} from '../../user_management/services/entity_events.service';
 
 const {
   LOGIN,
@@ -80,7 +86,56 @@ export class UserAccountController {
     private configurationManagerService: ConfigurationManagerService,
     @inject('Logger') private logger: Logger,
     @inject('JitProvisioningService') private jitProvisioningService: JitProvisioningService,
+    @inject('EntitiesEventProducer') private eventService: EntitiesEventProducer,
   ) {}
+
+  /**
+   * Check if user is member of admin group
+   */
+  private async isUserAdmin(orgId: string, userId: string): Promise<boolean> {
+    const groups = await UserGroups.find({
+      orgId,
+      users: { $in: [userId] },
+      isDeleted: false,
+    }).select('type');
+
+    return groups.some((group: any) => group.type === 'admin');
+  }
+
+  /**
+   * Publish userLoggedIn event for Global Reader team membership sync
+   */
+  private async publishUserLoggedInEvent(
+    orgId: string,
+    userId: string,
+    email: string,
+  ): Promise<void> {
+    try {
+      const isAdmin = await this.isUserAdmin(orgId, userId);
+
+      await this.eventService.start();
+      await this.eventService.publishEvent({
+        eventType: EventType.UserLoggedInEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId,
+          userId,
+          email,
+          isAdmin,
+        } as UserLoggedInEvent,
+      });
+      this.logger.debug('Published userLoggedIn event', { orgId, userId, isAdmin });
+    } catch (error) {
+      // Non-blocking: log error but don't fail login
+      this.logger.error('Failed to publish userLoggedIn event', {
+        orgId,
+        userId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    } finally {
+      await this.eventService.stop();
+    }
+  }
   async generateHashedOTP() {
     const otp = generateOtp();
     const hashedOTP = await bcrypt.hash(otp, SALT_ROUNDS);
@@ -1710,6 +1765,15 @@ export class UserAccountController {
           await this.iamService.updateUser(user._id, userInfo, accessToken);
           this.logger.info('user updated');
         }
+
+        // Publish userLoggedIn event for Global Reader team membership sync
+        // This handles: existing users not in team, admin promotions/demotions
+        await this.publishUserLoggedInEvent(
+          user.orgId.toString(),
+          user._id.toString(),
+          user.email,
+        );
+
         res.status(200).json({
           message: 'Fully authenticated',
           accessToken,
