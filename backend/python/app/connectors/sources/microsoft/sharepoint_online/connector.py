@@ -626,32 +626,33 @@ class SharePointConnector(BaseConnector):
 
             root_site = await self.client.sites.by_site_id("root").get(request_configuration=request_config)
 
-            if (root_site and
-                root_site.site_collection and
-                root_site.site_collection.data_location_code):
-
+            if (
+                root_site
+                and root_site.site_collection
+                and root_site.site_collection.data_location_code
+            ):
                 self.tenant_region = root_site.site_collection.data_location_code.upper()
                 self.logger.info(f"✅ Region detected via Root Site: {self.tenant_region}")
-
             else:
                 self.logger.info("🔍 Root site dataLocationCode empty, trying organization endpoint...")
 
                 org_collection = await self.client.organization.get()
 
-                if org_collection and org_collection.value and len(org_collection.value) > 0:
+                if org_collection and org_collection.value:
                     country_code = org_collection.value[0].country_letter_code
+                    country_code = "FR"
                     self.logger.info(f"🔍 Tenant country code: {country_code}")
 
                     # Use the mapper
                     self.tenant_region = CountryToRegionMapper.get_region_string(country_code)
-                    self.logger.info(f"✅ Region mapped from country '{country_code}': {self.tenant_region}")
+                    self.logger.info(
+                        f"✅ Region mapped from country '{country_code}': {self.tenant_region}"
+                    )
                 else:
-                    self.tenant_region = MicrosoftRegion.NAM.value
-                    self.logger.warning("⚠️ Could not determine region, defaulting to NAM")
+                    self.logger.warning("⚠️ Could not determine region, filter site/pages/drives might not work.")
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to fetch tenant region: {e}. Defaulting to NAM.")
-            self.tenant_region = MicrosoftRegion.NAM.value
+            self.logger.warning(f"⚠️ Failed to fetch tenant region: {e}. Filter site/pages/drives might not work.")
 
         return True
 
