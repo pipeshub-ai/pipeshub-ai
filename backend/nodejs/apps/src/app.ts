@@ -216,18 +216,20 @@ export class Application {
       }));
 
       // SPA fallback route with runtime config injection
-      this.app.get('*', (_req, res) => {
+      this.app.get('*', (_req, res): void => {
         // Use cached version if available
         if (this.cachedIndexHtml) {
           res.setHeader('Content-Type', 'text/html');
-          return res.send(this.cachedIndexHtml);
+          res.send(this.cachedIndexHtml);
+          return;
         }
 
         const indexPath = path.join(__dirname, 'public', 'index.html');
-        fs.readFile(indexPath, 'utf8', (err, html) => {
+        fs.readFile(indexPath, 'utf8', (err, html): void => {
           if (err) {
             this.logger.error('Failed to read index.html', err);
-            return res.status(500).send('Error loading application');
+            res.status(500).send('Error loading application');
+            return;
           }
 
           // Build runtime config from environment variables
