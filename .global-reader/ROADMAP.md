@@ -63,7 +63,8 @@ This roadmap implements automatic team membership for a system-managed "Global R
 
 ## Phase 3: Reliability & Resilience
 
-**Goal:** Ensure team membership operations are non-blocking and idempotent.
+**Goal:** Verify and document that team membership operations are non-blocking and idempotent.
+**Status:** Planned
 
 **Requirements Covered:**
 - RELY-01: Team assignment failures do not block user registration
@@ -78,11 +79,11 @@ This roadmap implements automatic team membership for a system-managed "Global R
 4. Team assignment errors appear in application logs with user context
 
 **Plans:**
-1. **PLAN-3.1: Non-Blocking Wrapper** - Wrap all team operations in try-catch, log failures, never throw
+- [ ] 03-01-PLAN.md - Verify and document reliability requirements (code inspection + verification doc)
 
-**Estimated Effort:** Small (1 implementation task)
+**Estimated Effort:** Small (verification only - features already implemented in Phase 2)
 
-**Note:** RELY-01 and RELY-04 are already implemented in Phase 2 (non-blocking try-catch with logging). Phase 3 will verify and document this, plus address RELY-02 and RELY-03.
+**Note:** Research revealed that RELY-01 and RELY-04 are already implemented in Phase 2 (non-blocking try-catch with logging). RELY-02 is satisfied by design (team assignment happens at registration, not login). RELY-03 is handled by ArangoDB UPSERT. Phase 3 formally verifies and documents these implementations.
 
 ---
 
@@ -92,7 +93,7 @@ This roadmap implements automatic team membership for a system-managed "Global R
 |-------|-------------|-------|--------|--------|
 | 1: Team Foundation | TEAM-01, TEAM-02 | 2 | Small | Complete |
 | 2: Membership Automation | MEMB-01, MEMB-02, MEMB-03, MEMB-04 | 2 | Medium | Complete |
-| 3: Reliability & Resilience | RELY-01, RELY-02, RELY-03, RELY-04 | 1 | Small | Ready |
+| 3: Reliability & Resilience | RELY-01, RELY-02, RELY-03, RELY-04 | 1 | Small | Planned |
 
 **Total:** 10 requirements mapped, 5 plans, estimated small-medium overall effort.
 
@@ -106,13 +107,13 @@ This roadmap implements automatic team membership for a system-managed "Global R
 | MEMB-02 | Phase 2 | Complete |
 | MEMB-03 | Phase 2 | Complete |
 | MEMB-04 | Phase 2 | Complete |
-| RELY-01 | Phase 3 | Ready |
-| RELY-02 | Phase 3 | Ready |
-| RELY-03 | Phase 3 | Ready |
-| RELY-04 | Phase 3 | Ready |
+| RELY-01 | Phase 3 | Planned |
+| RELY-02 | Phase 3 | Planned |
+| RELY-03 | Phase 3 | Planned |
+| RELY-04 | Phase 3 | Planned |
 
 **Coverage:** 10/10 v1 requirements (100%)
 
 ---
 *Roadmap created: 2026-02-04*
-*Last updated: 2026-02-04 after Phase 2 completion*
+*Last updated: 2026-02-04 after Phase 3 planning*
