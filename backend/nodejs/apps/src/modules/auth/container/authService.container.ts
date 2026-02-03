@@ -14,6 +14,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
 import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
+import { GlobalReaderTeamService } from '../../user_management/services/globalReaderTeam.service';
 
 const loggerConfig = {
   service: 'Auth Service Container',
@@ -92,10 +93,20 @@ export class AuthServiceContainer {
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
 
+      // GlobalReaderTeamService for automatic team membership
+      const globalReaderTeamService = new GlobalReaderTeamService(
+        appConfig,
+        logger,
+      );
+      container
+        .bind<GlobalReaderTeamService>('GlobalReaderTeamService')
+        .toConstantValue(globalReaderTeamService);
+
       // JIT Provisioning Service - shared service for user provisioning
       const jitProvisioningService = new JitProvisioningService(
         logger,
         entityEventsService,
+        globalReaderTeamService,
       );
       container
         .bind<JitProvisioningService>('JitProvisioningService')

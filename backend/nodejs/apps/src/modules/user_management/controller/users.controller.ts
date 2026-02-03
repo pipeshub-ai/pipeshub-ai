@@ -38,6 +38,7 @@ import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.c
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+import { GlobalReaderTeamService } from '../services/globalReaderTeam.service';
 
 @injectable()
 export class UserController {
@@ -48,6 +49,8 @@ export class UserController {
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer')
     private eventService: EntitiesEventProducer,
+    @inject('GlobalReaderTeamService')
+    private globalReaderTeamService: GlobalReaderTeamService,
   ) {}
 
   async getAllUsers(
@@ -271,6 +274,17 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
       await newUser.save();
+
+      // Add user to Global Reader team (non-blocking)
+      await this.globalReaderTeamService.addUserToGlobalReader(
+        newUser.orgId.toString(),
+        String(newUser._id),
+        {
+          authorization: req.headers.authorization || '',
+          'x-org-id': req.user?.orgId?.toString() || '',
+        },
+      );
+
       this.logger.debug('user created');
       res.status(201).json(newUser);
     } catch (error) {
@@ -1229,6 +1243,16 @@ export class UserController {
         await UserGroups.updateOne(
           { orgId: req.user?.orgId, type: 'everyone' }, // Find the everyone group in the same org
           { $addToSet: { users: userId } }, // Add user to the group if not already present
+        );
+
+        // Add user to Global Reader team (non-blocking)
+        await this.globalReaderTeamService.addUserToGlobalReader(
+          req.user?.orgId?.toString() || '',
+          userId.toString(),
+          {
+            authorization: req.headers.authorization || '',
+            'x-org-id': req.user?.orgId?.toString() || '',
+          },
         );
 
         const event: Event = {

@@ -662,6 +662,7 @@ export function createUserRouter(container: Container) {
               container.get<AuthService>('AuthService'),
               logger,
               container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+              container.get<GlobalReaderTeamService>('GlobalReaderTeamService'),
             );
           });
         res.status(200).json({

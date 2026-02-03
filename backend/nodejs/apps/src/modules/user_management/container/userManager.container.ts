@@ -108,6 +108,7 @@ export class UserManagerContainer {
           container.get<AuthService>('AuthService'),
           container.get('Logger'),
           container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+          container.get<GlobalReaderTeamService>('GlobalReaderTeamService'),
         );
       });
 
