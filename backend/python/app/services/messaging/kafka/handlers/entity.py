@@ -532,8 +532,10 @@ class EntityEventService(BaseEventService):
 
             # Create belongs_to edge from record group to app
             belongs_to_edge = {
-                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
-                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                "from_id": kb_key,
+                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_id": kb_app_id,
+                "to_collection": CollectionNames.APPS.value,
                 "entityType": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
@@ -589,16 +591,17 @@ class EntityEventService(BaseEventService):
             app_group = metadata.get('appGroup', 'Local Storage')
 
             # Check if KB connector instance already exists for this org
-            org_apps = await self.arango_service.get_org_apps(org_id)
+            org_apps = await self.graph_provider.get_org_apps(org_id)
             existing_kb_app = next(
                 (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
                 None
             )
 
             if existing_kb_app:
+                kb_key = existing_kb_app.get('_key') or existing_kb_app.get('id')
                 self.logger.info(
                     f"Knowledge Base connector instance already exists for org {org_id} "
-                    f"(id: {existing_kb_app.get('_key')}), skipping creation"
+                    f"(id: {kb_key}), skipping creation"
                 )
                 return existing_kb_app
 
@@ -615,7 +618,7 @@ class EntityEventService(BaseEventService):
             current_timestamp = get_epoch_timestamp_in_ms()
 
             instance_document = {
-                '_key': instance_key,
+                'id': instance_key,
                 'name': connector_name,
                 'type': Connectors.KNOWLEDGE_BASE.value,
                 'appGroup': app_group,
@@ -632,19 +635,21 @@ class EntityEventService(BaseEventService):
             }
 
             # Create instance in database
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [instance_document],
                 CollectionNames.APPS.value
             )
 
             # Create relationship edge between organization and instance
             edge_document = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{instance_key}",
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": instance_key,
+                "to_collection": CollectionNames.APPS.value,
                 "createdAtTimestamp": current_timestamp,
             }
 
-            await self.arango_service.batch_create_edges(
+            await self.graph_provider.batch_create_edges(
                 [edge_document],
                 CollectionNames.ORG_APP_RELATION.value,
             )
@@ -692,14 +697,15 @@ class EntityEventService(BaseEventService):
         """
         try:
             # Check if KB connector instance already exists for this org
-            org_apps = await self.arango_service.get_org_apps(org_id)
+            org_apps = await self.graph_provider.get_org_apps(org_id)
             existing_kb_app = next(
                 (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
                 None
             )
 
             if existing_kb_app:
-                self.logger.debug(f"Found existing KB app for org {org_id}: {existing_kb_app.get('_key')}")
+                kb_key = existing_kb_app.get('_key') or existing_kb_app.get('id')
+                self.logger.debug(f"Found existing KB app for org {org_id}: {kb_key}")
                 return existing_kb_app
 
             # Create KB app if it doesn't exist
@@ -729,24 +735,21 @@ class EntityEventService(BaseEventService):
                 self.logger.warning(f"KB app not found for org {org_id}, skipping user-app relation creation")
                 return False
 
-            kb_app_id = kb_app.get('_key')
+            kb_app_id = kb_app.get('_key') or kb_app.get('id')
 
-            # Check if user-app relation already exists
-            query = f"""
-            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
-                FILTER edge._from == CONCAT(@user_collection, '/', @user_key)
-                    AND edge._to == CONCAT(@app_collection, '/', @kb_app_id)
-                LIMIT 1
-                RETURN 1
-            """
-            bind_vars = {
-                "user_key": user_key,
-                "kb_app_id": kb_app_id,
-                "user_collection": CollectionNames.USERS.value,
-                "app_collection": CollectionNames.APPS.value,
-            }
-            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
-            if list(cursor):
+            # Check if user-app relation already exists using graph_provider
+            existing_edges = await self.graph_provider.get_edges_from_node(
+                node_id=user_key,
+                edge_collection=CollectionNames.USER_APP_RELATION.value
+            )
+
+            # Check if any edge points to the KB app
+            edge_exists = any(
+                edge.get('to_id') == kb_app_id or edge.get('_to') == f"{CollectionNames.APPS.value}/{kb_app_id}"
+                for edge in existing_edges
+            )
+
+            if edge_exists:
                 # Edge already exists
                 self.logger.debug(f"User-app relation already exists for user {user_key} and KB app {kb_app_id}")
                 return True
@@ -754,15 +757,17 @@ class EntityEventService(BaseEventService):
             # Create user-app relation edge
             current_timestamp = get_epoch_timestamp_in_ms()
             user_app_edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_app_id,
+                "to_collection": CollectionNames.APPS.value,
                 "syncState": "NOT_STARTED",  # Required by schema - KB doesn't sync
                 "lastSyncUpdate": current_timestamp,  # Required by schema
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
             }
 
-            await self.arango_service.batch_create_edges(
+            await self.graph_provider.batch_create_edges(
                 [user_app_edge],
                 CollectionNames.USER_APP_RELATION.value
             )

@@ -47,6 +47,19 @@ class Neo4jLabel(Enum):
     TOOLS = "Tool"
     TOOLS_CTAGS = "ToolCtag"
 
+    # Metadata (categories, departments, languages, topics)
+    # Using capitalized collection names to match default fallback behavior
+    DEPARTMENTS = "Departments"
+    CATEGORIES = "Categories"
+    SUBCATEGORIES1 = "Subcategories1"
+    SUBCATEGORIES2 = "Subcategories2"
+    SUBCATEGORIES3 = "Subcategories3"
+    LANGUAGES = "Languages"
+    TOPICS = "Topics"
+
+    # Teams
+    TEAMS = "Teams"
+
 
 class Neo4jRelationshipType(Enum):
     """Neo4j relationship types mapped from ArangoDB edge collections"""
@@ -87,6 +100,16 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     # Tools collections (not in CollectionNames enum, using string names)
     "tools": Neo4jLabel.TOOLS.value,
     "tools_ctags": Neo4jLabel.TOOLS_CTAGS.value,
+    # Metadata collections
+    CollectionNames.DEPARTMENTS.value: Neo4jLabel.DEPARTMENTS.value,
+    CollectionNames.CATEGORIES.value: Neo4jLabel.CATEGORIES.value,
+    CollectionNames.SUBCATEGORIES1.value: Neo4jLabel.SUBCATEGORIES1.value,
+    CollectionNames.SUBCATEGORIES2.value: Neo4jLabel.SUBCATEGORIES2.value,
+    CollectionNames.SUBCATEGORIES3.value: Neo4jLabel.SUBCATEGORIES3.value,
+    CollectionNames.LANGUAGES.value: Neo4jLabel.LANGUAGES.value,
+    CollectionNames.TOPICS.value: Neo4jLabel.TOPICS.value,
+    # Teams
+    CollectionNames.TEAMS.value: Neo4jLabel.TEAMS.value,
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types

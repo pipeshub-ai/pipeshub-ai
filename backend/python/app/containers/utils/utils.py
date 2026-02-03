@@ -77,11 +77,13 @@ class ContainerUtils:
         self,
         logger: Logger,
         config_service: ConfigurationService,
+        kafka_service=None,
     ) -> IGraphDBProvider:
         """Async factory to create and connect graph database provider"""
         return await GraphDBProviderFactory.create_provider(
             logger=logger,
             config_service=config_service,
+            kafka_service=kafka_service,
         )
 
     async def create_indexing_pipeline(
