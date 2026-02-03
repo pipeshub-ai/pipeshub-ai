@@ -139,7 +139,7 @@ class Neo4jProvider(IGraphDBProvider):
                 raise Exception("Failed to connect to Neo4j")
 
             # Initialize schema (constraints and indexes)
-            await self._initialize_schema()
+            # await self._initialize_schema()
 
             self.logger.info("✅ Neo4j provider connected successfully")
 
@@ -8257,3 +8257,598 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub parent node failed: {str(e)}")
             return None
+
+    # ==================== Missing Abstract Methods Implementation ====================
+
+    async def batch_update_connector_status(
+        self,
+        connector_ids: List[str],
+        is_active: bool,
+        transaction: Optional[str] = None
+    ) -> int:
+        """Batch update connector status."""
+        try:
+            query = """
+            UNWIND $connector_ids AS connector_id
+            MATCH (app:App {id: connector_id})
+            SET app.isActive = $is_active
+            RETURN count(app) as updated_count
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_ids": connector_ids, "is_active": is_active},
+                txn_id=transaction
+            )
+            return results[0].get("updated_count", 0) if results else 0
+        except Exception as e:
+            self.logger.error(f"❌ Batch update connector status failed: {str(e)}")
+            return 0
+
+    async def batch_upsert_people(
+        self,
+        people: List[Dict],
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> Optional[bool]:
+        """Batch upsert people nodes."""
+        try:
+            label = collection_to_label(collection)
+            query = f"""
+            UNWIND $people AS person
+            MERGE (p:{label} {{id: person.id}})
+            SET p += person
+            RETURN count(p) as count
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"people": people},
+                txn_id=transaction
+            )
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Batch upsert people failed: {str(e)}")
+            return False
+
+    async def check_connector_name_exists(
+        self,
+        connector_name: str,
+        org_id: str,
+        exclude_connector_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Check if connector name exists in org."""
+        try:
+            query = """
+            MATCH (app:App {name: $connector_name, orgId: $org_id})
+            WHERE $exclude_connector_id IS NULL OR app.id <> $exclude_connector_id
+            RETURN count(app) > 0 as exists
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "connector_name": connector_name,
+                    "org_id": org_id,
+                    "exclude_connector_id": exclude_connector_id
+                },
+                txn_id=transaction
+            )
+            return results[0].get("exists", False) if results else False
+        except Exception as e:
+            self.logger.error(f"❌ Check connector name exists failed: {str(e)}")
+            return False
+
+    async def count_kb_owners(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None
+    ) -> int:
+        """Count number of owners for a KB."""
+        try:
+            query = """
+            MATCH (u:User)-[p:PERMISSION {role: "OWNER"}]->(kb:RecordGroup {id: $kb_id})
+            RETURN count(DISTINCT u) as owner_count
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"kb_id": kb_id},
+                txn_id=transaction
+            )
+            return results[0].get("owner_count", 0) if results else 0
+        except Exception as e:
+            self.logger.error(f"❌ Count KB owners failed: {str(e)}")
+            return 0
+
+    async def create_parent_child_edge(
+        self,
+        parent_id: str,
+        child_id: str,
+        parent_collection: str,
+        child_collection: str,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Create parent-child relationship edge."""
+        try:
+            parent_label = collection_to_label(parent_collection)
+            child_label = collection_to_label(child_collection)
+            rel_type = edge_collection_to_relationship(collection)
+            
+            query = f"""
+            MATCH (parent:{parent_label} {{id: $parent_id}})
+            MATCH (child:{child_label} {{id: $child_id}})
+            MERGE (child)-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->(parent)
+            RETURN count(r) > 0 as created
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"parent_id": parent_id, "child_id": child_id},
+                txn_id=transaction
+            )
+            return results[0].get("created", False) if results else False
+        except Exception as e:
+            self.logger.error(f"❌ Create parent-child edge failed: {str(e)}")
+            return False
+
+    async def delete_edges_by_relationship_types(
+        self,
+        record_id: str,
+        relationship_types: List[str],
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> int:
+        """Delete edges by relationship types."""
+        try:
+            rel_type = edge_collection_to_relationship(collection)
+            query = f"""
+            MATCH (r:Record {{id: $record_id}})-[rel:{rel_type}]-()
+            WHERE rel.relationshipType IN $relationship_types
+            DELETE rel
+            RETURN count(rel) as deleted_count
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "relationship_types": relationship_types},
+                txn_id=transaction
+            )
+            return results[0].get("deleted_count", 0) if results else 0
+        except Exception as e:
+            self.logger.error(f"❌ Delete edges by relationship types failed: {str(e)}")
+            return 0
+
+    async def delete_parent_child_edge_to_record(
+        self,
+        record_id: str,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Delete parent-child edge to a record."""
+        try:
+            rel_type = edge_collection_to_relationship(collection)
+            query = f"""
+            MATCH (child:Record {{id: $record_id}})-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->()
+            DELETE r
+            RETURN count(r) > 0 as deleted
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id},
+                txn_id=transaction
+            )
+            return results[0].get("deleted", False) if results else False
+        except Exception as e:
+            self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
+            return False
+
+    async def ensure_schema(self) -> bool:
+        """Ensure Neo4j schema (indexes and constraints)."""
+        try:
+            self.logger.info("🔧 Ensuring Neo4j schema...")
+            
+            # Create constraints and indexes
+            constraints = [
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (u:User) REQUIRE u.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Record) REQUIRE r.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (rg:RecordGroup) REQUIRE rg.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (a:App) REQUIRE a.id IS UNIQUE",
+                "CREATE CONSTRAINT IF NOT EXISTS FOR (o:Org) REQUIRE o.id IS UNIQUE",
+            ]
+            
+            indexes = [
+                "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.orgId)",
+                "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.connectorId)",
+                "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.externalRecordId)",
+                "CREATE INDEX IF NOT EXISTS FOR (rg:RecordGroup) ON (rg.orgId)",
+                "CREATE INDEX IF NOT EXISTS FOR (a:App) ON (a.orgId)",
+            ]
+            
+            for constraint in constraints:
+                try:
+                    await self.client.execute_query(constraint, parameters={})
+                except Exception as e:
+                    self.logger.warning(f"Constraint creation warning: {str(e)}")
+            
+            for index in indexes:
+                try:
+                    await self.client.execute_query(index, parameters={})
+                except Exception as e:
+                    self.logger.warning(f"Index creation warning: {str(e)}")
+            
+            self.logger.info("✅ Neo4j schema ensured")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Ensure schema failed: {str(e)}")
+            return False
+
+    async def get_filtered_connector_instances(
+        self,
+        org_id: str,
+        connector_name: Optional[str] = None,
+        is_active: Optional[bool] = None,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """Get filtered connector instances."""
+        try:
+            conditions = ["app.orgId = $org_id"]
+            params = {"org_id": org_id}
+            
+            if connector_name:
+                conditions.append("app.name = $connector_name")
+                params["connector_name"] = connector_name
+            
+            if is_active is not None:
+                conditions.append("app.isActive = $is_active")
+                params["is_active"] = is_active
+            
+            where_clause = " AND ".join(conditions)
+            
+            query = f"""
+            MATCH (app:App)
+            WHERE {where_clause}
+            RETURN app
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters=params,
+                txn_id=transaction
+            )
+            return [r.get("app", {}) for r in results]
+        except Exception as e:
+            self.logger.error(f"❌ Get filtered connector instances failed: {str(e)}")
+            return []
+
+    async def get_kb_permissions(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """Get all permissions for a KB."""
+        try:
+            query = """
+            MATCH (entity)-[p:PERMISSION]->(kb:RecordGroup {id: $kb_id})
+            RETURN {
+                entityId: entity.id,
+                entityType: labels(entity)[0],
+                role: p.role,
+                type: p.type
+            } as permission
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"kb_id": kb_id},
+                txn_id=transaction
+            )
+            return [r.get("permission", {}) for r in results]
+        except Exception as e:
+            self.logger.error(f"❌ Get KB permissions failed: {str(e)}")
+            return []
+
+    async def get_knowledge_hub_children(
+        self,
+        node_id: str,
+        node_type: str,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        include_kbs: bool,
+        include_apps: bool,
+        only_containers: bool,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get children nodes for Knowledge Hub."""
+        try:
+            # Simplified implementation - returns empty for now
+            return {
+                "children": [],
+                "total": 0,
+                "has_more": False
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Get knowledge hub children failed: {str(e)}")
+            return {"children": [], "total": 0, "has_more": False}
+
+    async def get_knowledge_hub_recursive_search(
+        self,
+        search_term: str,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Recursive search in Knowledge Hub."""
+        try:
+            # Simplified implementation - returns empty for now
+            return {
+                "results": [],
+                "total": 0,
+                "has_more": False
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Knowledge hub recursive search failed: {str(e)}")
+            return {"results": [], "total": 0, "has_more": False}
+
+    async def get_record_by_external_revision_id(
+        self,
+        connector_id: str,
+        external_revision_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Record]:
+        """Get record by external revision ID."""
+        try:
+            query = """
+            MATCH (r:Record {connectorId: $connector_id, externalRevisionId: $external_revision_id})
+            RETURN r
+            LIMIT 1
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "connector_id": connector_id,
+                    "external_revision_id": external_revision_id
+                },
+                txn_id=transaction
+            )
+            if results:
+                record_data = results[0].get("r", {})
+                return self._create_typed_record_from_neo4j(record_data)
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Get record by external revision ID failed: {str(e)}")
+            return None
+
+    async def get_record_by_weburl(
+        self,
+        connector_id: str,
+        web_url: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Record]:
+        """Get record by web URL."""
+        try:
+            query = """
+            MATCH (r:Record {connectorId: $connector_id, webUrl: $web_url})
+            RETURN r
+            LIMIT 1
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_id": connector_id, "web_url": web_url},
+                txn_id=transaction
+            )
+            if results:
+                record_data = results[0].get("r", {})
+                return self._create_typed_record_from_neo4j(record_data)
+            return None
+        except Exception as e:
+            self.logger.error(f"❌ Get record by web URL failed: {str(e)}")
+            return None
+
+    async def get_record_parent_info(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Get parent information for a record."""
+        try:
+            query = """
+            MATCH (r:Record {id: $record_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(parent:Record)
+            RETURN {
+                id: parent.id,
+                name: parent.recordName,
+                type: parent.recordType
+            } as parent_info
+            LIMIT 1
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id},
+                txn_id=transaction
+            )
+            return results[0].get("parent_info") if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Get record parent info failed: {str(e)}")
+            return None
+
+    async def get_records(
+        self,
+        record_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """Get multiple records by IDs."""
+        try:
+            query = """
+            UNWIND $record_ids AS record_id
+            MATCH (r:Record {id: record_id})
+            RETURN r
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_ids": record_ids},
+                txn_id=transaction
+            )
+            records = []
+            for result in results:
+                record_data = result.get("r", {})
+                typed_record = self._create_typed_record_from_neo4j(record_data)
+                if typed_record:
+                    records.append(typed_record)
+            return records
+        except Exception as e:
+            self.logger.error(f"❌ Get records failed: {str(e)}")
+            return []
+
+    async def get_user_connector_instances(
+        self,
+        user_key: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """Get connector instances accessible by user."""
+        try:
+            query = """
+            MATCH (u:User {id: $user_key})-[:PERMISSION]->(app:App {orgId: $org_id})
+            RETURN app
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"user_key": user_key, "org_id": org_id},
+                txn_id=transaction
+            )
+            return [r.get("app", {}) for r in results]
+        except Exception as e:
+            self.logger.error(f"❌ Get user connector instances failed: {str(e)}")
+            return []
+
+    async def is_record_descendant_of(
+        self,
+        record_id: str,
+        ancestor_id: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Check if record is descendant of ancestor."""
+        try:
+            query = """
+            MATCH path = (r:Record {id: $record_id})-[:RECORD_RELATION*1..20 {relationshipType: "PARENT_CHILD"}]->(ancestor:Record {id: $ancestor_id})
+            RETURN count(path) > 0 as is_descendant
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "ancestor_id": ancestor_id},
+                txn_id=transaction
+            )
+            return results[0].get("is_descendant", False) if results else False
+        except Exception as e:
+            self.logger.error(f"❌ Is record descendant check failed: {str(e)}")
+            return False
+
+    async def is_record_folder(
+        self,
+        record_id: str,
+        folder_mime_types: List[str],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Check if record is a folder."""
+        try:
+            query = """
+            MATCH (r:Record {id: $record_id})
+            RETURN r.mimeType IN $folder_mime_types as is_folder
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "folder_mime_types": folder_mime_types},
+                txn_id=transaction
+            )
+            return results[0].get("is_folder", False) if results else False
+        except Exception as e:
+            self.logger.error(f"❌ Is record folder check failed: {str(e)}")
+            return False
+
+    async def update_record(
+        self,
+        record_id: str,
+        user_id: str,
+        updates: Dict,
+        file_metadata: Optional[Dict] = None,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """Update a record."""
+        try:
+            # Add timestamp
+            updates["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+            
+            query = """
+            MATCH (r:Record {id: $record_id})
+            SET r += $updates
+            RETURN r
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "updates": updates},
+                txn_id=transaction
+            )
+            if results:
+                return {
+                    "success": True,
+                    "updatedRecord": results[0].get("r", {}),
+                    "recordId": record_id
+                }
+            return {"success": False, "code": 404, "reason": "Record not found"}
+        except Exception as e:
+            self.logger.error(f"❌ Update record failed: {str(e)}")
+            return {"success": False, "code": 500, "reason": str(e)}
+
+    async def update_record_external_parent_id(
+        self,
+        record_id: str,
+        external_parent_id: Optional[str],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """Update record's external parent ID."""
+        try:
+            query = """
+            MATCH (r:Record {id: $record_id})
+            SET r.externalParentId = $external_parent_id
+            RETURN count(r) > 0 as updated
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "external_parent_id": external_parent_id},
+                txn_id=transaction
+            )
+            return results[0].get("updated", False) if results else False
+        except Exception as e:
+            self.logger.error(f"❌ Update record external parent ID failed: {str(e)}")
+            return False
+
+    def _create_typed_record_from_neo4j(self, record_data: Dict) -> Optional[Record]:
+        """Create typed Record instance from Neo4j data."""
+        if not record_data:
+            return None
+        
+        try:
+            record_type = record_data.get("recordType", "FILE")
+            
+            # Map to appropriate Record subclass
+            if record_type == "FILE":
+                return FileRecord(**record_data)
+            elif record_type == "MAIL":
+                return MailRecord(**record_data)
+            elif record_type == "COMMENT":
+                return CommentRecord(**record_data)
+            elif record_type == "WEBPAGE":
+                return WebpageRecord(**record_data)
+            elif record_type == "TICKET":
+                return TicketRecord(**record_data)
+            else:
+                return Record(**record_data)
+        except Exception as e:
+            self.logger.warning(f"Failed to create typed record: {str(e)}")
+            return Record(**record_data)

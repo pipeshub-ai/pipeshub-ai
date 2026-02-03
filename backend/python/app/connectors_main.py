@@ -58,13 +58,13 @@ async def get_initialized_container() -> ConnectorAppContainer:
     return container
 
 
-async def resume_sync_services(app_container: ConnectorAppContainer, graph_provider, data_store_provider) -> bool:
+async def resume_sync_services(app_container: ConnectorAppContainer, data_store: GraphDataStore = None) -> bool:
     """Resume sync services for users with active sync states"""
     logger = app_container.logger()
     logger.debug("🔄 Checking for sync services to resume")
 
     try:
-        graph_provider = data_store.graph_provider if data_store else (await app_container.data_store()).graph_provider
+        graph_provider = data_store.graph_provider
 
         # Get all organizations
         orgs = await graph_provider.get_all_orgs(active=True)
@@ -74,7 +74,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, graph_provi
 
         logger.info("Found %d organizations in the system", len(orgs))
 
-        # Use config_service and data_store_provider passed as parameters (already resolved)
         config_service = app_container.config_service()
 
         # Process each organization
@@ -113,7 +112,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, graph_provi
                 connector = await ConnectorFactory.create_and_start_sync(
                     name=connector_name,
                     logger=logger,
-                    data_store_provider=data_store_provider,
+                    data_store_provider=data_store,
                     config_service=config_service,
                     connector_id=connector_id
                 )
@@ -130,13 +129,13 @@ async def resume_sync_services(app_container: ConnectorAppContainer, graph_provi
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
-async def initialize_connector_registry(app_container: ConnectorAppContainer, graph_provider) -> ConnectorRegistry:
+async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
     """Initialize and sync connector registry with database"""
     logger = app_container.logger()
     logger.info("🔧 Initializing Connector Registry...")
 
     try:
-        registry = ConnectorRegistry(app_container, graph_provider)
+        registry = ConnectorRegistry(app_container)
 
         ConnectorFactory.initialize_beta_connector_registry()
         # Register connectors using generic factory
@@ -307,7 +306,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")
 
     # Initialize connector registry - pass already-resolved graph_provider
-    registry = await initialize_connector_registry(app_container, graph_provider)
+    registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
 
@@ -372,7 +371,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         raise
 
     # Resume sync services - pass already resolved graph_provider and data_store
-    asyncio.create_task(resume_sync_services(app_container, graph_provider, data_store))
+    asyncio.create_task(resume_sync_services(app_container, data_store))
 
     yield
     logger.info("🔄 Shut down application started")
