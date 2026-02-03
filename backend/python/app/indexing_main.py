@@ -70,10 +70,10 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
             CollectionNames.RECORDS.value,
             {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
         )
-        queued_records = await arango_service.get_documents_by_status(
-                CollectionNames.RECORDS.value,
-                ProgressStatus.QUEUED.value
-            )
+        queued_records = await graph_provider.get_nodes_by_filters(
+            CollectionNames.RECORDS.value,
+            {"indexingStatus": ProgressStatus.QUEUED.value}
+        )
         # Create combined list and store length for clarity and efficiency
         all_records_to_recover = in_progress_records + queued_records
         total_records = len(all_records_to_recover)
@@ -100,7 +100,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                     connector_id = record.get("connectorId")
                     origin = record.get("origin")
                     if connector_id and origin == OriginTypes.CONNECTOR.value:
-                        connector_instance = await arango_service.get_document(
+                        connector_instance = await graph_provider.get_document(
                             connector_id, CollectionNames.APPS.value
                         )
                         if not connector_instance:
@@ -116,12 +116,12 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                                 f"connector instance {connector_id} is inactive."
                             )
                             # Update status to CONNECTOR_DISABLED
-                            await arango_service.update_document(
+                            await graph_provider.update_node(
                                 record_id,
-                                CollectionNames.RECORDS.value,
                                 {
                                     "indexingStatus": ProgressStatus.CONNECTOR_DISABLED.value,
-                                }
+                                },
+                                CollectionNames.RECORDS.value
                             )
                             results["skipped"] += 1
                             return
@@ -273,8 +273,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.info("🚀 Starting application")
 
-    # Get the already-resolved graph_provider from container (set during initialization)
-    # This avoids coroutine reuse error
     graph_provider = getattr(app_container, '_graph_provider', None)
     if not graph_provider:
         # Fallback: if not set during initialization, resolve it now
@@ -282,7 +280,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.graph_provider = graph_provider
 
     # Recover in-progress records before starting Kafka consumers
-    # Pass already-resolved graph_provider to avoid coroutine reuse
     try:
         await recover_in_progress_records(app_container, graph_provider)
     except Exception as e:

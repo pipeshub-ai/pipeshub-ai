@@ -1799,6 +1799,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         filters: Dict[str, Any],
+        return_fields: Optional[List[str]] = None,
         transaction: Optional[str] = None
     ) -> List[Dict]:
         """
@@ -1807,6 +1808,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             collection: Collection name
             filters: Field filters as dict
+            return_fields: Optional list of fields to return (None = all fields)
             transaction: Optional transaction ID
 
         Returns:
@@ -9823,6 +9825,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return bool(results and results[0])
         except Exception as e:
             self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            return False
+
+    async def validate_folder_exists_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Validate folder exists in specific KB.
+        Uses direct KB ID check instead of edge traversal.
+        """
+        try:
+            query = """
+            FOR folder IN @@files_collection
+                FILTER folder._key == @folder_id
+                FILTER folder.recordGroupId == @kb_id
+                FILTER folder.isFile == false
+                RETURN true
+            """
+
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "folder_id": folder_id,
+                    "kb_id": kb_id,
+                    "@files_collection": CollectionNames.FILES.value,
+                },
+                transaction=transaction,
+            )
+
+            return bool(results and results[0])
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate folder exists in KB: {str(e)}")
             return False
 
     async def update_folder(

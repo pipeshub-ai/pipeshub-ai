@@ -2922,25 +2922,6 @@ class IGraphDBProvider(ABC):
 
     # ==================== Knowledge Base Operations ====================
 
-    @abstractmethod
-    async def create_knowledge_base(
-        self,
-        kb_data: Dict,
-        permission_edge: Dict,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Create a knowledge base with permissions.
-
-        Args:
-            kb_data (Dict): Knowledge base data (should have 'id' or '_key', 'groupName', etc.)
-            permission_edge (Dict): Permission edge in generic format (from_id, to_id, from_collection, to_collection)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status and KB info
-        """
-        pass
 
     @abstractmethod
     async def get_user_kb_permission(

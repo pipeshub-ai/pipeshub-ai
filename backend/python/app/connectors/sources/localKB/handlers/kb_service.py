@@ -24,7 +24,7 @@ class KnowledgeBaseService:
     def __init__(
         self,
         logger,
-        arango_service : BaseArangoService,
+        graph_provider: IGraphDBProvider,
         kafka_service : KafkaService
     ) -> None:
         self.logger = logger
@@ -52,7 +52,7 @@ class KnowledgeBaseService:
                     "reason": f"User not found for user_id: {user_id}"
                 }
 
-            user_key = user.get('id') or user.get('_key')
+            user_key = user.get('_key')
             user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
             self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
 
@@ -64,7 +64,8 @@ class KnowledgeBaseService:
             # Step 3: Create transaction
             txn_id = None
             try:
-                transaction = self.arango_service.db.begin_transaction(
+                txn_id = await self.graph_provider.begin_transaction(
+                    read=[],
                     write=[
                         CollectionNames.RECORD_GROUPS.value,
                         CollectionNames.RECORDS.value,
@@ -72,7 +73,7 @@ class KnowledgeBaseService:
                         CollectionNames.IS_OF_TYPE.value,
                         CollectionNames.BELONGS_TO.value,
                         CollectionNames.PERMISSION.value,
-                    ]
+                    ],
                 )
                 self.logger.info("🔄 Transaction created")
             except Exception as tx_error:
@@ -83,9 +84,9 @@ class KnowledgeBaseService:
                     "reason": f"Transaction creation failed: {str(tx_error)}"
                 }
 
-
+            kb_connector_id = f"knowledgeBase_{org_id}"
             kb_data = {
-                "id": kb_key,
+                "_key": kb_key,
                 "createdBy": user_key,
                 "orgId": org_id,
                 "groupName": name,
@@ -97,10 +98,8 @@ class KnowledgeBaseService:
             }
 
             permission_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
                 "externalPermissionId": "",
                 "type": "USER",
                 "role": "OWNER",
@@ -109,22 +108,38 @@ class KnowledgeBaseService:
                 "lastUpdatedTimestampAtSource": timestamp,
             }
 
+            # Create belongs_to edge from record group to app
+            belongs_to_edge = {
+                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "_to": f"{CollectionNames.APPS.value}/{kb_connector_id}",
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }
 
             # Step 5: Execute database operations
             self.logger.info("💾 Executing database operations...")
-            result = await self.arango_service.create_knowledge_base(
-                kb_data=kb_data,
-                # root_folder_data=root_folder_data,
-                permission_edge=permission_edge,
-                # folder_edge=folder_edge,
-                transaction=transaction
+            await self.graph_provider.batch_upsert_nodes(
+                [kb_data],
+                CollectionNames.RECORD_GROUPS.value,
+                transaction=txn_id,
             )
+            await self.graph_provider.batch_create_edges(
+                [permission_edge],
+                CollectionNames.PERMISSION.value,
+                transaction=txn_id,
+            )
+            await self.graph_provider.batch_create_edges(
+                [belongs_to_edge],
+                CollectionNames.BELONGS_TO.value,
+                transaction=txn_id,
+            )
+            await self.graph_provider.commit_transaction(txn_id)
 
-            await asyncio.to_thread(lambda: transaction.commit_transaction())
-
+            result = {"success": True}
             if result and result.get("success"):
                 response = {
-                    "id": kb_data["id"],
+                    "id": kb_data["_key"],
                     "name": kb_data["groupName"],
                     "createdAtTimestamp": kb_data["createdAtTimestamp"],
                     "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
@@ -134,8 +149,8 @@ class KnowledgeBaseService:
 
                 self.logger.info(f"✅ KB '{name}' created successfully: {kb_key}")
                 return response
+
             else:
-                await self.graph_provider.rollback_transaction(transaction)
                 return {
                     "success": False,
                     "code": 500,
@@ -144,14 +159,11 @@ class KnowledgeBaseService:
 
         except Exception as e:
             self.logger.error(f"❌ KB creation failed for '{name}': {str(e)}")
-            self.logger.error(f"❌ Error type: {type(e).__name__}")
-            if hasattr(transaction, 'abort_transaction'):
-                    await asyncio.to_thread(lambda: transaction.abort_transaction())
-
-            # Only log full traceback for unexpected errors (not business logic errors)
-            if not isinstance(e, (ValueError, KeyError)):
-                import traceback
-                self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            if txn_id is not None:
+                try:
+                    await self.graph_provider.rollback_transaction(txn_id)
+                except Exception as rb_err:
+                    self.logger.warning(f"Rollback failed: {rb_err}")
 
             return {
                 "success": False,
@@ -471,7 +483,7 @@ class KnowledgeBaseService:
                 }
 
             # Create folder using unified method
-            result = await self.arango_service.create_folder(
+            result = await self.graph_provider.create_folder(
                 kb_id=kb_id,
                 folder_name=name,
                 org_id=org_id,
@@ -505,7 +517,7 @@ class KnowledgeBaseService:
                 return validation_result
 
             # Additional validation for parent folder
-            folder_valid = await self.arango_service.validate_folder_exists_in_kb(kb_id, parent_folder_id)
+            folder_valid = await self.graph_provider.validate_folder_exists_in_kb(kb_id, parent_folder_id)
             if not folder_valid:
                 return {
                     "success": False,
@@ -819,7 +831,7 @@ class KnowledgeBaseService:
                 }
 
             user_key = user.get('_key')
-            user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
+            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
 
             if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
                 return {
@@ -875,7 +887,7 @@ class KnowledgeBaseService:
                 }
 
             user_key = user.get('_key')
-            user_role = await self.arango_service.get_user_kb_permission(kb_id, user_key)
+            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
 
             if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
                 return {
@@ -885,7 +897,7 @@ class KnowledgeBaseService:
                 }
 
             # Step 2: Validate folder exists in KB
-            folder_exists = await self.arango_service.validate_folder_exists_in_kb(kb_id, folder_id)
+            folder_exists = await self.graph_provider.validate_folder_exists_in_kb(kb_id, folder_id)
             if not folder_exists:
                 return {
                     "success": False,
@@ -1698,4 +1710,4 @@ class KnowledgeBaseService:
 
     async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
         """Upload to specific folder"""
-        return await self.arango_service.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)
+        return await self.graph_provider.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)

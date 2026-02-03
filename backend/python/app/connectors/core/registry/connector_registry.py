@@ -123,13 +123,12 @@ class ConnectorRegistry:
     - Pagination for large connector lists
     """
 
-    def __init__(self, container: ConnectorAppContainer, graph_provider: Optional[IGraphDBProvider] = None) -> None:
+    def __init__(self, container: ConnectorAppContainer) -> None:
         """
         Initialize the connector registry.
 
         Args:
             container: Dependency injection container
-            graph_provider: Optional pre-resolved graph provider to avoid coroutine reuse
         """
         self.container = container
         self.logger = container.logger()

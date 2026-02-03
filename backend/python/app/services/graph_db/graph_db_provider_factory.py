@@ -11,6 +11,7 @@ Design Pattern: Factory Method Pattern
 - Hides implementation details from clients
 """
 
+import os
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
@@ -43,7 +44,9 @@ class GraphDBProviderFactory:
         """
         Create and initialize a graph database provider.
 
-        Creates an HTTP-based provider for fully async operations.
+        The provider type is determined by the DATA_STORE environment variable:
+        - "arangodb": Creates ArangoHTTPProvider (HTTP-based, fully async)
+        - "neo4j": Creates Neo4jProvider (default)
 
         Args:
             logger: Logger instance for logging operations
@@ -53,12 +56,15 @@ class GraphDBProviderFactory:
             IGraphDBProvider: Connected database provider instance
 
         Raises:
-            ValueError: If required parameters are missing
+            ValueError: If DATA_STORE contains an unsupported provider type
             ConnectionError: If unable to connect to the database
+
+        Environment Variables:
+            DATA_STORE: Database provider type ("arangodb" or "neo4j")
 
         Example:
             ```python
-            # Create HTTP provider (fully async)
+            # Set in .env: DATA_STORE=arangodb
             provider = await GraphDBProviderFactory.create_provider(
                 logger=logger,
                 config_service=config_service,
@@ -71,18 +77,9 @@ class GraphDBProviderFactory:
         try:
             logger.info("🏭 GraphDBProviderFactory: Creating database provider...")
 
-            # Read from config to determine provider type
-            # If not found, set default to neo4j
-            try:
-                graphdb_config = await config_service.get_config("/services/graphdb")
-                provider_type = graphdb_config.get("provider", "neo4j") if graphdb_config else "neo4j"
-            except Exception:
-                # Config doesn't exist, set it to neo4j as default
-                logger.info("📝 /services/graphdb not found in etcd, setting default to neo4j...")
-                await config_service.set_config("/services/graphdb", {"provider": "neo4j"})
-                provider_type = "neo4j"
-
-            logger.info(f"📦 Creating {provider_type} provider...")
+            # Read provider type from DATA_STORE environment variable
+            provider_type = os.getenv("DATA_STORE", "neo4j").lower()
+            logger.info(f"📦 Creating {provider_type} provider (from DATA_STORE env)...")
 
             # Create HTTP-based ArangoDB provider
             if provider_type == "arangodb":
@@ -101,7 +98,7 @@ class GraphDBProviderFactory:
                 return provider
 
             else:
-                raise ValueError(f"Unsupported graph database provider: {provider_type}")
+                raise ValueError(f"Unsupported graph database provider: {provider_type}. Set DATA_STORE env to 'arangodb' or 'neo4j'")
 
         except Exception as e:
             logger.error(f"❌ GraphDBProviderFactory: Failed to create provider: {str(e)}")
