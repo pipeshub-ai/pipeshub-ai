@@ -783,6 +783,79 @@ class ArangoHTTPClient:
 
     # ==================== Graph Operations ====================
 
+    async def has_collection(self, name: str) -> bool:
+        """
+        Check if a collection exists.
+
+        Args:
+            name: Collection name
+
+        Returns:
+            bool: True if collection exists, False otherwise
+        """
+        return await self.collection_exists(name)
+
+    async def has_graph(self, graph_name: str) -> bool:
+        """
+        Check if a graph exists.
+
+        Args:
+            graph_name: Graph name
+
+        Returns:
+            bool: True if graph exists, False otherwise
+        """
+        return (await self.get_graph(graph_name)) is not None
+
+    async def create_graph(
+        self,
+        graph_name: str,
+        edge_definitions: List[Dict[str, Any]],
+    ) -> bool:
+        """
+        Create a named graph with the given edge definitions.
+
+        Args:
+            graph_name: Graph name
+            edge_definitions: List of edge definitions. Each dict must have:
+                - "collection": edge collection name
+                - "from": list of vertex collection names
+                - "to": list of vertex collection names
+
+        Returns:
+            bool: True if successful
+        """
+        url = f"{self.base_url}/_db/{self.database}/_api/gharial"
+
+        # Map to ArangoDB REST format: collection, from, to
+        # Support both schema keys (edge_collection, from_vertex_collections, to_vertex_collections) and REST keys
+        payload_definitions = [
+            {
+                "collection": ed.get("edge_collection", ed.get("collection", "")),
+                "from": ed.get("from_vertex_collections", ed.get("from", [])),
+                "to": ed.get("to_vertex_collections", ed.get("to", [])),
+            }
+            for ed in edge_definitions
+        ]
+
+        payload = {"name": graph_name, "edgeDefinitions": payload_definitions}
+
+        try:
+            async with self.session.post(url, json=payload) as resp:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
+                    self.logger.info(f"✅ Graph '{graph_name}' created")
+                    return True
+                elif resp.status == HttpStatusCode.CONFLICT.value:
+                    self.logger.debug(f"Graph '{graph_name}' already exists")
+                    return True
+                else:
+                    error = await resp.text()
+                    self.logger.error(f"❌ Failed to create graph: {error}")
+                    return False
+        except Exception as e:
+            self.logger.error(f"❌ Error creating graph: {str(e)}")
+            return False
+
     async def get_graph(self, graph_name: str) -> Optional[Dict]:
         """
         Get graph definition including edge definitions.

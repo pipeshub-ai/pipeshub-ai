@@ -6,7 +6,6 @@ from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
-from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
 from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.containers.container import BaseAppContainer
@@ -107,13 +106,9 @@ class ConnectorAppContainer(BaseAppContainer):
         graph_provider=graph_provider,
     )
 
-    kb_service = providers.Singleton(
-        KnowledgeBaseService,
-        logger= logger,
-        arango_service= arango_service,
-        kafka_service= kafka_service
-    )
-
+    # Note: KnowledgeBaseService is created in the router's get_kb_service() using
+    # request.app.state.graph_provider and container.kafka_service (async Resource
+    # does not inject well into Singleton).
     # Note: KnowledgeHubService is created manually in the router's get_knowledge_hub_service()
     # helper function because it depends on async graph_provider which doesn't work well
     # with dependency_injector's Factory/Resource providers.
@@ -162,12 +157,12 @@ async def run_connector_migration(container) -> bool:
         logger.info("🔍 Checking if Connector UUID migration is needed...")
 
         # Get required services
-        arango_service = await container.arango_service()
+        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Create migration service instance
         migration_service = ConnectorMigrationService(
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             config_service=config_service,
             logger=logger
         )
@@ -198,12 +193,12 @@ async def run_files_to_records_migration_wrapper(container) -> bool:
         logger.info("🔍 Checking if Files to Records MD5/Size migration is needed...")
 
         # Get required services
-        arango_service = await container.arango_service()
+        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Run the migration
         migration_result = await run_files_to_records_migration(
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             config_service=config_service,
             logger=logger
         )
@@ -247,12 +242,12 @@ async def run_drive_to_drive_workspace_migration_wrapper(container) -> bool:
         logger.info("🔍 Checking if Drive to Drive Workspace migration is needed...")
 
         # Get required services
-        arango_service = await container.arango_service()
+        graph_provider = await container.graph_provider()
         config_service = container.config_service()
 
         # Run the migration
         migration_result = await run_drive_to_drive_workspace_migration(
-            arango_service=arango_service,
+            graph_provider=graph_provider,
             config_service=config_service,
             logger=logger
         )
@@ -338,6 +333,16 @@ async def initialize_container(container) -> bool:
         if not arango_service:
             raise Exception("Failed to initialize ArangoDB service")
         logger.info("✅ ArangoDB service initialized")
+
+        logger.info("Ensuring graph database provider is initialized")
+        data_store = await container.data_store()
+        if not data_store:
+            raise Exception("Failed to initialize data store")
+        logger.info("✅ Data store initialized")
+
+        # Schema init: collections, graph, departments seed
+        await data_store.graph_provider.ensure_schema()
+        logger.info("✅ Schema ensured")
 
         logger.info("✅ Container initialization completed successfully")
 
