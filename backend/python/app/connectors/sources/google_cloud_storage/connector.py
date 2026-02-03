@@ -9,6 +9,7 @@ import asyncio
 import mimetypes
 import uuid
 from datetime import datetime, timezone
+from itertools import accumulate
 from logging import Logger
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import unquote
@@ -132,11 +133,10 @@ def get_folder_path_segments_from_key(key: str) -> List[str]:
         return []
 
     parts = normalized.split("/")
-    segments: List[str] = []
-    # Last part is the file (or folder key); segments are the folder path prefix
-    for i in range(1, len(parts)):
-        segments.append("/".join(parts[:i]))
-    return segments
+    # The last part is the file (or folder key), so we only want to accumulate the directory parts.
+    if len(parts) <= 1:
+        return []
+    return list(accumulate(parts[:-1], lambda acc, part: f"{acc}/{part}"))
 
 
 def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
@@ -1109,11 +1109,6 @@ class GCSConnector(BaseConnector):
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
             parent_record_type = RecordType.FILE if parent_path else None
 
-            # Root-level items: do not link to the bucket as a parent
-            if parent_external_id == bucket_name:
-                parent_external_id = None
-                parent_record_type = None
-
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
@@ -1550,11 +1545,6 @@ class GCSConnector(BaseConnector):
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
             parent_record_type = RecordType.FILE if parent_path else None
-
-            # Root-level items: do not link to the bucket as a parent
-            if parent_external_id == bucket_name:
-                parent_external_id = None
-                parent_record_type = None
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
