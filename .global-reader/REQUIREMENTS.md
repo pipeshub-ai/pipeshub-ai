@@ -14,10 +14,10 @@ Requirements for initial release.
 
 ### Membership Automation
 
-- [ ] **MEMB-01**: New users are automatically added to Global Reader team on registration
-- [ ] **MEMB-02**: New users receive Reader privilege by default
-- [ ] **MEMB-03**: New admin users receive Owner privilege instead of Reader
-- [ ] **MEMB-04**: Admin status is determined by UserGroup membership (type='admin')
+- [x] **MEMB-01**: New users are automatically added to Global Reader team on registration
+- [x] **MEMB-02**: New users receive Reader privilege by default
+- [x] **MEMB-03**: New admin users receive Owner privilege instead of Reader
+- [x] **MEMB-04**: Admin status is determined by UserGroup membership (type='admin')
 
 ### Reliability
 
@@ -61,10 +61,10 @@ Deferred to future release.
 |-------------|-------|--------|
 | TEAM-01 | Phase 1: Team Foundation | Complete |
 | TEAM-02 | Phase 1: Team Foundation | Complete |
-| MEMB-01 | Phase 2: Membership Automation | Pending |
-| MEMB-02 | Phase 2: Membership Automation | Pending |
-| MEMB-03 | Phase 2: Membership Automation | Pending |
-| MEMB-04 | Phase 2: Membership Automation | Pending |
+| MEMB-01 | Phase 2: Membership Automation | Complete |
+| MEMB-02 | Phase 2: Membership Automation | Complete |
+| MEMB-03 | Phase 2: Membership Automation | Complete |
+| MEMB-04 | Phase 2: Membership Automation | Complete |
 | RELY-01 | Phase 3: Reliability & Resilience | Pending |
 | RELY-02 | Phase 3: Reliability & Resilience | Pending |
 | RELY-03 | Phase 3: Reliability & Resilience | Pending |
@@ -77,4 +77,4 @@ Deferred to future release.
 
 ---
 *Requirements defined: 2026-02-04*
-*Last updated: 2026-02-04 after Phase 1 completion*
+*Last updated: 2026-02-04 after Phase 2 completion*

@@ -1,6 +1,6 @@
 # State: Automatic Global Reader Team
 
-**Current Phase:** Phase 1 - Team Foundation
+**Current Phase:** Phase 2 - Membership Automation
 **Status:** Complete
 **Last Updated:** 2026-02-04
 
@@ -9,26 +9,26 @@
 | Phase | Status | Progress |
 |-------|--------|----------|
 | Phase 1: Team Foundation | Complete | 2/2 plans |
-| Phase 2: Membership Automation | Ready | 0/3 plans |
-| Phase 3: Reliability & Resilience | Blocked | 0/1 plans |
+| Phase 2: Membership Automation | Complete | 2/2 plans |
+| Phase 3: Reliability & Resilience | Ready | 0/1 plans |
 
 ```
-Progress: [==========----------] 2/6 plans (33%)
+Progress: [================----] 4/5 plans (80%)
 ```
 
 ## Current Phase Details
 
-### Phase 1: Team Foundation
+### Phase 2: Membership Automation
 
-**Objective:** Establish the Global Reader team as a system-managed entity.
+**Objective:** Automatically add users to Global Reader team with appropriate privileges.
 
 **Plans:**
-- [x] PLAN-1.1: Global Reader Service (67d26ec7)
-- [x] PLAN-1.2: DI Integration (29f2fccd, 9ff9d1a8)
+- [x] PLAN-2.1: Add User Method (addUserToGlobalReader)
+- [x] PLAN-2.2: Hook Integration (JIT, createUser, addManyUsers)
 
 **Blockers:** None
 
-**Next Action:** Phase 1 complete. Ready for Phase 2: Membership Automation.
+**Next Action:** Phase 2 complete. Ready for Phase 3: Reliability & Resilience.
 
 ## Decision Log
 
@@ -42,31 +42,38 @@ Progress: [==========----------] 2/6 plans (33%)
 | 2026-02-04 | Use AIServiceCommand pattern | Consistent with teams.controller.ts for Python backend calls |
 | 2026-02-04 | Call team creation after eventService.stop() | Ensures org is fully committed before team creation |
 | 2026-02-04 | TypeScript generic type for API response | Proper typing for AIServiceCommand response data |
+| 2026-02-04 | Admin detection via UserGroups type='admin' | Matches existing pattern in userAdminCheck.ts middleware |
+| 2026-02-04 | READER/OWNER role constants | Uppercase strings matching Python backend expectations |
+| 2026-02-04 | Empty headers for JIT provisioning | Internal call doesn't need auth context forwarding |
 
 ## Files Modified
 
 | File | Purpose |
 |------|---------|
-| `backend/nodejs/apps/src/modules/user_management/services/globalReaderTeam.service.ts` | GlobalReaderTeamService with ensureGlobalReaderTeamExists method |
-| `backend/nodejs/apps/src/modules/user_management/container/userManager.container.ts` | DI container binding for GlobalReaderTeamService |
+| `backend/nodejs/apps/src/modules/user_management/services/globalReaderTeam.service.ts` | GlobalReaderTeamService with ensureGlobalReaderTeamExists and addUserToGlobalReader methods |
+| `backend/nodejs/apps/src/modules/user_management/container/userManager.container.ts` | DI container binding for GlobalReaderTeamService, UserController updated |
 | `backend/nodejs/apps/src/modules/user_management/controller/org.controller.ts` | Service injection and call in createOrg |
-| `backend/nodejs/apps/src/modules/user_management/routes/users.routes.ts` | OrgController rebind with new dependency |
+| `backend/nodejs/apps/src/modules/user_management/controller/users.controller.ts` | Service injection, calls in createUser and addManyUsers |
+| `backend/nodejs/apps/src/modules/user_management/routes/users.routes.ts` | OrgController and UserController rebind with new dependency |
+| `backend/nodejs/apps/src/modules/auth/services/jit-provisioning.service.ts` | Service injection and call in provisionUser |
+| `backend/nodejs/apps/src/modules/auth/container/authService.container.ts` | GlobalReaderTeamService binding for auth module |
 
 ## Notes
 
 - Research identified hook points in `userAccount.controller.ts`
 - Using existing PERMISSION edge pattern for memberships
 - No schema changes needed
-- GlobalReaderTeamService created and committed
-- Service integrated into DI container and org creation flow
+- GlobalReaderTeamService extended with user addition methods
+- All three user creation paths integrated (JIT, createUser, addManyUsers)
+- Admin users get OWNER role, regular users get READER role
 - TypeScript compiles without errors
 
 ## Session Continuity
 
 **Last session:** 2026-02-04
-**Stopped at:** Completed 01-02-PLAN.md (DI Integration)
+**Stopped at:** Completed 02-02-PLAN.md (Hook Integration)
 **Resume file:** None
-**Next:** Phase 2 - Membership Automation (02-01-PLAN.md)
+**Next:** Phase 3 - Reliability & Resilience
 
 ---
 *State file updated: 2026-02-04*
