@@ -1,6 +1,6 @@
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -641,6 +641,17 @@ class RetrievalService:
             self.logger.info(f"Vector store: {self.vector_store}")
         return self.vector_store
 
+    # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
+    # LangChain's SparseVector, which Prefetch does not accept.
+    @staticmethod
+    def to_qdrant_sparse(sparse: Union[models.SparseVector, Dict[str, Any], object]) -> models.SparseVector:
+        if isinstance(sparse, models.SparseVector):
+            return sparse
+        if hasattr(sparse, "indices") and hasattr(sparse, "values"):
+            return models.SparseVector(indices=list(sparse.indices), values=list(sparse.values))
+        if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
+            return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
+        raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
     async def _execute_parallel_searches(self, queries, filter, limit, vector_store) -> List[Dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
@@ -662,16 +673,7 @@ class RetrievalService:
             asyncio.gather(*sparse_tasks),
         )
 
-        # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
-        # LangChain's SparseVector, which Prefetch does not accept.
-        def to_qdrant_sparse(sparse: Any) -> models.SparseVector:
-            if isinstance(sparse, models.SparseVector):
-                return sparse
-            if hasattr(sparse, "indices") and hasattr(sparse, "values"):
-                return models.SparseVector(indices=list(sparse.indices), values=list(sparse.values))
-            if isinstance(sparse, dict) and "indices" in sparse and "values" in sparse:
-                return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
-            raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
+
 
         query_requests = [
             models.QueryRequest(
@@ -682,7 +684,7 @@ class RetrievalService:
                         limit=limit * 2,  # Fetch more candidates
                     ),
                     models.Prefetch(
-                        query=to_qdrant_sparse(sparse_embedding),
+                        query=self.to_qdrant_sparse(sparse_embedding),
                         using="sparse",
                         limit=limit * 2,
                     ),
