@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from typing import Dict
 
 from aiokafka import AIOKafkaProducer
@@ -52,6 +53,18 @@ class KafkaService:
                     "retry_backoff_ms": 100,
                     "enable_idempotence": True
                 }
+
+                # Add SSL/SASL configuration for AWS MSK
+                if kafka_config.get("ssl"):
+                    producer_config["ssl_context"] = ssl.create_default_context()
+                    sasl_config = kafka_config.get("sasl", {})
+                    if sasl_config.get("username"):
+                        producer_config["security_protocol"] = "SASL_SSL"
+                        producer_config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                        producer_config["sasl_plain_username"] = sasl_config["username"]
+                        producer_config["sasl_plain_password"] = sasl_config["password"]
+                    else:
+                        producer_config["security_protocol"] = "SSL"
 
                 producer = AIOKafkaProducer(**producer_config)
                 await producer.start()

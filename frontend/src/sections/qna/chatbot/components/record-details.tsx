@@ -162,13 +162,13 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
     const data: { [key: string]: { iconPath: string; color?: string } } = {};
     allConnectors.forEach((connector) => {
       data[connector.name.toUpperCase()] = {
-        iconPath: connector.iconPath || '/assets/icons/connectors/default.svg',
+        iconPath: connector.iconPath || '/assets/icons/connectors/collections.svg',
       };
     });
 
     // Add UPLOAD connector for local files
     data.UPLOAD = {
-      iconPath: '/assets/icons/connectors/kb.svg',
+      iconPath: '/assets/icons/connectors/collections.svg',
     };
 
     return data;
@@ -353,7 +353,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
   // Get connector info
   const connectorName = record.connectorName || (record.origin === 'UPLOAD' ? 'UPLOAD' : '');
   const connectorInfo = connectorData[connectorName?.toUpperCase()] || {
-    iconPath: '/assets/icons/connectors/default.svg',
+    iconPath: '/assets/icons/connectors/collections.svg',
   };
 
   const handleNavigateToRecordDetails = () => {
@@ -421,7 +421,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
                     flexShrink: 0,
                   }}
                   onError={(e) => {
-                    e.currentTarget.src = '/assets/icons/connectors/default.svg';
+                    e.currentTarget.src = '/assets/icons/connectors/collections.svg';
                   }}
                 />
                 <Typography
@@ -435,7 +435,7 @@ const RecordDetails = ({ recordId, onExternalLink }: RecordDetailsProps) => {
                     whiteSpace: 'nowrap',
                   }}
                 >
-                  {connectorName || 'KB'}
+                  {connectorName || 'Collection'}
                 </Typography>
               </Button>
             </Tooltip>

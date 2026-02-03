@@ -340,7 +340,7 @@ const GridView = memo<{
                     fontSize: '0.8125rem',
                   }}
                 >
-                  Loading more knowledge bases...
+                  Loading more collections...
                 </Typography>
               </Box>
             ) : (

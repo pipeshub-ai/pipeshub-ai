@@ -2,8 +2,8 @@ from enum import Enum
 from typing import List, Type
 
 from app.config.constants.arangodb import (
+    EntityRelations,
     RecordRelations,
-    TicketEdgeTypes,
 )
 
 
@@ -24,7 +24,7 @@ record_relations_schema = {
             },
             "customRelationshipTag": {
                 "type": "string",
-                "description": "Required when relationshipType is LINKED_TO. Standard tag describing the ticket linking relationship"
+                "description": "Optional custom relationship tag (use relationshipType directly instead of this field)"
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
@@ -35,7 +35,7 @@ record_relations_schema = {
     "message": "Document does not match the file relations schema.",
 }
 
-ticket_relations_schema = {
+entity_relations_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -43,16 +43,17 @@ ticket_relations_schema = {
             "_to": {"type": "string", "minLength": 1},
             "edgeType": {
                 "type": "string",
-                "enum": _get_enum_values(TicketEdgeTypes),
+                "enum": _get_enum_values(EntityRelations),
             },
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "sourceTimestamp": {"type": "number"},
         },
         "required": ["edgeType", "createdAtTimestamp"],
         "additionalProperties": True,
     },
     "level": "strict",
-    "message": "Document does not match the ticket relations schema.",
+    "message": "Document does not match the entity relations schema.",
 }
 
 is_of_type_schema = {

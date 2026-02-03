@@ -1,415 +1,169 @@
+"""
+Agent Graph - LLM-Driven Planner Architecture with Reflection
+
+This module defines the agent execution graph using LangGraph.
+The architecture is fully LLM-driven with intelligent error recovery.
+
+Architecture:
+    ┌───────────────────────────────────────────────────────────────────────┐
+    │                                                                       │
+    │   Entry ──▶ Planner ──▶ Execute ──▶ Reflect ──▶ Respond ──▶ End      │
+    │              (LLM)      (Parallel)    (Fast)     (LLM)                │
+    │                │                         │         ▲                  │
+    │                │                         │         │                  │
+    │                │                    retry_with_fix │                  │
+    │                │                         │         │                  │
+    │                │                         ▼         │                  │
+    │                │                   PrepareRetry ───┘                  │
+    │                │                         │                            │
+    │                │                         │ (back to planner)          │
+    │                └─────────────────────────┴────────────────────────────┘
+    │                                                                       │
+    └───────────────────────────────────────────────────────────────────────┘
+
+Flow:
+1. **Planner Node** (LLM): Analyzes query and creates execution plan
+2. **Execute Node**: Runs all planned tools in parallel
+3. **Reflect Node**: Analyzes results, decides next action (fast-path or LLM)
+4. **PrepareRetry Node**: Sets up retry context (if reflection says retry)
+5. **Respond Node** (LLM): Generates final response with citations
+
+Reflection Decisions:
+- respond_success: Tools worked, generate response
+- respond_error: Unrecoverable error, give friendly message
+- respond_clarify: Need user input, ask clarifying question
+- retry_with_fix: Fixable error, retry with adjusted approach (max 1 retry)
+
+Performance Targets:
+- Simple queries (no tools): ~2-3s
+- Success (tools work): ~6-8s
+- Retry (one fix needed): ~10-14s
+- Error (unrecoverable): ~6-8s
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import TYPE_CHECKING
+
 from langgraph.graph import END, StateGraph
 
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.nodes import (
-    agent_node,
-    check_for_error,
-    final_response_node,
-    prepare_agent_prompt_node,
-    tool_execution_node,
+    execute_node,
+    planner_node,
+    prepare_retry_node,
+    reflect_node,
+    respond_node,
+    route_after_reflect,
+    should_execute_tools,
 )
-from app.modules.agents.qna.query_analyzer import analyze_query_node
 
-# ============================================================================
-# OPTIMIZED CONSTANTS
-# ============================================================================
+if TYPE_CHECKING:
+    from langgraph.graph.state import CompiledStateGraph
 
-# Loop detection (reduced for faster termination)
-LAST_N_TOOLS = 3  # Reduced from 5 - faster loop detection
-MAX_TOOL_ITERATIONS = 20  # Reduced from 30 - prevent long-running queries
-PING_PONG_PATTERN_THRESHOLD = 3  # Reduced from 5
-RECENT_FAILURE_WINDOW = 2  # Reduced from 3
-MAX_RETRIES_PER_TOOL = 1  # Reduced from 2 - fail fast
-
-# Performance thresholds
-SIMPLE_QUERY_MAX_ITERATIONS = 5  # For simple queries, stop sooner
-COMPLEX_QUERY_MAX_ITERATIONS = 15  # For complex queries, allow more
+logger = logging.getLogger(__name__)
 
 
-# ============================================================================
-# ULTRA-SMART ROUTING - Skip Unnecessary Nodes
-# ============================================================================
-
-def smart_entry_point(state: ChatState) -> str:
+def create_agent_graph() -> "CompiledStateGraph":
     """
-    OPTIMIZATION: Determine optimal entry point based on query characteristics.
+    Create the LLM-driven agent graph with reflection.
 
-    Can skip analysis and retrieval for:
-    - Purely conversational queries
-    - Tool-only queries (math, web search, etc.)
-    - Follow-up queries with sufficient context
-    """
-    logger = state.get("logger")
-    query = state.get("query", "").lower()
-    previous_conversations = state.get("previous_conversations", [])
-    quick_mode = state.get("quick_mode", False)
+    This graph uses an intelligent architecture with error recovery:
 
-    # FAST PATH 1: Quick mode - skip analysis, go straight to agent
-    if quick_mode:
-        if logger:
-            logger.info("⚡ FAST PATH: Quick mode enabled - skipping analysis")
-        state["query_analysis"] = {
-            "is_complex": False,
-            "needs_tools": True,
-            "intent": "quick_query"
-        }
-        state["search_results"] = []
-        state["final_results"] = []
-        return "prepare"
+    1. **Planner** (Entry Point):
+       - Single LLM call that analyzes the query
+       - Decides which tools to use (including retrieval)
+       - Creates complete execution plan
+       - Handles retry context if coming from a failed attempt
 
-    # FAST PATH 2: Tool-only queries (calculator, web search, etc.)
-    tool_only_patterns = [
-        "calculate", "compute", "what is", "search for", "search web",
-        "web search", "google", "find on web", "look up online"
-    ]
-    if any(pattern in query for pattern in tool_only_patterns):
-        if logger:
-            logger.info("⚡ FAST PATH: Tool-only query detected")
-        state["query_analysis"] = {
-            "is_complex": False,
-            "needs_tools": True,
-            "intent": "tool_query"
-        }
-        state["search_results"] = []
-        state["final_results"] = []
-        return "prepare"
+    2. **Execute** (Conditional):
+       - Runs all planned tools in parallel
+       - Handles retrieval output specially for citations
+       - Skipped if planner says can_answer_directly=True
 
-    # FAST PATH 3: Conversational queries with context
-    conversational_patterns = [
-        "thank", "thanks", "ok", "okay", "got it", "understood",
-        "that's all", "nothing else", "that's it", "no more"
-    ]
-    if any(pattern in query for pattern in conversational_patterns) and previous_conversations:
-        if logger:
-            logger.info("⚡ FAST PATH: Conversational query - skipping all processing")
-        state["query_analysis"] = {
-            "is_complex": False,
-            "needs_tools": False,
-            "intent": "conversational"
-        }
-        state["search_results"] = []
-        state["final_results"] = []
-        return "prepare"
+    3. **Reflect** (Fast-Path + LLM Fallback):
+       - Analyzes tool execution results
+       - Uses pattern matching for common errors (0ms)
+       - Falls back to LLM for ambiguous cases (~3s)
+       - Decides: respond_success, respond_error, respond_clarify, retry_with_fix
 
-    # DEFAULT: Full analysis needed
-    if logger:
-        logger.debug("📍 NORMAL PATH: Full analysis required")
-    return "analyze"
+    4. **PrepareRetry** (Conditional):
+       - Sets up error context for retry
+       - Clears old results
+       - Routes back to planner
 
-
-def routing_decision_node(state: ChatState) -> str:
-    """
-    WORLD-CLASS ROUTING: Most intelligent routing logic possible.
-
-    Considers:
-    - Loop detection (3 levels of sophistication)
-    - Data sufficiency analysis
-    - Error patterns
-    - Query complexity
-    - Performance budget
-    - User experience
-    """
-    logger = state.get("logger")
-    all_tool_results = state.get("all_tool_results", [])
-    tool_call_count = len(all_tool_results)
-
-    is_complex = state.get("requires_planning", False)
-    has_pending_calls = state.get("pending_tool_calls", False)
-    force_final_response = state.get("force_final_response", False)
-
-    # Dynamic max iterations based on complexity
-    max_iterations = COMPLEX_QUERY_MAX_ITERATIONS if is_complex else SIMPLE_QUERY_MAX_ITERATIONS
-
-    # PRIORITY 1: Forced termination
-    if force_final_response:
-        if logger:
-            logger.info("🛑 Forced termination - comprehensive data available")
-        return "final"
-
-    # PRIORITY 2: Performance budget exceeded
-    if tool_call_count >= max_iterations:
-        if logger:
-            logger.warning(f"⏱️ Performance budget exceeded ({tool_call_count}/{max_iterations})")
-            logger.info("Providing best-effort response")
-        state["force_final_response"] = True
-        return "final"
-
-    # PRIORITY 3: Advanced loop detection (3 levels)
-    if tool_call_count >= LAST_N_TOOLS:
-        loop_detected, loop_type = _detect_loops(all_tool_results, logger)
-        if loop_detected:
-            if logger:
-                logger.warning(f"🔄 {loop_type} detected - forcing termination")
-            state["force_final_response"] = True
-            state["loop_detected"] = True
-            state["loop_reason"] = loop_type
-            return "final"
-
-    # PRIORITY 4: Data sufficiency analysis
-    # CRITICAL: Don't skip execution if the agent just planned new tool calls
-    # The agent's judgment should be trusted - if it wants to call tools, let it execute them
-    if tool_call_count > 0 and not has_pending_calls:
-        has_sufficient_data = _analyze_data_sufficiency(state, logger)
-        if has_sufficient_data:
-            if logger:
-                logger.info("✅ Sufficient data collected - moving to final response")
-            state["force_final_response"] = True
-            return "final"
-    elif has_pending_calls and tool_call_count > 0:
-        if logger:
-            logger.debug("⏩ Skipping data sufficiency check - agent planned new tool calls (trusting agent judgment)")
-
-    # PRIORITY 5: Error recovery analysis
-    # CRITICAL: Only check error recovery if we're not about to execute new tools
-    # If the agent planned new tool calls, it's adapting its strategy - let it execute
-    if tool_call_count > 0 and not has_pending_calls:
-        should_retry, retry_reason = _analyze_error_recovery(state, logger)
-        if not should_retry:
-            if logger:
-                logger.warning(f"❌ Error recovery failed: {retry_reason}")
-            state["force_final_response"] = True
-            return "final"
-
-    # PRIORITY 6: Normal routing
-    if has_pending_calls:
-        if logger:
-            logger.debug(f"▶️ Executing tools (iteration {tool_call_count + 1}/{max_iterations})")
-        return "execute_tools"
-    else:
-        if logger:
-            logger.info("✅ No pending calls - generating final response")
-        return "final"
-
-
-# ============================================================================
-# ADVANCED HELPER FUNCTIONS
-# ============================================================================
-
-def _detect_loops(all_tool_results: list, logger) -> tuple[bool, str]:
-    """
-    3-LEVEL LOOP DETECTION:
-    1. Exact repetition (same tool N times)
-    2. Ping-pong pattern (A→B→A→B)
-    3. Semantic loops (similar tool calls with minor variations)
-    """
-    recent_tools = [r.get("tool_name", "unknown") for r in all_tool_results[-LAST_N_TOOLS:]]
-
-    # LEVEL 1: Exact repetition
-    unique_tools = set(recent_tools)
-    if len(unique_tools) == 1:
-        return True, f"Exact repetition: {recent_tools[0]} × {LAST_N_TOOLS}"
-
-    # LEVEL 2: Ping-pong pattern
-    _PING_PONG_TOOL_COUNT = 2
-    if len(unique_tools) == _PING_PONG_TOOL_COUNT:
-        is_ping_pong = all(recent_tools[i] != recent_tools[i+1] for i in range(len(recent_tools)-1))
-        if is_ping_pong:
-            return True, f"Ping-pong: {' ↔ '.join(unique_tools)}"
-
-    # LEVEL 3: Semantic loops (same tool with similar args)
-    if len(all_tool_results) >= LAST_N_TOOLS:
-        recent_results = all_tool_results[-LAST_N_TOOLS:]
-        tool_arg_pairs = [(r.get("tool_name"), str(r.get("args", {}))) for r in recent_results]
-
-        # Check for repeated tool+args combinations
-        _MAX_UNIQUE_COMBINATIONS = 2  # Only 1-2 unique combinations
-        if len(set(tool_arg_pairs)) <= _MAX_UNIQUE_COMBINATIONS:
-            return True, "Semantic loop: repeated tool+args patterns"
-
-    return False, ""
-
-
-def _analyze_data_sufficiency(state: ChatState, logger) -> bool:
-    """
-
-    Determines if we have enough data to answer the query without more tool calls.
-    Considers:
-    - Number of successful tool executions
-    - Type of data retrieved
-    - Query complexity
-    - User intent
-    """
-    all_tool_results = state.get("all_tool_results", [])
-    query_analysis = state.get("query_analysis", {})
-
-    if not all_tool_results:
-        return False
-
-    # Count successful results
-    successful_results = [r for r in all_tool_results if r.get("status") == "success"]
-    success_count = len(successful_results)
-
-    # Get query intent
-    is_complex = query_analysis.get("is_complex", False)
-
-    if logger:
-        logger.debug(f"📊 Data sufficiency check: is_complex={is_complex}, success_count={success_count}, total_results={len(all_tool_results)}")
-
-    # RULE 1: Simple queries - 1-2 successful tool calls is enough
-    if not is_complex and success_count >= 1:
-        if logger:
-            logger.debug(f"✅ Simple query with {success_count} successful result(s)")
-        return True
-
-    # RULE 2: Complex queries - need 3+ successful tool calls
-    _MIN_SUCCESSFUL_TOOLS_COMPLEX = 3
-    if is_complex and success_count >= _MIN_SUCCESSFUL_TOOLS_COMPLEX:
-        if logger:
-            logger.debug(f"✅ Complex query with {success_count} successful results")
-        return True
-
-    # RULE 3: If last 2 tool calls were successful, likely have enough data
-    _MIN_TOOL_RESULTS_FOR_SUCCESS_CHECK = 2
-    if len(all_tool_results) >= _MIN_TOOL_RESULTS_FOR_SUCCESS_CHECK:
-        last_two = all_tool_results[-2:]
-        if all(r.get("status") == "success" for r in last_two):
-            if logger:
-                logger.debug("✅ Last 2 tool calls successful - sufficient data")
-            return True
-
-    # RULE 4: If we have retrieval tool results + other tool results, often enough
-    # Check if any tool result is from retrieval tool
-    has_retrieval_result = any(
-        r.get("tool_name", "").startswith("retrieval.")
-        for r in successful_results
-    )
-    if has_retrieval_result and success_count >= 1:
-        if logger:
-            logger.debug("✅ Have retrieval tool result + other tool results")
-        return True
-
-    return False
-
-
-def _analyze_error_recovery(state: ChatState, logger) -> tuple[bool, str]:
-    """
-    SMART ERROR RECOVERY ANALYSIS:
-
-    Determines if we should continue trying after errors or give up gracefully.
+    5. **Respond** (Final):
+       - Generates response based on reflection decision
+       - For success: incorporates tool results
+       - For error: returns user-friendly message
+       - For clarify: asks clarifying question
+       - Streams response for good UX
 
     Returns:
-        (should_retry, reason)
+        Compiled StateGraph ready for execution
+
+    Example:
+        >>> graph = create_agent_graph()
+        >>> result = await graph.ainvoke(initial_state, config=config)
+        >>> print(result["response"])
     """
-    all_tool_results = state.get("all_tool_results", [])
-
-    if not all_tool_results:
-        return True, "No results yet"
-
-    # Get recent results
-    recent_results = all_tool_results[-RECENT_FAILURE_WINDOW:] if len(all_tool_results) >= RECENT_FAILURE_WINDOW else all_tool_results
-
-    # Count errors
-    error_count = sum(1 for r in recent_results if r.get("status") == "error")
-    success_count = sum(1 for r in recent_results if r.get("status") == "success")
-
-    # RULE 1: All recent attempts failed - give up
-    if error_count == len(recent_results) and error_count >= RECENT_FAILURE_WINDOW:
-        return False, f"All last {error_count} attempts failed"
-
-    # RULE 2: More failures than successes in recent window
-    _MIN_ERROR_COUNT_FOR_FAILURE = 2
-    if error_count > success_count and error_count >= _MIN_ERROR_COUNT_FOR_FAILURE:
-        return False, f"High error rate: {error_count} errors vs {success_count} successes"
-
-    # RULE 3: Same tool failing repeatedly
-    failed_tools = {}
-    for r in all_tool_results:
-        if r.get("status") == "error":
-            tool_name = r.get("tool_name")
-            failed_tools[tool_name] = failed_tools.get(tool_name, 0) + 1
-
-    for tool, count in failed_tools.items():
-        if count > MAX_RETRIES_PER_TOOL:
-            return False, f"{tool} failed {count} times (max {MAX_RETRIES_PER_TOOL})"
-
-    return True, "Can continue"
-
-
-# ============================================================================
-# OPTIMIZED GRAPH CONSTRUCTION
-# ============================================================================
-
-def create_agent_graph() -> StateGraph:
-    """
-    Create the world's most optimized agent graph.
-
-    Features:
-    - Smart entry points (skip unnecessary nodes)
-    - Intelligent routing (3-level loop detection)
-    - Data sufficiency analysis
-    - Error recovery logic
-    - Performance budgets
-    - Memory efficiency
-    - Graceful degradation
-
-    This is a $1 Billion Agent.
-    """
+    # Create workflow
     workflow = StateGraph(ChatState)
 
-    # ========================================================================
-    # NODE DEFINITIONS
-    # ========================================================================
+    # Add nodes
+    workflow.add_node("planner", planner_node)
+    workflow.add_node("execute", execute_node)
+    workflow.add_node("reflect", reflect_node)
+    workflow.add_node("prepare_retry", prepare_retry_node)
+    workflow.add_node("respond", respond_node)
 
-    workflow.add_node("analyze", analyze_query_node)
-    workflow.add_node("prepare", prepare_agent_prompt_node)
-    workflow.add_node("agent", agent_node)
-    workflow.add_node("execute_tools", tool_execution_node)
-    workflow.add_node("final", final_response_node)
+    # Set entry point - planner is the first node
+    workflow.set_entry_point("planner")
 
-    # ========================================================================
-    # SMART ENTRY POINT - Can skip analysis for certain queries
-    # ========================================================================
-
-    workflow.set_entry_point("analyze")  # Default, but can be skipped via smart routing
-
-    # ========================================================================
-    # OPTIMIZED EDGES WITH ERROR HANDLING
-    # ========================================================================
-
-    # Analysis → Preparation (with error handling)
-    # Note: Retrieval is now a tool that the agent can call, not a separate node
+    # Add edges
+    # From planner: either execute tools or respond directly
     workflow.add_conditional_edges(
-        "analyze",
-        check_for_error,
+        "planner",
+        should_execute_tools,
         {
-            "continue": "prepare",
-            "error": "final"
+            "execute": "execute",
+            "respond": "respond"
         }
     )
 
-    # Preparation → Agent (with error handling)
+    # From execute: go to reflect for analysis
+    workflow.add_edge("execute", "reflect")
+
+    # From reflect: either retry or respond
     workflow.add_conditional_edges(
-        "prepare",
-        check_for_error,
+        "reflect",
+        route_after_reflect,
         {
-            "continue": "agent",
-            "error": "final"
+            "prepare_retry": "prepare_retry",
+            "respond": "respond"
         }
     )
 
-    # Agent → Ultra-Smart Routing
-    # This is where the magic happens - world-class routing logic
-    workflow.add_conditional_edges(
-        "agent",
-        routing_decision_node,
-        {
-            "execute_tools": "execute_tools",
-            "final": "final"
-        }
-    )
+    # From prepare_retry: go back to planner
+    workflow.add_edge("prepare_retry", "planner")
 
-    # Tools → Agent (for planning loop)
-    workflow.add_edge("execute_tools", "agent")
+    # From respond: end the graph
+    workflow.add_edge("respond", END)
 
-    # Final → End
-    workflow.add_edge("final", END)
-
+    # Compile and return
     return workflow.compile()
 
 
-# ============================================================================
-# EXPORT
-# ============================================================================
-
+# Create the compiled graph instance
 agent_graph = create_agent_graph()
 
+
+# =============================================================================
+# EXPORTS
+# =============================================================================
+
+__all__ = [
+    "agent_graph",
+    "create_agent_graph",
+]

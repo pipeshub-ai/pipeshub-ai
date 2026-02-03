@@ -388,7 +388,7 @@ export const ListView: React.FC<ListViewProps> = ({
         color = theme.palette.text.secondary;
         break;
       case 'AUTO_INDEX_OFF':
-        displayLabel = 'MANUAL SYNC';
+        displayLabel = 'MANUAL INDEXING';
         color = theme.palette.primary.main;
         break;
       case 'EMPTY':
@@ -707,7 +707,7 @@ export const ListView: React.FC<ListViewProps> = ({
           getRowId={(row) => row.id}
           rowHeight={56}
           localeText={{
-            noRowsLabel: 'No records uploaded for knowledge base',
+            noRowsLabel: 'No records uploaded for Collection',
           }}
           sx={{
             border: 'none',

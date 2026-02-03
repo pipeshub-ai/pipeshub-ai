@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set
 
@@ -113,13 +114,27 @@ class KafkaConsumerManager:
                 )
                 brokers = kafka_config["brokers"]
 
-                return {
+                config = {
                     "bootstrap_servers": ",".join(brokers),  # aiokafka uses bootstrap_servers
                     "group_id": "record_consumer_group",
                     "auto_offset_reset": "earliest",
                     "enable_auto_commit": True,
                     "client_id": KafkaConfig.CLIENT_ID_MAIN.value,
                 }
+
+                # Add SSL/SASL configuration for AWS MSK
+                if kafka_config.get("ssl"):
+                    config["ssl_context"] = ssl.create_default_context()
+                    sasl_config = kafka_config.get("sasl", {})
+                    if sasl_config.get("username"):
+                        config["security_protocol"] = "SASL_SSL"
+                        config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
+                        config["sasl_plain_username"] = sasl_config["username"]
+                        config["sasl_plain_password"] = sasl_config["password"]
+                    else:
+                        config["security_protocol"] = "SSL"
+
+                return config
 
             kafka_config = await get_kafka_config()
 

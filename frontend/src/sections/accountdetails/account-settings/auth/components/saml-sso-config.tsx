@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import React, { useState, useEffect } from 'react';
 import fileIcon from '@iconify-icons/eva/file-outline';
+import infoIcon from '@iconify-icons/eva/info-outline';
 import fileTextIcon from '@iconify-icons/eva/file-text-outline';
 import arrowBackIcon from '@iconify-icons/eva/arrow-ios-back-fill';
 
@@ -12,6 +13,7 @@ import {
   Paper,
   Alert,
   Button,
+  Switch,
   styled,
   Snackbar,
   Container,
@@ -19,7 +21,10 @@ import {
   Typography,
   IconButton,
   CircularProgress,
+  FormControlLabel,
 } from '@mui/material';
+
+import axios from 'src/utils/axios';
 
 import { useAdmin } from 'src/context/AdminContext';
 
@@ -30,6 +35,34 @@ import { useAuthContext } from 'src/auth/hooks';
 import { getSamlSsoConfig, updateSamlSsoConfig } from '../utils/auth-configuration-service';
 
 import type { SamlSsoConfig } from '../utils/auth-configuration-service';
+
+const getAcsUrls = async () => {
+  // Get the current window URL without hash and search parameters
+  const currentAcsUrl = `${window.location.origin}/api/v1/auth/saml/callback`;
+
+  // Get the frontend URL from the backend
+  try {
+    const response = await axios.get(`/api/v1/configurationManager/frontendPublicUrl`);
+    const frontendBaseUrl = response.data.url;
+    // Ensure the URL ends with a slash if needed
+    const frontendUrl = frontendBaseUrl.endsWith('/')
+      ? `${frontendBaseUrl}api/v1/auth/saml/callback`
+      : `${frontendBaseUrl}/api/v1/auth/saml/callback`;
+
+    return {
+      currentAcsUrl,
+      recommendedAcsUrl: frontendUrl,
+      urisMismatch: currentAcsUrl !== frontendUrl,
+    };
+  } catch (error) {
+    console.error('Error fetching frontend URL:', error);
+    return {
+      currentAcsUrl,
+      recommendedAcsUrl: currentAcsUrl,
+      urisMismatch: false,
+    };
+  }
+};
 
 const StyledTextarea = styled(TextField)(({ theme }) => ({
   '& .MuiOutlinedInput-root': {
@@ -43,6 +76,7 @@ const DEFAULT_SAML_CONFIG: SamlSsoConfig = {
   entryPoint: '',
   certificate: '',
   emailKey: '',
+  enableJit: true,
 };
 
 const SamlSsoConfigPage = () => {
@@ -57,6 +91,11 @@ const SamlSsoConfigPage = () => {
     entryPoint: '',
     certificate: '',
   });
+  const [acsUrls, setAcsUrls] = useState<{
+    currentAcsUrl: string;
+    recommendedAcsUrl: string;
+    urisMismatch: boolean;
+  } | null>(null);
 
   const [isLoading, setIsLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -97,7 +136,14 @@ const SamlSsoConfigPage = () => {
   const fetchSamlConfiguration = async () => {
     setIsLoading(true);
     try {
-      const response = await getSamlSsoConfig();
+      // Parallelize API calls for better performance
+      const [urls, response] = await Promise.all([
+        getAcsUrls(),
+        getSamlSsoConfig(),
+      ]);
+
+      setAcsUrls(urls);
+
       if (response && (response.entryPoint || response.certificate)) {
         setConfiguration(response);
       } else {
@@ -275,6 +321,7 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
         emailKey: configuration.emailKey || 'nameID',
         entityId: configuration.entityId,
         logoutUrl: configuration.logoutUrl,
+        enableJit: configuration.enableJit,
       };
 
       // Send to API
@@ -325,6 +372,69 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
           </Box>
         ) : (
           <Box>
+            {acsUrls?.urisMismatch && (
+              <Alert
+                severity="warning"
+                sx={{
+                  mb: 3,
+                  borderRadius: 1,
+                }}
+              >
+                <Typography variant="body2" sx={{ mb: 1 }}>
+                  ACS URL mismatch detected! Using the recommended URL from backend
+                  configuration.
+                </Typography>
+                <Typography variant="caption" component="div">
+                  Current ACS URL: {acsUrls.currentAcsUrl}
+                </Typography>
+                <Typography variant="caption" component="div">
+                  Recommended ACS URL: {acsUrls.recommendedAcsUrl}
+                </Typography>
+              </Alert>
+            )}
+
+            <Box
+              sx={{
+                mb: 3,
+                p: 2,
+                borderRadius: 1,
+                bgcolor: alpha(theme.palette.info.main, 0.04),
+                border: `1px solid ${alpha(theme.palette.info.main, 0.15)}`,
+                display: 'flex',
+                alignItems: 'flex-start',
+                gap: 1,
+              }}
+            >
+              <Iconify
+                icon={infoIcon}
+                width={20}
+                height={20}
+                color={theme.palette.info.main}
+                style={{ marginTop: 2 }}
+              />
+              <Box>
+                <Typography variant="body2" color="text.secondary">
+                  ACS (Assertion Consumer Service) URL - Add this to your Identity Provider:
+                  <Box
+                    component="code"
+                    sx={{
+                      display: 'block',
+                      p: 1.5,
+                      mt: 1,
+                      bgcolor: alpha(theme.palette.background.default, 0.7),
+                      borderRadius: 1,
+                      fontSize: '0.8rem',
+                      fontFamily: 'monospace',
+                      wordBreak: 'break-all',
+                      border: `1px solid ${theme.palette.divider}`,
+                    }}
+                  >
+                    {acsUrls?.recommendedAcsUrl || `${window.location.origin}/api/v1/auth/saml/callback`}
+                  </Box>
+                </Typography>
+              </Box>
+            </Box>
+
             <Grid container spacing={3}>
               <Grid item xs={12}>
                 <Box sx={{ mb: 2 }}>
@@ -425,6 +535,41 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
                 >
                   The attribute that contains the user&apos;s email address (default is nameID)
                 </Typography>
+              </Grid>
+
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.primary.main, 0.04),
+                    border: `1px solid ${alpha(theme.palette.primary.main, 0.15)}`,
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={configuration.enableJit ?? true}
+                        onChange={(e) =>
+                          setConfiguration((prev) => ({ ...prev, enableJit: e.target.checked }))
+                        }
+                        color="primary"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="subtitle2">
+                          Enable Just-In-Time (JIT) Provisioning
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Automatically create user accounts when they sign in with SAML SSO for the
+                          first time
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: 'flex-start', ml: 0 }}
+                  />
+                </Box>
               </Grid>
             </Grid>
 

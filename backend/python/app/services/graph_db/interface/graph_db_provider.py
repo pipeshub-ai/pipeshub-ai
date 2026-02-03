@@ -311,6 +311,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str],
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete edges from a node by relationship types.
+
+        Args:
+            from_id (str): Source node ID
+            from_collection (str): Source node collection name
+            collection (str): Edge collection name
+            relationship_types (List[str]): List of relationship type values to delete
+            transaction (Optional[Any]): Optional transaction context
+
+        Returns:
+            int: Number of edges deleted
+        """
+        pass
+
+    @abstractmethod
     async def delete_edges_to(
         self,
         to_id: str,
@@ -760,15 +784,35 @@ class IGraphDBProvider(ABC):
         transaction: Optional[str] = None
     ) -> Optional['Record']:
         """
-        Get a record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
+        Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern.
 
         Args:
-            connector_id (str): Connector ID
-            issue_key (str): Jira issue key (e.g., "PROJ-123")
-            transaction (Optional[Any]): Optional transaction context
+            connector_id: Connector ID
+            issue_key: Jira issue key (e.g., "PROJ-123")
+            transaction: Optional transaction ID
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            Optional[Record]: Record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_weburl(
+        self,
+        weburl: str,
+        org_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Optional['Record']:
+        """
+        Get record by weburl (exact match).
+
+        Args:
+            weburl: Web URL to search for
+            org_id: Optional organization ID to filter by
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Record if found, None otherwise
         """
         pass
 
@@ -1115,8 +1159,8 @@ class IGraphDBProvider(ABC):
         Args:
             from_record_id (str): Source record ID
             to_record_id (str): Target record ID
-            relation_type (str): Type of relation (e.g., 'PARENT_CHILD', 'ATTACHMENT')
-            transaction (Optional[Any]): Optional transaction context
+            relation_type (str): Type of relation (e.g., "PARENT_CHILD", "ATTACHMENT", "SIBLING", "BLOCKS", etc.)
+            transaction (Optional[str]): Optional transaction ID
         """
         pass
 
@@ -1922,7 +1966,117 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_knowledge_hub_children(
+        self,
+        parent_id: str,
+        parent_type: str,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get direct children of a parent node.
 
+        Provider-agnostic: Each provider converts these parameters to its query language.
+
+        Args:
+            parent_id: The ID of the parent node
+            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            org_id: The organization ID
+            user_key: The user's key for permission filtering
+            skip: Number of items to skip for pagination
+            limit: Maximum number of items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction ('ASC' or 'DESC')
+            search_query: Optional search query to filter by name
+            node_types: Optional list of node types to filter by
+            record_types: Optional list of record types to filter by
+            origins: Optional list of origins to filter by (KB/CONNECTOR)
+            connector_ids: Optional list of connector IDs to filter by
+            kb_ids: Optional list of KB IDs to filter by
+            indexing_status: Optional list of indexing statuses to filter by
+            created_at: Optional date range filter for creation date
+            updated_at: Optional date range filter for update date
+            size: Optional size range filter
+            only_containers: If True, only return nodes that can have children
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_hub_recursive_search(
+        self,
+        parent_id: str,
+        parent_type: str,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Search recursively within a parent node and all its descendants.
+
+        Provider-agnostic: Each provider converts these parameters to its query language.
+
+        Args:
+            parent_id: The ID of the parent node
+            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            org_id: The organization ID
+            user_key: The user's key for permission filtering
+            skip: Number of items to skip for pagination
+            limit: Maximum number of items to return
+            sort_field: Field to sort by
+            sort_dir: Sort direction ('ASC' or 'DESC')
+            search_query: Optional search query to filter by name
+            node_types: Optional list of node types to filter by
+            record_types: Optional list of record types to filter by
+            origins: Optional list of origins to filter by (KB/CONNECTOR)
+            connector_ids: Optional list of connector IDs to filter by
+            kb_ids: Optional list of KB IDs to filter by
+            indexing_status: Optional list of indexing statuses to filter by
+            created_at: Optional date range filter for creation date
+            updated_at: Optional date range filter for update date
+            size: Optional size range filter
+            only_containers: If True, only return nodes that can have children
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict with 'nodes' list and 'total' count
+        """
+        pass
 
     @abstractmethod
     async def get_knowledge_hub_search_nodes(

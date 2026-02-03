@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback, createRef } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -21,6 +21,7 @@ import { useAccountType } from 'src/hooks/use-account-type';
 import closeIcon from '@iconify-icons/mdi/close';
 import saveIcon from '@iconify-icons/eva/save-outline';
 import { useConnectorConfig } from '../../hooks/use-connector-config';
+import { useErrorAutoscroll } from '../../hooks/use-error-autoscroll';
 import AuthSection from './auth-section';
 import SyncSection from './sync-section';
 import FiltersSection from './filters-section';
@@ -55,6 +56,13 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showTopFade, setShowTopFade] = useState(false);
   const [showBottomFade, setShowBottomFade] = useState(false);
+  
+  // Refs for scrolling to error sections
+  const authSectionRef = createRef<HTMLDivElement>();
+  const filtersSectionRef = createRef<HTMLDivElement>();
+  const syncSectionRef = createRef<HTMLDivElement>();
+  const sharepointSectionRef = createRef<HTMLDivElement>();
+  const businessOAuthSectionRef = createRef<HTMLDivElement>();
 
   // Check if connector is active - prevents saving while active
   const isConnectorActive = connector.isActive;
@@ -68,6 +76,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     formErrors,
     saveError,
     conditionalDisplay,
+    saveAttempted,
 
     // Business OAuth state (Google Workspace)
     isCreateMode,
@@ -130,8 +139,15 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
   // Skip auth step if authType is 'NONE'
   const isNoAuthType = useMemo(() => isNoneAuthType(connector.authType), [connector.authType]);
   const hasFilters = useMemo(
-    () => (connectorConfig?.config?.filters?.sync?.schema?.fields?.length ?? 0) > 0,
-    [connectorConfig?.config?.filters?.sync?.schema?.fields?.length]
+    () => {
+      const syncFields = connectorConfig?.config?.filters?.sync?.schema?.fields?.length ?? 0;
+      const indexingFields = connectorConfig?.config?.filters?.indexing?.schema?.fields?.length ?? 0;
+      return syncFields > 0 || indexingFields > 0;
+    },
+    [
+      connectorConfig?.config?.filters?.sync?.schema?.fields?.length,
+      connectorConfig?.config?.filters?.indexing?.schema?.fields?.length
+    ]
   );
   const steps = useMemo(
     () => {
@@ -240,11 +256,38 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     };
   }, [activeStep, checkScroll]);
 
+  // Auto-scroll to first validation error when Save is clicked
+  useErrorAutoscroll({
+    saveAttempted,
+    formErrors,
+    instanceNameError,
+    adminEmailError,
+    fileError,
+    certificateError,
+    privateKeyError,
+    activeStep,
+    authOnly,
+    syncSettingsMode,
+    enableMode,
+    syncOnly,
+    isNoAuthType,
+    hasFilters,
+    connector,
+    isBusiness,
+    scrollContainerRef,
+    authSectionRef,
+    filtersSectionRef,
+    syncSectionRef,
+    sharepointSectionRef,
+    businessOAuthSectionRef,
+  });
+
   const renderStepContent = useCallback(() => {
     // Auth only mode: show only authentication
     if (authOnly) {
       return (
         <AuthSection
+          ref={authSectionRef}
           connector={connector}
           connectorConfig={connectorConfig}
           formData={formData.auth}
@@ -281,8 +324,11 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           instanceName={instanceName}
           instanceNameError={instanceNameError}
           onInstanceNameChange={setInstanceName}
+          saveAttempted={saveAttempted}
           selectedAuthType={selectedAuthType}
           handleAuthTypeChange={handleAuthTypeChange}
+          sharepointSectionRef={sharepointSectionRef}
+          businessOAuthSectionRef={businessOAuthSectionRef}
         />
       );
     }
@@ -295,6 +341,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 0:
             return (
               <FiltersSection
+                ref={filtersSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.filters}
                 formErrors={formErrors.filters}
@@ -306,6 +353,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 1:
             return (
               <SyncSection
+                ref={syncSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.sync}
                 formErrors={formErrors.sync}
@@ -320,6 +368,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       // If no filters, show sync settings as the only step
       return (
         <SyncSection
+          ref={syncSectionRef}
           connectorConfig={connectorConfig}
           formData={formData.sync}
           formErrors={formErrors.sync}
@@ -335,6 +384,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 0:
             return (
               <FiltersSection
+                ref={filtersSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.filters}
                 formErrors={formErrors.filters}
@@ -346,6 +396,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 1:
             return (
               <SyncSection
+                ref={syncSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.sync}
                 formErrors={formErrors.sync}
@@ -360,6 +411,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       // No filters, only sync
       return (
         <SyncSection
+          ref={syncSectionRef}
           connectorConfig={connectorConfig}
           formData={formData.sync}
           formErrors={formErrors.sync}
@@ -373,6 +425,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     if (isCreateMode) {
       return (
         <AuthSection
+          ref={authSectionRef}
           connector={connector}
           connectorConfig={connectorConfig}
           formData={formData.auth}
@@ -413,6 +466,9 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           certificateInputRef={certificateInputRef}
           privateKeyInputRef={privateKeyInputRef}
           onFieldChange={handleFieldChange}
+          saveAttempted={saveAttempted}
+          sharepointSectionRef={sharepointSectionRef}
+          businessOAuthSectionRef={businessOAuthSectionRef}
         />
       );
     }
@@ -425,6 +481,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 0:
             return (
               <FiltersSection
+                ref={filtersSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.filters}
                 formErrors={formErrors.filters}
@@ -436,6 +493,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
           case 1:
             return (
               <SyncSection
+                ref={syncSectionRef}
                 connectorConfig={connectorConfig}
                 formData={formData.sync}
                 formErrors={formErrors.sync}
@@ -450,6 +508,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       // No filters, only sync
       return (
         <SyncSection
+          ref={syncSectionRef}
           connectorConfig={connectorConfig}
           formData={formData.sync}
           formErrors={formErrors.sync}
@@ -465,6 +524,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         case 0:
           return (
             <AuthSection
+              ref={authSectionRef}
               connector={connector}
               connectorConfig={connectorConfig}
               formData={formData.auth}
@@ -505,11 +565,15 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
               onFieldChange={handleFieldChange}
               selectedAuthType={selectedAuthType}
               handleAuthTypeChange={handleAuthTypeChange}
+              saveAttempted={saveAttempted}
+              sharepointSectionRef={sharepointSectionRef}
+              businessOAuthSectionRef={businessOAuthSectionRef}
             />
           );
         case 1:
           return (
             <FiltersSection
+              ref={filtersSectionRef}
               connectorConfig={connectorConfig}
               formData={formData.filters}
               formErrors={formErrors.filters}
@@ -521,6 +585,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
         case 2:
           return (
             <SyncSection
+              ref={syncSectionRef}
               connectorConfig={connectorConfig}
               formData={formData.sync}
               formErrors={formErrors.sync}
@@ -538,6 +603,7 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
       case 0:
         return (
           <AuthSection
+            ref={authSectionRef}
             connector={connector}
             connectorConfig={connectorConfig}
             formData={formData.auth}
@@ -578,11 +644,15 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
             onFieldChange={handleFieldChange}
             selectedAuthType={selectedAuthType}
             handleAuthTypeChange={handleAuthTypeChange}
+            saveAttempted={saveAttempted}
+            sharepointSectionRef={sharepointSectionRef}
+            businessOAuthSectionRef={businessOAuthSectionRef}
           />
         );
       case 1:
         return (
           <SyncSection
+            ref={syncSectionRef}
             connectorConfig={connectorConfig}
             formData={formData.sync}
             formErrors={formErrors.sync}
@@ -641,6 +711,12 @@ const ConnectorConfigForm: React.FC<ConnectorConfigFormProps> = ({
     setInstanceName,
     selectedAuthType,
     handleAuthTypeChange,
+    saveAttempted,
+    authSectionRef,
+    businessOAuthSectionRef,
+    filtersSectionRef,
+    sharepointSectionRef,
+    syncSectionRef,
   ]);
 
   if (loading) {

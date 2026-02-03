@@ -9,14 +9,11 @@ from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
-from app.config.constants.arangodb import AccountType, Connectors, ConnectorScopes
+from app.config.constants.arangodb import AccountType
 from app.connectors.api.router import router
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.registry.connector import (
-    GmailConnector,
-)
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
@@ -25,8 +22,6 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hu
 from app.containers.connector import (
     ConnectorAppContainer,
     initialize_container,
-    initialize_enterprise_google_account_services_fn,
-    initialize_individual_google_account_services_fn,
 )
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -83,22 +78,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             enabled_apps = await arango_service.get_org_apps(org_id)
             app_names = [app["type"].replace(" ", "").lower() for app in enabled_apps]
             logger.info(f"App names: {app_names}")
-            # Ensure the method is called on the correct object
-            for app in enabled_apps:
-                connector_id = app.get("_key")
-                app_group = app.get("appGroup", "")
-
-                if (accountType == AccountType.ENTERPRISE.value or accountType == AccountType.BUSINESS.value) and "google" in app_group.lower():
-                    if app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
-                        await initialize_enterprise_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
-                    elif app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.PERSONAL.value:
-                        await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
-                elif accountType == AccountType.INDIVIDUAL.value and "google" in app_group.lower():
-                    if app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower() and app["scope"] == ConnectorScopes.TEAM.value:
-                        await initialize_individual_google_account_services_fn(org_id, app_container,connector_id, ['gmail'])
-                else:
-                    logger.error("Account Type not valid")
-                    continue
 
             logger.info(
                 "Processing organization %s with account type %s", org_id, accountType
@@ -113,8 +92,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             logger.info("Found %d users for organization %s", len(users), org_id)
 
-
-            gmail_sync_service = None
             config_service = app_container.config_service()
             arango_service = await app_container.arango_service()
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
@@ -126,38 +103,19 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
             for app in enabled_apps:
                 connector_id = app.get("_key")
-                if app["type"].lower() == Connectors.GOOGLE_MAIL.value.lower():
-                    gmail_sync_service = app_container.gmail_sync_service()  # type: ignore
-                    await gmail_sync_service.initialize(org_id, connector_id)  # type: ignore
-                    logger.info("Gmail Service initialized for org %s", org_id)
-                else:
-                    connector_name = app["type"].lower().replace(" ", "")
-                    connector = await ConnectorFactory.create_and_start_sync(
-                        name=connector_name,
-                        logger=logger,
-                        data_store_provider=data_store_provider,
-                        config_service=config_service,
-                        connector_id=connector_id
-                    )
-                    if connector:
-                        # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
-                        app_container.connectors_map[connector_id] = connector
-                        logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
 
-            if gmail_sync_service is not None:
-                try:
-                    asyncio.create_task(gmail_sync_service.perform_initial_sync(org_id, connector_id))  # type: ignore
-                    logger.info(
-                        "✅ Resumed Gmail sync for org %s",
-                        org_id,
-                    )
-                except Exception as e:
-                    logger.error(
-                        "❌ Error resuming Gmail sync for org %s: %s",
-                        org_id,
-                        str(e),
-                    )
-
+                connector_name = app["type"].lower().replace(" ", "")
+                connector = await ConnectorFactory.create_and_start_sync(
+                    name=connector_name,
+                    logger=logger,
+                    data_store_provider=data_store_provider,
+                    config_service=config_service,
+                    connector_id=connector_id
+                )
+                if connector:
+                    # Store using connector_id as the unique key (not connector_name to avoid conflicts with multiple instances)
+                    app_container.connectors_map[connector_id] = connector
+                    logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
 
             logger.info("✅ Sync services resumed for org %s", org_id)
         logger.info("✅ Sync services resumed for all orgs")
@@ -180,7 +138,6 @@ async def initialize_connector_registry(app_container: ConnectorAppContainer) ->
         for name, connector_class in available_connectors.items():
             registry.register_connector(connector_class)
         logger.info("✅ Connectors registered")
-        registry.register_connector(GmailConnector)
         logger.info(f"Registered {len(registry._connectors)} connectors")
 
         # Sync with database
@@ -412,8 +369,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 # Create FastAPI app with lifespan
 app = FastAPI(
-    title="Google Drive Sync Service",
-    description="Service for syncing Google Drive content to ArangoDB",
+    title="Connectors Sync Service",
+    description="Service for syncing content from connectors to GraphDB",
     version="1.0.0",
     lifespan=lifespan,
     dependencies=[Depends(get_initialized_container)],

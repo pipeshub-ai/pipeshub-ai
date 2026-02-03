@@ -200,7 +200,12 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str
+    ) -> None:
         pass
 
     @abstractmethod
@@ -233,6 +238,28 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str]
+    ) -> int:
+        """
+        Delete edges from a record by relationship types.
+
+        Args:
+            from_id: Source record ID
+            from_collection: Source record collection name
+            collection: Edge collection name
+            relationship_types: List of relationship type values to delete
+
+        Returns:
+            int: Number of edges deleted
+        """
         pass
 
     @abstractmethod

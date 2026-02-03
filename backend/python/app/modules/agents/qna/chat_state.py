@@ -68,6 +68,12 @@ class ChatState(TypedDict):
     # Tool calling specific fields - no ToolExecutor dependency
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
     tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
+    tool_records: Optional[List[Dict[str, Any]]]  # Full record data from tools (for citation normalization)
+
+    # Planner-based execution fields
+    execution_plan: Optional[Dict[str, Any]]  # Planned execution from planner node
+    planned_tool_calls: Optional[List[Dict[str, Any]]]  # List of planned tool calls to execute
+    completion_data: Optional[Dict[str, Any]]  # Final completion data with citations
 
     # ⚡ PERFORMANCE: Cache fields (must be in TypedDict to persist between nodes!)
     _cached_agent_tools: Optional[List[Any]]  # Cached list of tool wrappers
@@ -110,12 +116,23 @@ class ChatState(TypedDict):
     blob_store: Optional[Any]  # BlobStorage instance for processing results
     is_multimodal_llm: Optional[bool]  # Whether LLM supports multimodal content
 
+    # Reflection and retry fields (for intelligent error recovery)
+    reflection: Optional[Dict[str, Any]]  # Reflection analysis result from reflect_node
+    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix
+    retry_count: int  # Current retry count (starts at 0)
+    max_retries: int  # Maximum retries allowed (default 1 for speed)
+    is_retry: bool  # Whether this is a retry iteration
+    execution_errors: Optional[List[Dict[str, Any]]]  # Error details for retry context
+
 def _build_tool_to_connector_map(connector_instances: List[Dict[str, Any]]) -> Dict[str, str]:
     """
     Build a mapping from app_name (connector type) to connector instance ID.
 
+    Maps ALL connector types (both 'knowledge' and 'action' categories) to their
+    instance IDs for use by tools.
+
     Args:
-        connector_instances: List of connector instances with id, type, name
+        connector_instances: List of connector instances with id, type, name, category
 
     Returns:
         Dictionary mapping app_name (type) to connector instance ID
@@ -131,7 +148,7 @@ def _build_tool_to_connector_map(connector_instances: List[Dict[str, Any]]) -> D
 
             if connector_id and connector_type:
                 # Map connector type (e.g., "SLACK", "JIRA") to connector instance ID
-                # Normalize the type to uppercase for consistent matching
+                # Normalize the type to lowercase for consistent matching
                 normalized_type = connector_type.replace(" ", "").lower()
                 tool_to_connector[normalized_type] = connector_id
                 # Also map the original type (case-sensitive) for flexibility
@@ -258,6 +275,11 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "tool_results": None,
         "all_tool_results": [],
 
+        # Planner-based execution fields
+        "execution_plan": None,
+        "planned_tool_calls": [],
+        "completion_data": None,
+
         # Enhanced tool result tracking
         "tool_execution_summary": {},
         "tool_data_available": {},
@@ -283,4 +305,12 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "virtual_record_id_to_result": {},  # Mapping for citations
         "blob_store": None,  # Will be initialized during retrieval
         "is_multimodal_llm": False,  # Will be determined from LLM config
+
+        # Reflection and retry fields (for intelligent error recovery)
+        "reflection": None,  # Reflection analysis result
+        "reflection_decision": None,  # Decision from reflect_node
+        "retry_count": 0,  # Current retry count
+        "max_retries": 1,  # Single retry for speed (fast failure)
+        "is_retry": False,  # Whether this is a retry iteration
+        "execution_errors": [],  # Error details for retry context
     }

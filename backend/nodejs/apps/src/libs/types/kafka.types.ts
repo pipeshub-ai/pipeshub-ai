@@ -5,6 +5,7 @@ export interface KafkaConfig {
   brokers: string[];
   groupId?: string;
   sasl?: SASLOptions;
+  ssl?: boolean;
   maxRetries?: number;
   initialRetryTime?: number;
   maxRetryTime?: number;

@@ -130,6 +130,18 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_between_collections(self, from_id: str, from_collection: str, edge_collection: str, to_collection: str) -> None:
         return await self.graph_provider.delete_edges_between_collections(from_id, from_collection, edge_collection, to_collection, transaction=self.txn)
 
+    async def delete_edges_by_relationship_types(
+        self,
+        from_id: str,
+        from_collection: str,
+        collection: str,
+        relationship_types: List[str]
+    ) -> int:
+        """Delete edges by relationship types from a record."""
+        return await self.graph_provider.delete_edges_by_relationship_types(
+            from_id, from_collection, collection, relationship_types, transaction=self.txn
+        )
+
     async def delete_nodes_and_edges(self, keys: List[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes_and_edges(keys, collection, graph_name="knowledgeGraph", transaction=self.txn)
 
@@ -271,6 +283,10 @@ class GraphTransactionStore(TransactionStore):
         """Get record by Jira issue key (e.g., PROJ-123) by searching weburl pattern."""
         return await self.graph_provider.get_record_by_issue_key(connector_id, issue_key, transaction=self.txn)
 
+    async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
+        """Get record by weburl (exact match)."""
+        return await self.graph_provider.get_record_by_weburl(weburl, org_id, transaction=self.txn)
+
     async def get_records_by_parent(
         self,
         connector_id: str,
@@ -365,13 +381,25 @@ class GraphTransactionStore(TransactionStore):
         await self.graph_provider.rollback_transaction(self.txn)
         self.logger.debug(f"✅ Transaction {self.txn} rolled back")
 
-    async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
+    async def create_record_relation(
+        self,
+        from_record_id: str,
+        to_record_id: str,
+        relation_type: str
+    ) -> None:
         """
         Create a relation edge between two records.
 
         Delegates to graph_provider for implementation.
+
+        Args:
+            from_record_id: Source record ID
+            to_record_id: Target record ID
+            relation_type: Type of relation (e.g., "BLOCKS", "CLONES", etc.)
         """
-        return await self.graph_provider.create_record_relation(from_record_id, to_record_id, relation_type, transaction=self.txn)
+        return await self.graph_provider.create_record_relation(
+            from_record_id, to_record_id, relation_type, transaction=self.txn
+        )
     async def create_record_group_relation(self, record_id: str, record_group_id: str) -> None:
         """
         Create BELONGS_TO edge from record to record group.
@@ -519,6 +547,10 @@ class GraphTransactionStore(TransactionStore):
 
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
+
+    async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
+        """Batch create entity relation edges with edgeType in UPSERT match condition."""
+        return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
 
     async def get_edges_to_node(self, node_id: str, edge_collection: str) -> List[Dict]:
         """Get all edges pointing to a specific node"""

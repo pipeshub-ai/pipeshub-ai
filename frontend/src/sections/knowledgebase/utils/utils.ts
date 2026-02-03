@@ -1,17 +1,55 @@
 import type { Icon as IconifyIcon } from '@iconify/react';
 import React from 'react';
-import descriptionIcon from '@iconify-icons/mdi/file-document-outline';
-import pdfIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
-import docIcon from '@iconify-icons/vscode-icons/file-type-word';
-import xlsIcon from '@iconify-icons/vscode-icons/file-type-excel';
-import pptIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
-import txtIcon from '@iconify-icons/vscode-icons/file-type-text';
-import mdIcon from '@iconify-icons/vscode-icons/file-type-markdown';
-import htmlIcon from '@iconify-icons/vscode-icons/file-type-html';
-import jsonIcon from '@iconify-icons/vscode-icons/file-type-json';
-import zipIcon from '@iconify-icons/vscode-icons/file-type-zip';
-import imageIcon from '@iconify-icons/vscode-icons/file-type-image';
 import databaseIcon from '@iconify-icons/mdi/database';
+
+import { Icon } from '@iconify/react';
+import clearIcon from '@iconify-icons/mdi/close';
+import searchIcon from '@iconify-icons/mdi/magnify';
+import refreshIcon from '@iconify-icons/mdi/refresh';
+import eyeIcon from '@iconify-icons/mdi/eye-outline';
+import dotsIcon from '@iconify-icons/mdi/dots-vertical';
+import folderIcon from '@iconify-icons/mdi/folder-outline';
+import chevronRightIcon from '@iconify-icons/mdi/chevron-right';
+import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
+import homeIcon from '@iconify-icons/mdi/home';
+import languageCIcon from '@iconify-icons/vscode-icons/file-type-c3';
+import filePdfBoxIcon from '@iconify-icons/vscode-icons/file-type-pdf2';
+import languagePhpIcon from '@iconify-icons/vscode-icons/file-type-php3';
+import downloadIcon from '@iconify-icons/mdi/download-outline';
+import fileWordBoxIcon from '@iconify-icons/vscode-icons/file-type-word';
+import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
+import languageCss3Icon from '@iconify-icons/vscode-icons/file-type-css';
+import languageJavaIcon from '@iconify-icons/vscode-icons/file-type-java';
+import languageRubyIcon from '@iconify-icons/vscode-icons/file-type-ruby';
+import emailOutlineIcon from '@iconify-icons/vscode-icons/file-type-outlook';
+import fileExcelBoxIcon from '@iconify-icons/vscode-icons/file-type-excel';
+import fileImageBoxIcon from '@iconify-icons/vscode-icons/file-type-image';
+import languageHtml5Icon from '@iconify-icons/vscode-icons/file-type-html';
+import fileArchiveBoxIcon from '@iconify-icons/vscode-icons/file-type-zip2';
+import languagePythonIcon from '@iconify-icons/vscode-icons/file-type-python';
+import noteTextOutlineIcon from '@iconify-icons/vscode-icons/file-type-text';
+import fileCodeOutlineIcon from '@iconify-icons/vscode-icons/file-type-source';
+import languageMarkdownIcon from '@iconify-icons/vscode-icons/file-type-markdown';
+import fileMusicOutlineIcon from '@iconify-icons/vscode-icons/file-type-audio';
+import fileVideoOutlineIcon from '@iconify-icons/vscode-icons/file-type-video';
+import filePowerpointBoxIcon from '@iconify-icons/vscode-icons/file-type-powerpoint';
+import languageJavascriptIcon from '@iconify-icons/vscode-icons/file-type-js-official';
+import fileDocumentOutlineIcon from '@iconify-icons/mdi/file-document-outline';
+// Additional premium file type icons
+import fileSvgIcon from '@iconify-icons/vscode-icons/file-type-svg';
+import fileJsonIcon from '@iconify-icons/vscode-icons/file-type-json';
+import fileYamlIcon from '@iconify-icons/vscode-icons/file-type-yaml';
+import fileTypescriptIcon from '@iconify-icons/vscode-icons/file-type-typescript-official';
+import fileGoIcon from '@iconify-icons/vscode-icons/file-type-go-gopher';
+import fileSqlIcon from '@iconify-icons/vscode-icons/file-type-sql';
+// Premium image icons
+import panoramaIcon from '@iconify-icons/mdi/panorama';
+import imageOutlineIcon from '@iconify-icons/mdi/image';
+import gifIcon from '@iconify-icons/mdi/file-gif-box';
+// Node type icons
+import bookOpenVariantIcon from '@iconify-icons/mdi/book-open-variant';
+import folderOpenIcon from '@iconify-icons/mdi/folder-open';
+import appsIcon from '@iconify-icons/mdi/apps';
 
 export const getIndexingStatusColor = (
   status: string
@@ -53,62 +91,201 @@ export const formatFileSize = (bytes: number): string => {
   return `${parseFloat((bytes / k ** i).toFixed(2))} ${sizes[i]}`;
 };
 
-// Get file icon based on extension
+// Get file icon based on extension and optional MIME type
 export const getFileIcon = (
-  extension: string
+  extension: string,
+  mimeType?: string
 ): React.ComponentProps<typeof IconifyIcon>['icon'] => {
-  const ext = extension?.toLowerCase() || '';
+  // Try to get extension from mimeType if extension is not provided
+  let ext = extension?.toLowerCase() || '';
+  if ((!ext || ext === '') && mimeType) {
+    ext = getExtensionFromMimeType(mimeType);
+  }
 
+  // If still no extension, try mime type direct mapping
+  if ((!ext || ext === '') && mimeType) {
+    switch (mimeType) {
+      case 'application/vnd.google-apps.document':
+      case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+      case 'application/vnd.microsoft.word.document.macroEnabled.12':
+      case 'application/vnd.ms-word.document.macroEnabled.12':
+      case 'application/vnd.ms-word.document':
+        return fileWordBoxIcon;
+      case 'application/vnd.google-apps.spreadsheet':
+      case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      case 'application/vnd.microsoft.excel.sheet.macroEnabled.12':
+      case 'application/vnd.ms-excel.sheet.macroEnabled.12':
+      case 'application/vnd.ms-excel':
+        return fileExcelBoxIcon;
+      case 'application/vnd.google-apps.presentation':
+      case 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+      case 'application/vnd.microsoft.powerpoint.presentation.macroEnabled.12':
+      case 'application/vnd.ms-powerpoint.presentation.macroEnabled.12':
+      case 'application/vnd.ms-powerpoint':
+        return filePowerpointBoxIcon;
+      case 'application/vnd.google-apps.form':
+        return noteTextOutlineIcon;
+      case 'application/vnd.google-apps.drawing':
+        return fileImageBoxIcon;
+      case 'application/vnd.google-apps.folder':
+        return folderIcon;
+      case 'application/vnd.microsoft.onedrive.document':
+        return fileWordBoxIcon;
+      case 'application/vnd.microsoft.onedrive.spreadsheet':
+        return fileExcelBoxIcon;
+      case 'application/vnd.microsoft.onedrive.presentation':
+        return filePowerpointBoxIcon;
+      case 'application/vnd.microsoft.onedrive.drawing':
+        return fileImageBoxIcon;
+      case 'application/vnd.microsoft.onedrive.folder':
+      case 'application/vnd.folder':
+        return folderIcon;
+      default:
+        return fileDocumentOutlineIcon;
+    }
+  }
+
+  // Use extension to determine icon with premium vscode-icons
   switch (ext) {
+    // Documents
     case 'pdf':
-      return pdfIcon;
+      return filePdfBoxIcon;
     case 'doc':
     case 'docx':
-      return docIcon;
+      return fileWordBoxIcon;
     case 'xls':
     case 'xlsx':
     case 'csv':
-    case 'tsv':
-      return xlsIcon;
+      return fileExcelBoxIcon;
     case 'ppt':
     case 'pptx':
-      return pptIcon;
+      return filePowerpointBoxIcon;
+    case 'txt':
+      return noteTextOutlineIcon;
+    
+    // Images - using premium high-quality icons
     case 'jpg':
     case 'jpeg':
+      return panoramaIcon; // Premium landscape/photo icon
     case 'png':
+      return imageOutlineIcon; // Premium image icon
     case 'gif':
+      return gifIcon; // Animated GIF icon
+    case 'svg':
+      return fileSvgIcon; // Vector graphics icon
+    case 'webp':
     case 'bmp':
     case 'tiff':
     case 'ico':
-    case 'webp':
-      return imageIcon;
+      return fileImageBoxIcon; // Generic image icon for other formats
+    
+    // Archives
     case 'zip':
     case 'rar':
     case '7z':
-      return zipIcon;
-    case 'txt':
-      return txtIcon;
-    case 'html':
-    case 'css':
-    case 'js':
-      return htmlIcon;
+    case 'tar':
+    case 'gz':
+      return fileArchiveBoxIcon;
+    
+    // Markup & Markdown
     case 'md':
     case 'mdx':
-      return mdIcon;
+      return languageMarkdownIcon;
+    case 'html':
+    case 'htm':
+      return languageHtml5Icon;
+    
+    // Stylesheets
+    case 'css':
+    case 'scss':
+    case 'sass':
+    case 'less':
+      return languageCss3Icon;
+    
+    // JavaScript & TypeScript
+    case 'js':
+    case 'jsx':
+    case 'mjs':
+      return languageJavascriptIcon;
+    case 'ts':
+    case 'tsx':
+      return fileTypescriptIcon;
+    
+    // Data formats
     case 'json':
-      return jsonIcon;
-    case 'database':
-      return databaseIcon;
+      return fileJsonIcon;
+    case 'yaml':
+    case 'yml':
+      return fileYamlIcon;
+    case 'xml':
+      return fileCodeOutlineIcon;
+    
+    // Programming languages
+    case 'py':
+      return languagePythonIcon;
+    case 'java':
+      return languageJavaIcon;
+    case 'c':
+    case 'cpp':
+    case 'cs':
+      return languageCIcon;
+    case 'php':
+      return languagePhpIcon;
+    case 'rb':
+      return languageRubyIcon;
+    case 'go':
+      return fileGoIcon;
+    case 'sql':
+      return fileSqlIcon;
+    
+    // Media
+    case 'mp3':
+    case 'wav':
+    case 'ogg':
+    case 'flac':
+      return fileMusicOutlineIcon;
+    case 'mp4':
+    case 'avi':
+    case 'mov':
+    case 'wmv':
+    case 'webm':
+      return fileVideoOutlineIcon;
+    
+    // Email
+    case 'eml':
+    case 'msg':
+      return emailOutlineIcon;
+    
+    // Default
     default:
-      return descriptionIcon;
+      return fileDocumentOutlineIcon;
   }
 };
 
-// Get file icon color based on extension
-export const getFileIconColor = (extension: string): string => {
-  const ext = extension?.toLowerCase() || '';
+// Get file icon color based on extension and optional MIME type
+export const getFileIconColor = (extension: string, mimeType?: string): string => {
+  let ext = extension?.toLowerCase() || '';
+  if ((!ext || ext === '') && mimeType) {
+    ext = getExtensionFromMimeType(mimeType);
+  }
 
   switch (ext) {
+    // Images with vibrant, eye-catching colors
+    case 'jpg':
+    case 'jpeg':
+      return '#E53935'; // Vibrant red for photos
+    case 'png':
+      return '#00897B'; // Teal for PNG
+    case 'gif':
+      return '#43A047'; // Green for animated GIFs
+    case 'svg':
+      return '#FB8C00'; // Orange for vector graphics
+    case 'webp':
+    case 'bmp':
+    case 'tiff':
+    case 'ico':
+      return '#7E57C2'; // Purple for other image formats
+    // Documents
     case 'pdf':
       return '#f44336';
     case 'doc':

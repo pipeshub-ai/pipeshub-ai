@@ -135,9 +135,14 @@ async def main() -> None:
 
     # Fetch app user
     print("Fetching app user")
-    # fields = 'user(displayName,emailAddress,permissionId)'
-    # user_about = await google_drive_client.about_get(fields=fields)
-    # print(user_about)
+    fields = 'user(displayName,emailAddress,permissionId)'
+    user_about = await google_drive_client.about_get(fields=fields)
+    print(user_about)
+
+    #fetch drive info
+    print("Fetching drive info")
+    drive_info = await google_drive_client.files_get(fileId="root")
+    print(drive_info)
 
     # Fetch users drives 
     # print("Fetching users drives")

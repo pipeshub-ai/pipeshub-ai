@@ -127,7 +127,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const scrollableStyles = createScrollableContainerStyle(theme);
-  const appItems = useMemo(() => apps || [], [apps]);
+  // Filter out KB apps at the source - they're handled separately via knowledgeBases
+  const appItems = useMemo(() => (apps || []).filter((app) => app?.name !== 'KB'), [apps]);
   // Prefetch app icons to avoid flicker when switching tabs
   useEffect(() => {
     try {
@@ -525,7 +526,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 sx={{ display: 'flex', gap: 1, flexDirection: 'row', mr: 2, alignItems: 'center', }}
               >
                 {/* Unified Resources selector with badge */}
-                <Tooltip title="Select apps and knowledge bases">
+                <Tooltip title="Select apps and collections">
                   <Badge
                     badgeContent={selectedApps.length + selectedKbIds.length}
                     color="primary"

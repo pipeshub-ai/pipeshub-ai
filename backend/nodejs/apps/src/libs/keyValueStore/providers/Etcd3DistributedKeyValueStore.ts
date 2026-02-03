@@ -74,9 +74,9 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
     try {
       // Get current value
       const currentValue = await this.client.get(key).buffer();
-      
+
       // Compare buffers directly for exact match
-      const valuesMatch = 
+      const valuesMatch =
         (expectedValue === null && currentValue === null) ||
         (expectedBuffer !== null && currentValue !== null && expectedBuffer.equals(currentValue));
 
@@ -92,6 +92,19 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
       return updatedValue !== null && updatedValue.equals(newBuffer);
     } catch (error) {
       // If update fails, return false
+      return false;
+    }
+  }
+
+  /**
+   * Health check for etcd store.
+   * TODO: Remove this method when all deployments migrate to Redis KV store.
+   */
+  async healthCheck(): Promise<boolean> {
+    try {
+      await this.client.maintenance.status();
+      return true;
+    } catch (error) {
       return false;
     }
   }

@@ -455,7 +455,7 @@ def _get_recently_failed_tools(state: ChatState, logger) -> dict:
         Dict mapping tool_name to failure count for blocked tools
     """
     LOOKBACK_WINDOW = 7  # Check last N tool calls
-    FAILURE_THRESHOLD = 2  # Block if failed N+ times
+    FAILURE_THRESHOLD = 3  # Block if failed N+ times (increased to give agent more chances to fix errors)
 
     all_results = state.get("all_tool_results", [])
     if not all_results or len(all_results) < FAILURE_THRESHOLD:

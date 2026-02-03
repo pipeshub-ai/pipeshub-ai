@@ -11,10 +11,8 @@ import {
   getGoogleAuthConfig,
   getGoogleWorkspaceOauthConfig,
   getGoogleWorkspaceCredentials,
-  getKafkaConfig,
   getMicrosoftAuthConfig,
   getOAuthConfig,
-  getRedisConfig,
   getSmtpConfig,
   getSsoAuthConfig,
   getStorageConfig,
@@ -24,11 +22,8 @@ import {
   setOAuthConfig,
   setSsoAuthConfig,
   setGoogleWorkspaceOauthConfig,
-  getArangoDbConfig,
-  getMongoDbConfig,
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
-  getQdrantConfig,
   getFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
@@ -450,45 +445,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     setOAuthConfig(keyValueStoreService),
   );
 
-  router.get(
-    '/mongoDBConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    getMongoDbConfig(keyValueStoreService),
-  );
-
-  router.get(
-    '/arangoDBConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    getArangoDbConfig(keyValueStoreService),
-  );
-
-  /**
-   * GET /keyValueStoreConfig
-   * Retrieves the current key-value store configuration from key-value store
-   * Requires authentication
-   * @returns {Object} The stored configuration object or null if not found
-   */
-  router.get(
-    '/redisConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    getRedisConfig(keyValueStoreService),
-  );
-
-
-  router.get(
-    '/qdrantConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    getQdrantConfig(keyValueStoreService),
-  );
-
   // Platform settings
   router.post(
     '/platform/settings',
@@ -532,20 +488,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     setCustomSystemPrompt(keyValueStoreService),
   );
 
-
-  /**
-   * GET /messageBrokerConfig
-   * Retrieves the current message broker configuration from key-value store
-   * Requires authentication
-   * @returns {Object} The stored configuration object or null if not found
-   */
-  router.get(
-    '/kafkaConfig',
-    authMiddleware.authenticate,
-    userAdminCheck,
-    metricsMiddleware(container),
-    getKafkaConfig(keyValueStoreService),
-  );
 
   // Google Workspace Config Routes
   /**

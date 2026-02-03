@@ -140,7 +140,7 @@ export default function RecordDetails() {
 
   const handleDeleteRecord = () => {
     // Redirect to records list page after successful deletion
-    navigate('/knowledge-base/details');
+    navigate('/collections');
   };
 
   const handleRetryIndexing = async (recId: string) => {
@@ -252,6 +252,14 @@ export default function RecordDetails() {
     record.sourceLastModifiedTimestamp || record.updatedAtTimestamp
   ).toLocaleString();
 
+  // Common chip base styles (DRY principle)
+  const chipBaseStyles = {
+    height: 20,
+    fontSize: '0.7rem',
+    fontWeight: 600,
+    '& .MuiChip-label': { px: 1 },
+  };
+
   // Check record type
   const isFileRecord = record.recordType === 'FILE' && record.fileRecord;
   const isMailRecord = record.recordType === 'MAIL' && record.mailRecord;
@@ -263,6 +271,7 @@ export default function RecordDetails() {
   let fileIcon: any = fileDocumentBoxIcon;
   let fileIconColor = '#1976d2';
   let extension = '';
+  fileIcon = getFileIcon(record.fileRecord?.extension || '', record.mimeType || '');
   if (isFileRecord && record.fileRecord) {
     // Check sizeInBytes in multiple possible locations: record object, or fileRecord
     // Using ?? (nullish coalescing) to correctly handle 0 as a valid file size
@@ -270,12 +279,12 @@ export default function RecordDetails() {
     if (sizeInBytes !== undefined && sizeInBytes !== null && !Number.isNaN(sizeInBytes) && sizeInBytes >= 0) {
       fileSize = formatFileSize(sizeInBytes);
     }
-    extension = record.fileRecord.extension
-      ? record.fileRecord.extension.toUpperCase()
-      : getExtensionFromMimeType(record.fileRecord.mimeType || record.mimeType || '');
+    // Get extension from fileRecord or derive from MIME type
+    const mimeType = record.fileRecord.mimeType || record.mimeType || '';
+    extension = record.fileRecord.extension || '';
     fileType = extension.toUpperCase() || 'N/A';
-    fileIcon = getFileIcon(extension || '');
-    fileIconColor = getFileIconColor(extension || '');
+    fileIcon = getFileIcon(extension, mimeType);
+    fileIconColor = getFileIconColor(extension, mimeType);
   } else if (isMailRecord) {
     fileIcon = emailIcon;
     fileIconColor = '#2196f3';
@@ -370,7 +379,7 @@ export default function RecordDetails() {
             >
               <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
                 <IconButton
-                  onClick={() => navigate('/knowledge-base/details')}
+                  onClick={() => navigate('/collections')}
                   size="small"
                   sx={{
                     borderRadius: 1,
@@ -396,7 +405,7 @@ export default function RecordDetails() {
                   <Stack direction="row" spacing={2} alignItems="center">
                     <Chip
                       size="small"
-                      label={record.recordType}
+                      label={record.recordType.split('_').join(' ')}
                       color="primary"
                       sx={{ height: 22, fontSize: '0.75rem' }}
                     />
@@ -734,26 +743,101 @@ export default function RecordDetails() {
                 </Grid>
 
                 <Grid item xs={12} sm={6} md={3}>
-                  <Typography
-                    variant="body2"
-                    color="text.secondary"
+                  <Box
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 1,
-                      fontSize: { xs: '0.8125rem', sm: '0.875rem' },
+                      gap: 0.75,
                       flexWrap: 'wrap',
                     }}
                   >
-                    <Icon
-                      icon={record?.origin === 'CONNECTOR' ? connectorIcon : databaseIcon}
-                      style={{ fontSize: '16px' }}
-                    />
-                    {knowledgeBase && `KB: ${knowledgeBase.name || 'Default'}`}
-                    {record?.origin === 'CONNECTOR' && record.connectorName && (
-                      <>{record.connectorName}</>
+                    {record.origin === 'CONNECTOR' ? (
+                      <>
+                        {/* Connector Section */}
+                        <Icon
+                          icon={connectorIcon}
+                          style={{ fontSize: '16px', color: theme.palette.text.secondary }}
+                        />
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}
+                        >
+                          Connector:
+                        </Typography>
+                        {record.connectorName && (
+                          <Chip
+                            label={record.connectorName}
+                            size="small"
+                            color="primary"
+                            variant="outlined"
+                            sx={chipBaseStyles}
+                          />
+                        )}
+                        {/* Record Group Section */}
+                        {knowledgeBase && (
+                          <>
+                            <Box
+                              component="span"
+                              sx={{
+                                color: 'text.disabled',
+                                fontSize: '0.875rem',
+                                mx: 0.25,
+                              }}
+                            >
+                              •
+                            </Box>
+                            <Typography
+                              variant="body2"
+                              color="text.secondary"
+                              sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}
+                            >
+                              Record Group:
+                            </Typography>
+                            <Chip
+                              label={knowledgeBase.name || 'Default'}
+                              size="small"
+                              color="info"
+                              variant="filled"
+                              sx={{
+                                ...chipBaseStyles,
+                                bgcolor: alpha(theme.palette.info.main, 0.05),
+                                color: theme.palette.info.dark,
+                              }}
+                            />
+                          </>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        {/* Collection Section for KB/Upload */}
+                        <Icon
+                          icon={databaseIcon}
+                          style={{ fontSize: '16px', color: theme.palette.text.secondary }}
+                        />
+                        <Typography
+                          variant="body2"
+                          color="text.secondary"
+                          sx={{ fontSize: { xs: '0.8125rem', sm: '0.875rem' } }}
+                        >
+                          Collection:
+                        </Typography>
+                        {knowledgeBase && (
+                          <Chip
+                            label={knowledgeBase.name || 'Default'}
+                            size="small"
+                            color="success"
+                            variant="filled"
+                            sx={{
+                              ...chipBaseStyles,
+                              bgcolor: alpha(theme.palette.success.main, 0.05),
+                              color: theme.palette.success.dark,
+                            }}
+                          />
+                        )}
+                      </>
                     )}
-                  </Typography>
+                  </Box>
                 </Grid>
               </Grid>
             </Box>
@@ -849,7 +933,7 @@ export default function RecordDetails() {
                               Summary
                             </Typography>
                             <Typography variant="body2">
-                              {record.ticketRecord?.summary || record.ticketRecord?.name || 'N/A'}
+                              {record.ticketRecord?.name || record.recordName || 'N/A'}
                             </Typography>
                           </Box>
                         )}
@@ -1238,37 +1322,9 @@ export default function RecordDetails() {
                       </Box>
                     )}
 
-                    {isTicketRecord && record.ticketRecord && record.ticketRecord.description && (
-                      <Box>
-                        <Typography
-                          variant="caption"
-                          color="text.secondary"
-                          gutterBottom
-                          sx={{
-                            textTransform: 'uppercase',
-                            fontWeight: 600,
-                            letterSpacing: '0.8px',
-                            fontSize: '0.6875rem',
-                            display: 'block',
-                            mb: 1.25,
-                            opacity: 0.85,
-                          }}
-                        >
-                          Description
-                        </Typography>
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 400,
-                            color: 'text.primary',
-                            whiteSpace: 'pre-wrap',
-                            wordBreak: 'break-word',
-                          }}
-                        >
-                          {record.ticketRecord.description}
-                        </Typography>
-                      </Box>
-                    )}
+                    {/* Note: Description field has been removed from TicketRecord.
+                        Content is now stored in block_containers in the base Record class.
+                        If description display is needed, it should be extracted from block_containers. */}
 
                     {/* Departments */}
                     {metadata?.departments &&

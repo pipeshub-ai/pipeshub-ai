@@ -18,9 +18,6 @@ export const saveToDatabase = async ({
       { upsert: true },
     );
 
-    console.log(
-      `Saved to DB: threadId=${threadId}, conversationId=${conversationId}`,
-    );
   } catch (error) {
     console.error('Error saving to database:', error);
     throw new Error('Failed to save to database');
@@ -34,10 +31,6 @@ export const getFromDatabase = async (
   try {
     const record = await Conversation.findOne({ threadId, email });
     if (record) {
-      console.log(
-        `Fetched from DB: threadId=${threadId}, conversationId=${record.conversationId}`,
-      );
-
       return record.conversationId;
     } else {
       console.log(`No record found for threadId=${threadId}`);

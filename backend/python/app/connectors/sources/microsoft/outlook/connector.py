@@ -597,9 +597,15 @@ class OutlookConnector(BaseConnector):
                     user_groups_batch.append((user_group, app_users))
                     all_synced_user_groups.append(user_group)
 
-                    # Add group mailbox RecordGroup to batch
+                    # Add group mailbox RecordGroup to batch with group permission
                     if group_record_group:
-                        group_record_groups_batch.append((group_record_group, []))
+                        # Create group-level permission for the Microsoft 365 group
+                        group_permission = Permission(
+                            external_id=group_id,
+                            type=PermissionType.READ,
+                            entity_type=EntityType.GROUP
+                        )
+                        group_record_groups_batch.append((group_record_group, [group_permission]))
 
                     # Process batch if size reached
                     if len(user_groups_batch) >= batch_size:
@@ -1565,8 +1571,12 @@ class OutlookConnector(BaseConnector):
             top_level_folders = data.get('value', [])
 
             # Always include nested folders (no filter needed, it's always enabled)
+            # Mark top-level folders so we can skip storing parent_external_group_id for them
+            # This is requried to differentiate between top-level folders and nested folders
             all_folders = []
             for folder in top_level_folders:
+                # Mark as top-level folder
+                folder['_is_top_level'] = True
                 all_folders.append(folder)
                 # Recursively get child folders
                 child_folders = await self._get_child_folders_recursive(user_id, folder)
@@ -1610,7 +1620,9 @@ class OutlookConnector(BaseConnector):
                 return None
 
             # Get parent folder ID for hierarchy
-            parent_folder_id = self._safe_get_attr(folder, 'parent_folder_id')
+            # Top-level folders should not store parent_external_group_id even if API returns it
+            is_top_level = self._safe_get_attr(folder, '_is_top_level', False)
+            parent_folder_id = None if is_top_level else self._safe_get_attr(folder, 'parent_folder_id')
 
             # Create simple description
             description = f"{folder_name} folder for {user.email}"
@@ -1668,11 +1680,21 @@ class OutlookConnector(BaseConnector):
 
             self.logger.info(f"Syncing {len(record_groups)} folders for user {user.email}")
 
-            # Sync to database (no permissions needed for folders as they inherit from parent)
+            # Sync to database with owner permission for mailbox owner
             if record_groups:
-                await self.data_entities_processor.on_new_record_groups(
-                    [(rg, []) for rg in record_groups]
+                # Create owner permission for the mailbox owner
+                owner_permission = Permission(
+                    email=user.email,
+                    type=PermissionType.OWNER,
+                    entity_type=EntityType.USER
                 )
+
+                # Apply owner permission to all folders for this user
+                record_groups_with_permissions = [
+                    (rg, [owner_permission]) for rg in record_groups
+                ]
+
+                await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
 
             # Return raw folder data for email processing
             return folders

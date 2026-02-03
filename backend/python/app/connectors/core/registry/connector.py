@@ -12,74 +12,6 @@ from app.connectors.core.registry.connector_builder import (
 )
 
 
-@ConnectorBuilder("Gmail")\
-    .in_group("Google Workspace")\
-    .with_description("Sync emails and messages from Gmail")\
-    .with_categories(["Email"])\
-    .with_scopes([ConnectorScope.TEAM.value])\
-    .with_auth([
-        AuthBuilder.type(AuthType.OAUTH).oauth(
-            connector_name="Gmail",
-            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
-            token_url="https://oauth2.googleapis.com/token",
-            redirect_uri="connectors/oauth/callback/Gmail",
-            scopes=OAuthScopeConfig(
-                personal_sync=[],
-                team_sync=[
-                    'https://www.googleapis.com/auth/gmail.readonly',
-                    "https://www.googleapis.com/auth/documents.readonly",
-                    "https://www.googleapis.com/auth/spreadsheets.readonly",
-                    "https://www.googleapis.com/auth/presentations.readonly",
-                ],
-                agent=[]
-            ),
-            fields=[
-                CommonFields.client_id("Google Cloud Console"),
-                CommonFields.client_secret("Google Cloud Console")
-            ],
-            icon_path="/assets/icons/connectors/gmail.svg",
-            app_group="Google Workspace",
-            app_description="OAuth application for accessing Gmail API and Google Workspace services",
-            app_categories=["Email"],
-            additional_params={
-                "access_type": "offline",
-                "prompt": "consent",
-                "include_granted_scopes": "true"
-            }
-        )
-    ])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/gmail.svg")
-        .with_realtime_support(True)
-        .add_documentation_link(DocumentationLink(
-            "Gmail API Setup",
-            "https://developers.google.com/workspace/guides/auth-overview",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/google-workspace/gmail/gmail',
-            'pipeshub'
-        ))
-        .with_webhook_config(True, ["message.created", "message.modified", "message.deleted"])
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .with_sync_support(True)
-        .with_agent_support(True)
-    )\
-    .build_decorator()
-class GmailConnector:
-    """Gmail connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "Gmail"
-
-    def connect(self) -> bool:
-        """Connect to Gmail"""
-        print(f"Connecting to {self.name}")
-        return True
-
-
 @ConnectorBuilder("Slack")\
     .in_group("Slack")\
     .with_description("Sync messages and channels from Slack")\
@@ -126,56 +58,6 @@ class SlackConnector:
         """Connect to Slack"""
         print(f"Connecting to {self.name}")
         return True
-
-
-@ConnectorBuilder("Notion")\
-    .in_group("Notion")\
-    .with_description("Sync messages and channels from Notion")\
-    .with_categories(["Messaging"])\
-    .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
-    .with_auth([
-        AuthBuilder.type(AuthType.API_TOKEN).fields([
-            AuthField(
-                name="apiToken",
-                display_name="Api Token",
-                placeholder="ntn-...",
-                description="The Access Token from Notion App settings",
-                field_type="PASSWORD",
-                max_length=8000,
-                is_secret=True
-            )
-        ])
-    ])\
-    .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/notion.svg")
-        .add_documentation_link(DocumentationLink(
-            "Notion Bot Token Setup",
-            "https://api.notion.com/authentication/basics",
-            "setup"
-        ))
-        .add_documentation_link(DocumentationLink(
-            'Pipeshub Documentation',
-            'https://docs.pipeshub.com/connectors/notion/notion',
-            'pipeshub'
-        ))
-        .with_sync_strategies(["SCHEDULED", "MANUAL"])
-        .with_scheduled_config(True, 60)
-        .with_sync_support(False)
-        .with_agent_support(True)
-    )\
-    .build_decorator()
-class  NotionConnector:
-    """Notion connector built with the builder pattern"""
-
-    def __init__(self) -> None:
-        self.name = "Notion"
-
-    def connect(self) -> bool:
-        """Connect to Notion"""
-        print(f"Connecting to {self.name}")
-        return True
-
-
 
 @ConnectorBuilder("Calendar")\
     .in_group("Google Workspace")\

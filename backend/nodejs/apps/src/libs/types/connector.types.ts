@@ -8,6 +8,7 @@ export enum ConnectorId {
     DRIVE = 'drive',
     JIRA = 'jira',
     CONFLUENCE = 'confluence',
+    NOTION = 'notion',
     BITBUCKET = 'bitbucket',
     OUTLOOK = 'outlook',
     OUTLOOK_CALENDAR = 'outlookCalendar',
@@ -15,6 +16,7 @@ export enum ConnectorId {
     SLACK = 'slack',
     DROPBOX = 'dropbox',
     BOX = 'box',
+    LINEAR = 'linear',
     UPLOAD = 'upload',
   }
   
@@ -28,6 +30,7 @@ export enum ConnectorId {
     DRIVE = 'Drive',
     JIRA = 'Jira',
     CONFLUENCE = 'Confluence',
+    NOTION = 'Notion',
     BITBUCKET = 'Bitbucket',
     OUTLOOK = 'Outlook',
     OUTLOOK_CALENDAR = 'Outlook Calendar',
@@ -35,6 +38,7 @@ export enum ConnectorId {
     SLACK = 'Slack',
     DROPBOX = 'Dropbox',
     BOX = 'Box',
+    LINEAR = 'Linear',
     UPLOAD = 'Uploaded Files',
   }
   
@@ -48,6 +52,7 @@ export enum ConnectorId {
     [ConnectorId.DRIVE]: ConnectorNames.DRIVE,
     [ConnectorId.JIRA]: ConnectorNames.JIRA,
     [ConnectorId.CONFLUENCE]: ConnectorNames.CONFLUENCE,
+    [ConnectorId.NOTION]: ConnectorNames.NOTION,
     [ConnectorId.BITBUCKET]: ConnectorNames.BITBUCKET,
     [ConnectorId.OUTLOOK]: ConnectorNames.OUTLOOK,
     [ConnectorId.OUTLOOK_CALENDAR]: ConnectorNames.OUTLOOK_CALENDAR,
@@ -55,5 +60,6 @@ export enum ConnectorId {
     [ConnectorId.SLACK]: ConnectorNames.SLACK,
     [ConnectorId.DROPBOX]: ConnectorNames.DROPBOX,
     [ConnectorId.BOX]: ConnectorNames.BOX,
+    [ConnectorId.LINEAR]: ConnectorNames.LINEAR,
     [ConnectorId.UPLOAD]: ConnectorNames.UPLOAD,
   };

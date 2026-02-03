@@ -43,6 +43,7 @@ class ConnectorConfigBuilder:
             "supportsSync": True,
             "supportsAgent": True,
             "documentationLinks": [],
+            "hideConnector": False,
             "auth": {
                 "supportedAuthTypes": ["OAUTH"],
                 "schemas": {},  # Per-auth-type schemas: {"OAUTH": {"fields": []}, "API_TOKEN": {"fields": []}}
@@ -113,6 +114,11 @@ class ConnectorConfigBuilder:
     def with_agent_support(self, supported: bool = True) -> 'ConnectorConfigBuilder':
         """Enable or disable agent support"""
         self.config["supportsAgent"] = supported
+        return self
+
+    def with_hide_connector(self, hide: bool = True) -> 'ConnectorConfigBuilder':
+        """Set whether to hide the connector from the UI"""
+        self.config["hideConnector"] = hide
         return self
 
     def add_documentation_link(self, link: DocumentationLink) -> 'ConnectorConfigBuilder':
@@ -732,10 +738,10 @@ class CommonFields:
 
     @staticmethod
     def enable_manual_sync_filter() -> FilterField:
-        """Standard manual sync control filter (master switch for indexing)"""
+        """Standard manual indexing control filter (master switch for indexing)"""
         return FilterField(
             name="enable_manual_sync",
-            display_name="Enable Manual Sync",
+            display_name="Enable Manual Indexing",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
             description="Disable automatic indexing for all synced records.",

@@ -158,8 +158,6 @@ export const modelService = {
 
   async updateLlmConfig(config: any): Promise<any> {
     const { modelType, providerType, _provider, isMultimodal, isReasoning, ...cleanConfig } = config;
-    console.log("isMultimodal", isMultimodal);
-    console.log("cleanConfig", cleanConfig);
     const provider = providerType || modelType || _provider;
     
     // Handle "other" provider case for Bedrock: use customProvider value

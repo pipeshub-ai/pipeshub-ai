@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback, forwardRef } from 'react';
 import {
   Paper,
   Box,
@@ -53,15 +53,19 @@ interface FiltersSectionProps {
   readOnly?: boolean; // If true, show read-only view (no editing)
 }
 
-const FiltersSection: React.FC<FiltersSectionProps> = ({
-  connectorConfig,
-  formData,
-  formErrors,
-  onFieldChange,
-  onRemoveFilter,
-  connectorId,
-  readOnly = false,
-}) => {
+const FiltersSection = forwardRef<HTMLDivElement, FiltersSectionProps>(
+  (
+    {
+      connectorConfig,
+      formData,
+      formErrors,
+      onFieldChange,
+      onRemoveFilter,
+      connectorId,
+      readOnly = false,
+    },
+    ref
+  ) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const [addMenuAnchor, setAddMenuAnchor] = useState<{ [key: string]: HTMLElement | null }>({});
@@ -1080,7 +1084,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
   const syncFilters = filters?.sync;
   const indexingFilters = filters?.indexing;
 
-  // Get the manual sync field from indexing filters
+  // Get the manual indexing field from indexing filters
   const manualSyncField = indexingFilters?.schema?.fields?.find(
     (field) => field.name === 'enable_manual_sync'
   );
@@ -2402,6 +2406,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
 
   return (
     <Box 
+      ref={ref}
       sx={{ 
         display: 'flex', 
         flexDirection: 'column', 
@@ -2409,7 +2414,7 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
         height: '100%',
       }}
     >
-      {/* Manual Sync Control - Only show if the connector has indexing filters */}
+      {/* Manual Indexing Control - Only show if the connector has indexing filters */}
       {hasIndexingFilters && manualSyncField && (
         <Paper
           elevation={0}
@@ -2776,6 +2781,8 @@ const FiltersSection: React.FC<FiltersSectionProps> = ({
       </Alert>
     </Box>
   );
-};
+});
+
+FiltersSection.displayName = 'FiltersSection';
 
 export default FiltersSection;

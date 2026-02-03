@@ -209,12 +209,15 @@ export default function KnowledgeBaseSearch() {
     }
   }, [searchQuery, topK, filters, aggregateCitationsByRecordId, aggregateRecordsByRecordId]);
 
+  // Trigger search when search query or topK changes
+  // Filters changes won't auto-trigger search - user must manually refresh
   useEffect(() => {
     // Only trigger search if there's a non-empty query
     if (searchQuery.trim()) {
       handleSearch();
     }
-  }, [topK, filters, handleSearch, searchQuery]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery, topK]);
 
   const handleSearchQueryChange = (query: string): void => {
     setSearchQuery(query);
@@ -644,6 +647,7 @@ export default function KnowledgeBaseSearch() {
             onSearchQueryChange={handleSearchQueryChange}
             onTopKChange={handleTopKChange}
             onViewCitations={viewCitations}
+            onManualSearch={handleSearch}
             recordsMap={recordsMap}
             allConnectors={allConnectors}
           />

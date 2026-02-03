@@ -19,15 +19,8 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
 }) => {
   const theme = useTheme();
 
-  // Get appropriate hover color based on section
-  let hoverColor = theme.palette.primary.main;
-  if (sectionType === 'apps') {
-    hoverColor = theme.palette.info.main;
-  } else if (sectionType === 'kbs') {
-    hoverColor = theme.palette.warning.main;
-  } else if (sectionType === 'connectors') {
-    hoverColor = theme.palette.info.main;
-  }
+  // Use neutral colors for minimal design
+  const hoverColor = theme.palette.text.secondary;
 
   const handleDragStart = (event: React.DragEvent) => {
     event.dataTransfer.setData('application/reactflow', template.type);
@@ -58,6 +51,8 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
     }
   };
 
+  const isDark = theme.palette.mode === 'dark';
+
   return (
     <ListItem
       button
@@ -66,32 +61,34 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
       sx={{
         py: 0.75,
         px: 2,
-        pl: isSubItem ? 5.5 : 4,
+        pl: isSubItem ? 5 : 3.5,
         cursor: 'grab',
         borderRadius: 1,
         mx: isSubItem ? 1.5 : 1,
         my: 0.25,
-        border: `1px solid ${alpha(theme.palette.divider, 0.05)}`,
+        border: 'none',
         backgroundColor: 'transparent',
+        transition: 'all 0.2s ease',
         '&:hover': {
-          backgroundColor: alpha(theme.palette.action.hover, 0.04),
-          borderColor: alpha(theme.palette.divider, 0.1),
+          backgroundColor: theme.palette.action.hover,
         },
         '&:active': {
           cursor: 'grabbing',
+          backgroundColor: theme.palette.action.selected,
         },
       }}
     >
-      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, width: '100%' }}>
-        {/* Icon */}
+      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25, width: '100%' }}>
+        {/* Minimal Icon */}
         {isDynamicIcon ? (
           <img
             src={typeof itemIcon === 'string' ? itemIcon : '/assets/icons/connectors/default.svg'}
             alt={template.label}
-            width={isSubItem ? 16 : 18}
-            height={isSubItem ? 16 : 18}
+            width={isSubItem ? 14 : 16}
+            height={isSubItem ? 14 : 16}
             style={{
               objectFit: 'contain',
+              opacity: 0.7,
             }}
             onError={(e) => {
               e.currentTarget.src = '/assets/icons/connectors/default.svg';
@@ -100,21 +97,21 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
         ) : (
           <Icon
             icon={itemIcon || template.icon}
-            width={isSubItem ? 16 : 18}
-            height={isSubItem ? 16 : 18}
-            style={{ color: alpha(theme.palette.text.secondary, 0.7) }}
+            width={isSubItem ? 14 : 16}
+            height={isSubItem ? 14 : 16}
+            style={{ color: theme.palette.text.secondary, opacity: 0.7 }}
           />
         )}
         
-        {/* Label */}
+        {/* Label - Minimal Typography */}
         <Typography
           variant="body2"
           sx={{
-            fontSize: isSubItem ? '0.85rem' : '0.9rem',
+            fontSize: isSubItem ? '0.8125rem' : '0.875rem',
             color: theme.palette.text.primary,
             fontWeight: 400,
             flex: 1,
-            lineHeight: 1.4,
+            lineHeight: 1.5,
           }}
         >
           {normalizeDisplayName(template.label)}

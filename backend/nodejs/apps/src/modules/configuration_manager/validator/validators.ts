@@ -90,6 +90,7 @@ export const azureAdConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Azure client ID is required' }),
     tenantId: z.string().optional().default('common'),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
@@ -98,12 +99,14 @@ export const ssoConfigSchema = z.object({
     entryPoint: z.string().min(1, { message: 'SSO entry point is required' }),
     certificate: z.string().min(1, { message: 'SSO certificate is required' }),
     emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
 export const googleAuthConfigSchema = z.object({
   body: z.object({
     clientId: z.string().min(1, { message: 'Google client ID is required' }),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
@@ -117,12 +120,14 @@ export const oauthConfigSchema = z.object({
     userInfoEndpoint: z.string().url().optional().or(z.literal('')),
     scope: z.string().optional(),
     redirectUri: z.string().url().optional().or(z.literal('')),
+    enableJit: z.boolean().optional().default(true),
   }),
 });
 
 export const microsoftConfigSchema = z.object({
   clientId: z.string().min(1, { message: 'Microsoft client ID is required' }),
   tenantId: z.string().optional().default('common'),
+  enableJit: z.boolean().optional().default(false),
 });
 
 export const mongoDBConfigSchema = z.object({

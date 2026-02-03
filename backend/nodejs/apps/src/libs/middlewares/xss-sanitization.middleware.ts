@@ -217,6 +217,11 @@ export const xssSanitizationMiddleware = (
     // First, validate that no HTML/XSS content exists (reject if found)
     // This prevents HTML from being stored in the database
     
+    if (req.path.startsWith('/api/v1/agents/') && (req.method === 'POST' || req.method === 'PUT')) {
+      next();
+      return;
+    }
+
     // Validate request body
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       // Skip if body is a Buffer (file upload)

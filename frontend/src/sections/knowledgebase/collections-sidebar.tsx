@@ -547,6 +547,7 @@ export default function KnowledgeBaseSideBar({
       app: 0,
       permissions: 0,
       kb: 0,
+      nodeTypes: 0,
     };
 
     // Calculate counts from local filters to prevent UI flicker
@@ -1392,7 +1393,7 @@ export default function KnowledgeBaseSideBar({
                         width={16}
                         height={16}
                       />
-                      {status === 'AUTO_INDEX_OFF' ? 'Manual Sync' : status === 'CONNECTOR_DISABLED' ? 'Connector Disabled' : formatLabel(status)}
+                      {status === 'AUTO_INDEX_OFF' ? 'Manual Indexing' : status === 'CONNECTOR_DISABLED' ? 'Connector Disabled' : formatLabel(status)}
                     </Box>
                   }
                 />

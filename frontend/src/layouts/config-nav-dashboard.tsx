@@ -7,12 +7,16 @@ const baseNavData = [
     items: [
       { title: 'Assistant', path: paths.dashboard.root },
       {
-        title: 'Knowledge Base',
-        path: paths.dashboard.knowledgebase.root,
+        title: 'All Records',
+        path: paths.dashboard.allRecords,
+      },
+      {
+        title: 'Collections',
+        path: paths.dashboard.collections.root,
       },
       {
         title: 'Knowledge Search',
-        path: paths.dashboard.knowledgebase.search,
+        path: paths.dashboard.knowledgeSearch.root,
       },
     ],
   },
@@ -25,12 +29,14 @@ export const getDashboardNavData = (accountType: string | undefined, isAdmin: bo
   const navigationData = [...baseNavData];
   
   if (isBusiness) {
+    // Admins default to team scope, non-admins to personal scope
+    const scope = isAdmin ? 'team' : 'personal';
     navigationData.push({
       subheader: 'Administration',
       items: [
         {
           title: 'Connector Settings',
-          path: '/account/company-settings/settings/connector',
+          path: `/account/company-settings/settings/connector?scope=${scope}`,
         },
       ],
     });
@@ -40,7 +46,7 @@ export const getDashboardNavData = (accountType: string | undefined, isAdmin: bo
       items: [
         {
           title: 'Connector Settings',
-          path: '/account/individual/settings/connector',
+          path: '/account/individual/settings/connector?scope=team',
         },
       ],
     });

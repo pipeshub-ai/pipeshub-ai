@@ -7,13 +7,19 @@ import { CONFIG } from 'src/config-global';
 
 import { AuthContext } from 'src/auth/context/auth-context';
 
-// Define the context type with just isAdmin boolean
+// Define the context type with isAdmin boolean and loading state
 interface AdminContextType {
   isAdmin: boolean;
+  loading: boolean;
+  isInitialized: boolean;
 }
 
 // Create the context with a default value
-const AdminContext = createContext<AdminContextType>({ isAdmin: false });
+const AdminContext = createContext<AdminContextType>({ 
+  isAdmin: false, 
+  loading: true,
+  isInitialized: false
+});
 
 interface AdminProviderProps {
   children: React.ReactNode;
@@ -21,14 +27,25 @@ interface AdminProviderProps {
 
 export const AdminProvider: React.FC<AdminProviderProps> = ({ children }) => {
   const [isAdmin, setIsAdmin] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [isInitialized, setIsInitialized] = useState(false);
   const auth = useContext(AuthContext);
 
   // Check admin status whenever the user changes
   useEffect(() => {
     const checkAdmin = async () => {
+      // Wait for auth to be loaded first
+      if (auth?.loading) {
+        return;
+      }
+
+      setLoading(true);
+
       // If not authenticated or no user, we're definitely not an admin
       if (!auth?.authenticated || !auth?.user) {
         setIsAdmin(false);
+        setLoading(false);
+        setIsInitialized(true);
         return;
       }
 
@@ -39,6 +56,8 @@ export const AdminProvider: React.FC<AdminProviderProps> = ({ children }) => {
       if (!userId) {
         console.error('User ID not found in auth context');
         setIsAdmin(false);
+        setLoading(false);
+        setIsInitialized(true);
         return;
       }
 
@@ -46,18 +65,22 @@ export const AdminProvider: React.FC<AdminProviderProps> = ({ children }) => {
         const response = await axios.get(`${CONFIG.backendUrl}/api/v1/userGroups/users/${userId}`);
         const groups = response.data;
         const isAdminTypeGroup = groups.some((group: any) => group.type === 'admin');
-        setIsAdmin(isAdminTypeGroup );
+        setIsAdmin(isAdminTypeGroup);
       } catch (error) {
+        console.error('Error checking admin status:', error);
         setIsAdmin(false);
+      } finally {
+        setLoading(false);
+        setIsInitialized(true);
       }
     };
 
     checkAdmin();
     // eslint-disable-next-line
-  }, [auth?.user, auth?.authenticated]);
+  }, [auth?.user, auth?.authenticated, auth?.loading]);
 
   // Memoize the context value to prevent unnecessary re-renders
-  const contextValue = useMemo(() => ({ isAdmin }), [isAdmin]);
+  const contextValue = useMemo(() => ({ isAdmin, loading, isInitialized }), [isAdmin, loading, isInitialized]);
 
   return <AdminContext.Provider value={contextValue}>{children}</AdminContext.Provider>;
 };

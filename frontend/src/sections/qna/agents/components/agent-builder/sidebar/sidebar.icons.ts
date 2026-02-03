@@ -9,7 +9,7 @@ import chevronRightIcon from '@iconify-icons/mdi/chevron-right';
 import searchIcon from '@iconify-icons/mdi/magnify';
 import clearIcon from '@iconify-icons/mdi/close';
 import inputOutputIcon from '@iconify-icons/mdi/swap-horizontal';
-import settingsIcon from '@iconify-icons/mdi/cog-outline';
+import settingsIcon from '@iconify-icons/mdi/open-in-new';
 import alertCircleIcon from '@iconify-icons/mdi/alert-circle-outline';
 import connectorIcon from '@iconify-icons/mdi/database-plus';
 
