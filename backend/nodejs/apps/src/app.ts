@@ -243,7 +243,15 @@ export class Application {
 
           // Inject config script before </head>
           const configScript = `<script>window.__WHITELABEL_CONFIG__ = ${JSON.stringify(whitelabelConfig)};</script>`;
-          const modifiedHtml = html.replace('</head>', `${configScript}</head>`);
+          let modifiedHtml = html.replace('</head>', `${configScript}</head>`);
+
+          // Replace title tag with runtime value if provided
+          if (whitelabelConfig.appTitle) {
+            modifiedHtml = modifiedHtml.replace(
+              /<title>.*?<\/title>/,
+              `<title>${whitelabelConfig.appTitle}</title>`
+            );
+          }
 
           // Cache for subsequent requests
           this.cachedIndexHtml = modifiedHtml;
