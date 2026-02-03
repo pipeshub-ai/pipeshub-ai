@@ -5,6 +5,7 @@ Connector for synchronizing data from Azure Blob Storage containers. This connec
 uses the native Azure Blob Storage API with connection string authentication.
 """
 
+import asyncio
 import base64
 import mimetypes
 import uuid
@@ -111,6 +112,30 @@ def get_parent_path_from_blob_name(blob_name: str) -> Optional[str]:
         return None
     parent_path = "/".join(normalized_name.split("/")[:-1])
     return parent_path if parent_path else None
+
+
+def get_folder_path_segments_from_blob_name(blob_name: str) -> List[str]:
+    """Derives folder path segments from a blob name for hierarchy creation.
+
+    Azure Blob Storage, like S3, represents folders implicitly via blob names.
+    For each blob name (e.g. a/b/c/file.txt), returns the folder path segments
+    that must exist:
+
+    Example:
+        'a/b/c/file.txt' -> ['a', 'a/b', 'a/b/c']
+        'file.txt'       -> []
+    """
+    if not blob_name:
+        return []
+    normalized = blob_name.lstrip("/").rstrip("/")
+    if not normalized or "/" not in normalized:
+        return []
+    parts = normalized.split("/")
+    # Last part is the file (or folder blob); segments are the folder path prefix
+    segments = []
+    for i in range(1, len(parts)):
+        segments.append("/".join(parts[:i]))
+    return segments
 
 
 def get_mimetype_for_azure_blob(blob_name: str, is_folder: bool = False) -> str:
@@ -839,6 +864,12 @@ class AzureBlobConnector(BaseConnector):
                                     except ValueError:
                                         pass
 
+                        # Ensure folder hierarchy exists from blob path (Azure Blob has no folder objects)
+                        if not is_folder:
+                            path_segments = get_folder_path_segments_from_blob_name(blob_name)
+                            if path_segments:
+                                await self._ensure_parent_folders_exist(container_name, path_segments)
+
                         record, permissions = await self._process_azure_blob(
                             blob_dict, container_name
                         )
@@ -915,6 +946,74 @@ class AzureBlobConnector(BaseConnector):
                 self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
+
+    async def _ensure_parent_folders_exist(
+        self, container_name: str, path_segments: List[str]
+    ) -> None:
+        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+
+        Azure Blob Storage, like S3, represents folders implicitly via blob names.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
+        already exist (by external_id = container_name/segment). Process in order so parent
+        exists before child. Aligns with S3 _ensure_parent_folders_exist pattern.
+        """
+        if not path_segments:
+            return
+        timestamp_ms = get_epoch_timestamp_in_ms()
+        external_ids = [f"{container_name}/{segment}" for segment in path_segments]
+        async with self.data_store_provider.transaction() as tx_store:
+            results = await asyncio.gather(
+                *[
+                    tx_store.get_record_by_external_id(
+                        connector_id=self.connector_id, external_id=eid
+                    )
+                    for eid in external_ids
+                ]
+            )
+        existing_external_ids = {
+            eid for eid, rec in zip(external_ids, results) if rec is not None
+        }
+        for i, segment in enumerate(path_segments):
+            external_id = f"{container_name}/{segment}"
+            if external_id in existing_external_ids:
+                continue
+            # Root folder: first segment has no parent. Others: parent is previous segment.
+            parent_external_id = (
+                f"{container_name}/{path_segments[i - 1]}" if i > 0 else None
+            )
+            parent_record_type = RecordType.FILE if parent_external_id else None
+            record_name = segment.split("/")[-1] if segment else segment
+            web_url = self._generate_web_url(container_name, segment + "/")
+            folder_record = FileRecord(
+                id=str(uuid.uuid4()),
+                record_name=record_name,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.BUCKET.value,
+                external_record_group_id=container_name,
+                external_record_id=external_id,
+                external_revision_id=None,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_created_at=timestamp_ms,
+                source_updated_at=timestamp_ms,
+                weburl=web_url,
+                signed_url=None,
+                fetch_signed_url=None,
+                hide_weburl=True,
+                is_internal=True,
+                parent_external_record_id=parent_external_id,
+                parent_record_type=parent_record_type,
+                size_in_bytes=0,
+                is_file=False,
+                extension=None,
+                path=segment,
+                mime_type=MimeTypes.FOLDER.value,
+                etag=None,
+            )
+            permissions = await self._create_azure_blob_permissions(container_name, segment + "/")
+            await self.data_entities_processor.on_new_records([(folder_record, permissions)])
 
     def _get_azure_blob_revision_id(self, blob: Dict) -> str:
         """
@@ -1056,7 +1155,8 @@ class AzureBlobConnector(BaseConnector):
             mime_type = blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name, is_folder)
 
             parent_path = get_parent_path_from_blob_name(normalized_name)
-            parent_external_id = f"{container_name}/{parent_path}" if parent_path else container_name
+            parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
+            parent_record_type = RecordType.FILE if parent_path else None
 
             web_url = self._generate_web_url(container_name, normalized_name)
 
@@ -1108,7 +1208,7 @@ class AzureBlobConnector(BaseConnector):
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=blob.get("size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -1484,7 +1584,8 @@ class AzureBlobConnector(BaseConnector):
             mime_type = blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name, is_folder)
 
             parent_path = get_parent_path_from_blob_name(blob_name)
-            parent_external_id = f"{container_name}/{parent_path}" if parent_path else container_name
+            parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
+            parent_record_type = RecordType.FILE if parent_path else None
 
             web_url = self._generate_web_url(container_name, blob_name)
 
@@ -1525,7 +1626,7 @@ class AzureBlobConnector(BaseConnector):
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=blob_metadata.get("size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
