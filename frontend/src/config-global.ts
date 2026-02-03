@@ -1,8 +1,8 @@
+import type { RuntimeWhitelabelConfig } from 'src/types/runtime-config';
+
 import { paths } from 'src/routes/paths';
 
 import packageJson from '../package.json';
-
-import type { RuntimeWhitelabelConfig } from 'src/types/runtime-config';
 
 // ----------------------------------------------------------------------
 
