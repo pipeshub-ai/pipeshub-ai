@@ -5943,20 +5943,60 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 OR
                                 // Option 2: Connected via parentExternalGroupId field
                                 (child_rg.parentExternalGroupId != null AND child_rg.parentExternalGroupId == rg.externalGroupId)
+                                OR
+                                // Option 3: Connected via inheritPermissions edge (child_rg -> inheritPermissions -> rg)
+                                LENGTH(FOR edge IN inheritPermissions FILTER edge._from == child_rg._id AND edge._to == rg._id RETURN 1) > 0
                             )
-                            // Check if user has permission to this nested record group
+                            // Check if user has permission to this nested record group (6 paths)
+                            // Path 1: Direct user -> child_rg permission
                             LET child_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == child_rg._id AND perm.type == "USER" RETURN 1) > 0
+                            // Path 2: User -> group/role -> child_rg permission
                             LET child_has_group = LENGTH(
                                 FOR group, userEdge IN 1..1 ANY user_from permission
                                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                                     FOR perm IN permission FILTER perm._from == group._id AND perm._to == child_rg._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
                             ) > 0
+                            // Path 3: User -> org -> child_rg permission
                             LET child_has_org = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
                                     FOR perm IN permission FILTER perm._from == org._id AND perm._to == child_rg._id FILTER perm.type == "ORG" RETURN 1
                             ) > 0
-                            FILTER child_has_direct OR child_has_group OR child_has_org
+                            // Path 4: User -> parent_rg -> (inheritPermissions chain) -> child_rg
+                            LET child_has_inherit_user = LENGTH(
+                                FOR parent_rg, userPerm IN 1..1 ANY user_from permission
+                                    FILTER userPerm.type == "USER"
+                                    FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                    FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                        FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                        FILTER inherited_rg._id == child_rg._id
+                                        RETURN 1
+                            ) > 0
+                            // Path 5: User -> group/role -> parent_rg -> (inheritPermissions chain) -> child_rg
+                            LET child_has_inherit_group = LENGTH(
+                                FOR group, userEdge IN 1..1 ANY user_from permission
+                                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                                    FOR parent_rg, groupPerm IN 1..1 ANY group._id permission
+                                        FILTER groupPerm.type == "GROUP" OR groupPerm.type == "ROLE"
+                                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                        FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                            FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                            FILTER inherited_rg._id == child_rg._id
+                                            RETURN 1
+                            ) > 0
+                            // Path 6: User -> org -> parent_rg -> (inheritPermissions chain) -> child_rg
+                            LET child_has_inherit_org = LENGTH(
+                                FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                                    FILTER belongsEdge.entityType == "ORGANIZATION"
+                                    FOR parent_rg, orgPerm IN 1..1 ANY org._id permission
+                                        FILTER orgPerm.type == "ORG"
+                                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                        FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                            FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                            FILTER inherited_rg._id == child_rg._id
+                                            RETURN 1
+                            ) > 0
+                            FILTER child_has_direct OR child_has_group OR child_has_org OR child_has_inherit_user OR child_has_inherit_group OR child_has_inherit_org
                             RETURN 1
                     ) > 0
                 )
@@ -6016,34 +6056,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 FILTER belongsEdge.entityType == "ORGANIZATION"
                                 FOR perm IN permission FILTER perm._from == org._id AND perm._to == record._id FILTER perm.type == "ORG" RETURN 1
                         ) > 0
-                        // Path 4: User -> recordGroup (via inheritPermissions) -> record
+                        // Path 4: User -> recordGroup -> (RG inheritance chain) -> record
                         LET rec_has_inherit_rg = LENGTH(
                             FOR recordGroup, userToRgEdge IN 1..1 ANY user_from permission
                                 FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                FOR inheritEdge IN inheritPermissions
-                                    FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
-                                    RETURN 1
+                                // Traverse RG inheritance chain to find nested RGs
+                                FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                                    FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                                    // Check if record inherits from this nested RG
+                                    FOR inheritEdge IN inheritPermissions
+                                        FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
+                                        RETURN 1
                         ) > 0
-                        // Path 5: User -> group -> recordGroup (via inheritPermissions) -> record
+                        // Path 5: User -> group -> recordGroup -> (RG inheritance chain) -> record
                         LET rec_has_group_rg = LENGTH(
                             FOR group, userEdge IN 1..1 ANY user_from permission
                                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                                 FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id permission
                                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
-                                        RETURN 1
+                                    // Traverse RG inheritance chain to find nested RGs
+                                    FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                                        FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                                        // Check if record inherits from this nested RG
+                                        FOR inheritEdge IN inheritPermissions
+                                            FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
+                                            RETURN 1
                         ) > 0
-                        // Path 6: User -> org -> recordGroup (via inheritPermissions) -> record
+                        // Path 6: User -> org -> recordGroup -> (RG inheritance chain) -> record
                         LET rec_has_org_rg = LENGTH(
                             FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                 FILTER belongsEdge.entityType == "ORGANIZATION"
                                 FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
                                     FILTER orgPerm.type == "ORG"
                                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
-                                        RETURN 1
+                                    // Traverse RG inheritance chain to find nested RGs
+                                    FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                                        FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                                        // Check if record inherits from this nested RG
+                                        FOR inheritEdge IN inheritPermissions
+                                            FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
+                                            RETURN 1
                         ) > 0
                         FILTER rec_has_direct OR rec_has_group OR rec_has_org OR rec_has_inherit_rg OR rec_has_group_rg OR rec_has_org_rg
                         RETURN 1
@@ -6081,15 +6133,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER perm._from == org._id AND perm._to == {record_var}._id AND perm.type == "ORG"
                         RETURN 1
             ) > 0 OR
-            // Path 2: user->org<-recordGroup<-..nested recordGroup..<-record (org permission to recordGroup, then nested recordGroups via belongsTo, then record via inheritPermissions)
+            // Path 2: user->org->recordGroup->(RG inheritance chain)->record (org permission to recordGroup, then nested recordGroups via inheritPermissions, then record via inheritPermissions)
             LENGTH(
                 FOR org, belongsEdge IN 1..1 ANY {user_from_var} belongsTo
                     FILTER belongsEdge.entityType == "ORGANIZATION"
                     FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
                         FILTER orgPerm.type == "ORG"
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                        // Traverse nested recordGroups via belongsTo edges, then check inheritPermissions to record
-                        FOR nested_rg, rgEdge IN 0..10 OUTBOUND recordGroup._id belongsTo
+                        // Traverse RG inheritance chain (child RGs inherit from parent), then check inheritPermissions to record
+                        FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
                             FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
                             FOR inheritEdge IN inheritPermissions
                                 FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == {record_var}._id
@@ -6101,13 +6153,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER perm._from == {user_from_var} AND perm._to == {record_var}._id AND perm.type == "USER"
                     RETURN 1
             ) > 0 OR
-            // Path 4: user->recordGroup->..nested recordGroup..->record (user permission to recordGroup, then nested recordGroups via belongsTo, then record via inheritPermissions)
+            // Path 4: user->recordGroup->(RG inheritance chain)->record (user permission to recordGroup, then nested recordGroups via inheritPermissions, then record via inheritPermissions)
             LENGTH(
                 FOR recordGroup, userPerm IN 1..1 ANY {user_from_var} permission
                     FILTER userPerm.type == "USER"
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                    // Traverse nested recordGroups via belongsTo edges, then check inheritPermissions to record
-                    FOR nested_rg, rgEdge IN 0..10 OUTBOUND recordGroup._id belongsTo
+                    // Traverse RG inheritance chain (child RGs inherit from parent), then check inheritPermissions to record
+                    FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
                         FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
                         FOR inheritEdge IN inheritPermissions
                             FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == {record_var}._id
@@ -6122,7 +6174,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER perm._from == group._id AND perm._to == {record_var}._id AND (perm.type == "GROUP" OR perm.type == "ROLE")
                         RETURN 1
             ) > 0 OR
-            // Path 6: user->group->recordGroup->..nested recordGroup..->record (group permission to recordGroup, then nested recordGroups via belongsTo, then record via inheritPermissions)
+            // Path 6: user->group->recordGroup->(RG inheritance chain)->record (group permission to recordGroup, then nested recordGroups via inheritPermissions, then record via inheritPermissions)
             LENGTH(
                 FOR group, userEdge IN 1..1 ANY {user_from_var} permission
                     FILTER userEdge.type == "USER"
@@ -6130,8 +6182,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FOR recordGroup, groupPerm IN 1..1 ANY group._id permission
                         FILTER groupPerm.type == "GROUP" OR groupPerm.type == "ROLE"
                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                        // Traverse nested recordGroups via belongsTo edges, then check inheritPermissions to record
-                        FOR nested_rg, rgEdge IN 0..10 OUTBOUND recordGroup._id belongsTo
+                        // Traverse RG inheritance chain (child RGs inherit from parent), then check inheritPermissions to record
+                        FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
                             FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
                             FOR inheritEdge IN inheritPermissions
                                 FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == {record_var}._id
@@ -6219,11 +6271,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         LET accessible_nested_rg_ids_with_perm = rg.isInternal == true ? [] : (is_kb_rg ? accessible_nested_rg_ids : (
             FOR child_rg IN all_nested_rgs
                 // Check if user has permission to this nested record group
+                // Path 1: Direct user -> child_rg permission
                 LET has_direct_perm = LENGTH(
                     FOR perm IN permission
                         FILTER perm._from == user_from AND perm._to == child_rg._id AND perm.type == "USER"
                         RETURN 1
                 ) > 0
+                // Path 2: User -> group/role -> child_rg permission
                 LET has_group_perm = LENGTH(
                     FOR group, userEdge IN 1..1 ANY user_from permission
                         FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
@@ -6232,6 +6286,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER perm.type == "GROUP" OR perm.type == "ROLE"
                             RETURN 1
                 ) > 0
+                // Path 3: User -> org -> child_rg permission
                 LET has_org_perm = LENGTH(
                     FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                         FILTER belongsEdge.entityType == "ORGANIZATION"
@@ -6240,7 +6295,49 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER perm.type == "ORG"
                             RETURN 1
                 ) > 0
-                FILTER has_direct_perm OR has_group_perm OR has_org_perm
+                // Path 4: User -> parent_rg -> (inheritPermissions chain) -> child_rg
+                // User has permission to a parent recordGroup, and child_rg inherits from that parent RG chain
+                LET has_inherit_from_user_rg = LENGTH(
+                    FOR parent_rg, userPerm IN 1..1 ANY user_from permission
+                        FILTER userPerm.type == "USER"
+                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                        // Check if child_rg inherits from parent_rg (directly or through chain)
+                        // Edge direction: child -> parent, so use INBOUND to find children from parent
+                        FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                            FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                            FILTER inherited_rg._id == child_rg._id
+                            RETURN 1
+                ) > 0
+                // Path 5: User -> group/role -> parent_rg -> (inheritPermissions chain) -> child_rg
+                LET has_inherit_from_group_rg = LENGTH(
+                    FOR group, userEdge IN 1..1 ANY user_from permission
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                        FOR parent_rg, groupPerm IN 1..1 ANY group._id permission
+                            FILTER groupPerm.type == "GROUP" OR groupPerm.type == "ROLE"
+                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                            // Check if child_rg inherits from parent_rg (directly or through chain)
+                            // Edge direction: child -> parent, so use INBOUND to find children from parent
+                            FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                FILTER inherited_rg._id == child_rg._id
+                                RETURN 1
+                ) > 0
+                // Path 6: User -> org -> parent_rg -> (inheritPermissions chain) -> child_rg
+                LET has_inherit_from_org_rg = LENGTH(
+                    FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR parent_rg, orgPerm IN 1..1 ANY org._id permission
+                            FILTER orgPerm.type == "ORG"
+                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                            // Check if child_rg inherits from parent_rg (directly or through chain)
+                            // Edge direction: child -> parent, so use INBOUND to find children from parent
+                            FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                FILTER inherited_rg._id == child_rg._id
+                                RETURN 1
+                ) > 0
+
+                FILTER has_direct_perm OR has_group_perm OR has_org_perm OR has_inherit_from_user_rg OR has_inherit_from_group_rg OR has_inherit_from_org_rg
                 RETURN child_rg._key
         ))
 
@@ -6260,21 +6357,72 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     ) > 0
                 ) : (
                     LENGTH(
-                        FOR sub_rg IN recordGroups
-                            FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true
-                            // Check permission for nested record groups
+                        // Find sub record groups using BOTH parentId field AND inheritPermissions edges
+                        FOR sub_rg IN UNION_DISTINCT(
+                            // Method 1: Using parentId field
+                            FOR inner_rg IN recordGroups
+                                FILTER inner_rg.parentId == child_rg._key AND inner_rg.isDeleted != true
+                                RETURN inner_rg,
+                            // Method 2: Using inheritPermissions edges (RG -> RG inheritance)
+                            FOR inherit_edge IN inheritPermissions
+                                FILTER inherit_edge._to == child_rg._id AND STARTS_WITH(inherit_edge._from, "recordGroups/")
+                                LET inner_rg2 = DOCUMENT(inherit_edge._from)
+                                FILTER inner_rg2 != null AND inner_rg2.isDeleted != true
+                                RETURN inner_rg2
+                        )
+                            // Check permission for nested record groups (6 paths)
+                            // Path 1: Direct user -> sub_rg permission
                             LET sub_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == sub_rg._id AND perm.type == "USER" RETURN 1) > 0
+                            // Path 2: User -> group/role -> sub_rg permission
                             LET sub_has_group = LENGTH(
                                 FOR group, userEdge IN 1..1 ANY user_from permission
                                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                                     FOR perm IN permission FILTER perm._from == group._id AND perm._to == sub_rg._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
                             ) > 0
+                            // Path 3: User -> org -> sub_rg permission
                             LET sub_has_org = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
                                     FOR perm IN permission FILTER perm._from == org._id AND perm._to == sub_rg._id FILTER perm.type == "ORG" RETURN 1
                             ) > 0
-                            FILTER sub_has_direct OR sub_has_group OR sub_has_org
+                            // Path 4: User -> parent_rg -> (inheritPermissions chain) -> sub_rg
+                            LET sub_has_inherit_user = LENGTH(
+                                FOR parent_rg, userPerm IN 1..1 ANY user_from permission
+                                    FILTER userPerm.type == "USER"
+                                    FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                    // Edge direction: child -> parent, so use INBOUND to find children from parent
+                                    FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                        FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                        FILTER inherited_rg._id == sub_rg._id
+                                        RETURN 1
+                            ) > 0
+                            // Path 5: User -> group/role -> parent_rg -> (inheritPermissions chain) -> sub_rg
+                            LET sub_has_inherit_group = LENGTH(
+                                FOR group, userEdge IN 1..1 ANY user_from permission
+                                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                                    FOR parent_rg, groupPerm IN 1..1 ANY group._id permission
+                                        FILTER groupPerm.type == "GROUP" OR groupPerm.type == "ROLE"
+                                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                        // Edge direction: child -> parent, so use INBOUND to find children from parent
+                                        FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                            FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                            FILTER inherited_rg._id == sub_rg._id
+                                            RETURN 1
+                            ) > 0
+                            // Path 6: User -> org -> parent_rg -> (inheritPermissions chain) -> sub_rg
+                            LET sub_has_inherit_org = LENGTH(
+                                FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                                    FILTER belongsEdge.entityType == "ORGANIZATION"
+                                    FOR parent_rg, orgPerm IN 1..1 ANY org._id permission
+                                        FILTER orgPerm.type == "ORG"
+                                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                        // Edge direction: child -> parent, so use INBOUND to find children from parent
+                                        FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                            FILTER IS_SAME_COLLECTION("recordGroups", inherited_rg)
+                                            FILTER inherited_rg._id == sub_rg._id
+                                            RETURN 1
+                            ) > 0
+                            FILTER sub_has_direct OR sub_has_group OR sub_has_org OR sub_has_inherit_user OR sub_has_inherit_group OR sub_has_inherit_org
                             RETURN 1
                     ) > 0
                 )
@@ -6333,34 +6481,46 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 FILTER belongsEdge.entityType == "ORGANIZATION"
                                 FOR perm IN permission FILTER perm._from == org._id AND perm._to == r._id FILTER perm.type == "ORG" RETURN 1
                         ) > 0
-                        // Path 4: User -> recordGroup (via inheritPermissions) -> record
+                        // Path 4: User -> recordGroup -> (RG inheritance chain) -> record
                         LET r_has_inherit_rg = LENGTH(
                             FOR recordGroup, userToRgEdge IN 1..1 ANY user_from permission
                                 FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                FOR inheritEdge IN inheritPermissions
-                                    FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == r._id
-                                    RETURN 1
+                                // Traverse RG inheritance chain to find nested RGs
+                                FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                                    FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                                    // Check if record inherits from this nested RG
+                                    FOR inheritEdge IN inheritPermissions
+                                        FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == r._id
+                                        RETURN 1
                         ) > 0
-                        // Path 5: User -> group -> recordGroup (via inheritPermissions) -> record
+                        // Path 5: User -> group -> recordGroup -> (RG inheritance chain) -> record
                         LET r_has_group_rg = LENGTH(
                             FOR group, userEdge IN 1..1 ANY user_from permission
                                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                                 FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id permission
                                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == r._id
-                                        RETURN 1
+                                    // Traverse RG inheritance chain to find nested RGs
+                                    FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                                        FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                                        // Check if record inherits from this nested RG
+                                        FOR inheritEdge IN inheritPermissions
+                                            FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == r._id
+                                            RETURN 1
                         ) > 0
-                        // Path 6: User -> org -> recordGroup (via inheritPermissions) -> record
+                        // Path 6: User -> org -> recordGroup -> (RG inheritance chain) -> record
                         LET r_has_org_rg = LENGTH(
                             FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                 FILTER belongsEdge.entityType == "ORGANIZATION"
                                 FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
                                     FILTER orgPerm.type == "ORG"
                                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == r._id
-                                        RETURN 1
+                                    // Traverse RG inheritance chain to find nested RGs
+                                    FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                                        FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                                        // Check if record inherits from this nested RG
+                                        FOR inheritEdge IN inheritPermissions
+                                            FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == r._id
+                                            RETURN 1
                         ) > 0
                         FILTER r_has_direct OR r_has_group OR r_has_org OR r_has_inherit_rg OR r_has_group_rg OR r_has_org_rg
                         RETURN 1
