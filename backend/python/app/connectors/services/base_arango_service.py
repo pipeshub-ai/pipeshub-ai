@@ -3251,10 +3251,11 @@ class BaseArangoService:
         Flow:
         1. Collect all node IDs (records, record groups, roles, groups, drives, app)
         2. Get all edge collections from the graph definition
-        3. Delete all edges connected to these nodes (dynamically)
-        4. Delete isOfType target nodes (files, mails, etc.) dynamically
-        5. Delete the nodes themselves
-        6. Return virtualRecordIds for Qdrant cleanup
+        3. Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges
+        4. Delete all edges connected to these nodes (dynamically)
+        5. Delete isOfType target nodes using pre-collected targets
+        6. Delete the nodes themselves
+        7. Return virtualRecordIds for Qdrant cleanup
 
         Classification nodes (departments, categories, topics, languages) are NOT deleted
         as they are shared resources.
@@ -3313,49 +3314,55 @@ class BaseArangoService:
             )
 
             try:
-                # Step 5: Delete all edges connected to our nodes
+                # Step 5: Collect isOfType targets BEFORE deleting edges
+                isoftype_targets = await self._collect_isoftype_targets(
+                    transaction,
+                    collected["record_ids"]
+                )
+
+                # Step 6: Delete all edges connected to nodes
                 await self._delete_all_edges_for_nodes(
                     transaction,
                     collected["all_node_ids"],
                     edge_collections
                 )
 
-                # Step 6: Delete isOfType target nodes (files, mails, etc.)
-                await self._delete_isoftype_targets(
+                # Step 7: Delete isOfType target nodes (files, mails, etc.)
+                await self._delete_isoftype_targets_from_collected(
                     transaction,
-                    collected["record_ids"],
+                    isoftype_targets,
                     edge_collections
                 )
 
-                # Step 7: Delete records
+                # Step 8: Delete records
                 await self._delete_nodes_by_keys(
                     transaction,
                     collected["record_keys"],
                     CollectionNames.RECORDS.value
                 )
 
-                # Step 8: Delete record groups
+                # Step 9: Delete record groups
                 await self._delete_nodes_by_keys(
                     transaction,
                     collected["record_group_keys"],
                     CollectionNames.RECORD_GROUPS.value
                 )
 
-                # Step 9: Delete roles
+                # Step 10: Delete roles
                 await self._delete_nodes_by_keys(
                     transaction,
                     collected["role_keys"],
                     CollectionNames.ROLES.value
                 )
 
-                # Step 10: Delete groups
+                # Step 11: Delete groups
                 await self._delete_nodes_by_keys(
                     transaction,
                     collected["group_keys"],
                     CollectionNames.GROUPS.value
                 )
 
-                # Step 11: Delete syncPoints and blocks
+                # Step 12: Delete syncPoints and blocks
                 await self._delete_nodes_by_connector_id(
                     transaction,
                     connector_id,
@@ -3363,7 +3370,7 @@ class BaseArangoService:
                 )
 
 
-                # Step 12: Delete the app itself
+                # Step 13: Delete the app itself
                 await self._delete_nodes_by_keys(
                     transaction,
                     [connector_id],
@@ -3549,6 +3556,78 @@ class BaseArangoService:
                 # Continue with other collections
 
         self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+        return total_deleted
+
+    async def _collect_isoftype_targets(self, transaction, record_ids: List[str]) -> List[Dict]:
+        """
+        Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
+        This must be called before _delete_all_edges_for_nodes to ensure we can find the targets.
+
+        Returns:
+            List of target dictionaries with keys: collection, key, full_id
+        """
+        if not record_ids:
+            return []
+
+        collect_query = """
+        FOR edge IN @@isOfType
+            FILTER edge._from IN @record_ids
+            LET target = PARSE_IDENTIFIER(edge._to)
+            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        """
+
+        try:
+            cursor = transaction.aql.execute(collect_query, bind_vars={
+                "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                "record_ids": record_ids
+            })
+            targets = list(cursor)
+            self.logger.debug(f"📊 Collected {len(targets)} isOfType targets before edge deletion")
+            return targets
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error collecting isOfType targets: {e}")
+            return []
+
+    async def _delete_isoftype_targets_from_collected(
+        self,
+        transaction,
+        targets: List[Dict],
+        edge_collections: List[str]
+    ) -> int:
+        """
+        Delete isOfType target nodes using pre-collected targets.
+        This is called after edges are deleted, using targets collected before deletion.
+
+        Args:
+            transaction: The transaction object
+            targets: List of target dicts with keys: collection, key, full_id (from _collect_isoftype_targets)
+            edge_collections: List of edge collection names for cleanup
+        """
+        if not targets:
+            return 0
+
+        # Build list of type node IDs for edge cleanup
+        type_node_ids = [target["full_id"] for target in targets]
+
+        # Delete edges connected to type nodes BEFORE deleting the nodes
+        await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
+
+        # Group targets by collection
+        targets_by_collection: Dict[str, List[str]] = {}
+        for target in targets:
+            coll = target["collection"]
+            key = target["key"]
+            if coll not in targets_by_collection:
+                targets_by_collection[coll] = []
+            targets_by_collection[coll].append(key)
+
+        # Delete from each collection
+        total_deleted = 0
+        for collection, keys in targets_by_collection.items():
+            deleted = await self._delete_nodes_by_keys(transaction, keys, collection)
+            total_deleted += deleted
+
+        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
         return total_deleted
 
     async def _delete_isoftype_targets(self, transaction, record_ids: List[str], edge_collections: List[str]) -> int:
