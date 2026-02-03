@@ -1157,10 +1157,6 @@ class AzureBlobConnector(BaseConnector):
             parent_path = get_parent_path_from_blob_name(normalized_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
             parent_record_type = RecordType.FILE if parent_path else None
-            # Root-level items: parent must be null, not the container
-            if parent_external_id == container_name:
-                parent_external_id = None
-                parent_record_type = None
 
             web_url = self._generate_web_url(container_name, normalized_name)
 
@@ -1221,15 +1217,6 @@ class AzureBlobConnector(BaseConnector):
                 md5_hash=content_md5,
                 etag=raw_etag,
             )
-
-            # Root-level items: do not link to the container as a parent
-            if (
-                file_record.parent_external_record_id
-                and file_record.external_record_group_id
-                and file_record.parent_external_record_id == file_record.external_record_group_id
-            ):
-                file_record.parent_external_record_id = None
-                file_record.parent_record_type = None
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
@@ -1599,10 +1586,6 @@ class AzureBlobConnector(BaseConnector):
             parent_path = get_parent_path_from_blob_name(blob_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
             parent_record_type = RecordType.FILE if parent_path else None
-            # Root-level items: parent must be null, not the container
-            if parent_external_id == container_name:
-                parent_external_id = None
-                parent_record_type = None
 
             web_url = self._generate_web_url(container_name, blob_name)
 
@@ -1652,15 +1635,6 @@ class AzureBlobConnector(BaseConnector):
                 md5_hash=content_md5,
                 etag=current_etag,
             )
-
-            # Root-level items: do not link to the container as a parent
-            if (
-                updated_record.parent_external_record_id
-                and updated_record.external_record_group_id
-                and updated_record.parent_external_record_id == updated_record.external_record_group_id
-            ):
-                updated_record.parent_external_record_id = None
-                updated_record.parent_record_type = None
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
