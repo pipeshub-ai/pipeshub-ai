@@ -12,24 +12,26 @@ This roadmap implements automatic team membership for a system-managed "Global R
 - Primary hook: Post-JIT provisioning in `userAccount.controller.ts`
 - Existing patterns: PERMISSION edges in ArangoDB, UserGroup admin detection
 
-## Phase 1: Team Foundation
+## Phase 1: Team Foundation ✓
 
 **Goal:** Establish the Global Reader team as a system-managed entity.
+**Status:** Complete
+**Completed:** 2026-02-04
 
 **Requirements Covered:**
 - TEAM-01: Global Reader team exists in the system (created if not present)
 - TEAM-02: Team has name "Global Reader" and appropriate description
 
 **Success Criteria:**
-1. Global Reader team exists after application startup
-2. Team can be queried by name via existing team APIs
-3. Team creation is idempotent (safe to run multiple times)
+1. ✓ Global Reader team exists after application startup
+2. ✓ Team can be queried by name via existing team APIs
+3. ✓ Team creation is idempotent (safe to run multiple times)
 
 **Plans:**
-1. **PLAN-1.1: Global Reader Service** - Create `globalReaderTeam.service.ts` with `ensureGlobalReaderTeamExists()` method
-2. **PLAN-1.2: Startup Integration** - Call team creation on application bootstrap
+1. ✓ **PLAN-1.1: Global Reader Service** - Create `globalReaderTeam.service.ts` with `ensureGlobalReaderTeamExists()` method
+2. ✓ **PLAN-1.2: Startup Integration** - Call team creation on application bootstrap
 
-**Estimated Effort:** Small (1-2 implementation tasks)
+**Verification:** Passed (7/7 must-haves verified)
 
 ---
 
@@ -95,8 +97,8 @@ This roadmap implements automatic team membership for a system-managed "Global R
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TEAM-01 | Phase 1 | Mapped |
-| TEAM-02 | Phase 1 | Mapped |
+| TEAM-01 | Phase 1 | Complete |
+| TEAM-02 | Phase 1 | Complete |
 | MEMB-01 | Phase 2 | Mapped |
 | MEMB-02 | Phase 2 | Mapped |
 | MEMB-03 | Phase 2 | Mapped |
