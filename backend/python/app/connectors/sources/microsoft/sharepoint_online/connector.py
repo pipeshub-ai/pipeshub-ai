@@ -1315,7 +1315,7 @@ class SharePointConnector(BaseConnector):
             if hasattr(item, 'parent_reference') and item.parent_reference:
                 parent_id = getattr(item.parent_reference, 'id', None)
                 path = getattr(item.parent_reference, 'path', None)
-                
+
                 # Check if parent is root - if path ends with '/root:' or is '/drive/root:', parent is root
                 # Convert parent_id to composite format if parent is root
                 if parent_id and path:

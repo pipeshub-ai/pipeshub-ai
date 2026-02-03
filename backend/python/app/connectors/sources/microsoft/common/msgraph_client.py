@@ -1,8 +1,8 @@
 import json
+import re
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, Callable, Dict, List, Optional
-import re
 
 from aiolimiter import AsyncLimiter
 from kiota_abstractions.base_request_configuration import RequestConfiguration
@@ -591,7 +591,7 @@ class MSGraphClient:
 
         if region is None:
             region = "NAM"
-        
+
         async def _execute_search(search_region: str) -> dict:
             offset = (page - 1) * limit
             search_query_str = query.strip() if query and query.strip() else "*"
@@ -606,7 +606,7 @@ class MSGraphClient:
                     }
                 ]
             }
-            
+
             if search_region:
                 search_request["requests"][0]["region"] = search_region
 
@@ -637,10 +637,10 @@ class MSGraphClient:
             try:
                 if error.error and error.error.message:
                     message = error.error.message
-                    
+
                     pattern = r"Only valid regions are ([A-Z,\s]+)\."
                     match = re.search(pattern, message)
-                    
+
                     if match:
                         regions_str = match.group(1)
                         regions = [r.strip() for r in regions_str.split(',') if r.strip()]
@@ -652,13 +652,13 @@ class MSGraphClient:
 
         try:
             return await _execute_search(region or "")
-            
+
         except ODataError as ex:
             # Check if this is a region-related error
             if ex.error and ex.error.code == 'BadRequest' and ex.error.message:
                 if 'valid regions are' in ex.error.message.lower():
                     extracted_region = _extract_region_from_error(ex)
-                    
+
                     if extracted_region:
                         # Only retry if extracted region is different from what was passed
                         if extracted_region != region:
@@ -673,6 +673,6 @@ class MSGraphClient:
                                 f"Region '{region}' was passed but still failed. "
                                 f"Error: {ex.error.message}"
                             )
-            
+
             self.logger.error(f"Error searching entities {entity_types}: {ex}")
             raise
