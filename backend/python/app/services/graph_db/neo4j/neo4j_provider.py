@@ -34,6 +34,7 @@ from app.config.constants.neo4j import (
     edge_collection_to_relationship,
     parse_node_id,
 )
+from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -69,6 +70,7 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
+        kafka_service: Optional[KafkaService] = None,
     ) -> None:
         """
         Initialize Neo4j provider.
@@ -76,9 +78,11 @@ class Neo4jProvider(IGraphDBProvider):
         Args:
             logger: Logger instance
             config_service: Configuration service for database credentials
+            kafka_service: Optional Kafka service for event publishing
         """
         self.logger = logger
         self.config_service = config_service
+        self.kafka_service = kafka_service
         self.client: Optional[Neo4jClient] = None
 
     # ==================== Connection Management ====================
@@ -180,60 +184,8 @@ class Neo4jProvider(IGraphDBProvider):
         return edge_collection_to_relationship(edge_collection)
 
     async def _initialize_schema(self) -> None:
-        """Initialize Neo4j schema with constraints and indexes"""
-        try:
-            self.logger.info("🔧 Initializing Neo4j schema...")
-
-            # Create unique constraints on 'id' property for each label
-            # Neo4j requires one statement per query, so execute each separately
-            constraints = [
-                "CREATE CONSTRAINT record_id_unique IF NOT EXISTS FOR (n:Record) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (n:User) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT group_id_unique IF NOT EXISTS FOR (n:Group) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT org_id_unique IF NOT EXISTS FOR (n:Organization) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT app_id_unique IF NOT EXISTS FOR (n:App) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT tool_id_unique IF NOT EXISTS FOR (n:Tool) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT tool_ctag_id_unique IF NOT EXISTS FOR (n:ToolCtag) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT department_id_unique IF NOT EXISTS FOR (n:Departments) REQUIRE n.id IS UNIQUE",
-            ]
-
-            for constraint_query in constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # Constraint may already exist, log as warning
-                    self.logger.debug(f"Constraint creation (may already exist): {str(e)}")
-
-            # Create indexes for common queries
-            # Neo4j requires one statement per query
-            indexes = [
-                "CREATE INDEX record_external_id IF NOT EXISTS FOR (n:Record) ON (n.externalRecordId, n.connectorId)",
-                "CREATE INDEX user_email IF NOT EXISTS FOR (n:User) ON (n.email)",
-                "CREATE INDEX user_user_id IF NOT EXISTS FOR (n:User) ON (n.userId)",
-                "CREATE INDEX file_path IF NOT EXISTS FOR (n:File) ON (n.path)",
-                "CREATE INDEX tool_app_name_tool_name IF NOT EXISTS FOR (n:Tool) ON (n.app_name, n.tool_name)",
-                "CREATE INDEX tool_ctag_connector_name IF NOT EXISTS FOR (n:ToolCtag) ON (n.connector_name)",
-            ]
-
-            for index_query in indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    # Index may already exist, log as warning
-                    self.logger.debug(f"Index creation (may already exist): {str(e)}")
-
-            self.logger.info("✅ Neo4j schema initialized (including tools and tools_ctags)")
-
-        except Exception as e:
-            self.logger.warning(f"⚠️ Schema initialization warning (may already exist): {str(e)}")
-
-        # Always try to initialize departments, even if schema initialization had warnings
-        try:
-            await self._initialize_departments()
-        except Exception as e:
-            self.logger.error(f"❌ Error initializing departments: {str(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
+        """Initialize Neo4j schema (delegates to ensure_schema)."""
+        await self.ensure_schema()
 
     async def _initialize_departments(self) -> None:
         """Initialize departments collection with predefined department types"""
@@ -1139,14 +1091,24 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             label = collection_to_label(collection)
 
-            # Build filter conditions
+            # Build filter conditions - handle NULL values specially in Cypher
             if filters:
-                filter_conditions = " AND ".join([
-                    f"n.{field} = ${field}" for field in filters
-                ])
-                where_clause = f"WHERE {filter_conditions}"
+                filter_conditions = []
+                parameters = {}
+
+                for field, value in filters.items():
+                    if value is None:
+                        # Use IS NULL for None values in Cypher
+                        filter_conditions.append(f"n.{field} IS NULL")
+                    else:
+                        # Use parameterized query for non-null values
+                        filter_conditions.append(f"n.{field} = ${field}")
+                        parameters[field] = value
+
+                where_clause = f"WHERE {' AND '.join(filter_conditions)}"
             else:
                 where_clause = ""
+                parameters = {}
 
             # Build return clause
             if return_fields:
@@ -1168,7 +1130,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             results = await self.client.execute_query(
                 query,
-                parameters=filters,
+                parameters=parameters,
                 txn_id=transaction
             )
 
@@ -1185,6 +1147,50 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get nodes by filters failed: {str(e)}")
+            return []
+
+    async def get_documents_by_status(
+        self,
+        collection: str,
+        status: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all documents with a specific indexing status.
+
+        Args:
+            collection: Collection name
+            status: Status to filter by
+            transaction: Optional transaction context
+
+        Returns:
+            List[Dict]: List of matching documents
+        """
+        try:
+            label = collection_to_label(collection)
+
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.indexingStatus = $status
+            RETURN n
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"status": status},
+                txn_id=transaction
+            )
+
+            # Convert results
+            documents = []
+            for record in results:
+                node = record.get("n", {})
+                documents.append(node)
+
+            return documents
+
+        except Exception as e:
+            self.logger.error(f"❌ Get documents by status failed: {str(e)}")
             return []
 
     async def get_nodes_by_field_in(
@@ -2460,29 +2466,80 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return False
 
+    async def get_user_apps(self, user_id: str) -> list:
+        """Get all apps associated with a user"""
+        try:
+            query = """
+            MATCH (user:User {id: $user_id})-[:USER_APP_RELATION]->(app:App)
+            RETURN app
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"user_id": user_id}
+            )
+
+            apps = []
+            for r in results:
+                if r.get("app"):
+                    app_dict = dict(r["app"])
+                    apps.append(self._neo4j_to_arango_node(app_dict, CollectionNames.APPS.value))
+
+            return apps
+        except Exception as e:
+            self.logger.error(f"Failed to get user apps: {str(e)}")
+            raise
+
+    async def _get_user_app_ids(self, user_id: str) -> List[str]:
+        """Gets a list of accessible app connector IDs for a user."""
+        try:
+            user_app_docs = await self.get_user_apps(user_id)
+            # Filter out None values and apps without id/_key before accessing
+            user_apps = [app.get('id') or app.get('_key') for app in user_app_docs if app and (app.get('id') or app.get('_key'))]
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            return user_apps
+        except Exception as e:
+            self.logger.error(f"Failed to get user app ids: {str(e)}")
+            raise
+
     async def get_accessible_records(
-        self,
-        user_id: str,
-        org_id: str,
-        filters: Optional[Dict[str, List[str]]] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
+        self, user_id: str, org_id: str, filters: dict = None
+    ) -> list:
         """
         Get all records accessible to a user based on their permissions and apply filters.
 
-        This is a complex method that traverses permission graphs using Cypher.
-        Note: This is a simplified implementation. The full version would need
-        all the complex graph traversal logic from the ArangoDB version.
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (dict): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
         """
+        self.logger.info(
+            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
+        )
+
         try:
-            self.logger.info(
-                f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
-            )
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            user_key = user.get('id') or user.get('_key')
+            # Get user's accessible app connector ids
+            user_apps_ids = await self._get_user_app_ids(user_key)
 
             # Extract filters
-            filters = filters or {}
-            kb_ids = filters.get("kb")
-            connector_ids = filters.get("apps")
+            kb_ids = filters.get("kb") if filters else None
+            connector_ids = filters.get("apps") if filters else None
 
             # Determine filter case
             has_kb_filter = kb_ids is not None and len(kb_ids) > 0
@@ -2493,115 +2550,319 @@ class Neo4jProvider(IGraphDBProvider):
                 f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
             )
 
-            # Build Cypher query - simplified version
-            # This would need to be expanded to match the full ArangoDB AQL logic
+            # Build a simplified Cypher query
+            # Collect all accessible records in one go
             query = """
-            MATCH (user:User {userId: $user_id})
+            MATCH (userDoc:User {userId: $userId})
 
-            // Direct user -> records via permission
-            OPTIONAL MATCH (user)-[:PERMISSION]->(directRecord:Record)
-
-            // User -> Group -> Records
-            OPTIONAL MATCH (user)-[:BELONGS_TO]->(group:Group)-[:PERMISSION]->(groupRecord:Record)
-
-            // User -> Organization -> Records
-            OPTIONAL MATCH (user)-[:BELONGS_TO]->(org:Organization)-[:PERMISSION]->(orgRecord:Record)
-
-            // User -> Group/Role -> RecordGroup -> Record
-            OPTIONAL MATCH (user)-[:PERMISSION]->(groupOrRole)
-            WHERE groupOrRole:Group OR groupOrRole:Role
-            OPTIONAL MATCH (groupOrRole)-[:PERMISSION]->(recordGroup:RecordGroup)
-            OPTIONAL MATCH (recordGroup)<-[:INHERIT_PERMISSIONS*0..5]-(recordGroupRecord:Record)
-
-            // Anyone records
-            OPTIONAL MATCH (anyone:Anyone {organization: $org_id})-[:PERMISSION]->(anyoneRecord:Record)
-
-            WITH collect(DISTINCT directRecord) +
-                 collect(DISTINCT groupRecord) +
-                 collect(DISTINCT orgRecord) +
-                 collect(DISTINCT recordGroupRecord) +
-                 collect(DISTINCT anyoneRecord) AS allRecords
-
-            UNWIND allRecords AS record
-            WITH record
-            WHERE record IS NOT NULL
-            """
-
-            parameters = {
-                "user_id": user_id,
-                "org_id": org_id
+            // Collect all accessible records from different paths
+            CALL {
+                WITH userDoc
+                // User -> Direct Records
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(r:Record)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records1
             }
 
-            # Add KB filter
-            if has_kb_filter:
-                query += """
-            // KB filtering logic would go here
-            """
-                parameters["kb_ids"] = kb_ids
+            CALL {
+                WITH userDoc
+                // User -> Group -> Records (via BELONGS_TO)
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(g:Group)-[:PERMISSION]->(r:Record)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records2
+            }
 
-            # Add App filter
-            if has_app_filter:
-                query += """
-            AND record.connectorId IN $connector_ids
-            """
-                parameters["connector_ids"] = connector_ids
+            CALL {
+                WITH userDoc
+                // User -> Group -> Records (via PERMISSION)
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g:Group)-[:PERMISSION]->(r:Record)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records3
+            }
 
-            # Add metadata filters
+            CALL {
+                WITH userDoc
+                // User -> Organization -> Records
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(r:Record)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records4
+            }
+
+            CALL {
+                WITH userDoc
+                // User -> Organization -> RecordGroup -> Records
+                OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[:PERMISSION]->(rg:RecordGroup)
+                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..2]->(rg)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records5
+            }
+
+            CALL {
+                WITH userDoc
+                // User -> Group/Role -> RecordGroup -> Records
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(gr)
+                WHERE gr:Group OR gr:Role
+                OPTIONAL MATCH (gr)-[:PERMISSION]->(rg:RecordGroup)
+                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records6
+            }
+
+            CALL {
+                WITH userDoc
+                // User -> RecordGroup -> Records
+                OPTIONAL MATCH (userDoc)-[:PERMISSION]->(rg:RecordGroup)
+                OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
+                WHERE r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids)
+                RETURN collect(DISTINCT r) AS records7
+            }
+
+            CALL {
+                // Anyone records
+                OPTIONAL MATCH (anyone:Anyone {organization: $orgId})
+                OPTIONAL MATCH (r:Record)
+                WHERE r.id = anyone.file_key
+                  AND (r.origin = "UPLOAD" OR (r.origin = "CONNECTOR" AND r.connectorId IN $user_apps_ids))
+                RETURN collect(DISTINCT r) AS records8
+            }
+
+            WITH userDoc, records1 + records2 + records3 + records4 + records5 + records6 + records7 + records8 AS directAndGroupRecords
+            """
+
+            query_parts = [query]
+
+            # Now handle the 4 cases based on filters
+
+            # Case 1: Both KB and App filters applied
+            if has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 1: Both KB and App filters applied")
+
+                # Get KB records with filter
+                query_parts.append("""
+                CALL {
+                    WITH userDoc
+                    // Direct user-KB permissions
+                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
+                    WHERE kb.id IN $kb_ids
+                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                    RETURN collect(DISTINCT r) AS directKbRecords
+                }
+
+                CALL {
+                    WITH userDoc
+                    // Team-based KB permissions
+                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Team)
+                    WHERE ute.type = "USER"
+                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
+                    WHERE tke.type = "TEAM" AND kb.id IN $kb_ids
+                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                    RETURN collect(DISTINCT r) AS teamKbRecords
+                }
+
+                WITH directKbRecords + teamKbRecords AS kbRecords, directAndGroupRecords
+                WITH kbRecords, [r IN directAndGroupRecords WHERE r.connectorId IN $connector_ids] AS appFilteredRecords
+                WITH kbRecords + appFilteredRecords AS allAccessibleRecords
+                """)
+
+            # Case 2: Only KB filter applied
+            elif has_kb_filter and not has_app_filter:
+                self.logger.info("🔍 Case 2: Only KB filter applied")
+
+                # Get only filtered KB records
+                query_parts.append("""
+                CALL {
+                    WITH userDoc
+                    // Direct user-KB permissions with filter
+                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
+                    WHERE kb.id IN $kb_ids
+                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                    RETURN collect(DISTINCT r) AS directKbRecords
+                }
+
+                CALL {
+                    WITH userDoc
+                    // Team-based KB permissions with filter
+                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Team)
+                    WHERE ute.type = "USER"
+                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
+                    WHERE tke.type = "TEAM" AND kb.id IN $kb_ids
+                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                    RETURN collect(DISTINCT r) AS teamKbRecords
+                }
+
+                WITH directKbRecords + teamKbRecords AS allAccessibleRecords
+                """)
+
+            # Case 3: Only App filter applied
+            elif not has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 3: Only App filter applied")
+
+                # Get app-filtered records from direct, group, org, and anyone
+                query_parts.append("""
+                WITH [r IN directAndGroupRecords WHERE r.connectorId IN $connector_ids] AS allAccessibleRecords
+                """)
+
+            # Case 4: No KB or App filters - return all accessible records
+            else:
+                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
+
+                # Get all KB records
+                query_parts.append("""
+                CALL {
+                    WITH userDoc
+                    // Direct user-KB permissions
+                    OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:RecordGroup)
+                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                    RETURN collect(DISTINCT r) AS directKbRecords
+                }
+
+                CALL {
+                    WITH userDoc
+                    // Team-based KB permissions
+                    OPTIONAL MATCH (userDoc)-[ute:PERMISSION]->(team:Team)
+                    WHERE ute.type = "USER"
+                    OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:RecordGroup)
+                    WHERE tke.type = "TEAM"
+                    OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
+                    RETURN collect(DISTINCT r) AS teamKbRecords
+                }
+
+                WITH directKbRecords + teamKbRecords + directAndGroupRecords AS allAccessibleRecords
+                """)
+
+            # Add additional filter conditions (departments, categories, etc.)
+            filter_conditions = []
             if filters:
                 if filters.get("departments"):
-                    query += """
-            AND EXISTS {
-                MATCH (record)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
-                WHERE dept.departmentName IN $departmentNames
-            }
-            """
-                    parameters["departmentNames"] = filters["departments"]
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+                        WHERE dept.departmentName IN $departmentNames
+                    }
+                    """)
 
                 if filters.get("categories"):
-                    query += """
-            AND EXISTS {
-                MATCH (record)-[:BELONGS_TO_CATEGORY]->(cat:Category)
-                WHERE cat.name IN $categoryNames
-            }
-            """
-                    parameters["categoryNames"] = filters["categories"]
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+                        WHERE cat.name IN $categoryNames
+                    }
+                    """)
+
+                if filters.get("subcategories1"):
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat1Names
+                    }
+                    """)
+
+                if filters.get("subcategories2"):
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat2Names
+                    }
+                    """)
+
+                if filters.get("subcategories3"):
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_CATEGORY]->(subcat:Category)
+                        WHERE subcat.name IN $subcat3Names
+                    }
+                    """)
 
                 if filters.get("languages"):
-                    query += """
-            AND EXISTS {
-                MATCH (record)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
-                WHERE lang.name IN $languageNames
-            }
-            """
-                    parameters["languageNames"] = filters["languages"]
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+                        WHERE lang.name IN $languageNames
+                    }
+                    """)
 
                 if filters.get("topics"):
-                    query += """
-            AND EXISTS {
-                MATCH (record)-[:BELONGS_TO_TOPIC]->(topic:Topic)
-                WHERE topic.name IN $topicNames
+                    filter_conditions.append("""
+                    EXISTS {
+                        MATCH (record)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+                        WHERE topic.name IN $topicNames
+                    }
+                    """)
+
+            # Apply additional filters if any
+            if filter_conditions:
+                query_parts.append("""
+                UNWIND allAccessibleRecords AS record
+                WITH record
+                WHERE record IS NOT NULL
+                  AND """ + " AND ".join(filter_conditions) + """
+                RETURN DISTINCT record
+                """)
+            else:
+                query_parts.append("""
+                UNWIND allAccessibleRecords AS record
+                WITH record
+                WHERE record IS NOT NULL
+                RETURN DISTINCT record
+                """)
+
+            # Combine all query parts
+            query = "\n".join(query_parts)
+
+            # Prepare parameters
+            parameters = {
+                "userId": user_id,
+                "orgId": org_id,
+                "user_apps_ids": user_apps_ids,
             }
-            """
+
+            # Add conditional parameters
+            if has_kb_filter:
+                parameters["kb_ids"] = kb_ids
+
+            if has_app_filter:
+                parameters["connector_ids"] = connector_ids
+
+            # Add filter parameters
+            if filters:
+                if filters.get("departments"):
+                    parameters["departmentNames"] = filters["departments"]
+                if filters.get("categories"):
+                    parameters["categoryNames"] = filters["categories"]
+                if filters.get("subcategories1"):
+                    parameters["subcat1Names"] = filters["subcategories1"]
+                if filters.get("subcategories2"):
+                    parameters["subcat2Names"] = filters["subcategories2"]
+                if filters.get("subcategories3"):
+                    parameters["subcat3Names"] = filters["subcategories3"]
+                if filters.get("languages"):
+                    parameters["languageNames"] = filters["languages"]
+                if filters.get("topics"):
                     parameters["topicNames"] = filters["topics"]
 
-            query += """
-            RETURN DISTINCT record
-            """
+            # Execute query
+            self.logger.debug(f"🔍 Executing query with parameters keys: {list(parameters.keys())}")
+            results = await self.client.execute_query(query, parameters=parameters)
 
-            results = await self.client.execute_query(
-                query,
-                parameters=parameters,
-                txn_id=transaction
-            )
+            # Process results
+            record_list = []
+            if results:
+                for r in results:
+                    if r.get("record"):
+                        record_dict = dict(r["record"])
+                        record_list.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
-            records = []
-            for record in results:
-                if record.get("record"):
-                    record_dict = dict(record["record"])
-                    records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
+            record_count = len(record_list)
+            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
 
-            self.logger.info(f"✅ Found {len(records)} accessible records")
-            return records
+            if has_kb_filter:
+                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
+            if has_app_filter:
+                self.logger.info(f"✅ App filtering applied for {len(connector_ids)} connector IDs")
+            if not has_kb_filter and not has_app_filter:
+                self.logger.info("✅ No KB/App filters - returned all accessible records")
+
+            return record_list
 
         except Exception as e:
             self.logger.error(f"❌ Get accessible records failed: {str(e)}")
@@ -4312,6 +4573,11 @@ class Neo4jProvider(IGraphDBProvider):
             user = dict(user_results[0]["u"])
             user_key = user.get("id")
 
+            # Get user's accessible app connector ids
+            user_apps_ids = await self._get_user_app_ids(user_key)
+
+            self.logger.info(f"🚀 User apps ids: {user_apps_ids}")
+
             # Get record
             record = await self.get_record_by_id(record_id, transaction)
             record = record.to_arango_base_record()
@@ -4324,77 +4590,80 @@ class Neo4jProvider(IGraphDBProvider):
             access_query = """
             MATCH (u:User {id: $user_key})
             MATCH (rec:Record {id: $record_id})
+            WHERE rec.origin <> "CONNECTOR" OR rec.connectorId IN $user_apps_ids
 
             // Direct access
             OPTIONAL MATCH (u)-[directPerm:PERMISSION {type: "USER"}]->(rec)
-            WITH u, rec, COLLECT({type: "DIRECT", source: u, role: directPerm.role}) AS directAccess
+            WITH u, rec,
+                 [x IN COLLECT({type: "DIRECT", source: u, role: directPerm.role}) WHERE x.role IS NOT NULL] AS directAccess
 
             // Group access: User -> Group -> Record
-            OPTIONAL MATCH (u)-[userGroupPerm:PERMISSION {type: "USER"}]->(g:Group)
-            OPTIONAL MATCH (g)-[groupRecPerm:PERMISSION]->(rec)
-            WITH u, rec, directAccess, COLLECT({type: "GROUP", source: g, role: groupRecPerm.role}) AS groupAccess
+            OPTIONAL MATCH (u)-[userGroupPerm:PERMISSION {type: "USER"}]->(g:Group)-[groupRecPerm:PERMISSION]->(rec)
+            WITH u, rec, directAccess,
+                 [x IN COLLECT({type: "GROUP", source: g, role: groupRecPerm.role}) WHERE x.role IS NOT NULL] AS groupAccess
 
             // Record Group access: User -> Group -> RecordGroup -> Record
-            OPTIONAL MATCH (u)-[userGroupPerm2:PERMISSION {type: "USER"}]->(g2:Group)
-            OPTIONAL MATCH (g2)-[groupRgPerm:PERMISSION]->(rg:RecordGroup)
+            OPTIONAL MATCH (u)-[userGroupPerm2:PERMISSION {type: "USER"}]->(g2:Group)-[groupRgPerm:PERMISSION]->(rg:RecordGroup)
             WHERE groupRgPerm.type IN ["GROUP", "ROLE"]
-            OPTIONAL MATCH (rg)<-[:BELONGS_TO]-(rec2:Record {id: $record_id})
-            WITH u, rec, directAccess, groupAccess, COLLECT({type: "RECORD_GROUP", source: rg, role: groupRgPerm.role}) AS recordGroupAccess
+            OPTIONAL MATCH (rg)<-[:INHERIT_PERMISSIONS]-(rec2:Record {id: $record_id})
+            WHERE rec2.origin <> "CONNECTOR" OR rec2.connectorId IN $user_apps_ids
+            WITH u, rec, directAccess, groupAccess,
+                 [x IN COLLECT({type: "RECORD_GROUP", source: rg, role: groupRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS recordGroupAccess
 
             // Nested Record Group access: User -> Group -> Parent RG -> Child RG -> Record
-            OPTIONAL MATCH (u)-[userGroupPerm3:PERMISSION {type: "USER"}]->(g3:Group)
-            OPTIONAL MATCH (g3)-[groupParentRgPerm:PERMISSION]->(parentRg:RecordGroup)
+            OPTIONAL MATCH (u)-[userGroupPerm3:PERMISSION {type: "USER"}]->(g3:Group)-[groupParentRgPerm:PERMISSION]->(parentRg:RecordGroup)
             WHERE groupParentRgPerm.type IN ["GROUP", "ROLE"]
-            OPTIONAL MATCH (parentRg)<-[:BELONGS_TO]-(childRg:RecordGroup)
-            OPTIONAL MATCH (childRg)<-[:BELONGS_TO]-(rec3:Record {id: $record_id})
+            OPTIONAL MATCH (parentRg)<-[:INHERIT_PERMISSIONS]-(childRg:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec3:Record {id: $record_id})
+            WHERE rec3.origin <> "CONNECTOR" OR rec3.connectorId IN $user_apps_ids
             WITH u, rec, directAccess, groupAccess, recordGroupAccess,
-                 COLLECT({type: "NESTED_RECORD_GROUP", source: childRg, role: groupParentRgPerm.role}) AS nestedRgAccess
+                 [x IN COLLECT({type: "NESTED_RECORD_GROUP", source: childRg, role: groupParentRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS nestedRgAccess
 
             // Direct User to Record Group access (with nested support)
             OPTIONAL MATCH (u)-[userRgPerm:PERMISSION {type: "USER"}]->(rg2:RecordGroup)
-            OPTIONAL MATCH path = (rg2)<-[:BELONGS_TO*0..5]-(rec4:Record {id: $record_id})
+            OPTIONAL MATCH path = (rg2)<-[:INHERIT_PERMISSIONS*0..5]-(rec4:Record {id: $record_id})
+            WHERE rec4.origin <> "CONNECTOR" OR rec4.connectorId IN $user_apps_ids
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess,
-                 COLLECT({type: "DIRECT_USER_RECORD_GROUP", source: rg2, role: userRgPerm.role, depth: length(path)}) AS directUserRgAccess
+                 [x IN COLLECT(DISTINCT {type: "DIRECT_USER_RECORD_GROUP", source: rg2, role: userRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS directUserRgAccess
 
             // Organization access: User -> Organization -> Record
-            OPTIONAL MATCH (u)-[:BELONGS_TO]->(org:Organization {id: $org_id})
-            OPTIONAL MATCH (org)-[orgRecPerm:PERMISSION]->(rec5:Record {id: $record_id})
+            OPTIONAL MATCH (u)-[:BELONGS_TO]->(org:Organization {id: $org_id})-[orgRecPerm:PERMISSION]->(rec5:Record {id: $record_id})
+            WHERE rec5.origin <> "CONNECTOR" OR rec5.connectorId IN $user_apps_ids
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess,
-                 COLLECT({type: "ORGANIZATION", source: org, role: orgRecPerm.role}) AS orgAccess
+                 [x IN COLLECT({type: "ORGANIZATION", source: org, role: orgRecPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgAccess
 
             // Organization Record Group access: User -> Organization -> RecordGroup -> Record
-            OPTIONAL MATCH (u)-[belongsTo:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization {id: $org_id})
-            OPTIONAL MATCH (org2)-[orgRgPerm:PERMISSION {type: "ORG"}]->(rg3:RecordGroup)
-            OPTIONAL MATCH path2 = (rg3)<-[:BELONGS_TO*0..2]-(rec6:Record {id: $record_id})
+            OPTIONAL MATCH (u)-[belongsTo:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization {id: $org_id})-[orgRgPerm:PERMISSION {type: "ORG"}]->(rg3:RecordGroup)
+            OPTIONAL MATCH path2 = (rg3)<-[:INHERIT_PERMISSIONS*0..2]-(rec6:Record {id: $record_id})
+            WHERE rec6.origin <> "CONNECTOR" OR rec6.connectorId IN $user_apps_ids
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess,
-                 COLLECT({type: "ORG_RECORD_GROUP", source: rg3, role: orgRgPerm.role, depth: length(path2)}) AS orgRgAccess
+                 [x IN COLLECT(DISTINCT {type: "ORG_RECORD_GROUP", source: rg3, role: orgRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgRgAccess
 
-            // Knowledge Base access: Check if record belongs to KB
-            OPTIONAL MATCH (kb:RecordGroup)<-[:BELONGS_TO]-(rec7:Record {id: $record_id})
-            OPTIONAL MATCH (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
+            // Knowledge Base access: Check if record belongs to KB and user has permission
+            OPTIONAL MATCH (kb:RecordGroup)<-[:BELONGS_TO]-(rec7:Record {id: $record_id}),
+                           (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
             OPTIONAL MATCH (rec7)<-[:PARENT_CHILD]-(folder:File)
             WHERE folder.isFile = false
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess, orgRgAccess,
-                 COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: folder}) AS kbDirectAccess
+                 [x IN COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: folder}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbDirectAccess
 
             // KB Team access: User -> Team -> KB -> Record
-            OPTIONAL MATCH (kb2:RecordGroup)<-[:BELONGS_TO]-(rec8:Record {id: $record_id})
-            OPTIONAL MATCH (team:Team)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2)
-            OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
+            OPTIONAL MATCH (kb2:RecordGroup)<-[:BELONGS_TO]-(rec8:Record {id: $record_id}),
+                           (team:Team)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2),
+                           (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
             OPTIONAL MATCH (rec8)<-[:PARENT_CHILD]-(folder2:File)
             WHERE folder2.isFile = false
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess, orgRgAccess, kbDirectAccess,
-                 COLLECT({
+                 [x IN COLLECT({
                      type: "KNOWLEDGE_BASE_TEAM",
                      source: kb2,
                      role: userTeamPerm.role,
                      folder: folder2
-                 }) AS kbTeamAccess
+                 }) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbTeamAccess
 
             // Anyone access
             OPTIONAL MATCH (anyone:Anyone {organization: $org_id, file_key: $record_id})
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
-                 COLLECT({type: "ANYONE", source: null, role: anyone.role}) AS anyoneAccess
+                 [x IN COLLECT({type: "ANYONE", source: null, role: anyone.role}) WHERE x.role IS NOT NULL] AS anyoneAccess
 
             // Combine all access paths
             WITH directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess + anyoneAccess AS allAccess
@@ -4407,7 +4676,8 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={
                     "user_key": user_key,
                     "record_id": record_id,
-                    "org_id": org_id
+                    "org_id": org_id,
+                    "user_apps_ids": user_apps_ids
                 },
                 txn_id=transaction
             )
@@ -4446,28 +4716,29 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Get metadata (departments, categories, topics, languages)
             # Use separate queries to avoid aggregation conflicts
+            # Note: Labels use capitalized collection names (Departments, Categories, etc.)
             metadata_query = """
             MATCH (rec:Record {id: $record_id})
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_DEPARTMENT]->(dept:Department)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_DEPARTMENT]->(dept:Departments)
             WITH rec, COLLECT(DISTINCT {id: dept.id, name: dept.departmentName}) AS departments
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(cat:Category)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(cat:Categories)
             WITH rec, departments, COLLECT(DISTINCT {id: cat.id, name: cat.name}) AS categories
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat1:Subcategory1)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat1:Subcategories1)
             WITH rec, departments, categories, COLLECT(DISTINCT {id: subcat1.id, name: subcat1.name}) AS subcategories1
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat2:Subcategory2)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat2:Subcategories2)
             WITH rec, departments, categories, subcategories1, COLLECT(DISTINCT {id: subcat2.id, name: subcat2.name}) AS subcategories2
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat3:Subcategory3)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_CATEGORY]->(subcat3:Subcategories3)
             WITH rec, departments, categories, subcategories1, subcategories2, COLLECT(DISTINCT {id: subcat3.id, name: subcat3.name}) AS subcategories3
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_TOPIC]->(topic:Topic)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_TOPIC]->(topic:Topics)
             WITH rec, departments, categories, subcategories1, subcategories2, subcategories3, COLLECT(DISTINCT {id: topic.id, name: topic.name}) AS topics
 
-            OPTIONAL MATCH (rec)-[:BELONGS_TO_LANGUAGE]->(lang:Language)
+            OPTIONAL MATCH (rec)-[:BELONGS_TO_LANGUAGE]->(lang:Languages)
             WITH departments, categories, subcategories1, subcategories2, subcategories3, topics, COLLECT(DISTINCT {id: lang.id, name: lang.name}) AS languages
 
             RETURN {
@@ -4520,6 +4791,7 @@ class Neo4jProvider(IGraphDBProvider):
                 }
                 permissions.append(permission)
 
+            record["id"] = record.pop("_key")
             return {
                 "record": {
                     **record,
@@ -5829,6 +6101,55 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete knowledge base: {str(e)}")
             raise
 
+    async def get_and_validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get folder by ID and validate it belongs to the specified KB in a single query.
+        This combines validate_folder_in_kb() and get_folder_record_by_id() for better performance.
+
+        Returns:
+            Dict with folder data if valid and belongs to KB, None otherwise
+        """
+        try:
+            query = """
+            MATCH (folder_record:Record {id: $folder_id})
+            MATCH (folder_record)-[:IS_OF_TYPE]->(folder_file:File)
+            WHERE folder_file.isFile = false
+            MATCH (folder_record)-[:BELONGS_TO {entityType: $entity_type}]->(kb:RecordGroup {id: $kb_id})
+            RETURN folder_record {
+                .*,
+                name: folder_file.name,
+                isFile: folder_file.isFile,
+                extension: folder_file.extension,
+                recordGroupId: folder_record.connectorId
+            } AS folder
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "folder_id": folder_id,
+                    "kb_id": kb_id,
+                    "entity_type": Connectors.KNOWLEDGE_BASE.value
+                },
+                txn_id=transaction
+            )
+
+            if results and len(results) > 0:
+                folder_dict = dict(results[0]["folder"])
+                return self._neo4j_to_arango_node(folder_dict, CollectionNames.RECORDS.value)
+
+            self.logger.warning(f"⚠️ Folder {folder_id} validation failed for KB {kb_id}")
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get and validate folder in KB: {str(e)}")
+            return None
+
     async def create_folder(
         self,
         kb_id: str,
@@ -5856,17 +6177,11 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Step 1: Validate parent folder exists (if nested)
             if parent_folder_id:
-                parent_folder = await self.get_folder_record_by_id(parent_folder_id, transaction)
+                parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id, transaction)
                 if not parent_folder:
-                    raise ValueError(f"Parent folder {parent_folder_id} not found")
-                # Check if parent is actually a folder
-                parent_file = await self.get_document(CollectionNames.FILES.value, parent_folder_id, transaction)
-                if parent_file and parent_file.get("isFile") is not False:
-                    raise ValueError(f"Parent {parent_folder_id} is not a folder")
-                if parent_folder.get("connectorId") != kb_id:
-                    raise ValueError(f"Parent folder does not belong to KB {kb_id}")
+                    raise ValueError(f"Parent folder {parent_folder_id} not found in KB {kb_id}")
 
-                self.logger.info(f"✅ Validated parent folder: {parent_folder.get('recordName')}")
+                self.logger.info(f"✅ Validated parent folder: {parent_folder.get('name') or parent_folder.get('recordName')}")
 
             # Step 2: Check for name conflicts in the target location
             existing_folder = await self.find_folder_by_name_in_parent(
@@ -5888,17 +6203,20 @@ class Neo4jProvider(IGraphDBProvider):
                 }
 
             # Step 3: Create RECORDS document for folder
-            # Determine parent: for root folders use KB ID, for nested folders use parent folder ID
-            external_parent_id = parent_folder_id if parent_folder_id else kb_id
+            # Determine parent: for immediate children of record group, externalParentId should be null
+            # For nested folders (under another folder), use parent folder ID
+            # Note: externalParentId is used to distinguish immediate children (null) from nested children (parent folder ID)
+            external_parent_id = parent_folder_id if parent_folder_id else None
+            kb_connector_id = f"knowledgeBase_{org_id}"
 
             record_data = {
                 "id": folder_id,
                 "orgId": org_id,
                 "recordName": folder_name,
                 "externalRecordId": f"kb_folder_{folder_id}",
-                "connectorId": kb_id,  # Always KB ID
+                "connectorId": kb_connector_id,  # KB connector ID (knowledgeBase_{org_id})
                 "externalGroupId": kb_id,  # Always KB ID (the knowledge base)
-                "externalParentId": external_parent_id,  # KB ID for root, parent folder ID for nested
+                "externalParentId": external_parent_id,  # None for root, parent folder ID for nested
                 "externalRootGroupId": kb_id,  # Always KB ID (the root knowledge base)
                 "recordType": RecordTypes.FILE.value,
                 "version": 0,
@@ -5925,17 +6243,18 @@ class Neo4jProvider(IGraphDBProvider):
                 f"parent={external_parent_id}, kb={kb_id}"
             )
 
+            self.logger.debug(
+                f"Creating folder RECORDS: root={not parent_folder_id}, "
+                f"parent={external_parent_id}, kb={kb_id}"
+            )
+
             # Step 4: Create FILES document for folder (file metadata)
             folder_data = {
                 "id": folder_id,
                 "orgId": org_id,
-                "recordGroupId": kb_id,
                 "name": folder_name,
                 "isFile": False,
                 "extension": None,
-                "mimeType": "application/vnd.folder",
-                "sizeInBytes": 0,
-                "webUrl": f"/kb/{kb_id}/folder/{folder_id}"
             }
 
             # Step 5: Insert both documents
@@ -5954,7 +6273,7 @@ class Neo4jProvider(IGraphDBProvider):
             await self.batch_create_edges([is_of_type_edge], CollectionNames.IS_OF_TYPE.value, transaction)
 
             # Step 7: Create relationships
-            # Always create KB relationship (RECORDS -> KB)
+            # Always create KB relationship (RECORDS -> KB) via BELONGS_TO edge
             kb_relationship_edge = {
                 "from_id": folder_id,
                 "from_collection": CollectionNames.RECORDS.value,
@@ -5966,9 +6285,10 @@ class Neo4jProvider(IGraphDBProvider):
             }
             await self.batch_create_edges([kb_relationship_edge], CollectionNames.BELONGS_TO.value, transaction)
 
-            # Create parent-child relationship (RECORDS -> RECORDS)
+            # Create parent-child relationship ONLY for nested folders (NOT for root folders)
+            # Root folders are identified by BELONGS_TO edge + absence of RECORD_RELATIONS edge
             if parent_folder_id:
-                # Nested folder: Parent Record -> Child Record
+                # Nested folder: Parent Record -> Child Record via RECORD_RELATIONS
                 parent_child_edge = {
                     "from_id": parent_folder_id,
                     "from_collection": CollectionNames.RECORDS.value,
@@ -5979,24 +6299,12 @@ class Neo4jProvider(IGraphDBProvider):
                     "updatedAtTimestamp": timestamp,
                 }
                 await self.batch_create_edges([parent_child_edge], CollectionNames.RECORD_RELATIONS.value, transaction)
-            else:
-                # Root folder: KB -> Folder Record
-                kb_parent_edge = {
-                    "from_id": kb_id,
-                    "from_collection": CollectionNames.RECORD_GROUPS.value,
-                    "to_id": folder_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "relationshipType": "PARENT_CHILD",
-                    "createdAtTimestamp": timestamp,
-                    "updatedAtTimestamp": timestamp,
-                }
-                await self.batch_create_edges([kb_parent_edge], CollectionNames.RECORD_RELATIONS.value, transaction)
 
             self.logger.info(f"✅ Folder '{folder_name}' created successfully with RECORDS document")
             return {
                 "id": folder_id,
                 "name": folder_name,
-                "webUrl": folder_data["webUrl"],
+                "webUrl": record_data["webUrl"],
                 "exists": False,
                 "success": True
             }
@@ -6058,23 +6366,43 @@ class Neo4jProvider(IGraphDBProvider):
         updates: Dict,
         transaction: Optional[str] = None
     ) -> bool:
-        """Update folder details"""
+        """
+        Update folder details in both FILES and RECORDS collections.
+
+        Updates FILES.name and RECORDS.recordName + updatedAtTimestamp
+        """
         try:
             self.logger.info(f"🚀 Updating folder {folder_id}")
 
-            updates_clean = {k: v for k, v in updates.items() if k != "id" and k != "_key"}
+            # Update FILES collection
+            file_updates = {k: v for k, v in updates.items() if k in ["name"]}
+            if file_updates:
+                query_file = """
+                MATCH (file:File {id: $folder_id})
+                SET file += $updates
+                RETURN file
+                """
+                await self.client.execute_query(
+                    query_file,
+                    parameters={"folder_id": folder_id, "updates": file_updates},
+                    txn_id=transaction
+                )
 
-            # Update both Record and File nodes
-            query = """
-            MATCH (folder:Record {id: $folder_id})-[:IS_OF_TYPE]->(file:File)
-            SET folder += $updates
-            SET file += $updates
-            RETURN folder
+            # Update RECORDS collection (map 'name' to 'recordName')
+            record_updates = {
+                "recordName": updates.get("name"),
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms()
+            }
+
+            query_record = """
+            MATCH (record:Record {id: $folder_id})
+            SET record += $updates
+            RETURN record
             """
 
             results = await self.client.execute_query(
-                query,
-                parameters={"folder_id": folder_id, "updates": updates_clean},
+                query_record,
+                parameters={"folder_id": folder_id, "updates": record_updates},
                 txn_id=transaction
             )
 
@@ -6131,27 +6459,38 @@ class Neo4jProvider(IGraphDBProvider):
         parent_folder_id: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
-        """Find a folder by name within a parent"""
+        """
+        Find a folder by name within a specific parent (KB root or folder).
+
+        New logic:
+        - For KB root: Find folders with BELONGS_TO edge to KB that have NO incoming RECORD_RELATION edges
+        - For nested folders: Find folders with RECORD_RELATION edge from parent
+        """
         try:
-            if parent_folder_id:
+            if parent_folder_id is None:
+                # KB root: Find immediate children (no incoming RECORD_RELATION edges)
                 query = """
-                MATCH (parent:Record {id: $parent_folder_id})-[r:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folder:Record)
+                MATCH (folder:Record)-[:BELONGS_TO]->(kb:RecordGroup {id: $kb_id})
                 MATCH (folder)-[:IS_OF_TYPE]->(file:File {isFile: false})
-                WHERE folder.connectorId = $kb_id
-                  AND toLower(folder.recordName) = toLower($folder_name)
+                WHERE toLower(folder.recordName) = toLower($folder_name)
+                  AND folder.isDeleted <> true
+                  AND NOT EXISTS {
+                      MATCH (folder)<-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]-(:Record)
+                  }
                 RETURN folder
                 LIMIT 1
                 """
-                params = {"parent_folder_id": parent_folder_id, "kb_id": kb_id, "folder_name": folder_name}
+                params = {"kb_id": kb_id, "folder_name": folder_name}
             else:
+                # Nested folder: Find children via RECORD_RELATION edge
                 query = """
-                MATCH (kb:RecordGroup {id: $kb_id})-[r:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folder:Record)
+                MATCH (parent:Record {id: $parent_folder_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folder:Record)
                 MATCH (folder)-[:IS_OF_TYPE]->(file:File {isFile: false})
                 WHERE toLower(folder.recordName) = toLower($folder_name)
                 RETURN folder
                 LIMIT 1
                 """
-                params = {"kb_id": kb_id, "folder_name": folder_name}
+                params = {"parent_folder_id": parent_folder_id, "folder_name": folder_name}
 
             results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
 
@@ -6240,88 +6579,606 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         org_id: str,
         files: List[Dict],
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
+        parent_folder_id: Optional[str] = None,  # None = KB root, str = specific folder
     ) -> Dict:
-        """Upload records/files to a knowledge base"""
+        """
+        Upload records/files to a knowledge base.
+        - KB root upload (parent_folder_id=None)
+        - Folder upload (parent_folder_id=folder_id)
+
+        This method follows the same structure as BaseArangoService:
+        1. Validate user permissions and target location
+        2. Analyze folder structure relative to upload target
+        3. Execute upload in single transaction
+        """
         try:
-            # This is a complex method - simplified implementation
-            # Full implementation would handle folder structure, file validation, etc.
-            self.logger.info(f"🚀 Uploading {len(files)} files to KB {kb_id}")
+            upload_type = "folder" if parent_folder_id else "KB root"
+            self.logger.info(f"🚀 Starting unified upload to {upload_type} in KB {kb_id}")
+            self.logger.info(f"📊 Processing {len(files)} files")
 
-            timestamp = get_epoch_timestamp_in_ms()
-            total_created = 0
-            failed_files = []
+            # Step 1: Validate user permissions and target location
+            validation_result = await self._validate_upload_context(
+                kb_id=kb_id,
+                user_id=user_id,
+                org_id=org_id,
+                parent_folder_id=parent_folder_id
+            )
+            if not validation_result["valid"]:
+                return validation_result
 
-            for file_data in files:
-                try:
-                    file_id = str(uuid.uuid4())
+            # Step 2: Analyze folder structure relative to upload target
+            folder_analysis = self._analyze_upload_structure(files, validation_result)
+            self.logger.info(f"📁 Structure analysis: {folder_analysis['summary']}")
 
-                    # Create record
-                    record = {
-                        "id": file_id,
-                        "recordName": file_data.get("name", "Untitled"),
-                        "connectorId": kb_id,
-                        "orgId": org_id,
-                        "recordType": "FILES",
-                        "createdAtTimestamp": timestamp,
-                        "updatedAtTimestamp": timestamp,
-                    }
+            # Step 3: Execute upload in single transaction
+            result = await self._execute_upload_transaction(
+                kb_id=kb_id,
+                user_id=user_id,
+                org_id=org_id,
+                files=files,
+                folder_analysis=folder_analysis,
+                validation_result=validation_result
+            )
 
-                    # Create file
-                    file_doc = {
-                        "id": file_id,
-                        "isFile": True,
-                        "name": file_data.get("name", "Untitled"),
-                        "createdAtTimestamp": timestamp,
-                        "updatedAtTimestamp": timestamp,
-                    }
-
-                    await self.batch_upsert_nodes([record], CollectionNames.RECORDS.value, transaction=transaction)
-                    await self.batch_upsert_nodes([file_doc], CollectionNames.FILES.value, transaction=transaction)
-
-                    # Create edges
-                    is_of_type_edge = {
-                        "from_id": file_id,
-                        "from_collection": CollectionNames.RECORDS.value,
-                        "to_id": file_id,
-                        "to_collection": CollectionNames.FILES.value,
-                    }
-                    await self.batch_create_edges([is_of_type_edge], CollectionNames.IS_OF_TYPE.value, transaction=transaction)
-
-                    belongs_to_edge = {
-                        "from_id": file_id,
-                        "from_collection": CollectionNames.RECORDS.value,
-                        "to_id": kb_id,
-                        "to_collection": CollectionNames.RECORD_GROUPS.value,
-                        "entityType": Connectors.KNOWLEDGE_BASE.value,
-                    }
-                    await self.batch_create_edges([belongs_to_edge], CollectionNames.BELONGS_TO.value, transaction=transaction)
-
-                    if parent_folder_id:
-                        parent_child_edge = {
-                            "from_id": parent_folder_id,
-                            "from_collection": CollectionNames.RECORDS.value,
-                            "to_id": file_id,
-                            "to_collection": CollectionNames.RECORDS.value,
-                            "relationshipType": "PARENT_CHILD",
-                        }
-                        await self.batch_create_edges([parent_child_edge], CollectionNames.RECORD_RELATIONS.value, transaction=transaction)
-
-                    total_created += 1
-                except Exception as e:
-                    self.logger.error(f"Failed to upload file {file_data.get('name')}: {str(e)}")
-                    failed_files.append({"name": file_data.get("name"), "error": str(e)})
-
-            return {
-                "success": True,
-                "total_created": total_created,
-                "failed_files": failed_files
-            }
+            if result["success"]:
+                return {
+                    "success": True,
+                    "message": self._generate_upload_message(result, upload_type),
+                    "totalCreated": result["total_created"],
+                    "foldersCreated": result["folders_created"],
+                    "createdFolders": result["created_folders"],
+                    "failedFiles": result["failed_files"],
+                    "kbId": kb_id,
+                    "parentFolderId": parent_folder_id,
+                }
+            else:
+                return result
 
         except Exception as e:
-            self.logger.error(f"❌ Upload records failed: {str(e)}")
-            return {"success": False, "reason": str(e), "code": 500}
+            self.logger.error(f"❌ Unified upload failed: {str(e)}")
+            return {"success": False, "reason": f"Upload failed: {str(e)}", "code": 500}
+
+    # ==================== Upload Helper Methods ====================
+
+    async def _validate_upload_context(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        parent_folder_id: Optional[str] = None
+    ) -> Dict:
+        """Unified validation for all upload scenarios"""
+        try:
+            # Get user
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
+
+            user_key = user.get('id') or user.get('_key')
+
+            # Check KB permissions
+            user_role = await self.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                return {
+                    "valid": False,
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient permissions. Role: {user_role}"
+                }
+
+            # Validate target location
+            if parent_folder_id:
+                # Validate folder exists and belongs to KB
+                parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
+                if not parent_folder:
+                    return {
+                        "valid": False,
+                        "success": False,
+                        "code": 404,
+                        "reason": f"Parent folder {parent_folder_id} not found in KB {kb_id}"
+                    }
+                return {
+                    "valid": True,
+                    "upload_target": "folder",
+                    "parent_folder": parent_folder,
+                    "user": user,
+                    "user_key": user_key,
+                    "user_role": user_role
+                }
+            else:
+                # KB root upload
+                return {
+                    "valid": True,
+                    "upload_target": "kb_root",
+                    "user": user,
+                    "user_key": user_key,
+                    "user_role": user_role
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Upload validation failed: {str(e)}")
+            return {"valid": False, "success": False, "code": 500, "reason": str(e)}
+
+    def _analyze_upload_structure(self, files: List[Dict], validation_result: Dict) -> Dict:
+        """
+        Analyze folder structure - creates folder hierarchy map based on file paths
+        """
+        folder_hierarchy = {}  # path -> {name: str, parent_path: str, level: int}
+        file_destinations = {}  # file_index -> {type: "root"|"folder", folder_name: str|None, folder_hierarchy_path: str|None}
+
+        for index, file_data in enumerate(files):
+            file_path = file_data["filePath"]
+
+            if "/" in file_path:
+                # File is in a subfolder - analyze the hierarchy
+                path_parts = file_path.split("/")
+                folder_parts = path_parts[:-1]
+
+                # Build folder hierarchy
+                current_path = ""
+                for i, folder_name in enumerate(folder_parts):
+                    parent_path = current_path if current_path else None
+                    current_path = f"{current_path}/{folder_name}" if current_path else folder_name
+
+                    if current_path not in folder_hierarchy:
+                        folder_hierarchy[current_path] = {
+                            "name": folder_name,
+                            "parent_path": parent_path,
+                            "level": i + 1
+                        }
+
+                # File goes to the deepest folder
+                file_destinations[index] = {
+                    "type": "folder",
+                    "folder_name": folder_parts[-1],
+                    "folder_hierarchy_path": current_path,
+                }
+            else:
+                # File goes to upload target (KB root or parent folder)
+                file_destinations[index] = {
+                    "type": "root",
+                    "folder_name": None,
+                    "folder_hierarchy_path": None,
+                }
+
+        # Sort folders by level (create parents first)
+        sorted_folder_paths = sorted(folder_hierarchy.keys(), key=lambda x: folder_hierarchy[x]["level"])
+
+        # Add parent folder context
+        parent_folder_id = None
+        if validation_result["upload_target"] == "folder":
+            parent_folder_id = validation_result["parent_folder"].get("id") or validation_result["parent_folder"].get("_key")
+
+        return {
+            "folder_hierarchy": folder_hierarchy,
+            "sorted_folder_paths": sorted_folder_paths,
+            "file_destinations": file_destinations,
+            "upload_target": validation_result["upload_target"],
+            "parent_folder_id": parent_folder_id,
+            "summary": {
+                "total_folders": len(folder_hierarchy),
+                "root_files": len([d for d in file_destinations.values() if d["type"] == "root"]),
+                "folder_files": len([d for d in file_destinations.values() if d["type"] == "folder"])
+            }
+        }
+
+    async def _execute_upload_transaction(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+        folder_analysis: Dict,
+        validation_result: Dict
+    ) -> Dict:
+        """Execute upload in single transaction"""
+        transaction = None
+        try:
+            # Start transaction
+            transaction = await self.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.FILES.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                ]
+            )
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Step 1: Ensure all needed folders exist
+            folder_map = await self._ensure_folders_exist(
+                kb_id=kb_id,
+                org_id=org_id,
+                folder_analysis=folder_analysis,
+                validation_result=validation_result,
+                transaction=transaction,
+                timestamp=timestamp
+            )
+
+            # Step 2: Update file destinations with folder IDs
+            self._populate_file_destinations(folder_analysis, folder_map)
+
+            # Step 3: Create all records and relationships
+            creation_result = await self._create_records(
+                kb_id=kb_id,
+                org_id=org_id,
+                files=files,
+                folder_analysis=folder_analysis,
+                transaction=transaction,
+                timestamp=timestamp
+            )
+
+            if creation_result["total_created"] > 0 or len(folder_map) > 0:
+                # Commit transaction BEFORE event publishing
+                await self.commit_transaction(transaction)
+                self.logger.info("✅ Upload transaction committed successfully")
+
+                # Publish events AFTER successful commit
+                try:
+                    await self._publish_upload_events(kb_id, {
+                        "created_files_data": creation_result["created_files_data"],
+                        "total_created": creation_result["total_created"]
+                    })
+                    self.logger.info(f"✅ Published events for {creation_result['total_created']} records")
+                except Exception as event_error:
+                    self.logger.error(f"❌ Event publishing failed (records still created): {str(event_error)}")
+                    # Don't fail the main operation - records were successfully created
+
+                return {
+                    "success": True,
+                    "total_created": creation_result["total_created"],
+                    "folders_created": len(folder_map),
+                    "created_folders": [
+                        {"id": folder_id}
+                        for folder_id in folder_map.values()
+                    ],
+                    "failed_files": creation_result["failed_files"],
+                }
+            else:
+                # Nothing created - rollback
+                await self.rollback_transaction(transaction)
+                self.logger.info("🔄 Transaction rolled back - no items to create")
+                return {
+                    "success": True,
+                    "total_created": 0,
+                    "folders_created": 0,
+                    "created_folders": [],
+                    "failed_files": creation_result["failed_files"],
+                }
+
+        except Exception as e:
+            if transaction:
+                try:
+                    await self.rollback_transaction(transaction)
+                    self.logger.info("🔄 Transaction rolled back due to error")
+                except Exception as abort_error:
+                    self.logger.error(f"❌ Failed to rollback transaction: {str(abort_error)}")
+
+            self.logger.error(f"❌ Upload transaction failed: {str(e)}")
+            return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+
+    async def _ensure_folders_exist(
+        self,
+        kb_id: str,
+        org_id: str,
+        folder_analysis: Dict,
+        validation_result: Dict,
+        transaction: str,
+        timestamp: int
+    ) -> Dict[str, str]:
+        """Ensure all folders in hierarchy exist, creating them if needed"""
+        folder_map = {}  # hierarchy_path -> folder_id
+        upload_parent_folder_id = None
+        if validation_result["upload_target"] == "folder":
+            upload_parent_folder_id = validation_result["parent_folder"].get("id") or validation_result["parent_folder"].get("_key")
+
+        for hierarchy_path in folder_analysis["sorted_folder_paths"]:
+            folder_info = folder_analysis["folder_hierarchy"][hierarchy_path]
+            folder_name = folder_info["name"]
+            parent_hierarchy_path = folder_info["parent_path"]
+
+            # Determine parent folder ID
+            parent_folder_id = None
+            if parent_hierarchy_path:
+                parent_folder_id = folder_map.get(parent_hierarchy_path)
+                if parent_folder_id is None:
+                    raise Exception(f"Parent folder creation failed for path: {parent_hierarchy_path}")
+            elif upload_parent_folder_id:
+                parent_folder_id = upload_parent_folder_id
+
+            # Check if folder already exists
+            existing_folder = await self.find_folder_by_name_in_parent(
+                kb_id=kb_id,
+                folder_name=folder_name,
+                parent_folder_id=parent_folder_id,
+                transaction=transaction
+            )
+
+            if existing_folder:
+                folder_map[hierarchy_path] = existing_folder.get("id") or existing_folder.get("_key")
+                self.logger.debug(f"✅ Folder exists: {folder_name}")
+            else:
+                # Create new folder
+                folder = await self.create_folder(
+                    kb_id=kb_id,
+                    org_id=org_id,
+                    folder_name=folder_name,
+                    parent_folder_id=parent_folder_id,
+                    transaction=transaction
+                )
+                folder_id = folder['id']
+                folder_map[hierarchy_path] = folder_id
+                self.logger.info(f"✅ Created folder: {folder_name} -> {folder_id}")
+
+        return folder_map
+
+    def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
+        """Update file destinations with resolved folder IDs"""
+        for index, destination in folder_analysis["file_destinations"].items():
+            if destination["type"] == "folder":
+                hierarchy_path = destination["folder_hierarchy_path"]
+                if hierarchy_path in folder_map:
+                    destination["folder_id"] = folder_map[hierarchy_path]
+
+    async def _create_records(
+        self,
+        kb_id: str,
+        org_id: str,
+        files: List[Dict],
+        folder_analysis: Dict,
+        transaction: str,
+        timestamp: int
+    ) -> Dict:
+        """Create all records and relationships"""
+        total_created = 0
+        failed_files = []
+        created_files_data = []  # For event publishing
+
+        kb_connector_id = f"knowledgeBase_{org_id}"
+
+        for index, file_data in enumerate(files):
+            try:
+                destination = folder_analysis["file_destinations"][index]
+                parent_folder_id = None
+
+                if destination["type"] == "root":
+                    parent_folder_id = folder_analysis.get("parent_folder_id")
+                else:
+                    parent_folder_id = destination.get("folder_id")
+                    if not parent_folder_id:
+                        failed_files.append(file_data["filePath"])
+                        continue
+
+                # Extract data from file_data
+                record_data = file_data["record"].copy()
+                file_record_data = file_data["fileRecord"].copy()
+
+                # Enrich record with KB-specific fields
+                external_parent_id = parent_folder_id if parent_folder_id else None
+                record_data.setdefault("externalGroupId", kb_id)
+                record_data.setdefault("externalParentId", external_parent_id)
+                record_data.setdefault("externalRootGroupId", kb_id)
+                record_data.setdefault("connectorId", kb_connector_id)
+                record_data.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
+                record_data.setdefault("lastSyncTimestamp", timestamp)
+                record_data.setdefault("isVLMOcrProcessed", False)
+                record_data.setdefault("extractionStatus", "NOT_STARTED")
+                record_data.setdefault("isLatestVersion", True)
+                record_data.setdefault("isDirty", False)
+
+                # Convert _key to id for Neo4j
+                record_id = record_data.get("_key") or record_data.get("id")
+                file_id = file_record_data.get("_key") or file_record_data.get("id")
+
+                record_data["id"] = record_id
+                file_record_data["id"] = file_id
+
+                # Also ensure _key is set for event publishing (Kafka expects _key)
+                record_data["_key"] = record_id
+                file_record_data["_key"] = file_id
+
+                # Create nodes
+                await self.batch_upsert_nodes([record_data], CollectionNames.RECORDS.value, transaction)
+                await self.batch_upsert_nodes([file_record_data], CollectionNames.FILES.value, transaction)
+
+                # Create edges
+                edges = []
+
+                # IS_OF_TYPE edge
+                edges.append({
+                    "from_id": record_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": file_id,
+                    "to_collection": CollectionNames.FILES.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+
+                # BELONGS_TO edge
+                edges.append({
+                    "from_id": record_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "entityType": Connectors.KNOWLEDGE_BASE.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+
+                # RECORD_RELATIONS edge (if has parent)
+                if parent_folder_id:
+                    edges.append({
+                        "from_id": parent_folder_id,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": record_id,
+                        "to_collection": CollectionNames.RECORDS.value,
+                        "relationshipType": "PARENT_CHILD",
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    })
+
+                # Create edges by type
+                is_of_type_edges = [e for e in edges if e.get("to_collection") == CollectionNames.FILES.value]
+                belongs_to_edges = [e for e in edges if e.get("entityType") == Connectors.KNOWLEDGE_BASE.value]
+                parent_child_edges = [e for e in edges if e.get("relationshipType") == "PARENT_CHILD"]
+
+                if is_of_type_edges:
+                    await self.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value, transaction)
+                if belongs_to_edges:
+                    await self.batch_create_edges(belongs_to_edges, CollectionNames.BELONGS_TO.value, transaction)
+                if parent_child_edges:
+                    await self.batch_create_edges(parent_child_edges, CollectionNames.RECORD_RELATIONS.value, transaction)
+
+                # Store created file data for event publishing
+                created_files_data.append({
+                    "record": record_data,
+                    "fileRecord": file_record_data
+                })
+
+                total_created += 1
+
+            except Exception as e:
+                self.logger.error(f"Failed to create record for {file_data.get('filePath')}: {str(e)}")
+                failed_files.append(file_data["filePath"])
+
+        return {
+            "total_created": total_created,
+            "failed_files": failed_files,
+            "created_files_data": created_files_data
+        }
+
+    def _generate_upload_message(self, result: Dict, upload_type: str) -> str:
+        """Generate success message"""
+        total_created = result["total_created"]
+        folders_created = result["folders_created"]
+        failed_files = len(result.get("failed_files", []))
+
+        message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
+
+        if folders_created > 0:
+            message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
+
+        if failed_files > 0:
+            message += f". {failed_files} file{'s' if failed_files != 1 else ''} failed to upload"
+
+        return message + "."
+
+    async def _publish_upload_events(self, kb_id: str, result: Dict) -> None:
+        """
+        Publish Kafka events for uploaded records.
+        Enhanced event publishing with better error handling.
+        """
+        try:
+            self.logger.info(f"This is the result passed to publish record events {result}")
+            created_files_data = result.get("created_files_data", [])
+
+            if not created_files_data:
+                self.logger.info("No new records were created, skipping event publishing.")
+                return
+
+            self.logger.info(f"🚀 Publishing creation events for {len(created_files_data)} new records.")
+
+            # Get storage endpoint
+            try:
+                endpoints = await self.config_service.get_config("endpoints")
+                self.logger.info(f"This the the endpoint {endpoints}")
+                storage_url = endpoints.get("storage", {}).get("endpoint", "http://localhost:3000")
+            except Exception as config_error:
+                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
+                storage_url = "http://localhost:3000"  # Fallback
+
+            # Create events with enhanced error handling
+            successful_events = 0
+            failed_events = 0
+
+            for file_data in created_files_data:
+                try:
+                    record_doc = file_data.get("record")
+                    file_doc = file_data.get("fileRecord")
+
+                    if record_doc and file_doc:
+                        # Create payload with error handling
+                        create_payload = await self._create_new_record_event_payload(
+                            record_doc, file_doc, storage_url
+                        )
+
+                        if create_payload:  # Only publish if payload creation succeeded
+                            await self._publish_record_event("newRecord", create_payload)
+                            successful_events += 1
+                        else:
+                            self.logger.warning(f"⚠️ Skipping event for record {record_doc.get('_key')} - payload creation failed")
+                            failed_events += 1
+                    else:
+                        self.logger.warning(f"⚠️ Incomplete file data found, cannot publish event: {file_data}")
+                        failed_events += 1
+
+                except Exception as event_error:
+                    self.logger.error(f"❌ Failed to publish event for record: {str(event_error)}")
+                    failed_events += 1
+
+            self.logger.info(f"📊 Event publishing summary: {successful_events} successful, {failed_events} failed")
+
+        except Exception as e:
+            self.logger.error(f"❌ Critical error in event publishing for KB {kb_id}: {str(e)}", exc_info=True)
+
+    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Dict:
+        """
+        Creates NewRecordEvent payload to publish to Kafka.
+        """
+        try:
+            record_id = record_doc.get("_key") or record_doc.get("id")
+            self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
+
+            signed_url_route = (
+                f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
+            )
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Construct the payload matching the Node.js NewRecordEvent interface
+            payload = {
+                "orgId": record_doc.get("orgId"),
+                "recordId": record_id,
+                "recordName": record_doc.get("recordName"),
+                "recordType": record_doc.get("recordType"),
+                "version": record_doc.get("version", 1),
+                "signedUrlRoute": signed_url_route,
+                "origin": record_doc.get("origin"),
+                "extension": file_doc.get("extension", ""),
+                "mimeType": file_doc.get("mimeType", ""),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp", timestamp)),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp", timestamp)),
+                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
+            }
+
+            return payload
+        except Exception:
+            self.logger.error(
+                f"❌ Failed to publish NewRecordEvent for record_id: {record_doc.get('_key', 'N/A')}",
+                exc_info=True
+            )
+            return {}
+
+    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
+        """Publish record event to Kafka"""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+
+            event = {
+                "eventType": event_type,
+                "timestamp": timestamp,
+                "payload": payload
+            }
+
+            if self.kafka_service:
+                await self.kafka_service.publish_event("record-events", event)
+                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            else:
+                self.logger.debug("Skipping Kafka publish for record-events: kafka_service is not configured")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
 
     async def delete_records(
         self,
@@ -6702,7 +7559,6 @@ class Neo4jProvider(IGraphDBProvider):
             }} AS result
             """
 
-            # Count query - match BaseArangoService structure
             count_query = """
             MATCH (u:User {id: $user_id})
 
@@ -7188,36 +8044,34 @@ class Neo4jProvider(IGraphDBProvider):
             sort_direction = sort_order.upper() if sort_order.upper() in ["ASC", "DESC"] else "ASC"
 
             # Query to get all folders (with level traversal)
-            # Note: Neo4j doesn't support parameterized variable-length relationships, so we build it dynamically
+            # NEW LOGIC: Immediate children are identified by:
+            # 1. BELONGS_TO edge to KB
+            # 2. NO incoming RECORD_RELATION edges (not a child of another folder)
             folders_query = f"""
             MATCH (kb:RecordGroup {{id: $kb_id}})
-            // Get folders at different levels using variable-length path
-            MATCH path = (kb)-[rels:RECORD_RELATION*1..{level}]->(folder_record:Record)
-            WHERE ALL(rel IN rels WHERE rel.relationshipType = "PARENT_CHILD")
+            // Get immediate children (folders with BELONGS_TO but no incoming RECORD_RELATION)
+            MATCH (folder_record:Record)-[:BELONGS_TO]->(kb)
+            WHERE folder_record.isDeleted <> true
+              AND NOT EXISTS {{
+                  MATCH (folder_record)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
+              }}
             MATCH (folder_record)-[:IS_OF_TYPE]->(folder_file:File)
             WHERE folder_file.isFile = false
             {folder_filter}
-            WITH folder_record, folder_file, path, size(relationships(path)) AS current_level
+            WITH folder_record, folder_file, 1 AS current_level
             // Get counts for this folder (direct children only)
             OPTIONAL MATCH (folder_record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(child_record:Record)
             OPTIONAL MATCH (child_record)-[:IS_OF_TYPE]->(child_file:File)
-            WITH folder_record, folder_file, current_level, path,
+            WITH folder_record, folder_file, current_level,
                  sum(CASE WHEN child_file IS NOT NULL AND child_file.isFile = false THEN 1 ELSE 0 END) AS direct_subfolders,
                  sum(CASE WHEN child_record IS NOT NULL AND child_record.isDeleted <> true AND (child_file IS NULL OR child_file.isFile <> false) THEN 1 ELSE 0 END) AS direct_records
-            // Get parent_id from path (last Record node before folder_record)
-            WITH folder_record, folder_file, current_level, path, direct_subfolders, direct_records,
-                 CASE
-                     WHEN size(nodes(path)) > 2
-                     THEN [n IN nodes(path)[0..-1] WHERE n:Record | n.id][-1]
-                     ELSE null
-                 END AS parent_id
             ORDER BY folder_record.recordName ASC
             RETURN {{
                 id: folder_record.id,
                 name: folder_record.recordName,
                 path: folder_file.path,
                 level: current_level,
-                parent_id: parent_id,
+                parent_id: null,
                 webUrl: folder_record.webUrl,
                 recordGroupId: folder_record.connectorId,
                 type: "folder",
@@ -7233,9 +8087,14 @@ class Neo4jProvider(IGraphDBProvider):
             """
 
             # Query to get all records directly in KB root (excluding folders)
+            # NEW LOGIC: Immediate children with BELONGS_TO but no incoming RECORD_RELATION
             records_query = f"""
-            MATCH (kb:RecordGroup {{id: $kb_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
+            MATCH (kb:RecordGroup {{id: $kb_id}})
+            MATCH (record:Record)-[:BELONGS_TO]->(kb)
             WHERE record.isDeleted <> true
+              AND NOT EXISTS {{
+                  MATCH (record)<-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]-(:Record)
+              }}
             // Exclude folders by checking if there's a File with isFile = false
             OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(check_file:File)
             WHERE check_file.isFile = false
@@ -7361,48 +8220,194 @@ class Neo4jProvider(IGraphDBProvider):
         sort_order: str = "asc",
         transaction: Optional[str] = None
     ) -> Dict:
-        """Get folder contents with pagination and filters"""
+        """
+        Get folder contents with folders_first pagination and level order traversal.
+
+        NEW LOGIC: Children are identified via RECORD_RELATION edges with relationshipType="PARENT_CHILD"
+        """
         try:
-            where_clauses = []
+            self.logger.info(f"🔍 Getting folder {folder_id} children with folders_first pagination (skip={skip}, limit={limit}, level={level})")
+
+            # Build filter conditions
+            folder_conditions = []
+            record_conditions = []
+            params = {
+                "folder_id": folder_id,
+                "kb_id": kb_id,
+                "skip": skip,
+                "limit": limit,
+                "level": level
+            }
+
             if search:
-                where_clauses.append("toLower(item.recordName) CONTAINS toLower($search)")
+                folder_conditions.append("toLower(subfolder_record.recordName) CONTAINS toLower($search)")
+                record_conditions.append("(toLower(record.recordName) CONTAINS toLower($search) OR toLower(record.externalRecordId) CONTAINS toLower($search))")
+                params["search"] = search.lower()
+            if record_types:
+                record_conditions.append("record.recordType IN $record_types")
+                params["record_types"] = record_types
+            if origins:
+                record_conditions.append("record.origin IN $origins")
+                params["origins"] = origins
+            if connectors:
+                record_conditions.append("record.connectorName IN $connectors")
+                params["connectors"] = connectors
+            if indexing_status:
+                record_conditions.append("record.indexingStatus IN $indexing_status")
+                params["indexing_status"] = indexing_status
 
-            where_clause = " AND ".join(where_clauses) if where_clauses else "true"
+            folder_filter = " AND " + " AND ".join(folder_conditions) if folder_conditions else ""
+            record_filter = " AND " + " AND ".join(record_conditions) if record_conditions else ""
 
-            query = f"""
-            MATCH (folder:Record {{id: $folder_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(item:Record)
-            WHERE {where_clause}
-            OPTIONAL MATCH (item)-[:IS_OF_TYPE]->(file:File)
-            RETURN item, file
-            SKIP $skip
-            LIMIT $limit
+            # Sort field mapping for records
+            record_sort_map = {
+                "name": "record.recordName",
+                "created_at": "record.createdAtTimestamp",
+                "updated_at": "record.updatedAtTimestamp",
+                "size": "file.sizeInBytes"
+            }
+            record_sort_field = record_sort_map.get(sort_by, "record.recordName")
+            sort_direction = sort_order.upper() if sort_order.upper() in ["ASC", "DESC"] else "ASC"
+
+            # Query to get all subfolders (direct children via RECORD_RELATION)
+            folders_query = f"""
+            MATCH (folder_record:Record {{id: $folder_id}})
+            MATCH (folder_record)-[:IS_OF_TYPE]->(folder_file:File)
+            WHERE folder_file.isFile = false
+            // Get direct subfolders via RECORD_RELATION edges
+            MATCH (folder_record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(subfolder_record:Record)
+            MATCH (subfolder_record)-[:IS_OF_TYPE]->(subfolder_file:File)
+            WHERE subfolder_file.isFile = false
+            {folder_filter}
+            WITH subfolder_record, subfolder_file, 1 AS current_level
+            // Get counts for this subfolder
+            OPTIONAL MATCH (subfolder_record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(child_record:Record)
+            OPTIONAL MATCH (child_record)-[:IS_OF_TYPE]->(child_file:File)
+            WITH subfolder_record, subfolder_file, current_level,
+                 sum(CASE WHEN child_file IS NOT NULL AND child_file.isFile = false THEN 1 ELSE 0 END) AS direct_subfolders,
+                 sum(CASE WHEN child_record IS NOT NULL AND child_record.isDeleted <> true AND (child_file IS NULL OR child_file.isFile <> false) THEN 1 ELSE 0 END) AS direct_records
+            ORDER BY subfolder_record.recordName ASC
+            RETURN {{
+                id: subfolder_record.id,
+                name: subfolder_record.recordName,
+                path: subfolder_file.path,
+                level: current_level,
+                parent_id: $folder_id,
+                webUrl: subfolder_record.webUrl,
+                recordGroupId: subfolder_record.connectorId,
+                type: "folder",
+                createdAtTimestamp: subfolder_record.createdAtTimestamp,
+                updatedAtTimestamp: subfolder_record.updatedAtTimestamp,
+                counts: {{
+                    subfolders: direct_subfolders,
+                    records: direct_records,
+                    totalItems: direct_subfolders + direct_records
+                }},
+                hasChildren: direct_subfolders > 0 OR direct_records > 0
+            }} AS folder
             """
 
-            params = {"folder_id": folder_id, "skip": skip, "limit": limit}
-            if search:
-                params["search"] = search
+            # Query to get all records directly in folder (excluding folders)
+            records_query = f"""
+            MATCH (folder_record:Record {{id: $folder_id}})-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
+            WHERE record.isDeleted <> true
+            // Exclude folders by checking if there's a File with isFile = false
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(check_file:File)
+            WHERE check_file.isFile = false
+            WITH record, check_file
+            WHERE check_file IS NULL
+            {record_filter}
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+            WITH record, file
+            ORDER BY {record_sort_field} {sort_direction}
+            RETURN {{
+                id: record.id,
+                recordName: record.recordName,
+                name: record.recordName,
+                recordType: record.recordType,
+                externalRecordId: record.externalRecordId,
+                origin: record.origin,
+                connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
+                indexingStatus: record.indexingStatus,
+                version: record.version,
+                isLatestVersion: COALESCE(record.isLatestVersion, true),
+                createdAtTimestamp: record.createdAtTimestamp,
+                updatedAtTimestamp: record.updatedAtTimestamp,
+                sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                webUrl: record.webUrl,
+                orgId: record.orgId,
+                type: "record",
+                fileRecord: CASE WHEN file IS NOT NULL THEN {{
+                    id: file.id,
+                    name: file.name,
+                    extension: file.extension,
+                    mimeType: file.mimeType,
+                    sizeInBytes: file.sizeInBytes,
+                    webUrl: file.webUrl,
+                    path: file.path,
+                    isFile: file.isFile
+                }} ELSE null END
+            }} AS record
+            """
 
-            results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
+            # Execute queries
+            folders_results = await self.client.execute_query(folders_query, parameters=params, txn_id=transaction)
+            records_results = await self.client.execute_query(records_query, parameters=params, txn_id=transaction)
 
-            folders = []
-            records = []
+            all_folders = [r["folder"] for r in folders_results if r.get("folder")]
+            all_records = [r["record"] for r in records_results if r.get("record")]
 
-            for r in results:
-                item = self._neo4j_to_arango_node(dict(r["item"]), CollectionNames.RECORDS.value)
-                file = self._neo4j_to_arango_node(dict(r["file"]), CollectionNames.FILES.value) if r.get("file") else None
+            total_folders = len(all_folders)
+            total_records = len(all_records)
+            total_count = total_folders + total_records
 
-                if file and not file.get("isFile", True):
-                    folders.append({"record": item, "file": file})
-                else:
-                    records.append({"record": item, "file": file})
+            # Folders First Pagination Logic
+            if skip < total_folders:
+                # Show folders from skip position
+                paginated_folders = all_folders[skip:skip + limit]
+                folders_shown = len(paginated_folders)
+                remaining_limit = limit - folders_shown
+                record_skip = 0
+                record_limit = remaining_limit if remaining_limit > 0 else 0
+            else:
+                # Skip folders entirely, show only records
+                paginated_folders = []
+                folders_shown = 0
+                record_skip = skip - total_folders
+                record_limit = limit
 
-            return {
-                "success": True,
-                "folders": folders,
-                "records": records,
-                "counts": {"folders": len(folders), "records": len(records)},
-                "totalCount": len(folders) + len(records)
+            paginated_records = all_records[record_skip:record_skip + record_limit] if record_limit > 0 else []
+
+            # Get available filters from all records
+            available_filters = {
+                "recordTypes": list(set([r.get("recordType") for r in all_records if r.get("recordType")])),
+                "origins": list(set([r.get("origin") for r in all_records if r.get("origin")])),
+                "connectors": list(set([r.get("connectorName") for r in all_records if r.get("connectorName")])),
+                "indexingStatus": list(set([r.get("indexingStatus") for r in all_records if r.get("indexingStatus")]))
             }
+
+            # Build response
+            result = {
+                "success": True,
+                "folders": paginated_folders,
+                "records": paginated_records,
+                "counts": {
+                    "folders": total_folders,
+                    "records": total_records,
+                    "totalItems": total_count,
+                    "foldersShown": len(paginated_folders),
+                    "recordsShown": len(paginated_records)
+                },
+                "totalCount": total_count,
+                "availableFilters": available_filters
+            }
+
+            self.logger.info(
+                f"✅ Folder children retrieved: {len(paginated_folders)} folders, {len(paginated_records)} records "
+                f"(total: {total_folders} folders, {total_records} records)"
+            )
+            return result
 
         except Exception as e:
             self.logger.error(f"❌ Get folder children failed: {str(e)}")
@@ -7665,38 +8670,58 @@ class Neo4jProvider(IGraphDBProvider):
             return False
 
     async def ensure_schema(self) -> bool:
-        """Ensure Neo4j schema (indexes and constraints)."""
+        """Ensure Neo4j schema (constraints, indexes, and departments seed)."""
         try:
             self.logger.info("🔧 Ensuring Neo4j schema...")
 
-            # Create constraints and indexes
+            # Create unique constraints on 'id' property for each label
             constraints = [
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (u:User) REQUIRE u.id IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (r:Record) REQUIRE r.id IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (rg:RecordGroup) REQUIRE rg.id IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (a:App) REQUIRE a.id IS UNIQUE",
-                "CREATE CONSTRAINT IF NOT EXISTS FOR (o:Org) REQUIRE o.id IS UNIQUE",
+                "CREATE CONSTRAINT record_id_unique IF NOT EXISTS FOR (n:Record) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (n:User) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT group_id_unique IF NOT EXISTS FOR (n:Group) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT org_id_unique IF NOT EXISTS FOR (n:Organization) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT app_id_unique IF NOT EXISTS FOR (n:App) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT tool_id_unique IF NOT EXISTS FOR (n:Tool) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT tool_ctag_id_unique IF NOT EXISTS FOR (n:ToolCtag) REQUIRE n.id IS UNIQUE",
+                "CREATE CONSTRAINT department_id_unique IF NOT EXISTS FOR (n:Departments) REQUIRE n.id IS UNIQUE",
             ]
 
+            for constraint_query in constraints:
+                try:
+                    await self.client.execute_query(constraint_query)
+                except Exception as e:
+                    self.logger.debug(f"Constraint creation (may already exist): {str(e)}")
+
+            # Create indexes for common queries
             indexes = [
-                "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.orgId)",
-                "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.connectorId)",
-                "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.externalRecordId)",
-                "CREATE INDEX IF NOT EXISTS FOR (rg:RecordGroup) ON (rg.orgId)",
-                "CREATE INDEX IF NOT EXISTS FOR (a:App) ON (a.orgId)",
+                "CREATE INDEX record_external_id IF NOT EXISTS FOR (n:Record) ON (n.externalRecordId, n.connectorId)",
+                "CREATE INDEX user_email IF NOT EXISTS FOR (n:User) ON (n.email)",
+                "CREATE INDEX user_user_id IF NOT EXISTS FOR (n:User) ON (n.userId)",
+                "CREATE INDEX file_path IF NOT EXISTS FOR (n:File) ON (n.path)",
+                "CREATE INDEX tool_app_name_tool_name IF NOT EXISTS FOR (n:Tool) ON (n.app_name, n.tool_name)",
+                "CREATE INDEX tool_ctag_connector_name IF NOT EXISTS FOR (n:ToolCtag) ON (n.connector_name)",
+                "CREATE INDEX record_org_id IF NOT EXISTS FOR (n:Record) ON (n.orgId)",
+                "CREATE INDEX record_connector_id IF NOT EXISTS FOR (n:Record) ON (n.connectorId)",
+                "CREATE INDEX record_external_record_id IF NOT EXISTS FOR (n:Record) ON (n.externalRecordId)",
+                "CREATE INDEX record_group_org_id IF NOT EXISTS FOR (n:RecordGroup) ON (n.orgId)",
+                "CREATE INDEX app_org_id IF NOT EXISTS FOR (n:App) ON (n.orgId)",
             ]
 
-            for constraint in constraints:
+            for index_query in indexes:
                 try:
-                    await self.client.execute_query(constraint, parameters={})
+                    await self.client.execute_query(index_query)
                 except Exception as e:
-                    self.logger.warning(f"Constraint creation warning: {str(e)}")
+                    self.logger.debug(f"Index creation (may already exist): {str(e)}")
 
-            for index in indexes:
-                try:
-                    await self.client.execute_query(index, parameters={})
-                except Exception as e:
-                    self.logger.warning(f"Index creation warning: {str(e)}")
+            self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
+
+            # Seed departments collection with predefined department types
+            try:
+                await self._initialize_departments()
+            except Exception as e:
+                self.logger.error(f"❌ Error initializing departments: {str(e)}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
 
             self.logger.info("✅ Neo4j schema ensured")
             return True

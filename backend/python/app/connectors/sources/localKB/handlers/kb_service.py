@@ -51,7 +51,7 @@ class KnowledgeBaseService:
                     "reason": f"User not found for user_id: {user_id}"
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get('id') or user.get('_key')
             user_name = user.get('fullName') or f"{user.get('firstName', '')} {user.get('lastName', '')}".strip() or 'Unknown'
             self.logger.info(f"✅ Found user: {user_name} (key: {user_key})")
 
@@ -85,7 +85,7 @@ class KnowledgeBaseService:
 
             kb_connector_id = f"knowledgeBase_{org_id}"
             kb_data = {
-                "_key": kb_key,
+                "id": kb_key,
                 "createdBy": user_key,
                 "orgId": org_id,
                 "groupName": name,
@@ -97,8 +97,10 @@ class KnowledgeBaseService:
             }
 
             permission_edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
                 "externalPermissionId": "",
                 "type": "USER",
                 "role": "OWNER",
@@ -109,8 +111,10 @@ class KnowledgeBaseService:
 
             # Create belongs_to edge from record group to app
             belongs_to_edge = {
-                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
-                "_to": f"{CollectionNames.APPS.value}/{kb_connector_id}",
+                "from_id": kb_key,
+                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_id": kb_connector_id,
+                "to_collection": CollectionNames.APPS.value,
                 "entityType": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
@@ -138,7 +142,7 @@ class KnowledgeBaseService:
             result = {"success": True}
             if result and result.get("success"):
                 response = {
-                    "id": kb_data["_key"],
+                    "id": kb_data["id"],
                     "name": kb_data["groupName"],
                     "createdAtTimestamp": kb_data["createdAtTimestamp"],
                     "updatedAtTimestamp": kb_data["updatedAtTimestamp"],
@@ -829,7 +833,7 @@ class KnowledgeBaseService:
                     "reason": f"User not found for user_id: {user_id}"
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get('id') or user.get('_key')
             user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
 
             if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
@@ -885,7 +889,7 @@ class KnowledgeBaseService:
                     "reason": f"User not found for user_id: {user_id}"
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get('id') or user.get('_key')
             user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
 
             if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
@@ -1013,7 +1017,7 @@ class KnowledgeBaseService:
                     "code": 404,
                     "reason": f"User not found for user_id: {requester_id}"
                 }
-            requester_key = requester.get('_key')
+            requester_key = requester.get('id') or requester.get('_key')
 
             # Validate requester has permission to update permissions
             requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
@@ -1137,7 +1141,7 @@ class KnowledgeBaseService:
                     "code": 404,
                     "reason": f"User not found for user_id: {requester_id}"
                 }
-            requester_key = requester.get('_key')
+            requester_key = requester.get('id') or requester.get('_key')
 
             # Validate requester has permission to remove permissions
             requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)
@@ -1257,7 +1261,7 @@ class KnowledgeBaseService:
                     "code": 404,
                     "reason": f"User not found for user_id: {requester_id}"
                 }
-            requester_key = requester.get('_key')
+            requester_key = requester.get('id') or requester.get('_key')
 
             # Validate requester has access to the KB
             requester_role = await self.graph_provider.get_user_kb_permission(kb_id, requester_key)

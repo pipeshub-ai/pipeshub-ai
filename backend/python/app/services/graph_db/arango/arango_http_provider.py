@@ -13,11 +13,11 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from app.config.configuration_service import ConfigurationService
+from app.connectors.services.kafka_service import KafkaService
 
 if TYPE_CHECKING:
     from fastapi import Request
 
-    from app.services.messaging.interface.producer import IMessagingProducer
 
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -69,7 +69,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        kafka_service: Optional["IMessagingProducer"] = None,
+        kafka_service: Optional[KafkaService] = None,
     ) -> None:
         """
         Initialize ArangoDB HTTP provider.
