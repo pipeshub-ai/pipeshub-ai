@@ -8,6 +8,7 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { UserGroups } from '../schema/userGroup.schema';
+import { authJwtGenerator } from '../../../libs/utils/createJwt';
 
 // Type for team list API response
 interface TeamListResponse {
@@ -31,6 +32,26 @@ export class GlobalReaderTeamService {
   ) {}
 
   /**
+   * Generate auth headers for internal service-to-service calls.
+   * Creates a scoped JWT with userId and orgId for Python backend authentication.
+   */
+  private generateInternalAuthHeaders(
+    orgId: string,
+    userId: string,
+  ): Record<string, string> {
+    const token = authJwtGenerator(
+      this.config.scopedJwtSecret,
+      null, // email
+      userId,
+      orgId,
+    );
+    return {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    };
+  }
+
+  /**
    * Ensures the Global Reader team exists for the given organization.
    * This method is idempotent - safe to call multiple times.
    *
@@ -45,15 +66,21 @@ export class GlobalReaderTeamService {
     headers: Record<string, string>,
   ): Promise<void> {
     try {
+      // Use internal auth headers if no authorization provided
+      const authHeaders =
+        headers.authorization || headers.Authorization
+          ? headers
+          : this.generateInternalAuthHeaders(orgId, userId);
+
       // Step 1: Check if team already exists
-      const exists = await this.checkTeamExists(orgId, headers);
+      const exists = await this.checkTeamExists(orgId, authHeaders);
       if (exists) {
         this.logger.info('Global Reader team already exists', { orgId });
         return;
       }
 
       // Step 2: Create the team
-      await this.createTeam(orgId, userId, headers);
+      await this.createTeam(orgId, userId, authHeaders);
       this.logger.info('Global Reader team created successfully', { orgId });
     } catch (error) {
       // Log but don't throw - team creation failure should not block org creation
@@ -202,8 +229,14 @@ export class GlobalReaderTeamService {
     headers: Record<string, string>,
   ): Promise<void> {
     try {
+      // Use internal auth headers if no authorization provided
+      const authHeaders =
+        headers.authorization || headers.Authorization
+          ? headers
+          : this.generateInternalAuthHeaders(orgId, userId);
+
       // Step 1: Get team ID
-      const teamId = await this.getGlobalReaderTeamId(orgId, headers);
+      const teamId = await this.getGlobalReaderTeamId(orgId, authHeaders);
       if (!teamId) {
         this.logger.warn('Global Reader team not found, skipping user addition', {
           orgId,
@@ -217,7 +250,7 @@ export class GlobalReaderTeamService {
       const role = isAdmin ? OWNER_ROLE : READER_ROLE;
 
       // Step 3: Add user to team
-      await this.addUserToTeam(teamId, userId, role, headers);
+      await this.addUserToTeam(teamId, userId, role, authHeaders);
       this.logger.info('User added to Global Reader team', {
         orgId,
         userId,
