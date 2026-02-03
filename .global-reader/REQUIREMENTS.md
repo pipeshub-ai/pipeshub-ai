@@ -21,10 +21,10 @@ Requirements for initial release.
 
 ### Reliability
 
-- [ ] **RELY-01**: Team assignment failures do not block user registration
-- [ ] **RELY-02**: Team assignment failures do not block user login
-- [ ] **RELY-03**: Multiple registrations/logins do not create duplicate memberships
-- [ ] **RELY-04**: Failed assignments are logged for debugging
+- [x] **RELY-01**: Team assignment failures do not block user registration
+- [x] **RELY-02**: Team assignment failures do not block user login
+- [x] **RELY-03**: Multiple registrations/logins do not create duplicate memberships
+- [x] **RELY-04**: Failed assignments are logged for debugging
 
 ## v2 Requirements
 
@@ -65,10 +65,10 @@ Deferred to future release.
 | MEMB-02 | Phase 2: Membership Automation | Complete |
 | MEMB-03 | Phase 2: Membership Automation | Complete |
 | MEMB-04 | Phase 2: Membership Automation | Complete |
-| RELY-01 | Phase 3: Reliability & Resilience | Pending |
-| RELY-02 | Phase 3: Reliability & Resilience | Pending |
-| RELY-03 | Phase 3: Reliability & Resilience | Pending |
-| RELY-04 | Phase 3: Reliability & Resilience | Pending |
+| RELY-01 | Phase 3: Reliability & Resilience | Complete |
+| RELY-02 | Phase 3: Reliability & Resilience | Complete |
+| RELY-03 | Phase 3: Reliability & Resilience | Complete |
+| RELY-04 | Phase 3: Reliability & Resilience | Complete |
 
 **Coverage:**
 - v1 requirements: 10 total
@@ -77,4 +77,4 @@ Deferred to future release.
 
 ---
 *Requirements defined: 2026-02-04*
-*Last updated: 2026-02-04 after Phase 2 completion*
+*Last updated: 2026-02-04 after Phase 3 completion*
