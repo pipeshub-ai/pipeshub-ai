@@ -26,6 +26,19 @@ from app.connectors.sources.localKB.api.models import (
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.containers.connector import ConnectorAppContainer
 
+
+async def get_kb_service(request: Request) -> KnowledgeBaseService:
+    """
+    Resolve KnowledgeBaseService with graph_provider and kafka_service.
+    KB service is created per-request since it depends on async graph_provider.
+    """
+    container: ConnectorAppContainer = request.app.container
+    logger = container.logger()
+    graph_provider = request.app.state.graph_provider
+    kafka_service = container.kafka_service()
+    return KnowledgeBaseService(logger=logger, graph_provider=graph_provider, kafka_service=kafka_service)
+
+
 # Constants for HTTP status codes
 HTTP_MIN_STATUS = 100
 HTTP_MAX_STATUS = 600
@@ -50,7 +63,7 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
 @inject
 async def create_knowledge_base(
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> CreateKnowledgeBaseResponse:
     try:
         try:
@@ -103,7 +116,7 @@ async def list_user_knowledge_bases(
     permissions: Optional[str] = Query(None, description="Filter by permission roles"),
     sort_by: str = Query("name", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[ListKnowledgeBaseResponse, Dict[str, Any]]:
     try:
         # Parse comma-separated string into list
@@ -150,7 +163,7 @@ async def list_user_knowledge_bases(
 async def get_knowledge_base(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[KnowledgeBaseResponse, Dict[str, Any]]:
     try :
         user_id = request.state.user.get("userId")
@@ -186,7 +199,7 @@ async def get_knowledge_base(
 async def update_knowledge_base(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     try:
         user_id = request.state.user.get("userId")
@@ -228,7 +241,7 @@ async def update_knowledge_base(
 async def delete_knowledge_base(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     try:
         user_id = request.state.user.get("userId")
@@ -260,7 +273,7 @@ async def delete_knowledge_base(
 async def create_records_in_kb(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateRecordsResponse, Dict[str, Any]]:
     try:
         user_id = request.state.user.get("userId")
@@ -309,7 +322,7 @@ async def create_records_in_kb(
 async def upload_records_to_kb(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[UploadRecordsinKBResponse, Dict[str, Any]]:
     """
     ⭐ UNIFIED: Upload records to KB root using consolidated service
@@ -390,7 +403,7 @@ async def upload_records_to_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[UploadRecordsinFolderResponse, Dict[str, Any]]:
     """
     ⭐ UNIFIED: Upload records to specific folder using consolidated service
@@ -465,7 +478,7 @@ async def upload_records_to_folder(
 async def create_folder_in_kb_root(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateFolderResponse, Dict[str, Any]]:
     """Create folder in KB root"""
     try:
@@ -510,7 +523,7 @@ async def create_nested_folder(
     kb_id: str,
     parent_folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateFolderResponse, Dict[str, Any]]:
     """Create folder inside another folder"""
     try:
@@ -556,7 +569,7 @@ async def get_folder_contents(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[FolderContentsResponse, Dict[str, Any]]:
     try:
         user_id = request.state.user.get("userId")
@@ -590,7 +603,7 @@ async def update_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     try:
         try:
@@ -630,7 +643,7 @@ async def delete_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     try:
         user_id = request.state.user.get("userId")
@@ -672,7 +685,7 @@ async def list_kb_records(
     date_to: Optional[int] = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
@@ -710,7 +723,7 @@ async def get_kb_children(
     indexing_status: Optional[List[str]] = None,
     sort_by: str = "name",
     sort_order: str = "asc",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
     """
     Get KB root contents (folders and records) with pagination and filters
@@ -769,7 +782,7 @@ async def get_folder_children(
     indexing_status: Optional[List[str]] = None,
     sort_by: str = "name",
     sort_order: str = "asc",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
     """
     Get folder contents (subfolders and records) with pagination and filters
@@ -819,7 +832,7 @@ async def get_folder_children(
 async def create_kb_permissions(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreatePermissionsResponse, Dict[str, Any]]:
     try:
         try:
@@ -877,7 +890,7 @@ async def create_kb_permissions(
 async def update_kb_permission(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[UpdatePermissionResponse, Dict[str, Any]]:
     try:
         try:
@@ -942,7 +955,7 @@ async def update_kb_permission(
 async def remove_kb_permission(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[RemovePermissionResponse, Dict[str, Any]]:
     """
     Remove permissions for users and teams from a knowledge base
@@ -989,7 +1002,7 @@ async def remove_kb_permission(
 async def list_kb_permissions(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[ListPermissionsResponse, Dict[str, Any]]:
     try:
         user_id = request.state.user.get("userId")
@@ -1023,7 +1036,7 @@ async def create_records_in_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateRecordsResponse, Dict[str, Any]]:
     try:
         try:
@@ -1072,7 +1085,7 @@ async def create_records_in_folder(
 async def update_record(
     record_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[UpdateRecordResponse, Dict[str, Any]]:
     try:
         try:
@@ -1120,7 +1133,7 @@ async def update_record(
 async def delete_records_in_kb(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[DeleteRecordResponse, Dict[str, Any]]:
     try:
         try:
@@ -1169,7 +1182,7 @@ async def delete_record_in_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[DeleteRecordResponse, Dict[str, Any]]:
     try:
         try:
@@ -1226,7 +1239,7 @@ async def list_all_records(
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     source: str = "all",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
 
     # Parse comma-separated strings into lists
@@ -1277,7 +1290,7 @@ async def move_record(
     kb_id: str,
     record_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     """
     Move a record (file or folder) to a different location within the same KB.

@@ -65,6 +65,7 @@ export interface Record {
   _key: string;
   _id: string;
   _rev: string;
+  id: string;
   orgId: string;
   recordName: string;
   externalRecordId: string;

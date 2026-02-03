@@ -48,9 +48,10 @@ async def get_initialized_container() -> ConnectorAppContainer:
             ]
         )
         setattr(get_initialized_container, "_initialized", True)
-        # Start token refresh service at app startup
+        # Start token refresh service at app startup (use graph_provider from data_store)
         try:
-            await startup_service.initialize(container.key_value_store(), await container.arango_service())
+            data_store = await container.data_store()
+            await startup_service.initialize(container.key_value_store(), data_store.graph_provider)
         except Exception as e:
             container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container
@@ -62,10 +63,10 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
     logger.debug("🔄 Checking for sync services to resume")
 
     try:
-        arango_service = await app_container.arango_service()  # type: ignore
+        graph_provider = data_store.graph_provider if data_store else (await app_container.data_store()).graph_provider
 
         # Get all organizations
-        orgs = await arango_service.get_all_orgs(active=True)
+        orgs = await graph_provider.get_all_orgs(active=True)
         if not orgs:
             logger.info("No organizations found in the system")
             return True
@@ -73,9 +74,9 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.info("Found %d organizations in the system", len(orgs))
         # Process each organization
         for org in orgs:
-            org_id = org["_key"]
+            org_id = org.get("_key") or org.get("id")
             accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
-            enabled_apps = await arango_service.get_org_apps(org_id)
+            enabled_apps = await graph_provider.get_org_apps(org_id)
             app_names = [app["type"].replace(" ", "").lower() for app in enabled_apps]
             logger.info(f"App names: {app_names}")
 
@@ -84,7 +85,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             )
 
             # Get users for this organization
-            users = await arango_service.get_users(org_id, active=True)
+            users = await graph_provider.get_users(org_id, active=True)
             logger.info(f"User: {users}")
             if not users:
                 logger.info("No users found for organization %s", org_id)
@@ -93,7 +94,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             logger.info("Found %d users for organization %s", len(users), org_id)
 
             config_service = app_container.config_service()
-            arango_service = await app_container.arango_service()
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
             data_store_provider = data_store if data_store else await app_container.data_store()
 
@@ -283,12 +283,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container  # type: ignore
 
     app.state.config_service = app_container.config_service()
-    app.state.arango_service = await app_container.arango_service()  # type: ignore
 
-    # Resolve data_store FIRST - this internally resolves graph_provider as a dependency
-    # Access graph_provider from data_store (not from container) to avoid coroutine reuse
+    # Resolve data_store first - this internally resolves graph_provider
     data_store = await app_container.data_store()
-    app.state.graph_provider = data_store.graph_provider  # Already resolved inside data_store
+    app.state.graph_provider = data_store.graph_provider
 
     # Initialize connector registry
     logger = app_container.logger()
@@ -315,7 +313,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         migration_result = await run_oauth_credentials_migration(
             config_service=app_container.config_service(),
-            arango_service=await app_container.arango_service(),
+            graph_provider=app.state.graph_provider,
             logger=logger,
             dry_run=False
         )

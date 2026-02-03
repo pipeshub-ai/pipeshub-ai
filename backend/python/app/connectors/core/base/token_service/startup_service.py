@@ -10,7 +10,7 @@ from app.config.key_value_store import KeyValueStore
 from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
 )
-from app.connectors.services.base_arango_service import BaseArangoService
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class StartupService:
@@ -20,11 +20,11 @@ class StartupService:
         self.logger = logging.getLogger(__name__)
         self._token_refresh_service: Optional[TokenRefreshService] = None
 
-    async def initialize(self, key_value_store: KeyValueStore, arango_service: BaseArangoService) -> None:
+    async def initialize(self, key_value_store: KeyValueStore, graph_provider: IGraphDBProvider) -> None:
         """Initialize startup services"""
         try:
             # Initialize token refresh service
-            self._token_refresh_service = TokenRefreshService(key_value_store, arango_service)
+            self._token_refresh_service = TokenRefreshService(key_value_store, graph_provider)
             await self._token_refresh_service.start()
 
             self.logger.info("Startup services initialized successfully")

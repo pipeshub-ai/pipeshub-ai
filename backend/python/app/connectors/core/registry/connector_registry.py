@@ -5,10 +5,8 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.services.base_arango_service import (
-    BaseArangoService as ArangoService,
-)
 from app.containers.connector import ConnectorAppContainer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.models.entities import RecordType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -133,22 +131,23 @@ class ConnectorRegistry:
         """
         self.container = container
         self.logger = container.logger()
-        self._arango_service: Optional[ArangoService] = None
+        self._graph_provider: Optional[IGraphDBProvider] = None
         self._collection_name = CollectionNames.APPS.value
 
         # In-memory storage for connector metadata
         self._connectors: Dict[str, Dict[str, Any]] = {}
 
-    async def _get_arango_service(self) -> ArangoService:
+    async def _get_graph_provider(self) -> IGraphDBProvider:
         """
-        Get the ArangoDB service, initializing it lazily if needed.
+        Get the graph DB provider, initializing it lazily if needed.
 
         Returns:
-            Initialized ArangoDB service instance
+            Initialized graph DB provider instance
         """
-        if self._arango_service is None:
-            self._arango_service = await self.container.arango_service()
-        return self._arango_service
+        if self._graph_provider is None:
+            data_store = await self.container.data_store()
+            self._graph_provider = data_store.graph_provider
+        return self._graph_provider
 
     def register_connector(self, connector_class: Type) -> bool:
         """
@@ -311,51 +310,19 @@ class ConnectorRegistry:
             True if name is unique, False if already exists
         """
         try:
-            arango_service = await self._get_arango_service()
+            graph_provider = await self._get_graph_provider()
 
-            # Normalize name for comparison (case-insensitive, trim whitespace)
-            normalized_name = instance_name.strip().lower()
+            # Use graph provider method to check name existence
+            name_exists = await graph_provider.check_connector_name_exists(
+                collection=self._collection_name,
+                instance_name=instance_name,
+                scope=scope,
+                org_id=org_id,
+                user_id=user_id,
+            )
 
-            if scope == ConnectorScope.PERSONAL.value:
-                # For personal scope: check uniqueness within user's personal connectors
-                query = """
-                FOR doc IN @@collection
-                    FILTER doc.scope == @scope
-                    FILTER doc.createdBy == @user_id
-                    FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                    RETURN doc._key
-                """
-                bind_vars = {
-                    "@collection": self._collection_name,
-                    "scope": ConnectorScope.PERSONAL.value,
-                    "user_id": user_id,
-                    "normalized_name": normalized_name,
-                }
-            else:  # TEAM scope
-                # For team scope: check uniqueness within organization's team connectors
-                # We need to check via org relationship
-                query = """
-                FOR edge IN @@edge_collection
-                    FILTER edge._from == @org_id
-                    FOR doc IN @@collection
-                        FILTER doc._id == edge._to
-                        FILTER doc.scope == @scope
-                        FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                        RETURN doc._key
-                """
-                bind_vars = {
-                    "@collection": self._collection_name,
-                    "@edge_collection": CollectionNames.ORG_APP_RELATION.value,
-                    "org_id": f"{CollectionNames.ORGS.value}/{org_id}",
-                    "scope": ConnectorScope.TEAM.value,
-                    "normalized_name": normalized_name,
-                }
-
-            cursor = arango_service.db.aql.execute(query, bind_vars=bind_vars)
-            existing = list(cursor)
-
-            # If any results found, name is not unique
-            return len(existing) == 0
+            # Return True if name is unique (does NOT exist)
+            return not name_exists
 
         except Exception as e:
             self.logger.error(f"Error checking name uniqueness: {e}")
@@ -376,8 +343,8 @@ class ConnectorRegistry:
             Connector instance document or None if not found
         """
         try:
-            arango_service = await self._get_arango_service()
-            document = await arango_service.get_document(
+            graph_provider = await self._get_graph_provider()
+            document = await graph_provider.get_document(
                 connector_id,
                 self._collection_name
             )
@@ -414,10 +381,10 @@ class ConnectorRegistry:
             Created connector instance document or None if failed
         """
         try:
-            arango_service = await self._get_arango_service()
+            graph_provider = await self._get_graph_provider()
 
             # Verify organization exists
-            organization = await arango_service.get_document(
+            organization = await graph_provider.get_document(
                 org_id,
                 CollectionNames.ORGS.value
             )
@@ -486,7 +453,7 @@ class ConnectorRegistry:
             }
 
             # Create instance in database
-            created_instance = await arango_service.batch_upsert_nodes(
+            created_instance = await graph_provider.batch_upsert_nodes(
                 [instance_document],
                 self._collection_name
             )
@@ -498,12 +465,14 @@ class ConnectorRegistry:
 
             # Create relationship edge between organization and instance
             edge_document = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{instance_key}",
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": instance_key,
+                "to_collection": CollectionNames.APPS.value,
                 "createdAtTimestamp": current_timestamp,
             }
 
-            created_edge = await arango_service.batch_create_edges(
+            created_edge = await graph_provider.batch_create_edges(
                 [edge_document],
                 CollectionNames.ORG_APP_RELATION.value,
             )
@@ -539,9 +508,9 @@ class ConnectorRegistry:
             True if successful, False otherwise
         """
         try:
-            arango_service = await self._get_arango_service()
+            graph_provider = await self._get_graph_provider()
 
-            existing_document = await arango_service.get_document(
+            existing_document = await graph_provider.get_document(
                 connector_id,
                 self._collection_name
             )
@@ -552,17 +521,16 @@ class ConnectorRegistry:
                 )
                 return False
 
-            updated_document = {
-                **existing_document,
+            updates = {
                 'isActive': False,
                 'isAgentActive': False,
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            await arango_service.update_node(
+            await graph_provider.update_node(
                 connector_id,
-                updated_document,
-                self._collection_name
+                self._collection_name,
+                updates
             )
 
             self.logger.info(f"Deactivated connector instance {connector_id}")
@@ -585,43 +553,34 @@ class ConnectorRegistry:
             True if successful, False otherwise
         """
         try:
-            arango_service = await self._get_arango_service()
+            graph_provider = await self._get_graph_provider()
 
             # Get all connector instances from database
-            all_documents = await arango_service.get_all_documents(
+            all_documents = await graph_provider.get_all_documents(
                 self._collection_name
             )
 
             # Collect keys of instances that need to be deactivated
             keys_to_deactivate = []
             for document in all_documents:
-                connector_type = document['type']
+                connector_type = document.get('type')
                 is_active = document.get('isActive', False)
                 if connector_type == Connectors.KNOWLEDGE_BASE.value:
                     continue
-                if connector_type not in self._connectors and is_active:
-                    keys_to_deactivate.append(document['_key'])
+                doc_key = document.get('_key') or document.get('id')
 
-            # Batch deactivate all instances in a single query
+                if connector_type not in self._connectors and is_active:
+                    keys_to_deactivate.append(doc_key)
+
+            # Batch deactivate all instances using graph provider
             if keys_to_deactivate:
-                current_timestamp = get_epoch_timestamp_in_ms()
-                query = """
-                FOR doc IN @@collection
-                    FILTER doc._key IN @keys
-                    UPDATE doc WITH {
-                        isActive: false,
-                        isAgentActive: false,
-                        updatedAtTimestamp: @timestamp
-                    } IN @@collection
-                    RETURN NEW
-                """
-                bind_vars = {
-                    "@collection": self._collection_name,
-                    "keys": keys_to_deactivate,
-                    "timestamp": current_timestamp
-                }
-                arango_service.db.aql.execute(query, bind_vars=bind_vars)
-                self.logger.info(f"Batch deactivated {len(keys_to_deactivate)} connector instances")
+                updated_count = await graph_provider.batch_update_connector_status(
+                    collection=self._collection_name,
+                    connector_keys=keys_to_deactivate,
+                    is_active=False,
+                    is_agent_active=False,
+                )
+                self.logger.info(f"Batch deactivated {updated_count} connector instances")
 
             self.logger.info("Successfully synced registry with database")
             return True
@@ -680,7 +639,7 @@ class ConnectorRegistry:
                 'isAuthenticated': instance_data.get('isAuthenticated', False),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
-                '_key': instance_data.get('_key'),
+                '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
                 'createdBy': instance_data.get('createdBy'),
@@ -699,30 +658,21 @@ class ConnectorRegistry:
         """
         connectors = []
         try:
-            arango_service = await self._get_arango_service()
-            # Get connectors that are either:
-            # 1. Team scope connectors (shared across org)
-            # 2. Personal scope connectors created by this user
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER (
-                    doc.scope == @team_scope OR
-                    (doc.scope == @personal_scope AND doc.createdBy == @user_id)
-                )
-                RETURN doc
-            """
-            bind_vars = {
-                "@collection": self._collection_name,
-                "team_scope": ConnectorScope.TEAM.value,
-                "personal_scope": ConnectorScope.PERSONAL.value,
-                "user_id": user_id,
-            }
-            cursor = arango_service.db.aql.execute(query, bind_vars=bind_vars)
-            documents = list[Dict[str, Any]](cursor)
+            graph_provider = await self._get_graph_provider()
+            
+            # Use graph provider method to get user's connector instances
+            documents = await graph_provider.get_user_connector_instances(
+                collection=self._collection_name,
+                user_id=user_id,
+                org_id=org_id,
+                team_scope=ConnectorScope.TEAM.value,
+                personal_scope=ConnectorScope.PERSONAL.value,
+            )
+            
             for document in documents:
-                if document['type'] in self._connectors:
-                    connectors.append(self._build_connector_info(document['type'], self._connectors[document['type']], document))
+                doc_type = document.get('type')
+                if doc_type in self._connectors:
+                    connectors.append(self._build_connector_info(doc_type, self._connectors[doc_type], document))
             return connectors
         except Exception as e:
             self.logger.error(f"Error getting all connector instances: {e}")
@@ -897,106 +847,22 @@ class ConnectorRegistry:
             Dictionary with connector instances and pagination info
         """
         try:
-            arango_service = await self._get_arango_service()
+            graph_provider = await self._get_graph_provider()
 
-            # Build AQL query with scope filtering
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER doc.type != @kb_connector_type
-            """
-
-            bind_vars = {
-                "@collection": self._collection_name,
-                "kb_connector_type": Connectors.KNOWLEDGE_BASE.value
-            }
-
-            # Add scope filter if specified
-            if scope:
-                query += " FILTER doc.scope == @scope"
-                bind_vars["scope"] = scope
-
-            # Add access control
-            if not is_admin:
-                # Non-admins can only see their own connectors or team connectors they created
-                query += """
-                FILTER (doc.createdBy == @user_id)
-                """
-                bind_vars["user_id"] = user_id
-            else:
-                # Admins can see all team connectors + their personal connectors
-                query += """
-                FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)
-                """
-                bind_vars["team_scope"] = ConnectorScope.TEAM.value
-                bind_vars["user_id"] = user_id
-
-            # Add search filter if specified
-            if search:
-                query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)"
-                bind_vars["search"] = f"%{search.lower()}%"
-
-            # Get total count for current query (with filters)
-            count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
-            count_cursor = arango_service.db.aql.execute(count_query, bind_vars=bind_vars)
-            total_count = next(count_cursor, 0)
-
-            # Calculate scope counts (total configured connectors per scope, without search/pagination filters)
-            # These counts represent the total configured connectors for each scope
-            scope_counts = {"personal": 0, "team": 0}
-
-            try:
-                # Count personal connectors (configured = isConfigured = True)
-                personal_count_query = """
-                FOR doc IN @@collection
-                    FILTER doc._id != null
-                    FILTER doc.scope == @personal_scope
-                    FILTER doc.createdBy == @user_id
-                    FILTER doc.isConfigured == true
-                    COLLECT WITH COUNT INTO total
-                    RETURN total
-                """
-                personal_bind_vars = {
-                    "@collection": self._collection_name,
-                    "personal_scope": ConnectorScope.PERSONAL.value,
-                    "user_id": user_id,
-                }
-                personal_cursor = arango_service.db.aql.execute(personal_count_query, bind_vars=personal_bind_vars)
-                scope_counts["personal"] = next(personal_cursor, 0)
-
-                # Count team connectors (only for admins)
-                if is_admin:
-                    team_count_query = """
-                    FOR doc IN @@collection
-                        FILTER doc._id != null
-                        FILTER doc.type != @kb_connector_type
-                        FILTER doc.scope == @team_scope
-                        FILTER doc.isConfigured == true
-                        COLLECT WITH COUNT INTO total
-                        RETURN total
-                    """
-                    team_bind_vars = {
-                        "@collection": self._collection_name,
-                        "team_scope": ConnectorScope.TEAM.value,
-                        "kb_connector_type": Connectors.KNOWLEDGE_BASE.value
-                    }
-                    team_cursor = arango_service.db.aql.execute(team_count_query, bind_vars=team_bind_vars)
-                    scope_counts["team"] = next(team_cursor, 0)
-            except Exception as e:
-                self.logger.warning(f"Error calculating scope counts: {e}")
-                # Continue with zero counts if there's an error
-
-            # Add pagination
-            query += """
-                SORT doc.createdAtTimestamp DESC
-                LIMIT @offset, @limit
-                RETURN doc
-            """
-            bind_vars["offset"] = (page - 1) * limit
-            bind_vars["limit"] = limit
-
-            cursor = arango_service.db.aql.execute(query, bind_vars=bind_vars)
-            documents = list(cursor)
+            # Use graph provider method for filtered query with pagination
+            documents, total_count, scope_counts = await graph_provider.get_filtered_connector_instances(
+                collection=self._collection_name,
+                edge_collection=CollectionNames.ORG_APP_RELATION.value,
+                org_id=org_id,
+                user_id=user_id,
+                scope=scope,
+                search=search,
+                skip=(page - 1) * limit,
+                limit=limit,
+                exclude_kb=True,
+                kb_connector_type=Connectors.KNOWLEDGE_BASE.value,
+                is_admin=is_admin,
+            )
 
             connector_instances = []
 
@@ -1425,9 +1291,9 @@ class ConnectorRegistry:
             ValueError: If instance name is not unique
         """
         try:
-            arango_service = await self._get_arango_service()
+            graph_provider = await self._get_graph_provider()
 
-            existing_document = await arango_service.get_document(
+            existing_document = await graph_provider.get_document(
                 connector_id,
                 self._collection_name
             )
@@ -1482,25 +1348,19 @@ class ConnectorRegistry:
                 'updatedAtTimestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Execute update query
-            query = """
-            FOR node IN @@collection
-                FILTER node._key == @key
-                UPDATE node WITH @node_updates IN @@collection
-                RETURN NEW
-            """
+            # Execute update via update_node (only the changed fields)
+            node_updates = {
+                k: v for k, v in updated_document.items()
+                if k not in ('_key', '_id', '_rev', 'id')
+            }
 
-            db = arango_service.db
-            cursor = db.aql.execute(
-                query,
-                bind_vars={
-                    "key": connector_id,
-                    "node_updates": updated_document,
-                    "@collection": self._collection_name
-                }
+            await graph_provider.update_node(
+                connector_id,
+                self._collection_name,
+                node_updates
             )
 
-            result = list(cursor)
+            result = [updated_document]
             if not result:
                 self.logger.warning(
                     f"Failed to update connector instance {connector_id}: not found"

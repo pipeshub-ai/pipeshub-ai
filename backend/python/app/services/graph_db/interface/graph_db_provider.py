@@ -102,6 +102,18 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def ensure_schema(self) -> bool:
+        """
+        Ensure database schema is initialized (collections, graphs, and any
+        required seed data). Should be called only from the connector service
+        during startup when schema init is enabled.
+
+        Returns:
+            bool: True if schema was ensured successfully, False otherwise
+        """
+        pass
+
     # ==================== Transaction Management ====================
 
     @abstractmethod
@@ -116,6 +128,16 @@ class IGraphDBProvider(ABC):
         Returns:
             str: Transaction ID
         """
+        pass
+
+    @abstractmethod
+    async def commit_transaction(self, transaction: str) -> None:
+        """Commit a database transaction."""
+        pass
+
+    @abstractmethod
+    async def rollback_transaction(self, transaction: str) -> None:
+        """Roll back a database transaction."""
         pass
 
     # ==================== Document Operations ====================
@@ -137,6 +159,42 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: Document data with 'id' field if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_by_id(
+        self,
+        id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional["Record"]:
+        """
+        Get record by internal ID (_key) with associated type document (file/mail/etc.).
+
+        Args:
+            id: Internal record ID (_key)
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
+        """
+        pass
+
+    @abstractmethod
+    async def get_all_documents(
+        self,
+        collection: str,
+        transaction: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Get all documents from a collection.
+
+        Args:
+            collection: Collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of all documents in the collection
         """
         pass
 
@@ -751,6 +809,98 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        permissions: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """
+        List all records the user can access.
+
+        Args:
+            user_id: External user ID
+            org_id: Organization ID
+            skip: Number of records to skip (pagination)
+            limit: Maximum records to return
+            search: Optional search string
+            record_types: Optional list of record types to filter
+            origins: Optional list of origins to filter
+            connectors: Optional list of connector IDs to filter
+            indexing_status: Optional list of indexing statuses to filter
+            permissions: Optional list of permission roles to filter
+            date_from: Optional start timestamp
+            date_to: Optional end timestamp
+            sort_by: Field to sort by
+            sort_order: Sort order (ASC/DESC)
+            source: Data source filter ('all', 'local', 'connector')
+
+        Returns:
+            Tuple of (records list, total count, available_filters dict)
+        """
+        pass
+
+    @abstractmethod
+    async def reindex_single_record(
+        self,
+        record_id: str,
+        user_id: str,
+        org_id: str,
+        request: Optional[Any] = None,
+        depth: int = 0,
+    ) -> Dict:
+        """
+        Validate and prepare reindex for a single record (permission checks, reset status).
+        Does NOT publish events; caller should publish after success.
+
+        Args:
+            record_id: Record ID to reindex
+            user_id: External user ID
+            org_id: Organization ID
+            request: Optional request (for signature compatibility)
+            depth: Depth for children (0 = only this record)
+
+        Returns:
+            Dict: success, recordId, recordName, connector, userRole; or error code/reason
+        """
+        pass
+
+    @abstractmethod
+    async def reindex_record_group_records(
+        self,
+        record_group_id: str,
+        depth: int,
+        user_id: str,
+        org_id: str,
+    ) -> Dict:
+        """
+        Validate record group and user permissions for reindexing.
+        Does NOT publish events; caller should publish.
+
+        Args:
+            record_group_id: Record group ID
+            depth: Depth for traversing children
+            user_id: External user ID
+            org_id: Organization ID
+
+        Returns:
+            Dict: success, connectorId, connectorName, depth, recordGroupId; or error code/reason
+        """
+        pass
+
+    @abstractmethod
     async def get_record_by_conversation_index(
         self,
         connector_id: str,
@@ -954,6 +1104,37 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_account_type(self, org_id: str) -> Optional[str]:
+        """
+        Get account type for an organization.
+
+        Args:
+            org_id: Organization ID
+
+        Returns:
+            Optional[str]: Account type ('individual' or 'business'), or None
+        """
+        pass
+
+    @abstractmethod
+    async def get_connector_stats(
+        self,
+        org_id: str,
+        connector_id: str,
+    ) -> Dict:
+        """
+        Get connector statistics for a specific connector.
+
+        Args:
+            org_id: Organization ID
+            connector_id: Connector (app) ID
+
+        Returns:
+            Dict: success, message, data (stats and byRecordType)
+        """
+        pass
+
+    @abstractmethod
     async def get_users(
         self,
         org_id: str,
@@ -1007,6 +1188,394 @@ class IGraphDBProvider(ABC):
         Returns:
             List[Dict]: List of app users
         """
+        pass
+
+    @abstractmethod
+    async def list_user_knowledge_bases(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str] = None,
+        permissions: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """
+        List knowledge bases with pagination, search, and filtering.
+        Includes both direct user permissions and team-based permissions.
+
+        Args:
+            user_id: User ID
+            org_id: Organization ID
+            skip: Pagination skip
+            limit: Pagination limit
+            search: Optional search term for KB name
+            permissions: Optional filter by permission roles
+            sort_by: Sort field (name, createdAtTimestamp, updatedAtTimestamp, userRole)
+            sort_order: Sort direction (asc, desc)
+            transaction: Optional transaction ID
+
+        Returns:
+            Tuple of (list of KB dicts, total count, available_filters dict)
+        """
+        pass
+
+    @abstractmethod
+    async def get_kb_children(
+        self,
+        kb_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: Optional[str] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """
+        Get KB root contents with folders_first pagination.
+
+        Returns:
+            Dict with success, container, folders, records, totalCount, counts,
+            availableFilters, paginationMode; or { success: False, reason: str }.
+        """
+        pass
+
+    @abstractmethod
+    async def get_folder_children(
+        self,
+        kb_id: str,
+        folder_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: Optional[str] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """
+        Get folder contents with folders_first pagination.
+
+        Returns:
+            Dict with success, container, folders, records, totalCount, counts,
+            availableFilters, paginationMode; or { success: False, reason: str }.
+        """
+        pass
+
+    @abstractmethod
+    async def get_knowledge_base(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Get knowledge base with user permissions."""
+        pass
+
+    @abstractmethod
+    async def update_knowledge_base(
+        self,
+        kb_id: str,
+        updates: Dict,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Update knowledge base."""
+        pass
+
+    @abstractmethod
+    async def delete_knowledge_base(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Delete a knowledge base and all nested content."""
+        pass
+
+    @abstractmethod
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> Dict:
+        """Shared validation logic for folder creation."""
+        pass
+
+    @abstractmethod
+    async def find_folder_by_name_in_parent(
+        self,
+        kb_id: str,
+        folder_name: str,
+        parent_folder_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Find a folder by name within a specific parent (KB root or folder)."""
+        pass
+
+    @abstractmethod
+    async def create_folder(
+        self,
+        kb_id: str,
+        folder_name: str,
+        org_id: str,
+        parent_folder_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Create folder with proper RECORDS document and edges."""
+        pass
+
+    @abstractmethod
+    async def get_folder_contents(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Get folder contents (container, folders, records)."""
+        pass
+
+    @abstractmethod
+    async def validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Validate that a folder exists and belongs to the KB."""
+        pass
+
+    @abstractmethod
+    async def update_folder(
+        self,
+        folder_id: str,
+        updates: Dict,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Update folder."""
+        pass
+
+    @abstractmethod
+    async def delete_folder(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Delete a folder and all nested content."""
+        pass
+
+    @abstractmethod
+    async def update_record(
+        self,
+        record_id: str,
+        user_id: str,
+        updates: Dict,
+        file_metadata: Optional[Dict] = None,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Update a record by ID with automatic KB and permission detection."""
+        pass
+
+    @abstractmethod
+    async def delete_records(
+        self,
+        record_ids: List[str],
+        kb_id: str,
+        folder_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """Delete multiple records and publish delete events."""
+        pass
+
+    @abstractmethod
+    async def create_kb_permissions(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        role: str,
+    ) -> Dict:
+        """Create KB permissions for users and teams."""
+        pass
+
+    @abstractmethod
+    async def count_kb_owners(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> int:
+        """Count the number of owners for a knowledge base."""
+        pass
+
+    @abstractmethod
+    async def remove_kb_permission(
+        self,
+        kb_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Remove permissions for multiple users and teams from a KB."""
+        pass
+
+    @abstractmethod
+    async def get_user_kb_permission(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[str]:
+        """Get user's permission role on a KB (direct or via team)."""
+        pass
+
+    @abstractmethod
+    async def upload_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+        parent_folder_id: Optional[str] = None,
+    ) -> Dict:
+        """Upload records to KB root or a folder."""
+        pass
+
+    @abstractmethod
+    async def is_record_folder(self, record_id: str, transaction: Optional[str] = None) -> bool:
+        """Return True if the record is a folder (has FILES doc with isFile false)."""
+        pass
+
+    @abstractmethod
+    async def get_record_parent_info(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Get parent folder/kb info for a record."""
+        pass
+
+    @abstractmethod
+    async def is_record_descendant_of(
+        self,
+        record_id: str,
+        ancestor_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Return True if record is a descendant of ancestor (folder)."""
+        pass
+
+    @abstractmethod
+    async def delete_parent_child_edge_to_record(
+        self,
+        record_id: str,
+        parent_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Delete PARENT_CHILD edge from parent to record."""
+        pass
+
+    @abstractmethod
+    async def create_parent_child_edge(
+        self,
+        parent_id: str,
+        child_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Create PARENT_CHILD edge from parent to child record."""
+        pass
+
+    @abstractmethod
+    async def update_record_external_parent_id(
+        self,
+        record_id: str,
+        new_parent_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Update record's externalParentId."""
+        pass
+
+    @abstractmethod
+    async def get_kb_permissions(
+        self,
+        kb_id: str,
+        user_ids: Optional[List[str]] = None,
+        team_ids: Optional[List[str]] = None,
+        transaction: Optional[str] = None,
+    ) -> Dict[str, Dict[str, str]]:
+        """Get current roles for users and teams on a KB."""
+        pass
+
+    @abstractmethod
+    async def update_kb_permission(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        new_role: str,
+    ) -> Optional[Dict]:
+        """Update permissions for users/teams on a KB."""
+        pass
+
+    @abstractmethod
+    async def list_kb_permissions(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> List[Dict]:
+        """List all permissions for a KB with entity details."""
+        pass
+
+    @abstractmethod
+    async def list_all_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        permissions: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """List all records the user can access. Returns (records, total_count, available_filters)."""
+        pass
+
+    @abstractmethod
+    async def list_kb_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        folder_id: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """List records in a KB. Returns (records, total_count, available_filters)."""
         pass
 
     # ==================== Group Operations ====================
@@ -1302,6 +1871,27 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[User]: List of user objects
+        """
+        pass
+
+    @abstractmethod
+    async def check_record_access_with_details(
+        self,
+        user_id: str,
+        org_id: str,
+        record_id: str,
+    ) -> Optional[Dict]:
+        """
+        Check record access and return record details if accessible.
+
+        Args:
+            user_id: The userId field value in users collection
+            org_id: The organization ID
+            record_id: The record ID to check access for
+
+        Returns:
+            Dict with record, knowledgeBase, folder, metadata, permissions if accessible;
+            None if not.
         """
         pass
 
@@ -1795,6 +2385,125 @@ class IGraphDBProvider(ABC):
         pass
 
     # ==================== Page Token Operations ====================
+
+    # ==================== Connector Registry Operations ====================
+
+    @abstractmethod
+    async def check_connector_name_exists(
+        self,
+        collection: str,
+        instance_name: str,
+        scope: str,
+        org_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """
+        Check if a connector instance name already exists for the given scope.
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            instance_name: Name to check (will be normalized: lowercase, trimmed)
+            scope: Connector scope ("personal" or "team")
+            org_id: Organization ID (required for team scope)
+            user_id: User ID (required for personal scope)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if name exists, False if available
+        """
+        pass
+
+    @abstractmethod
+    async def batch_update_connector_status(
+        self,
+        collection: str,
+        connector_keys: List[str],
+        is_active: bool,
+        is_agent_active: bool,
+        transaction: Optional[str] = None,
+    ) -> int:
+        """
+        Batch update isActive and isAgentActive status for multiple connectors.
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            connector_keys: List of connector instance keys to update
+            is_active: New isActive value
+            is_agent_active: New isAgentActive value
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Number of connectors updated
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_connector_instances(
+        self,
+        collection: str,
+        user_id: str,
+        org_id: str,
+        team_scope: str,
+        personal_scope: str,
+        transaction: Optional[str] = None,
+    ) -> List[Dict]:
+        """
+        Get all connector instances accessible to a user (personal + team).
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            user_id: User ID
+            org_id: Organization ID
+            team_scope: Team scope value (e.g., "team")
+            personal_scope: Personal scope value (e.g., "personal")
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Dict]: List of connector instance documents
+        """
+        pass
+
+    @abstractmethod
+    async def get_filtered_connector_instances(
+        self,
+        collection: str,
+        edge_collection: str,
+        org_id: str,
+        user_id: str,
+        scope: Optional[str] = None,
+        search: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+        exclude_kb: bool = True,
+        kb_connector_type: Optional[str] = None,
+        is_admin: bool = False,
+        transaction: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict[str, int]]:
+        """
+        Get filtered connector instances with pagination and scope counts.
+
+        Args:
+            collection: Collection name (e.g., "apps")
+            edge_collection: Edge collection for org-app relation
+            org_id: Organization ID
+            user_id: User ID
+            scope: Optional scope filter ("personal" or "team")
+            search: Optional search query (searches name, type, appGroup)
+            skip: Number of items to skip
+            limit: Maximum number of items to return
+            exclude_kb: Whether to exclude KB connector
+            kb_connector_type: KB connector type to exclude
+            is_admin: Whether user is admin (affects team scope access)
+            transaction: Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int, Dict[str, int]]: 
+                - List of connector documents
+                - Total count
+                - Scope counts dict with "personal" and "team" keys
+        """
+        pass
 
     @abstractmethod
     async def store_page_token(
