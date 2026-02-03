@@ -113,6 +113,32 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
+def get_folder_path_segments_from_key(key: str) -> List[str]:
+    """Derives folder path segments from a GCS key for hierarchy creation.
+
+    GCS, like S3, represents folders implicitly via object keys.
+    For each file key (e.g. a/b/c/file.txt), this returns the folder
+    path segments that must exist:
+
+    Example:
+        'a/b/c/file.txt' -> ['a', 'a/b', 'a/b/c']
+        'file.txt'       -> []
+    """
+    if not key:
+        return []
+
+    normalized = key.lstrip("/").rstrip("/")
+    if not normalized or "/" not in normalized:
+        return []
+
+    parts = normalized.split("/")
+    segments: List[str] = []
+    # Last part is the file (or folder key); segments are the folder path prefix
+    for i in range(1, len(parts)):
+        segments.append("/".join(parts[:i]))
+    return segments
+
+
 def get_mimetype_for_gcs(key: str, is_folder: bool = False) -> str:
     """Determines the correct MimeTypes string value for a GCS object."""
     if is_folder:
@@ -743,9 +769,23 @@ class GCSConnector(BaseConnector):
 
                     if not response.success:
                         error_msg = response.error or "Unknown error"
-                        self.logger.error(
-                            f"Failed to list objects in bucket {bucket_name}: {error_msg}"
-                        )
+                        if any(
+                            phrase in str(error_msg)
+                            for phrase in ["403", "denied", "permission", "PermissionDenied"]
+                        ):
+                            self.logger.error(
+                                f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
+                            )
+                            self.logger.error(
+                                "Please verify that the service account has at least the following roles:\n"
+                                f"  - storage.objects.list on bucket '{bucket_name}'\n"
+                                f"  - storage.buckets.get on project '{self.project_id}' (if applicable)\n"
+                                "Also check if there is a bucket-level IAM or ACL policy blocking access."
+                            )
+                        else:
+                            self.logger.error(
+                                f"Failed to list objects in bucket {bucket_name}: {error_msg}"
+                            )
                         has_more = False
                         continue
 
@@ -794,6 +834,12 @@ class GCSConnector(BaseConnector):
                                         max_timestamp = max(max_timestamp, obj_timestamp_ms)
                                     except ValueError:
                                         pass
+
+                            # Ensure folder hierarchy exists from file path (GCS has no real folder objects)
+                            if not is_folder:
+                                path_segments = get_folder_path_segments_from_key(key)
+                                if path_segments:
+                                    await self._ensure_parent_folders_exist(bucket_name, path_segments)
 
                             record, permissions = await self._process_gcs_object(
                                 obj, bucket_name
@@ -847,6 +893,82 @@ class GCSConnector(BaseConnector):
                 self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
+
+    async def _ensure_parent_folders_exist(
+        self, bucket_name: str, path_segments: List[str]
+    ) -> None:
+        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+
+        GCS, like S3, represents folders implicitly via object keys.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
+        already exist (by external_id = bucket_name/segment). Process in order so parent
+        exists before child.
+        """
+        if not path_segments:
+            return
+
+        timestamp_ms = get_epoch_timestamp_in_ms()
+        external_ids = [f"{bucket_name}/{segment}" for segment in path_segments]
+
+        async with self.data_store_provider.transaction() as tx_store:
+            results = await asyncio.gather(
+                *[
+                    tx_store.get_record_by_external_id(
+                        connector_id=self.connector_id, external_id=eid
+                    )
+                    for eid in external_ids
+                ]
+            )
+
+        existing_external_ids = {
+            eid for eid, rec in zip(external_ids, results) if rec is not None
+        }
+
+        for i, segment in enumerate(path_segments):
+            external_id = f"{bucket_name}/{segment}"
+            if external_id in existing_external_ids:
+                continue
+
+            # Root folder: first segment has no parent. Others: parent is previous segment.
+            parent_external_id = (
+                f"{bucket_name}/{path_segments[i - 1]}" if i > 0 else None
+            )
+            parent_record_type = RecordType.FILE if parent_external_id else None
+            record_name = segment.split("/")[-1] if segment else segment
+            web_url = self._generate_web_url(bucket_name, segment + "/")
+
+            folder_record = FileRecord(
+                id=str(uuid.uuid4()),
+                record_name=record_name,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.BUCKET.value,
+                external_record_group_id=bucket_name,
+                external_record_id=external_id,
+                external_revision_id=None,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_created_at=timestamp_ms,
+                source_updated_at=timestamp_ms,
+                weburl=web_url,
+                signed_url=None,
+                fetch_signed_url=None,
+                hide_weburl=True,
+                is_internal=True,
+                parent_external_record_id=parent_external_id,
+                parent_record_type=parent_record_type,
+                size_in_bytes=0,
+                is_file=False,
+                extension=None,
+                path=segment,
+                mime_type=MimeTypes.FOLDER.value,
+                md5_hash=None,
+                crc32_hash=None,
+            )
+
+            permissions = await self._create_gcs_permissions(bucket_name, segment + "/")
+            await self._process_records_with_retry([(folder_record, permissions)])
 
     def _get_gcs_revision_id(self, obj: Dict) -> str:
         """
@@ -978,13 +1100,19 @@ class GCSConnector(BaseConnector):
             else:
                 self.logger.debug(f"New document: {normalized_key} (no revision available)")
 
-            # Prepare record data
-            record_type = RecordType.FOLDER if is_folder else RecordType.FILE
+            # Prepare record data: all items are RecordType.FILE; folders have is_file=False
+            record_type = RecordType.FILE
             extension = get_file_extension(normalized_key) if is_file else None
             mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
+            parent_record_type = RecordType.FILE if parent_path else None
+
+            # Root-level items: do not link to the bucket as a parent
+            if parent_external_id == bucket_name:
+                parent_external_id = None
+                parent_record_type = None
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
@@ -1022,7 +1150,7 @@ class GCSConnector(BaseConnector):
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=obj.get("Size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -1148,10 +1276,29 @@ class GCSConnector(BaseConnector):
             if response.success and response.data:
                 return response.data.get("url")
             else:
-                self.logger.error(
-                    f"Failed to generate signed URL: {response.error} | "
-                    f"Bucket: {bucket_name} | Key: {key}"
-                )
+                error_msg = response.error or "Unknown error"
+                error_str = str(error_msg)
+                if any(
+                    phrase in error_str
+                    for phrase in ["403", "denied", "permission", "PermissionDenied", "Forbidden"]
+                ):
+                    self.logger.error(
+                        f"❌ ACCESS DENIED: Failed to generate signed URL. "
+                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+                    )
+                elif any(
+                    phrase in error_str
+                    for phrase in ["404", "NotFound", "NoSuchKey", "not found"]
+                ):
+                    self.logger.error(
+                        f"❌ KEY NOT FOUND: The object may not exist or the key is incorrect. "
+                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+                    )
+                else:
+                    self.logger.error(
+                        f"❌ FAILED: Failed to generate signed URL. "
+                        f"Error: {error_msg} | Bucket: {bucket_name} | Key: {key} | Record ID: {record.id}"
+                    )
                 return None
         except Exception as e:
             self.logger.error(
@@ -1365,11 +1512,23 @@ class GCSConnector(BaseConnector):
             current_revision_id = self._get_gcs_revision_id(obj_metadata)
             stored_revision = record.external_revision_id
 
-            if current_revision_id == stored_revision:
-                self.logger.debug(f"Record {record.id}: revision unchanged")
+            if current_revision_id and stored_revision and current_revision_id == stored_revision:
+                self.logger.debug(f"Record {record.id}: external_revision_id unchanged ({current_revision_id})")
                 return None
 
-            self.logger.debug(f"Record {record.id}: revision changed")
+            if current_revision_id and stored_revision and current_revision_id != stored_revision:
+                self.logger.debug(
+                    f"Record {record.id}: external_revision_id changed from {stored_revision} to {current_revision_id}"
+                )
+            else:
+                if not current_revision_id:
+                    self.logger.warning(
+                        f"Record {record.id}: current revision missing for {normalized_key}, processing record"
+                    )
+                if not stored_revision:
+                    self.logger.debug(
+                        f"Record {record.id}: stored revision missing for {normalized_key}, processing record"
+                    )
 
             # Parse timestamps
             last_modified = obj_metadata.get("LastModified")
@@ -1389,7 +1548,13 @@ class GCSConnector(BaseConnector):
             mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
+            parent_record_type = RecordType.FILE if parent_path else None
+
+            # Root-level items: do not link to the bucket as a parent
+            if parent_external_id == bucket_name:
+                parent_external_id = None
+                parent_record_type = None
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
@@ -1399,10 +1564,11 @@ class GCSConnector(BaseConnector):
 
             updated_external_record_id = f"{bucket_name}/{normalized_key}"
 
+            # All items are RecordType.FILE; folders have is_file=False
             updated_record = FileRecord(
                 id=record.id,
                 record_name=record_name,
-                record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
@@ -1419,7 +1585,7 @@ class GCSConnector(BaseConnector):
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=obj_metadata.get("ContentLength", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
