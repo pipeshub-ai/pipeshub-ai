@@ -32,6 +32,7 @@ class QueryAppContainer(BaseAppContainer):
         config_service=config_service,
     )
 
+    # Keep arango_service for backward compatibility with agent routes
     arango_service = providers.Resource(
         container_utils.create_arango_service,
         logger=logger,

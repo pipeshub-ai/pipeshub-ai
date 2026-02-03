@@ -49,7 +49,6 @@ from app.connectors.core.base.token_service.oauth_service import (
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.services.kafka_service import KafkaService
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.connectors.sources.google.admin.admin_webhook_handler import (
     AdminWebhookHandler,
 )

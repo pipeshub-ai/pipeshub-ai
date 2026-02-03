@@ -61,7 +61,7 @@ def convert_record_dict_to_record(record_dict: dict) -> Record:
     mime_type = record_dict.get("mimeType", None)
 
     record = Record(
-        id=record_dict.get("_key"),
+        id=record_dict.get("_key") or record_dict.get("id"),
         org_id=record_dict.get("orgId"),
         record_name=record_dict.get("recordName"),
         record_type=RecordType(record_dict.get("recordType", "FILE")),
@@ -805,7 +805,7 @@ class Processor:
             await self._enhance_tables_with_llm(block_containers)
 
             # Get record from database
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
 

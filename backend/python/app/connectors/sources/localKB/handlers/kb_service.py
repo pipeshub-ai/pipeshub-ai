@@ -1,5 +1,5 @@
 import uuid
-from typing import Any, Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -8,7 +8,6 @@ from app.config.constants.arangodb import (
 from app.connectors.services.kafka_service import KafkaService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
 
 read_collections = [
     collection.value for collection in CollectionNames

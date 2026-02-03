@@ -43,7 +43,7 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         graph_provider = await container.graph_provider()
         if not graph_provider:
             raise Exception("Failed to initialize Graph Database Provider")
-        
+
         # Store the resolved graph_provider in the container to avoid coroutine reuse
         container._graph_provider = graph_provider
         logger.info("✅ Graph Database Provider initialized and connected")

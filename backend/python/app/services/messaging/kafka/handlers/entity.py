@@ -9,9 +9,6 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.services.base_arango_service import (
-    BaseArangoService as ArangoService,
-)
 from app.containers.connector import (
     ConnectorAppContainer,
 )

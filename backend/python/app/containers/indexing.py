@@ -30,11 +30,15 @@ class IndexingAppContainer(BaseAppContainer):
     kafka_service = providers.Singleton(
         KafkaService, logger=logger, config_service=config_service
     )
+
+    # Graph Database Provider via Factory (HTTP mode - fully async)
     graph_provider = providers.Resource(
         container_utils.create_graph_provider,
         logger=logger,
         config_service=config_service,
     )
+
+    # Keep arango_service for backward compatibility
     arango_service = providers.Resource(
         container_utils.create_arango_service,
         logger=logger,
@@ -95,7 +99,7 @@ class IndexingAppContainer(BaseAppContainer):
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
 
-    # Processor - depends on indexing_pipeline, and arango_service
+    # Processor - depends on indexing_pipeline and graph_provider
     processor = providers.Resource(
         container_utils.create_processor,
         logger=logger,
@@ -112,6 +116,7 @@ class IndexingAppContainer(BaseAppContainer):
         logger=logger,
         processor=processor,
         graph_provider=graph_provider,
+        # arango_service=arango_service,  # For specialized methods not yet migrated
         config_service=config_service,
     )
 

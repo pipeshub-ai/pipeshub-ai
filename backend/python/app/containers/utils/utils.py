@@ -108,7 +108,7 @@ class ContainerUtils:
         return vector_store
 
     async def create_arango(self, graph_provider, logger) -> Arango:
-        """Async factory for Graph DB"""
+        """Async factory for Arango transformer (uses graph_provider for transactions)"""
         arango = Arango(graph_provider, logger)
         return arango
 

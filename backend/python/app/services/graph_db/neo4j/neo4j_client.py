@@ -6,10 +6,13 @@ handling connection pooling, transaction management, and query execution.
 """
 
 from logging import Logger
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from neo4j import AsyncGraphDatabase
 from neo4j.exceptions import ServiceUnavailable
+
+if TYPE_CHECKING:
+    from neo4j import AsyncSession
 
 
 class Neo4jClient:
@@ -189,7 +192,7 @@ class Neo4jClient:
                 records = await result.data()
                 return records
 
-    def get_session(self, txn_id: str) -> Any:
+    def get_session(self, txn_id: str) -> "AsyncSession":
         """
         Get the session for a transaction ID.
 
