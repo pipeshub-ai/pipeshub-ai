@@ -13,6 +13,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { AuthService } from '../services/auth.service';
 import { ConfigurationManagerService } from '../services/cm.service';
 import { TeamsController } from '../controller/teams.controller';
+import { GlobalReaderTeamService } from '../services/globalReaderTeam.service';
 
 const loggerConfig = {
   service: 'User Manager Container',
@@ -55,6 +56,14 @@ export class UserManagerContainer {
         .bind<AuthService>('AuthService')
         .toDynamicValue(() => authService);
 
+      const globalReaderTeamService = new GlobalReaderTeamService(
+        appConfig,
+        container.get('Logger'),
+      );
+      container
+        .bind<GlobalReaderTeamService>('GlobalReaderTeamService')
+        .toDynamicValue(() => globalReaderTeamService);
+
       const configurationService = new ConfigurationManagerService();
       container
         .bind<ConfigurationManagerService>('ConfigurationManagerService')
@@ -84,6 +93,7 @@ export class UserManagerContainer {
           container.get<MailService>('MailService'),
           container.get('Logger'),
           container.get<EntitiesEventProducer>('EntitiesEventProducer'),
+          container.get<GlobalReaderTeamService>('GlobalReaderTeamService'),
         );
       });
       
