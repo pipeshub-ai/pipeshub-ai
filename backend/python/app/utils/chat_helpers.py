@@ -1,5 +1,3 @@
-import re
-import time
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple, Union
 from uuid import uuid4
@@ -46,17 +44,11 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     sorted_new_type_results = sorted(new_type_results, key=lambda x: not x.get("metadata", {}).get("isBlockGroup", False))
     rows_to_be_included = defaultdict(list)
-    
-    # Track batch fetch timing
-    batch_fetch_start_time = time.time()
-    records_to_fetch = set()
-    
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
 
         if virtual_record_id not in virtual_record_id_to_result:
-            records_to_fetch.add(virtual_record_id)
             await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map)
 
 
@@ -300,31 +292,15 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     # This mapping is used to convert point_id from search results to block index
     point_id_to_blockIndex_mappings = {}
 
-    # Track batch fetch timing for old type results
-    old_type_batch_start_time = time.time()
-    old_type_records_to_fetch = set()
-    
     for result in old_type_results:
         virtual_record_id = result.get("metadata",{}).get("virtualRecordId")
         meta = result.get("metadata",{})
 
         if virtual_record_id not in virtual_record_id_to_result:
-            old_type_records_to_fetch.add(virtual_record_id)
             record,point_id_to_blockIndex = await create_record_from_vector_metadata(meta,org_id,virtual_record_id,blob_store)
             virtual_record_id_to_result[virtual_record_id] = record
             point_id_to_blockIndex_mappings[virtual_record_id] = point_id_to_blockIndex
 
-    # Log batch fetch timing for old type results
-    if old_type_records_to_fetch:
-        old_type_batch_duration_ms = (time.time() - old_type_batch_start_time) * 1000
-        old_type_record_count = len(old_type_records_to_fetch)
-        old_type_avg_duration_ms = old_type_batch_duration_ms / old_type_record_count if old_type_record_count > 0 else 0
-        logger.info("⏱️ Batch fetch (old type) completed: %d records in %.0fms (avg: %.0fms/record)", old_type_record_count, old_type_batch_duration_ms, old_type_avg_duration_ms)
-
-    for result in old_type_results:
-        virtual_record_id = result.get("metadata",{}).get("virtualRecordId")
-        meta = result.get("metadata",{})
-        
         point_id = meta.get("point_id")
         point_id_to_blockIndex = point_id_to_blockIndex_mappings.get(virtual_record_id, {})
         if point_id not in point_id_to_blockIndex:
@@ -1491,5 +1467,4 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
 
     return current_message_tokens, new_tokens
-
 

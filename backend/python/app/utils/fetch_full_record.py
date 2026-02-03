@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import re
-import time
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.logger import create_logger
-
-# Create a logger for this module
-logger = create_logger("fetch_full_record")
 
 
 class FetchFullRecordArgs(BaseModel):
@@ -46,12 +40,9 @@ async def _try_blobstore_fetch(blob_store: BlobStorage, org_id: str, record_id: 
     Try common BlobStorage paths. We don't know the exact method names in your code,
     so attempt a few sensible options and return the first successful payload.
     """
-    fetch_start_time = time.time()
     try:
         rec = await blob_store.get_record_from_storage(org_id=org_id, virtual_record_id=record_id)
         if rec:
-            fetch_duration_ms = (time.time() - fetch_start_time) * 1000
-            logger.info("⏱️ Tool fetch completed in %.0fms for virtual_record_id: %s", fetch_duration_ms, record_id)
             return rec
     except Exception:
         pass
@@ -79,7 +70,6 @@ async def _fetch_multiple_records_impl(
       "not_found": [...]  # IDs that weren't found
     }
     """
-    fetch_start_time = time.time()
     records = list(virtual_record_id_to_result.values())
 
     found_records = []
@@ -92,11 +82,7 @@ async def _fetch_multiple_records_impl(
         else:
             not_found_ids.append(record_id)
 
-    fetch_duration_ms = (time.time() - fetch_start_time) * 1000
-    
     if found_records:
-        avg_duration_ms = fetch_duration_ms / len(found_records) if len(found_records) > 0 else 0
-        logger.info("⏱️ Tool batch fetch completed: %d records in %.0fms (avg: %.0fms/record)", len(found_records), fetch_duration_ms, avg_duration_ms)
         result = {
             "ok": True,
             "records": found_records,
