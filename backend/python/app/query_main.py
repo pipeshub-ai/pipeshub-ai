@@ -38,12 +38,15 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         logger.info("Checking Connector service health before startup")
         await Health.health_check_connector_service(container)
 
-        # Ensure ArangoDB service is initialized (connection is handled in the resource factory)
-        logger.info("Ensuring ArangoDB service is initialized")
-        arango_service = await container.arango_service()
-        if not arango_service:
-            raise Exception("Failed to initialize ArangoDB service")
-        logger.info("✅ ArangoDB service initialized")
+        # Ensure Graph Database Provider is initialized (connection is handled in the resource factory)
+        logger.info("Ensuring Graph Database Provider is initialized")
+        graph_provider = await container.graph_provider()
+        if not graph_provider:
+            raise Exception("Failed to initialize Graph Database Provider")
+        
+        # Store the resolved graph_provider in the container to avoid coroutine reuse
+        container._graph_provider = graph_provider
+        logger.info("✅ Graph Database Provider initialized and connected")
 
         return True
 
@@ -129,6 +132,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
+    # Get the already-resolved graph_provider from container (set during initialization)
+    # This avoids coroutine reuse error
+    graph_provider = getattr(app_container, '_graph_provider', None)
+    if not graph_provider:
+        # Fallback: if not set during initialization, resolve it now
+        graph_provider = await app_container.graph_provider()
+    app.state.graph_provider = graph_provider
+
     # Start all Kafka consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -138,10 +149,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
         raise
 
-    arango_service = await app_container.arango_service()
-
     # Get all organizations
-    orgs = await arango_service.get_all_orgs()
+    orgs = await graph_provider.get_all_orgs()
     if not orgs:
         logger.info("No organizations found in the system")
     else:
