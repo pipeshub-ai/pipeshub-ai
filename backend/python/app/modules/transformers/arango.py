@@ -324,7 +324,7 @@ class Arango(Transformer):
                     "🚀 Metadata saved successfully for document"
                 )
 
-                # Update extraction status for the record in ArangoDB
+                # Update extraction status for the record
                 timestamp = get_epoch_timestamp_in_ms()
                 # Update extraction status for the record
                 status_doc = {

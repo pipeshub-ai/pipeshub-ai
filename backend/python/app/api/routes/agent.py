@@ -53,6 +53,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
     # Get services
     retrieval_service = await container.retrieval_service()
     arango_service = await container.arango_service()
+    graph_provider = await container.graph_provider()
     reranker_service = container.reranker_service()
     config_service = container.config_service()
     logger = container.logger()
@@ -70,6 +71,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
     return {
         "retrieval_service": retrieval_service,
         "arango_service": arango_service,
+        "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
         "logger": logger,
@@ -139,6 +141,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
         services = await get_services(request)
         logger = services["logger"]
         arango_service = services["arango_service"]
+        graph_provider = services["graph_provider"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
         config_service = services["config_service"]
@@ -173,7 +176,7 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             llm,
             logger,
             retrieval_service,
-            arango_service,
+            graph_provider,
             reranker_service,
             config_service,
             org_info,
@@ -264,7 +267,7 @@ async def stream_response(
     llm: BaseChatModel,
     logger: Logger,
     retrieval_service: RetrievalService,
-    arango_service: BaseArangoService,
+    graph_provider,
     reranker_service: RerankerService,
     config_service: ConfigurationService,
     org_info: Dict[str, Any] = None,
@@ -278,7 +281,7 @@ async def stream_response(
         llm,
         logger,
         retrieval_service,
-        arango_service,
+        graph_provider,
         reranker_service,
         config_service,
         org_info,
@@ -315,6 +318,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         services = await get_services(request)
         logger = services["logger"]
         arango_service = services["arango_service"]
+        graph_provider = services["graph_provider"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
         config_service = services["config_service"]
@@ -333,7 +337,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         # Stream the response
         return StreamingResponse(
             stream_response(
-                query_info.model_dump(), user_info, llm, logger, retrieval_service, arango_service, reranker_service, config_service, org_info
+                query_info.model_dump(), user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
             ),
             media_type="text/event-stream",
         )
@@ -1142,6 +1146,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         services = await get_services(request)
         logger = services["logger"]
         arango_service = services["arango_service"]
+        graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
         llm = services["llm"]
         reranker_service = services["reranker_service"]
@@ -1228,7 +1233,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             llm,
             logger,
             retrieval_service,
-            arango_service,
+            graph_provider,
             reranker_service,
             config_service,
             org_info,
@@ -1270,6 +1275,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         logger = services["logger"]
         config_service = services["config_service"]
         arango_service = services["arango_service"]
+        graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
         # llm = services["llm"]
         reranker_service = services["reranker_service"]
@@ -1370,7 +1376,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
 
         return StreamingResponse(
             stream_response(
-                query_info, user_info, llm, logger, retrieval_service, arango_service, reranker_service, config_service, org_info
+                query_info, user_info, llm, logger, retrieval_service, graph_provider, reranker_service, config_service, org_info
             ),
             media_type="text/event-stream",
         )

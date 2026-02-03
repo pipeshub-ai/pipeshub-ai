@@ -6,9 +6,9 @@ from langchain_core.messages import BaseMessage
 from typing_extensions import TypedDict
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class Document(TypedDict):
@@ -20,7 +20,7 @@ class ChatState(TypedDict):
     llm: BaseChatModel
 
     retrieval_service: RetrievalService
-    arango_service: BaseArangoService
+    graph_provider: IGraphDBProvider
     reranker_service: RerankerService
     config_service: ConfigurationService
 
@@ -199,7 +199,7 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 
 
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
-                        logger: Logger, retrieval_service: RetrievalService, arango_service: BaseArangoService,
+                        logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
                         reranker_service: RerankerService, config_service: ConfigurationService, org_info: Dict[str, Any] = None) -> ChatState:
     """Build the initial state from the chat query and user info"""
 
@@ -257,7 +257,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "llm": llm,
         "logger": logger,
         "retrieval_service": retrieval_service,
-        "arango_service": arango_service,
+        "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
 
