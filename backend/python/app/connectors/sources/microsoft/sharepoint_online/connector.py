@@ -640,7 +640,6 @@ class SharePointConnector(BaseConnector):
 
                 if org_collection and org_collection.value:
                     country_code = org_collection.value[0].country_letter_code
-                    country_code = "FR"
                     self.logger.info(f"🔍 Tenant country code: {country_code}")
 
                     # Use the mapper
@@ -1161,11 +1160,21 @@ class SharePointConnector(BaseConnector):
             if not item_id:
                 return None
 
+            is_root = hasattr(item, 'root') and item.root is not None
+
+            external_record_id = None
+            # Create a composite ID that includes drive_id for root folders
+            if is_root:
+                external_record_id = f"{drive_id}:root:{item_id}"
+            else:
+                external_record_id = item_id
+
+
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
                 return RecordUpdate(
                     record=None,
-                    external_record_id=item_id,
+                    external_record_id=external_record_id,
                     is_new=False,
                     is_updated=False,
                     is_deleted=True,
@@ -1186,7 +1195,7 @@ class SharePointConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=item_id
+                    external_id=external_record_id
                 )
 
             is_new = existing_record is None
@@ -1251,6 +1260,13 @@ class SharePointConnector(BaseConnector):
             if not item_id:
                 return None
 
+            is_root = hasattr(item, 'root') and item.root is not None
+            external_record_id = None
+            if is_root:
+                external_record_id = f"{drive_id}:root:{item_id}"
+            else:
+                external_record_id = item_id
+
             # Determine if it's a file or folder
             is_file = hasattr(item, 'folder') and item.folder is None
             record_type = RecordType.FILE
@@ -1299,6 +1315,13 @@ class SharePointConnector(BaseConnector):
             if hasattr(item, 'parent_reference') and item.parent_reference:
                 parent_id = getattr(item.parent_reference, 'id', None)
                 path = getattr(item.parent_reference, 'path', None)
+                
+                # Check if parent is root - if path ends with '/root:' or is '/drive/root:', parent is root
+                # Convert parent_id to composite format if parent is root
+                if parent_id and path:
+                    # Check if parent is at root level (path ends with '/root:' or '/drive/root:')
+                    if path.endswith('/root:') or path == '/drive/root:':
+                        parent_id = f"{drive_id}:root:{parent_id}"
 
             return FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -1307,7 +1330,7 @@ class SharePointConnector(BaseConnector):
                 record_status=ProgressStatus.NOT_STARTED if not existing_record else existing_record.record_status,
                 record_group_type=RecordGroupType.DRIVE,
                 parent_record_type=RecordType.FILE,
-                external_record_id=item_id,
+                external_record_id=external_record_id,
                 external_revision_id=getattr(item, 'e_tag', None),
                 version=0 if not existing_record else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
@@ -4295,7 +4318,8 @@ class SharePointConnector(BaseConnector):
             entity_types=["list"],
             query=full_query,
             page=page,
-            limit=limit
+            limit=limit,
+            region=self.tenant_region
         )
 
         options = []
