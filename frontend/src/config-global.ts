@@ -2,6 +2,8 @@ import { paths } from 'src/routes/paths';
 
 import packageJson from '../package.json';
 
+import type { RuntimeWhitelabelConfig } from 'src/types/runtime-config';
+
 // ----------------------------------------------------------------------
 
 export type ConfigValue = {
@@ -32,6 +34,16 @@ export type ConfigValue = {
 
 // ----------------------------------------------------------------------
 
+// Runtime config takes precedence over build-time config (for Docker runtime injection)
+const getRuntimeConfig = (): RuntimeWhitelabelConfig | undefined => {
+  if (typeof window !== 'undefined' && window.__WHITELABEL_CONFIG__) {
+    return window.__WHITELABEL_CONFIG__;
+  }
+  return undefined;
+};
+
+const runtimeConfig = getRuntimeConfig();
+
 export const CONFIG: ConfigValue = {
   appName: 'PipesHub',
   appVersion: packageJson.version,
@@ -52,13 +64,13 @@ export const CONFIG: ConfigValue = {
     redirectPath: paths.dashboard.root,
   },
   whitelabel: {
-    appName: import.meta.env.VITE_APP_NAME ?? '',
-    appTitle: import.meta.env.VITE_APP_TITLE ?? '',
-    appTagline: import.meta.env.VITE_APP_TAGLINE ?? '',
-    githubUrl: import.meta.env.VITE_GITHUB_URL ?? '',
-    docsBaseUrl: import.meta.env.VITE_DOCS_BASE_URL ?? '',
-    signinImageUrl: import.meta.env.VITE_SIGNIN_IMAGE_URL ?? '',
-    assistantName: import.meta.env.VITE_ASSISTANT_NAME ?? '',
+    appName: runtimeConfig?.appName ?? import.meta.env.VITE_APP_NAME ?? '',
+    appTitle: runtimeConfig?.appTitle ?? import.meta.env.VITE_APP_TITLE ?? '',
+    appTagline: runtimeConfig?.appTagline ?? import.meta.env.VITE_APP_TAGLINE ?? '',
+    githubUrl: runtimeConfig?.githubUrl ?? import.meta.env.VITE_GITHUB_URL ?? '',
+    docsBaseUrl: runtimeConfig?.docsBaseUrl ?? import.meta.env.VITE_DOCS_BASE_URL ?? '',
+    signinImageUrl: runtimeConfig?.signinImageUrl ?? import.meta.env.VITE_SIGNIN_IMAGE_URL ?? '',
+    assistantName: runtimeConfig?.assistantName ?? import.meta.env.VITE_ASSISTANT_NAME ?? '',
   },
 };
 

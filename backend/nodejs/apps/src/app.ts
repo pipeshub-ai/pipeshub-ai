@@ -1,4 +1,5 @@
 import express, { Express } from 'express';
+import fs from 'fs';
 import path from 'path';
 import helmet from 'helmet';
 import cors from 'cors';
@@ -79,6 +80,7 @@ export class Application {
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
   private port: number;
+  private cachedIndexHtml: string | null = null;
 
   constructor() {
     this.app = express();
@@ -208,11 +210,47 @@ export class Application {
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
 
-      // Serve static frontend files\
-      this.app.use(express.static(path.join(__dirname, 'public')));
-      // SPA fallback route\
+      // Serve static files (CSS, JS, images, etc.) but not index.html directly
+      this.app.use(express.static(path.join(__dirname, 'public'), {
+        index: false  // Don't serve index.html automatically - we handle it below
+      }));
+
+      // SPA fallback route with runtime config injection
       this.app.get('*', (_req, res) => {
-        res.sendFile(path.join(__dirname, 'public', 'index.html'));
+        // Use cached version if available
+        if (this.cachedIndexHtml) {
+          res.setHeader('Content-Type', 'text/html');
+          return res.send(this.cachedIndexHtml);
+        }
+
+        const indexPath = path.join(__dirname, 'public', 'index.html');
+        fs.readFile(indexPath, 'utf8', (err, html) => {
+          if (err) {
+            this.logger.error('Failed to read index.html', err);
+            return res.status(500).send('Error loading application');
+          }
+
+          // Build runtime config from environment variables
+          const whitelabelConfig = {
+            appName: process.env.VITE_APP_NAME || '',
+            appTitle: process.env.VITE_APP_TITLE || '',
+            appTagline: process.env.VITE_APP_TAGLINE || '',
+            githubUrl: process.env.VITE_GITHUB_URL || '',
+            docsBaseUrl: process.env.VITE_DOCS_BASE_URL || '',
+            signinImageUrl: process.env.VITE_SIGNIN_IMAGE_URL || '',
+            assistantName: process.env.VITE_ASSISTANT_NAME || '',
+          };
+
+          // Inject config script before </head>
+          const configScript = `<script>window.__WHITELABEL_CONFIG__ = ${JSON.stringify(whitelabelConfig)};</script>`;
+          const modifiedHtml = html.replace('</head>', `${configScript}</head>`);
+
+          // Cache for subsequent requests
+          this.cachedIndexHtml = modifiedHtml;
+
+          res.setHeader('Content-Type', 'text/html');
+          res.send(modifiedHtml);
+        });
       });
 
       this.logger.info('Application initialized successfully');
