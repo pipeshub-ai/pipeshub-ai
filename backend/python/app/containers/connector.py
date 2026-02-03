@@ -1,3 +1,5 @@
+import os
+
 from dependency_injector import containers, providers
 
 from app.config.configuration_service import ConfigurationService
@@ -328,12 +330,18 @@ async def initialize_container(container) -> bool:
     try:
         await Health.system_health_check(container)
 
-        logger.info("Ensuring ArangoDB service is initialized")
-        # Arango_service is needed for migrations
-        arango_service = await container.arango_service()
-        if not arango_service:
-            raise Exception("Failed to initialize ArangoDB service")
-        logger.info("✅ ArangoDB service initialized")
+        # Conditionally initialize ArangoDB service based on DATA_STORE
+        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        if data_store == "arangodb":
+            logger.info("Ensuring ArangoDB service is initialized")
+            # Arango_service is needed for migrations
+            arango_service = await container.arango_service()
+            if not arango_service:
+                raise Exception("Failed to initialize ArangoDB service")
+            logger.info("✅ ArangoDB service initialized")
+        else:
+            logger.info(f"⏭️ Skipping ArangoDB service init (DATA_STORE={data_store})")
+            arango_service = None
 
         logger.info("Ensuring graph database provider is initialized")
         data_store = await container.data_store()
@@ -405,6 +413,8 @@ async def initialize_container(container) -> bool:
 
         if migration_completed(migration_state, "permissionsEdge"):
             logger.info("⏭️ Permissions Edge migration already completed, skipping.")
+        elif arango_service is None:
+            logger.info("⏭️ Skipping Permissions Edge migration (ArangoDB service not initialized)")
         else:
             logger.info("🔄 Running Permissions Edge migration...")
             result_permissions_migration = await run_permissions_edge_migration(
@@ -421,6 +431,8 @@ async def initialize_container(container) -> bool:
 
         if migration_completed(migration_state, "permissionsToKb"):
             logger.info("⏭️ Permissions To KB migration already completed, skipping.")
+        elif arango_service is None:
+            logger.info("⏭️ Skipping Permissions To KB migration (ArangoDB service not initialized)")
         else:
             logger.info("🔄 Running Permissions To KB migration...")
             result_permissions_to_kb_migration = await run_permissions_to_kb_migration(
@@ -437,6 +449,8 @@ async def initialize_container(container) -> bool:
 
         if migration_completed(migration_state, "folderHierarchy"):
             logger.info("⏭️ Folder Hierarchy migration already completed, skipping.")
+        elif arango_service is None:
+            logger.info("⏭️ Skipping Folder Hierarchy migration (ArangoDB service not initialized)")
         else:
             logger.info("🔄 Running Folder Hierarchy migration...")
             result_folder_hierarchy_migration = await run_folder_hierarchy_migration(
