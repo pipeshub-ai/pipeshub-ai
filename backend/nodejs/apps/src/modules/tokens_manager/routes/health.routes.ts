@@ -92,15 +92,21 @@ export function createHealthRouter(
         health.status = 'unhealthy';
       }
 
-      try {
-        const isArangoHealthy = await arangoService.isConnected();
-        health.services.arangodb = isArangoHealthy ? 'healthy' : 'unhealthy';
-        if (!isArangoHealthy) {
+      // ArangoDB check - only when using ArangoDB as the graph database
+      const dataStore = (process.env.DATA_STORE || 'neo4j').toLowerCase();
+      if (dataStore === 'arangodb') {
+        try {
+          const isArangoHealthy = await arangoService.isConnected();
+          health.services.arangodb = isArangoHealthy ? 'healthy' : 'unhealthy';
+          if (!isArangoHealthy) {
+            health.status = 'unhealthy';
+          }
+        } catch (exception) {
+          health.services.arangodb = 'unhealthy';
           health.status = 'unhealthy';
         }
-      } catch (exception) {
-        health.services.arangodb = 'unhealthy';
-        health.status = 'unhealthy';
+      } else {
+        health.services.arangodb = 'skipped';
       }
 
       try {
