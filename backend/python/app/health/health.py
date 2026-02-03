@@ -232,6 +232,13 @@ class Health:
     async def health_check_arango(container) -> None:
         """Health check method that verifies arango service health"""
         logger = container.logger()
+
+        # Skip ArangoDB health check if using a different graph database
+        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoDB health check (DATA_STORE={data_store})")
+            return
+
         logger.info("🔍 Starting ArangoDB health check...")
         try:
             # Get the config_service instance first, then call get_config
