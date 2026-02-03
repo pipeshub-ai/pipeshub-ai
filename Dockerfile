@@ -324,7 +324,8 @@ while true; do
 done
 EOF
 
-RUN chmod +x /app/process_monitor.sh
+# Convert Windows line endings (CRLF) to Unix (LF) and make executable
+RUN sed -i 's/\r$//' /app/process_monitor.sh && chmod +x /app/process_monitor.sh
 
 EXPOSE 3000 8000 8088 8091 8081
 
