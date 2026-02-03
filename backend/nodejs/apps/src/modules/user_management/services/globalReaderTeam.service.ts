@@ -8,6 +8,11 @@ import {
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 
+// Type for team list API response
+interface TeamListResponse {
+  teams?: Array<{ name: string; orgId: string }>;
+}
+
 // Constants for the Global Reader team
 export const GLOBAL_READER_TEAM_NAME = 'Global Reader';
 export const GLOBAL_READER_TEAM_DESCRIPTION =
@@ -72,7 +77,7 @@ export class GlobalReaderTeamService {
       },
     };
 
-    const aiCommand = new AIServiceCommand(aiCommandOptions);
+    const aiCommand = new AIServiceCommand<TeamListResponse>(aiCommandOptions);
     const response = await aiCommand.execute();
 
     if (response.statusCode !== HTTP_STATUS.OK) {
