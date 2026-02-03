@@ -336,6 +336,28 @@ export const AuthenticationView = () => {
       }
 
       setLoading(true);
+
+      // For direct Microsoft SSO, we need to create a session first
+      // because we skipped the email entry step that normally calls initAuth
+      if (directMicrosoftSso && credential.idToken) {
+        try {
+          // Decode JWT payload to get email (base64 decode, no signature validation needed)
+          const payloadBase64 = credential.idToken.split('.')[1];
+          const payload = JSON.parse(atob(payloadBase64));
+          const email = payload.email || payload.preferred_username || payload.upn;
+
+          if (email) {
+            console.log('[Auth] Direct SSO: Creating session for', email);
+            await authInitConfig(email);
+          } else {
+            console.warn('[Auth] Direct SSO: No email found in token, authentication may fail');
+          }
+        } catch (decodeError) {
+          console.error('[Auth] Direct SSO: Failed to decode token for email', decodeError);
+          // Continue anyway - let the backend handle the error
+        }
+      }
+
       let authResponse;
 
       if (method === 'microsoft') {
