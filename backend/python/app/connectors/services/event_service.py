@@ -79,7 +79,11 @@ class EventService:
 
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
-            data_store_provider = await self.app_container.data_store()
+            # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
+            from app.connectors.core.base.data_store.graph_data_store import (
+                GraphDataStore,
+            )
+            data_store_provider = GraphDataStore(self.logger, self.arango_service)
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
                 name=connector_name,

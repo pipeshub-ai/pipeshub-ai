@@ -1,4 +1,5 @@
 import asyncio
+import traceback
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -48,9 +49,10 @@ async def get_initialized_container() -> ConnectorAppContainer:
             ]
         )
         setattr(get_initialized_container, "_initialized", True)
-        # Start token refresh service at app startup
+        # Start token refresh service at app startup (use graph_provider from data_store)
         try:
-            await startup_service.initialize(container.key_value_store(), await container.arango_service())
+            data_store = await container.data_store()
+            await startup_service.initialize(container.key_value_store(), data_store.graph_provider)
         except Exception as e:
             container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container
@@ -62,20 +64,23 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
     logger.debug("🔄 Checking for sync services to resume")
 
     try:
-        arango_service = await app_container.arango_service()  # type: ignore
+        graph_provider = data_store.graph_provider
 
         # Get all organizations
-        orgs = await arango_service.get_all_orgs(active=True)
+        orgs = await graph_provider.get_all_orgs(active=True)
         if not orgs:
             logger.info("No organizations found in the system")
             return True
 
         logger.info("Found %d organizations in the system", len(orgs))
+
+        config_service = app_container.config_service()
+
         # Process each organization
         for org in orgs:
-            org_id = org["_key"]
+            org_id = org.get("_key") or org.get("id")
             accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
-            enabled_apps = await arango_service.get_org_apps(org_id)
+            enabled_apps = await graph_provider.get_org_apps(org_id)
             app_names = [app["type"].replace(" ", "").lower() for app in enabled_apps]
             logger.info(f"App names: {app_names}")
 
@@ -84,7 +89,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             )
 
             # Get users for this organization
-            users = await arango_service.get_users(org_id, active=True)
+            users = await graph_provider.get_users(org_id, active=True)
             logger.info(f"User: {users}")
             if not users:
                 logger.info("No users found for organization %s", org_id)
@@ -93,9 +98,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             logger.info("Found %d users for organization %s", len(users), org_id)
 
             config_service = app_container.config_service()
-            arango_service = await app_container.arango_service()
             # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
-            data_store_provider = data_store if data_store else await app_container.data_store()
+            # data_store_provider = data_store if data_store else await app_container.data_store()
 
             # Initialize connectors_map if not already initialized
             if not hasattr(app_container, 'connectors_map'):
@@ -108,7 +112,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                 connector = await ConnectorFactory.create_and_start_sync(
                     name=connector_name,
                     logger=logger,
-                    data_store_provider=data_store_provider,
+                    data_store_provider=data_store,
                     config_service=config_service,
                     connector_id=connector_id
                 )
@@ -122,6 +126,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         return True
     except Exception as e:
         logger.error("❌ Error during sync service resumption: %s", str(e))
+        logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
 async def initialize_connector_registry(app_container: ConnectorAppContainer) -> ConnectorRegistry:
@@ -176,7 +181,7 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error starting messaging producer: {str(e)}")
         raise
 
-async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
+async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> List:
     """Start all Kafka consumers at application level"""
     logger = app_container.logger()
     consumers = []
@@ -190,7 +195,7 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer) -> List:
             logger=logger,
             config=entity_kafka_config
         )
-        entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container)
+        entity_message_handler = await KafkaUtils.create_entity_message_handler(app_container, graph_provider)
         await entity_kafka_consumer.start(entity_message_handler)
         consumers.append(("entity", entity_kafka_consumer))
         logger.info("✅ Entity Kafka consumer started")
@@ -283,15 +288,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container  # type: ignore
 
     app.state.config_service = app_container.config_service()
-    app.state.arango_service = await app_container.arango_service()  # type: ignore
 
-    # Resolve data_store FIRST - this internally resolves graph_provider as a dependency
-    # Access graph_provider from data_store (not from container) to avoid coroutine reuse
+    # Resolve data_store first - this internally resolves graph_provider
     data_store = await app_container.data_store()
-    app.state.graph_provider = data_store.graph_provider  # Already resolved inside data_store
+    app.state.graph_provider = data_store.graph_provider
 
     # Initialize connector registry
+    # Use the already-resolved graph_provider from data_store to avoid coroutine reuse
     logger = app_container.logger()
+    graph_provider = data_store.graph_provider
+
+    # Start token refresh service at app startup (database-agnostic)
+    try:
+        await startup_service.initialize(app_container.key_value_store(), graph_provider)
+        logger.info("✅ Startup services initialized successfully")
+    except Exception as e:
+        logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")
+
+    # Initialize connector registry - pass already-resolved graph_provider
     registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
@@ -315,7 +329,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         migration_result = await run_oauth_credentials_migration(
             config_service=app_container.config_service(),
-            arango_service=await app_container.arango_service(),
+            graph_provider=app.state.graph_provider,
             logger=logger,
             dry_run=False
         )
@@ -338,6 +352,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # Don't fail startup - migration is idempotent and can be retried
 
     logger.debug("🚀 Starting application")
+
     # Start messaging producer first
     try:
         await start_messaging_producer(app_container)
@@ -346,16 +361,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start messaging producer: {str(e)}")
         raise
 
-    # Start all Kafka consumers centrally
+    # Start all Kafka consumers centrally - pass already resolved graph_provider
     try:
-        consumers = await start_kafka_consumers(app_container)
+        consumers = await start_kafka_consumers(app_container, graph_provider)
         app_container.kafka_consumers = consumers
         logger.info("✅ All Kafka consumers started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
         raise
 
-    # Resume sync services (pass pre-resolved data_store)
+    # Resume sync services - pass already resolved graph_provider and data_store
     asyncio.create_task(resume_sync_services(app_container, data_store))
 
     yield

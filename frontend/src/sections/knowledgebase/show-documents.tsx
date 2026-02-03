@@ -572,7 +572,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     }));
 
     try {
-      const recordId = record._key;
+      const recordId = record.id;
 
       if (!record) {
         console.error('Record not found for ID:', recordId);

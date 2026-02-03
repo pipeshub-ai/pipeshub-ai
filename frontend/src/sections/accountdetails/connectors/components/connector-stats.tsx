@@ -62,7 +62,7 @@ const ConnectorStatistics = ({
   const [connectorStats, setConnectorStats] = useState<ConnectorStatsData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-
+  console.log('connecvfvfvftor', connector);
   // Create a ref to track if component is mounted
   const isMounted = useRef<boolean>(true);
   // Create a ref for the interval ID

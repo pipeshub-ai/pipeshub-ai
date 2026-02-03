@@ -136,7 +136,6 @@ async def search(
             user_id=request.state.user.get("userId"),
             limit=body.limit,
             filter_groups=updated_filters,
-            arango_service=arango_service,
             knowledge_search=True,
         )
         custom_status_code = results.get("status_code", 500)

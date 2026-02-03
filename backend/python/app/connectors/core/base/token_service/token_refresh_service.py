@@ -10,16 +10,16 @@ from typing import Dict
 
 from app.config.key_value_store import KeyValueStore
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
-from app.connectors.services.base_arango_service import BaseArangoService
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.oauth_config import get_oauth_config
 
 
 class TokenRefreshService:
     """Service for managing token refresh across all connectors"""
 
-    def __init__(self, key_value_store: KeyValueStore, arango_service: BaseArangoService) -> None:
+    def __init__(self, key_value_store: KeyValueStore, graph_provider: IGraphDBProvider) -> None:
         self.key_value_store = key_value_store
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.logger = logging.getLogger(__name__)
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
@@ -154,7 +154,7 @@ class TokenRefreshService:
         """Internal method to refresh tokens (called with lock held)"""
         try:
             # 1. Get all connectors from database
-            connectors = await self.arango_service.get_all_documents("apps")
+            connectors = await self.graph_provider.get_all_documents("apps")
 
             # 2. Filter for authenticated OAuth connectors
             authenticated_connectors = await self._filter_authenticated_oauth_connectors(connectors)
