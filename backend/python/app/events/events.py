@@ -14,7 +14,6 @@ from app.config.constants.arangodb import (
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -43,7 +42,7 @@ class EventProcessor:
             )
 
             docs = [doc]
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
             )
 
@@ -87,15 +86,14 @@ class EventProcessor:
             md5_checksum = hashlib.md5(content).hexdigest()
             doc.update({"md5Checksum": md5_checksum})
             self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
 
         if not md5_checksum:
             return False
 
-        duplicate_records = await self.arango_service.find_duplicate_records(
+        duplicate_records = await self.graph_provider.find_duplicate_files(
             doc.get('_key'),
             md5_checksum,
-            record_type,
             size_in_bytes
         )
 
@@ -124,10 +122,10 @@ class EventProcessor:
                 "extractionStatus": processed_duplicate.get("extractionStatus"),
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
             })
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
 
             # Copy all relationships from the processed duplicate to this document
-            await self.arango_service.copy_document_relationships(
+            await self.graph_provider.copy_document_relationships(
                 processed_duplicate.get("_key"),
                 doc.get("_key")
             )
@@ -146,7 +144,7 @@ class EventProcessor:
             doc.update({
                 "indexingStatus": ProgressStatus.QUEUED.value,
             })
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             return True  # Marked as queued
 
         self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")

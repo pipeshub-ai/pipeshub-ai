@@ -162,8 +162,11 @@ class KafkaUtils:
         - 'indexing_complete': When indexing pipeline is done
         """
         logger = app_container.logger()
-        event_processor = await app_container.event_processor()
-        config_service =  app_container.config_service()
+        # Use cached event_processor if available, otherwise resolve it
+        event_processor = getattr(app_container, '_event_processor', None)
+        if not event_processor:
+            event_processor = await app_container.event_processor()
+        config_service = app_container.config_service()
         # Create the entity event service
         record_event_service = RecordEventHandler(
             logger=logger,

@@ -25,6 +25,7 @@ from app.exceptions.indexing_exceptions import (
 from app.models.blocks import BlocksContainer
 from app.modules.extraction.prompt_template import prompt_for_image_description
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.utils.aimodels import (
     EmbeddingProvider,
@@ -64,7 +65,7 @@ class VectorStore(Transformer):
         self,
         logger,
         config_service,
-        graph_provider,
+        graph_provider: IGraphDBProvider,
         collection_name: str,
         vector_db_service: IVectorDBService,
     ) -> None:

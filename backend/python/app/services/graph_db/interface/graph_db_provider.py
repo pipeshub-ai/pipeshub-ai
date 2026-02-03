@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from app.models.entities import Person
 
 if TYPE_CHECKING:
+    from fastapi import Request
+
     from app.models.entities import (
         AppRole,
         AppUser,
@@ -703,24 +705,6 @@ class IGraphDBProvider(ABC):
     # ==================== Record Operations ====================
 
     @abstractmethod
-    async def get_record_by_id(
-        self,
-        record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get a record by its internal ID.
-
-        Args:
-            record_id (str): The internal record ID to look up
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Record data if found, None otherwise
-        """
-        pass
-
-    @abstractmethod
     async def get_record_by_path(
         self,
         connector_id: str,
@@ -876,7 +860,7 @@ class IGraphDBProvider(ABC):
         record_id: str,
         user_id: str,
         org_id: str,
-        request: Optional[Any] = None,
+        request: Optional["Request"] = None,
         depth: int = 0,
     ) -> Dict:
         """
@@ -915,6 +899,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict: success, connectorId, connectorName, depth, recordGroupId; or error code/reason
+        """
+        pass
+
+    @abstractmethod
+    async def get_documents_by_status(
+        self,
+        collection: str,
+        status: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all documents with a specific indexing status.
+
+        Args:
+            collection (str): Collection name
+            status (str): Status to filter by
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of matching documents
         """
         pass
 
@@ -1697,22 +1701,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_org_apps(
-        self,
-        org_id: str
-    ) -> List[Dict]:
-        """
-        Get all apps for an organization.
-
-        Args:
-            org_id (str): Organization ID
-
-        Returns:
-            List[Dict]: List of apps
-        """
-        pass
-
-    @abstractmethod
     async def get_departments(
         self,
         org_id: Optional[str] = None,
@@ -1727,6 +1715,22 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[str]: List of department names
+        """
+        pass
+
+    @abstractmethod
+    async def get_org_apps(
+        self,
+        org_id: str
+    ) -> List[Dict]:
+        """
+        Get all apps for an organization.
+
+        Args:
+            org_id (str): Organization ID
+
+        Returns:
+            List[Dict]: List of apps
         """
         pass
 
@@ -1877,6 +1881,39 @@ class IGraphDBProvider(ABC):
             record_id (str): Record ID
             record_group_id (str): Record group ID
             transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
+    async def get_accessible_records(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: Optional[Dict[str, List[str]]] = None,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all records accessible to a user based on their permissions and apply filters.
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+                Format: {
+                    'departments': [dept_ids],
+                    'categories': [cat_ids],
+                    'subcategories1': [subcat1_ids],
+                    'subcategories2': [subcat2_ids],
+                    'subcategories3': [subcat3_ids],
+                    'languages': [language_ids],
+                    'topics': [topic_ids],
+                    'kb': [kb_ids],
+                    'apps': [connector_ids]
+                }
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of accessible records
         """
         pass
 
@@ -2579,7 +2616,7 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction ID
 
         Returns:
-            Tuple[List[Dict], int, Dict[str, int]]: 
+            Tuple[List[Dict], int, Dict[str, int]]:
                 - List of connector documents
                 - Total count
                 - Scope counts dict with "personal" and "team" keys
@@ -2922,141 +2959,6 @@ class IGraphDBProvider(ABC):
 
     # ==================== Knowledge Base Operations ====================
 
-
-    @abstractmethod
-    async def get_user_kb_permission(
-        self,
-        kb_id: str,
-        user_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
-        """
-        Get user's permission role on a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            user_id (str): User ID (internal key, not userId field)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Permission role (OWNER, WRITER, READER, COMMENTER) or None
-        """
-        pass
-
-    @abstractmethod
-    async def get_knowledge_base(
-        self,
-        kb_id: str,
-        user_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get knowledge base details for a user.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            user_id (str): User ID (internal key)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: KB data if found and user has access, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def list_user_knowledge_bases(
-        self,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: Optional[str] = None,
-        permissions: Optional[List[str]] = None,
-        sort_by: str = "name",
-        sort_order: str = "asc",
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int, Dict]:
-        """
-        List knowledge bases for a user with pagination and filtering.
-
-        Args:
-            user_id (str): User ID (internal key)
-            org_id (str): Organization ID
-            skip (int): Number of records to skip
-            limit (int): Maximum number of records to return
-            search (Optional[str]): Search term for KB name
-            permissions (Optional[List[str]]): Filter by permission roles
-            sort_by (str): Field to sort by (name, createdAtTimestamp, updatedAtTimestamp, userRole)
-            sort_order (str): Sort order (asc, desc)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Tuple[List[Dict], int, Dict]: (KB list, total count, available filters)
-        """
-        pass
-
-    @abstractmethod
-    async def update_knowledge_base(
-        self,
-        kb_id: str,
-        updates: Dict,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Update knowledge base details.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            updates (Dict): Fields to update
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Updated KB data if successful, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def delete_knowledge_base(
-        self,
-        kb_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Delete a knowledge base and all its contents.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Result dict if successful, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def create_folder(
-        self,
-        kb_id: str,
-        folder_name: str,
-        org_id: str,
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Create a folder in a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            folder_name (str): Folder name
-            org_id (str): Organization ID
-            parent_folder_id (Optional[str]): Parent folder ID (None for KB root)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Folder data if successful, None otherwise
-        """
-        pass
-
     @abstractmethod
     async def get_knowledge_hub_node_permissions(
         self,
@@ -3076,25 +2978,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict mapping node_id to permission info (role, canEdit, canDelete)
-        """
-        pass
-
-    async def get_folder_contents(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get contents of a folder.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            folder_id (str): Folder ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Folder contents if found, None otherwise
         """
         pass
 
@@ -3177,25 +3060,6 @@ class IGraphDBProvider(ABC):
             True if record is a folder, False otherwise
         """
 
-    async def update_folder(
-        self,
-        folder_id: str,
-        updates: Dict,
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Update folder details.
-
-        Args:
-            folder_id (str): Folder ID
-            updates (Dict): Fields to update
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        pass
-
     @abstractmethod
     async def get_knowledge_hub_node_info(
         self,
@@ -3216,25 +3080,6 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    async def delete_folder(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Delete a folder and all its contents.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            folder_id (str): Folder ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Result dict if successful, None otherwise
-        """
-        pass
-
     @abstractmethod
     async def get_knowledge_hub_parent_node(
         self,
@@ -3252,27 +3097,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with parent node info or None if at root
-        """
-        pass
-
-    async def find_folder_by_name_in_parent(
-        self,
-        kb_id: str,
-        folder_name: str,
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Find a folder by name within a parent (KB root or folder).
-
-        Args:
-            kb_id (str): Knowledge base ID
-            folder_name (str): Folder name to search for
-            parent_folder_id (Optional[str]): Parent folder ID (None for KB root)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Folder data if found, None otherwise
         """
         pass
 
@@ -3297,26 +3121,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def validate_folder_in_kb(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Validate that a folder exists and belongs to a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            folder_id (str): Folder ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if folder is valid and belongs to KB, False otherwise
-        """
-        pass
-
-    @abstractmethod
     async def _validate_folder_creation(
         self,
         kb_id: str,
@@ -3331,420 +3135,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict: Validation result with 'valid' key and user info
-        """
-        pass
-
-    @abstractmethod
-    async def upload_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        files: List[Dict],
-        parent_folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Upload records/files to a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            user_id (str): User ID (internal key)
-            org_id (str): Organization ID
-            files (List[Dict]): List of file data to upload
-            parent_folder_id (Optional[str]): Parent folder ID (None for KB root)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Upload result with success status and details
-        """
-        pass
-
-    @abstractmethod
-    async def delete_records(
-        self,
-        record_ids: List[str],
-        kb_id: str,
-        folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Delete multiple records from a knowledge base.
-
-        Args:
-            record_ids (List[str]): List of record IDs to delete
-            kb_id (str): Knowledge base ID
-            folder_id (Optional[str]): Folder ID (None for KB root)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Deletion result with success status
-        """
-        pass
-
-    @abstractmethod
-    async def create_kb_permissions(
-        self,
-        kb_id: str,
-        requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        role: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Create permissions for users and teams on a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            requester_id (str): Requester user ID (internal key)
-            user_ids (List[str]): List of user IDs (internal keys)
-            team_ids (List[str]): List of team IDs
-            role (str): Permission role (OWNER, WRITER, READER, COMMENTER)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status and granted count
-        """
-        pass
-
-    @abstractmethod
-    async def update_kb_permission(
-        self,
-        kb_id: str,
-        requester_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        new_role: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Update permissions for users and teams on a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            requester_id (str): Requester user ID (internal key)
-            user_ids (List[str]): List of user IDs (internal keys)
-            team_ids (List[str]): List of team IDs
-            new_role (str): New permission role
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status
-        """
-        pass
-
-    @abstractmethod
-    async def remove_kb_permission(
-        self,
-        kb_id: str,
-        user_ids: List[str],
-        team_ids: List[str],
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Remove permissions for users and teams from a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            user_ids (List[str]): List of user IDs (internal keys)
-            team_ids (List[str]): List of team IDs
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status
-        """
-        pass
-
-    @abstractmethod
-    async def list_kb_permissions(
-        self,
-        kb_id: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        List all permissions for a knowledge base.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[Dict]: List of permission data
-        """
-        pass
-
-    @abstractmethod
-    async def list_all_records(
-        self,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        permissions: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        sort_by: str = "createdAtTimestamp",
-        sort_order: str = "desc",
-        source: str = "all",
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int, Dict]:
-        """
-        List all records accessible to a user.
-
-        Args:
-            user_id (str): User ID (internal key)
-            org_id (str): Organization ID
-            skip (int): Number of records to skip
-            limit (int): Maximum number of records to return
-            search (Optional[str]): Search term
-            record_types (Optional[List[str]]): Filter by record types
-            origins (Optional[List[str]]): Filter by origins
-            connectors (Optional[List[str]]): Filter by connectors
-            indexing_status (Optional[List[str]]): Filter by indexing status
-            permissions (Optional[List[str]]): Filter by permissions
-            date_from (Optional[int]): Start timestamp
-            date_to (Optional[int]): End timestamp
-            sort_by (str): Field to sort by
-            sort_order (str): Sort order (asc, desc)
-            source (str): Source filter (all, local, connector)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Tuple[List[Dict], int, Dict]: (Records list, total count, available filters)
-        """
-        pass
-
-    @abstractmethod
-    async def list_kb_records(
-        self,
-        kb_id: str,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        date_from: Optional[int] = None,
-        date_to: Optional[int] = None,
-        sort_by: str = "createdAtTimestamp",
-        sort_order: str = "desc",
-        folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int, Dict]:
-        """
-        List all records in a knowledge base through folder structure for better folder-based filtering.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            user_id (str): User ID (internal key)
-            org_id (str): Organization ID
-            skip (int): Number of records to skip
-            limit (int): Maximum number of records to return
-            search (Optional[str]): Search term
-            record_types (Optional[List[str]]): Filter by record types
-            origins (Optional[List[str]]): Filter by origins
-            connectors (Optional[List[str]]): Filter by connectors
-            indexing_status (Optional[List[str]]): Filter by indexing status
-            date_from (Optional[int]): Start timestamp
-            date_to (Optional[int]): End timestamp
-            sort_by (str): Field to sort by
-            sort_order (str): Sort order (asc, desc)
-            folder_id (Optional[str]): Filter by folder ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Tuple[List[Dict], int, Dict]: (Records list, total count, available filters)
-        """
-        pass
-
-    @abstractmethod
-    async def get_kb_children(
-        self,
-        kb_id: str,
-        skip: int,
-        limit: int,
-        level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        sort_by: str = "name",
-        sort_order: str = "asc",
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Get KB root contents with pagination and filters.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            skip (int): Number of items to skip
-            limit (int): Maximum number of items to return
-            level (int): Hierarchy level
-            search (Optional[str]): Search term
-            record_types (Optional[List[str]]): Filter by record types
-            origins (Optional[List[str]]): Filter by origins
-            connectors (Optional[List[str]]): Filter by connectors
-            indexing_status (Optional[List[str]]): Filter by indexing status
-            sort_by (str): Field to sort by
-            sort_order (str): Sort order (asc, desc)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: KB children with pagination info
-        """
-        pass
-
-    @abstractmethod
-    async def get_folder_children(
-        self,
-        kb_id: str,
-        folder_id: str,
-        skip: int,
-        limit: int,
-        level: int = 1,
-        search: Optional[str] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connectors: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        sort_by: str = "name",
-        sort_order: str = "asc",
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Get folder contents with pagination and filters.
-
-        Args:
-            kb_id (str): Knowledge base ID
-            folder_id (str): Folder ID
-            skip (int): Number of items to skip
-            limit (int): Maximum number of items to return
-            level (int): Hierarchy level
-            search (Optional[str]): Search term
-            record_types (Optional[List[str]]): Filter by record types
-            origins (Optional[List[str]]): Filter by origins
-            connectors (Optional[List[str]]): Filter by connectors
-            indexing_status (Optional[List[str]]): Filter by indexing status
-            sort_by (str): Field to sort by
-            sort_order (str): Sort order (asc, desc)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Folder children with pagination info
-        """
-        pass
-
-    @abstractmethod
-    async def get_connector_stats(
-        self,
-        org_id: str,
-        connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Get connector statistics for a specific connector.
-
-        Args:
-            org_id (str): Organization ID
-            connector_id (str): Connector ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Statistics data with success status
-        """
-        pass
-
-    @abstractmethod
-    async def check_record_access_with_details(
-        self,
-        user_id: str,
-        org_id: str,
-        record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Check record access and return record details if accessible.
-
-        Args:
-            user_id (str): User ID (userId field value)
-            org_id (str): Organization ID
-            record_id (str): Record ID to check access for
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Record details with permissions if accessible, None otherwise
-        """
-        pass
-
-    @abstractmethod
-    async def reindex_single_record(
-        self,
-        record_id: str,
-        user_id: str,
-        depth: int = 1,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Reindex a single record and optionally its children.
-
-        Args:
-            record_id (str): Record ID to reindex
-            user_id (str): User ID performing the reindex
-            depth (int): Depth of children to reindex
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status
-        """
-        pass
-
-    @abstractmethod
-    async def reindex_record_group_records(
-        self,
-        record_group_id: str,
-        user_id: str,
-        depth: int = 1,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Reindex all records in a record group.
-
-        Args:
-            record_group_id (str): Record group ID
-            user_id (str): User ID performing the reindex
-            depth (int): Depth of children to reindex
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status
-        """
-        pass
-
-    @abstractmethod
-    async def get_account_type(
-        self,
-        org_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[str]:
-        """
-        Get account type for an organization.
-
-        Args:
-            org_id (str): Organization ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[str]: Account type (e.g., "INDIVIDUAL", "ENTERPRISE") or None
         """
         pass
 
@@ -3931,39 +3321,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             int: Count of connector instances
-        """
-        pass
-
-    @abstractmethod
-    async def get_accessible_records(
-        self,
-        user_id: str,
-        org_id: str,
-        filters: Optional[Dict[str, List[str]]] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        Args:
-            user_id (str): The userId field value in users collection
-            org_id (str): The org_id to filter anyone collection
-            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
-                Format: {
-                    'departments': [dept_ids],
-                    'categories': [cat_ids],
-                    'subcategories1': [subcat1_ids],
-                    'subcategories2': [subcat2_ids],
-                    'subcategories3': [subcat3_ids],
-                    'languages': [language_ids],
-                    'topics': [topic_ids],
-                    'kb': [kb_ids],
-                    'apps': [connector_ids]
-                }
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[Dict]: List of accessible record documents
         """
         pass
 

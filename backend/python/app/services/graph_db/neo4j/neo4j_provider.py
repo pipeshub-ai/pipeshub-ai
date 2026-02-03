@@ -4778,7 +4778,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Note: Graph providers don't implement event publishing
             # This is a simplified version that validates the record and returns info
             # The actual event publishing would be handled by the connector service layer
-            
+
             self.logger.info(f"✅ Record {record_id} validated for reindexing")
             return {
                 "success": True,
@@ -5306,7 +5306,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if results and len(results) > 0:
                 return results[0].get("kb_context")
-            
+
             return None
 
         except Exception as e:
@@ -6995,9 +6995,9 @@ class Neo4jProvider(IGraphDBProvider):
             AND record.isFile <> false
             {record_filter}
             OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-            
+
             WITH folder, record, file, $user_permission AS user_permission, $kb_id AS kb_id
-            
+
             RETURN {{
                 id: record.id,
                 externalRecordId: record.externalRecordId,
@@ -7030,7 +7030,7 @@ class Neo4jProvider(IGraphDBProvider):
                 kb_id: kb_id,
                 folder: {{id: folder.id, name: folder.recordName}}
             }} AS result
-            
+
             ORDER BY result.{sort_by} {sort_order.upper()}
             SKIP $skip
             LIMIT $limit
@@ -7070,15 +7070,15 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE record.isDeleted <> true
             AND record.orgId = $org_id
             AND record.isFile <> false
-            
+
             WITH DISTINCT record, folder
-            
+
             WITH collect(DISTINCT record.recordType) AS recordTypes,
                  collect(DISTINCT record.origin) AS origins,
                  collect(DISTINCT record.connectorName) AS connectors,
                  collect(DISTINCT record.indexingStatus) AS indexingStatus,
                  collect(DISTINCT {id: folder.id, name: folder.recordName}) AS folders
-            
+
             RETURN {
                 recordTypes: [r IN recordTypes WHERE r IS NOT NULL],
                 origins: [o IN origins WHERE o IS NOT NULL],
@@ -7206,10 +7206,10 @@ class Neo4jProvider(IGraphDBProvider):
                  sum(CASE WHEN child_record IS NOT NULL AND child_record.isDeleted <> true AND (child_file IS NULL OR child_file.isFile <> false) THEN 1 ELSE 0 END) AS direct_records
             // Get parent_id from path (last Record node before folder_record)
             WITH folder_record, folder_file, current_level, path, direct_subfolders, direct_records,
-                 CASE 
-                     WHEN size(nodes(path)) > 2 
+                 CASE
+                     WHEN size(nodes(path)) > 2
                      THEN [n IN nodes(path)[0..-1] WHERE n:Record | n.id][-1]
-                     ELSE null 
+                     ELSE null
                  END AS parent_id
             ORDER BY folder_record.recordName ASC
             RETURN {{
@@ -7455,7 +7455,7 @@ class Neo4jProvider(IGraphDBProvider):
                 edge_dict = dict(result.get("r", {}))
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
-                
+
                 # Determine target collection from labels
                 target_collection = "records"  # Default
                 for label in target_labels:
@@ -7471,7 +7471,7 @@ class Neo4jProvider(IGraphDBProvider):
                         }
                         target_collection = label_to_collection.get(label, "records")
                         break
-                
+
                 # Convert to ArangoDB edge format
                 edge_dict["_from"] = node_id
                 edge_dict["_to"] = f"{target_collection}/{target_id}"
@@ -8299,7 +8299,7 @@ class Neo4jProvider(IGraphDBProvider):
             SET p += person
             RETURN count(p) as count
             """
-            results = await self.client.execute_query(
+            await self.client.execute_query(
                 query,
                 parameters={"people": people},
                 txn_id=transaction
@@ -8372,7 +8372,7 @@ class Neo4jProvider(IGraphDBProvider):
             parent_label = collection_to_label(parent_collection)
             child_label = collection_to_label(child_collection)
             rel_type = edge_collection_to_relationship(collection)
-            
+
             query = f"""
             MATCH (parent:{parent_label} {{id: $parent_id}})
             MATCH (child:{child_label} {{id: $child_id}})
@@ -8443,7 +8443,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Ensure Neo4j schema (indexes and constraints)."""
         try:
             self.logger.info("🔧 Ensuring Neo4j schema...")
-            
+
             # Create constraints and indexes
             constraints = [
                 "CREATE CONSTRAINT IF NOT EXISTS FOR (u:User) REQUIRE u.id IS UNIQUE",
@@ -8452,7 +8452,7 @@ class Neo4jProvider(IGraphDBProvider):
                 "CREATE CONSTRAINT IF NOT EXISTS FOR (a:App) REQUIRE a.id IS UNIQUE",
                 "CREATE CONSTRAINT IF NOT EXISTS FOR (o:Org) REQUIRE o.id IS UNIQUE",
             ]
-            
+
             indexes = [
                 "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.orgId)",
                 "CREATE INDEX IF NOT EXISTS FOR (r:Record) ON (r.connectorId)",
@@ -8460,19 +8460,19 @@ class Neo4jProvider(IGraphDBProvider):
                 "CREATE INDEX IF NOT EXISTS FOR (rg:RecordGroup) ON (rg.orgId)",
                 "CREATE INDEX IF NOT EXISTS FOR (a:App) ON (a.orgId)",
             ]
-            
+
             for constraint in constraints:
                 try:
                     await self.client.execute_query(constraint, parameters={})
                 except Exception as e:
                     self.logger.warning(f"Constraint creation warning: {str(e)}")
-            
+
             for index in indexes:
                 try:
                     await self.client.execute_query(index, parameters={})
                 except Exception as e:
                     self.logger.warning(f"Index creation warning: {str(e)}")
-            
+
             self.logger.info("✅ Neo4j schema ensured")
             return True
         except Exception as e:
@@ -8490,17 +8490,17 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             conditions = ["app.orgId = $org_id"]
             params = {"org_id": org_id}
-            
+
             if connector_name:
                 conditions.append("app.name = $connector_name")
                 params["connector_name"] = connector_name
-            
+
             if is_active is not None:
                 conditions.append("app.isActive = $is_active")
                 params["is_active"] = is_active
-            
+
             where_clause = " AND ".join(conditions)
-            
+
             query = f"""
             MATCH (app:App)
             WHERE {where_clause}
@@ -8783,7 +8783,7 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             # Add timestamp
             updates["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
-            
+
             query = """
             MATCH (r:Record {id: $record_id})
             SET r += $updates
@@ -8832,10 +8832,10 @@ class Neo4jProvider(IGraphDBProvider):
         """Create typed Record instance from Neo4j data."""
         if not record_data:
             return None
-        
+
         try:
             record_type = record_data.get("recordType", "FILE")
-            
+
             # Map to appropriate Record subclass
             if record_type == "FILE":
                 return FileRecord(**record_data)

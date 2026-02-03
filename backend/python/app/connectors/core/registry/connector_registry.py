@@ -6,7 +6,6 @@ from uuid import uuid4
 from app.config.constants.arangodb import CollectionNames, Connectors, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.models.entities import RecordType
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -660,7 +659,7 @@ class ConnectorRegistry:
         connectors = []
         try:
             graph_provider = await self._get_graph_provider()
-            
+
             # Use graph provider method to get user's connector instances
             documents = await graph_provider.get_user_connector_instances(
                 collection=self._collection_name,
@@ -669,7 +668,7 @@ class ConnectorRegistry:
                 team_scope=ConnectorScope.TEAM.value,
                 personal_scope=ConnectorScope.PERSONAL.value,
             )
-            
+
             for document in documents:
                 doc_type = document.get('type')
                 if doc_type in self._connectors:

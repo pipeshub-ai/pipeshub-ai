@@ -10,11 +10,15 @@ import asyncio
 import unicodedata
 import uuid
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple, Union
-
-from fastapi import Request
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from app.config.configuration_service import ConfigurationService
+
+if TYPE_CHECKING:
+    from fastapi import Request
+
+    from app.services.messaging.interface.producer import IMessagingProducer
+
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
@@ -22,11 +26,10 @@ from app.config.constants.arangodb import (
     DepartmentNames,
     GraphNames,
     OriginTypes,
-    RecordTypes,
     ProgressStatus,
+    RecordTypes,
 )
-from app.schema.arango.graph import EDGE_DEFINITIONS
-from app.config.constants.service import config_node_constants, DefaultEndpoints
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -44,6 +47,7 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
+from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -65,7 +69,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        kafka_service: Optional[Any] = None,
+        kafka_service: Optional["IMessagingProducer"] = None,
     ) -> None:
         """
         Initialize ArangoDB HTTP provider.
@@ -576,31 +580,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
         except Exception as e:
             self.logger.error("❌ Failed to get record by id %s: %s", id, str(e))
-            return None
-
-    async def get_account_type(self, org_id: str) -> Optional[str]:
-        """
-        Get account type for an organization.
-
-        Args:
-            org_id: Organization ID
-
-        Returns:
-            Optional[str]: Account type ('individual' or 'business'), or None
-        """
-        try:
-            query = """
-            FOR org IN organizations
-                FILTER org._key == @org_id
-                RETURN org.accountType
-            """
-            results = await self.execute_query(
-                query,
-                bind_vars={"org_id": org_id},
-            )
-            return results[0] if results else None
-        except Exception as e:
-            self.logger.error("❌ Error getting account type: %s", str(e))
             return None
 
     async def get_connector_stats(
@@ -1229,7 +1208,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         record_id: str,
         user_id: str,
         org_id: str,
-        request: Optional[Any] = None,
+        request: Optional["Request"] = None,
         depth: int = 0,
     ) -> Dict:
         """
@@ -1301,16 +1280,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         }
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
-            
+
             # Get file record for event payload
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if rec.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
-            
+
             # Determine if we should use batch reindex (depth > 0)
             use_batch_reindex = depth != 0
-            
+
             # Reset indexing status to QUEUED before reindexing
             await self._reset_indexing_status_to_queued(record_id)
-            
+
             # Create and publish reindex event
             try:
                 if use_batch_reindex:
@@ -1819,10 +1798,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             f"doc.{field} == @{field}" for field in filters
         ])
 
+        # Build return clause
+        if return_fields:
+            return_clause = "{ " + ", ".join([f'"{field}": doc.{field}' for field in return_fields]) + " }"
+        else:
+            return_clause = "doc"
+
         query = f"""
         FOR doc IN {collection}
             FILTER {filter_conditions}
-            RETURN doc
+            RETURN {return_clause}
         """
 
         try:
@@ -2331,6 +2316,42 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
+            return []
+
+    async def get_documents_by_status(
+        self,
+        collection: str,
+        status: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all documents with a specific indexing status.
+
+        Args:
+            collection (str): Collection name
+            status (str): Status to filter by
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of matching documents
+        """
+        try:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc.indexingStatus == @status
+                RETURN doc
+            """
+
+            bind_vars = {
+                "@collection": collection,
+                "status": status
+            }
+
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return results if results else []
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get documents by status from {collection}: {str(e)}")
             return []
 
     def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
@@ -3505,68 +3526,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get departments failed: {str(e)}")
             return []
 
-    async def find_duplicate_files(
-        self,
-        file_key: str,
-        md5_checksum: str,
-        size_in_bytes: int,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Find duplicate files based on MD5 checksum and file size.
-
-        Args:
-            file_key (str): Key of the file to exclude from results
-            md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[Dict]: List of record documents that match both criteria (excluding the file_key)
-        """
-        try:
-            self.logger.info(
-                f"🔍 Finding duplicate files with MD5: {md5_checksum} and size: {size_in_bytes} bytes"
-            )
-
-            query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @file_key
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        RETURN r
-                )[0]
-                RETURN record
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "file_key": file_key
-                },
-                txn_id=transaction
-            )
-
-            duplicate_records = [r for r in results if r is not None] if results else []
-
-            if duplicate_records:
-                self.logger.info(
-                    f"✅ Found {len(duplicate_records)} duplicate record(s) matching criteria"
-                )
-            else:
-                self.logger.info("✅ No duplicate records found")
-
-            return duplicate_records
-
-        except Exception as e:
-            self.logger.error(f"❌ Find duplicate files failed: {str(e)}")
-            return []
-
     async def update_queued_duplicates_status(
         self,
         record_id: str,
@@ -3700,471 +3659,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"❌ Failed to update queued duplicates status: {str(e)}"
             )
             return -1
-
-    async def copy_document_relationships(
-        self,
-        source_key: str,
-        target_key: str,
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Copy all relationships (edges) from source document to target document.
-        This includes departments, categories, subcategories, languages, and topics.
-
-        Args:
-            source_key (str): Key/ID of the source document
-            target_key (str): Key/ID of the target document
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
-
-            # Define collections to copy relationships from
-            edge_collections = [
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
-                CollectionNames.BELONGS_TO_TOPIC.value
-            ]
-
-            source_doc = f"{CollectionNames.RECORDS.value}/{source_key}"
-            target_doc = f"{CollectionNames.RECORDS.value}/{target_key}"
-
-            for collection in edge_collections:
-                # Find all edges from source document
-                query = f"""
-                FOR edge IN {collection}
-                    FILTER edge._from == @source_doc
-                    RETURN {{
-                        from: edge._from,
-                        to: edge._to,
-                        timestamp: edge.createdAtTimestamp
-                    }}
-                """
-
-                results = await self.http_client.execute_aql(
-                    query,
-                    bind_vars={"source_doc": source_doc},
-                    txn_id=transaction
-                )
-
-                edges = list(results) if results else []
-
-                if edges:
-                    # Create new edges for target document
-                    new_edges = []
-                    for edge in edges:
-                        new_edge = {
-                            "_from": target_doc,
-                            "_to": edge["to"],
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms()
-                        }
-                        new_edges.append(new_edge)
-
-                    # Batch create the new edges
-                    await self.batch_create_edges(new_edges, collection, transaction=transaction)
-                    self.logger.info(
-                        f"✅ Copied {len(new_edges)} relationships from collection {collection}"
-                    )
-
-            self.logger.info(f"✅ Successfully copied all relationships to {target_key}")
-            return True
-
-        except Exception as e:
-            self.logger.error(
-                f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
-            )
-            return False
-
-    async def get_accessible_records(
-        self,
-        user_id: str,
-        org_id: str,
-        filters: Optional[Dict[str, List[str]]] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Get all records accessible to a user based on their permissions and apply filters.
-
-        This is a complex method that traverses permission graphs using AQL.
-        """
-        try:
-            self.logger.info(
-                f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
-            )
-
-            # Extract filters
-            filters = filters or {}
-            kb_ids = filters.get("kb")
-            connector_ids = filters.get("apps")
-
-            # Determine filter case
-            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
-            has_app_filter = connector_ids is not None and len(connector_ids) > 0
-
-            self.logger.info(
-                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
-                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
-            )
-
-            # Build base query - this is a simplified version
-            # The full implementation would need all the complex graph traversal logic
-            # For now, we'll use a basic query structure that can be extended
-            query = f"""
-            LET userDoc = FIRST(
-                FOR user IN @@users
-                FILTER user.userId == @userId
-                RETURN user
-            )
-
-            // User -> Direct Records (via permission edges)
-            LET directRecords = (
-                FOR records IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
-            )
-
-            // User -> Group -> Records (via belongs_to edges)
-            LET groupRecords = (
-                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
-            )
-
-            // User -> Group -> Records (via permission edges)
-            LET groupRecordsPermissionEdge = (
-                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FOR records IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
-            )
-
-            // User -> Organization -> Records (direct)
-            LET orgRecords = (
-                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                RETURN DISTINCT records
-            )
-
-            // User -> Organization -> RecordGroup -> Records (direct and inherited)
-            LET orgRecordGroupRecords = (
-                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                            FILTER IS_SAME_COLLECTION("records", record)
-                            RETURN DISTINCT record
-            )
-
-            // User -> Group/Role -> RecordGroup -> Record
-            LET recordGroupRecords = (
-                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                // Support nested RecordGroups (0..5 levels)
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER IS_SAME_COLLECTION("records", record)
-                RETURN DISTINCT record
-            )
-
-            // User -> Group/Role -> RecordGroup -> Records (inherited)
-            LET inheritedRecordGroupRecords = (
-                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER IS_SAME_COLLECTION("records", record)
-                RETURN DISTINCT record
-            )
-
-            LET directAndGroupRecords = UNION_DISTINCT(
-                directRecords,
-                groupRecords,
-                orgRecords,
-                groupRecordsPermissionEdge,
-                recordGroupRecords,
-                inheritedRecordGroupRecords,
-                orgRecordGroupRecords
-            )
-
-            LET anyoneRecords = (
-                FOR records IN @@anyone
-                    FILTER records.organization == @orgId
-                    FOR record IN @@records
-                        FILTER record != null AND record._key == records.file_key
-                        RETURN record
-            )
-            """
-
-            bind_vars = {
-                "userId": user_id,
-                "orgId": org_id,
-                "@users": CollectionNames.USERS.value,
-                "@records": CollectionNames.RECORDS.value,
-                "@anyone": CollectionNames.ANYONE.value,
-            }
-
-            unions = []
-
-            # Case 1: Both KB and App filters applied
-            if has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 1: Both KB and App filters applied")
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-                query += """
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER record.connectorId IN @connector_ids
-                        RETURN DISTINCT record
-                )
-                """
-                unions.append("appFilteredRecords")
-                bind_vars["connector_ids"] = connector_ids
-
-            # Case 2: Only KB filter applied
-            elif has_kb_filter and not has_app_filter:
-                self.logger.info("🔍 Case 2: Only KB filter applied")
-                query += f"""
-                // Direct user-KB permissions with filter
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions with filter: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                        FILTER kb._key IN @kb_ids
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-                bind_vars["kb_ids"] = kb_ids
-
-            # Case 3: Only App filter applied
-            elif not has_kb_filter and has_app_filter:
-                self.logger.info("🔍 Case 3: Only App filter applied")
-                query += """
-                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
-                LET appFilteredRecords = (
-                    FOR record IN baseAccessible
-                        FILTER record.connectorId IN @connector_ids
-                        RETURN DISTINCT record
-                )
-                """
-                unions.append("appFilteredRecords")
-                bind_vars["connector_ids"] = connector_ids
-
-            # Case 4: No filters applied
-            else:
-                self.logger.info("🔍 Case 4: No filters applied")
-                query += f"""
-                // Direct user-KB permissions
-                LET directKbRecords = (
-                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                // Team-based KB permissions: User -> Team -> KB -> Records
-                LET teamKbRecords = (
-                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("teams", team)
-                        FILTER userTeamEdge.type == "USER"
-                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
-                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
-                        FILTER teamKbEdge.type == "TEAM"
-                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
-                    RETURN DISTINCT records
-                )
-
-                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
-                """
-                unions.append("kbRecords")
-                unions.append("directAndGroupRecords")
-                unions.append("anyoneRecords")
-
-            # Combine all unions
-            if len(unions) == 1:
-                query += f"""
-                LET allAccessibleRecords = {unions[0]}
-                """
-            else:
-                query += f"""
-                LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
-                """
-
-            # Add additional filter conditions (departments, categories, etc.)
-            filter_conditions = []
-            if filters:
-                if filters.get("departments"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
-                        FILTER dept.departmentName IN @departmentNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["departmentNames"] = filters["departments"]
-
-                if filters.get("categories"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER cat.name IN @categoryNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["categoryNames"] = filters["categories"]
-
-                if filters.get("subcategories1"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat1Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["subcat1Names"] = filters["subcategories1"]
-
-                if filters.get("subcategories2"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat2Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["subcat2Names"] = filters["subcategories2"]
-
-                if filters.get("subcategories3"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                        FILTER subcat.name IN @subcat3Names
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["subcat3Names"] = filters["subcategories3"]
-
-                if filters.get("languages"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
-                        FILTER lang.name IN @languageNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["languageNames"] = filters["languages"]
-
-                if filters.get("topics"):
-                    filter_conditions.append(
-                        f"""
-                    LENGTH(
-                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
-                        FILTER topic.name IN @topicNames
-                        LIMIT 1
-                        RETURN 1
-                    ) > 0
-                    """
-                    )
-                    bind_vars["topicNames"] = filters["topics"]
-
-            # Apply additional filters if any
-            if filter_conditions:
-                query += (
-                    """
-                FOR record IN allAccessibleRecords
-                    FILTER """
-                    + " AND ".join(filter_conditions)
-                    + """
-                    RETURN DISTINCT record
-                """
-                )
-            else:
-                query += """
-                RETURN allAccessibleRecords
-                """
-
-            # Execute query
-            self.logger.debug("🔍 Executing get_accessible_records query")
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            # Handle nested results structure
-            if results and isinstance(results, list):
-                if results and isinstance(results[0], list):
-                    # Flatten nested list
-                    records = [record for sublist in results for record in sublist if record]
-                else:
-                    records = [r for r in results if r]
-            else:
-                records = []
-
-            self.logger.info(f"✅ Found {len(records)} accessible records")
-            return records
-
-        except Exception as e:
-            self.logger.error(f"❌ Get accessible records failed: {str(e)}")
-            import traceback
-            self.logger.error(f"Traceback: {traceback.format_exc()}")
-            return []
 
     async def batch_upsert_record_permissions(
         self,
@@ -5944,6 +5438,111 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return []
 
+    async def batch_update_nodes(
+        self,
+        node_ids: List[str],
+        updates: Dict[str, Any],
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch update multiple nodes with the same updates.
+
+        Args:
+            node_ids (List[str]): List of node IDs to update
+            updates (Dict[str, Any]): Dictionary of fields to update
+            collection (str): Collection name
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.logger.info(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
+
+            query = f"""
+            FOR doc IN {collection}
+                FILTER doc._key IN @keys
+                UPDATE doc WITH @updates IN {collection}
+                RETURN NEW
+            """
+
+            bind_vars = {
+                "keys": node_ids,
+                "updates": updates
+            }
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(f"✅ Successfully batch updated {len(results)} nodes")
+                return True
+            else:
+                self.logger.warning("⚠️ No nodes were updated")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
+            return False
+
+    async def count_connector_instances_by_scope(
+        self,
+        collection: str,
+        scope: str,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Count connector instances by scope with access control.
+
+        Args:
+            collection (str): Collection name
+            scope (str): Scope filter (personal/team)
+            user_id (Optional[str]): User ID for access control
+            is_admin (bool): Whether the user is an admin
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            int: Count of connector instances
+        """
+        try:
+            self.logger.info(f"🚀 Counting connector instances for scope {scope}")
+
+            query = f"""
+            FOR doc IN {collection}
+                FILTER doc._id != null
+                FILTER doc.scope == @scope
+                FILTER doc.isConfigured == true
+            """
+
+            bind_vars = {"scope": scope}
+
+            # Add user filter for personal scope
+            if scope == "personal" and user_id:
+                query += " FILTER doc.createdBy == @user_id"
+                bind_vars["user_id"] = user_id
+
+            query += " COLLECT WITH COUNT INTO total RETURN total"
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            count = results[0] if results else 0
+            self.logger.info(f"✅ Found {count} connector instances for scope {scope}")
+            return count
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to count connector instances by scope: {str(e)}")
+            return 0
+
     async def check_connector_name_uniqueness(
         self,
         instance_name: str,
@@ -6025,57 +5624,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Error checking name uniqueness: {str(e)}")
             # On error, allow the operation (fail-open to avoid blocking)
             return True
-
-    async def batch_update_nodes(
-        self,
-        node_ids: List[str],
-        updates: Dict[str, Any],
-        collection: str,
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.info(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._key IN @keys
-                UPDATE doc WITH @updates IN {collection}
-                RETURN NEW
-            """
-
-            bind_vars = {
-                "keys": node_ids,
-                "updates": updates
-            }
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.info(f"✅ Successfully batch updated {len(results)} nodes")
-                return True
-            else:
-                self.logger.warning("⚠️ No nodes were updated")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
-            return False
 
     async def get_connector_instances_with_filters(
         self,
@@ -6170,395 +5718,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get connector instances with filters: {str(e)}")
             return [], 0
-
-    async def count_connector_instances_by_scope(
-        self,
-        collection: str,
-        scope: str,
-        user_id: Optional[str] = None,
-        is_admin: bool = False,
-        transaction: Optional[str] = None
-    ) -> int:
-        """
-        Count connector instances by scope with access control.
-
-        Args:
-            collection (str): Collection name
-            scope (str): Scope filter (personal/team)
-            user_id (Optional[str]): User ID for access control
-            is_admin (bool): Whether the user is an admin
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            int: Count of connector instances
-        """
-        try:
-            self.logger.info(f"🚀 Counting connector instances for scope {scope}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._id != null
-                FILTER doc.scope == @scope
-                FILTER doc.isConfigured == true
-            """
-
-            bind_vars = {"scope": scope}
-
-            # Add user filter for personal scope
-            if scope == "personal" and user_id:
-                query += " FILTER doc.createdBy == @user_id"
-                bind_vars["user_id"] = user_id
-
-            query += " COLLECT WITH COUNT INTO total RETURN total"
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            count = results[0] if results else 0
-            self.logger.info(f"✅ Found {count} connector instances for scope {scope}")
-            return count
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to count connector instances by scope: {str(e)}")
-            return 0
-
-    async def get_connector_instances_by_scope_and_user(
-        self,
-        collection: str,
-        user_id: str,
-        team_scope: str,
-        personal_scope: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """
-        Get connector instances by scope and user (for _get_all_connector_instances).
-
-        Args:
-            collection (str): Collection name
-            user_id (str): User ID
-            team_scope (str): Team scope value
-            personal_scope (str): Personal scope value
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[Dict]: List of connector instance documents
-        """
-        try:
-            self.logger.info(f"🚀 Getting connector instances for user {user_id}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._id != null
-                FILTER (
-                    doc.scope == @team_scope OR
-                    (doc.scope == @personal_scope AND doc.createdBy == @user_id)
-                )
-                RETURN doc
-            """
-
-            bind_vars = {
-                "team_scope": team_scope,
-                "personal_scope": personal_scope,
-                "user_id": user_id,
-            }
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            documents = list(results) if results else []
-            self.logger.info(f"✅ Found {len(documents)} connector instances")
-            return documents
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get connector instances by scope and user: {str(e)}")
-            return []
-
-    async def check_connector_name_uniqueness(
-        self,
-        instance_name: str,
-        scope: str,
-        org_id: str,
-        user_id: str,
-        collection: str,
-        edge_collection: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Check if connector instance name is unique based on scope.
-
-        Args:
-            instance_name (str): Name to check
-            scope (str): Connector scope (personal/team)
-            org_id (str): Organization ID
-            user_id (str): User ID (for personal scope)
-            collection (str): Collection name for connector instances
-            edge_collection (Optional[str]): Edge collection for org-connector relationship (for team scope)
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if name is unique, False if already exists
-        """
-        try:
-            self.logger.info(
-                f"🚀 Checking name uniqueness for '{instance_name}' with scope {scope}"
-            )
-
-            normalized_name = instance_name.strip().lower()
-
-            if scope == "personal":
-                # For personal scope: check uniqueness within user's personal connectors
-                query = f"""
-                FOR doc IN {collection}
-                    FILTER doc.scope == @scope
-                    FILTER doc.createdBy == @user_id
-                    FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                    RETURN doc._key
-                """
-                bind_vars = {
-                    "scope": scope,
-                    "user_id": user_id,
-                    "normalized_name": normalized_name,
-                }
-            else:  # TEAM scope
-                # For team scope: check uniqueness within organization's team connectors
-                query = f"""
-                FOR edge IN {edge_collection}
-                    FILTER edge._from == @org_id
-                    FOR doc IN {collection}
-                        FILTER doc._id == edge._to
-                        FILTER doc.scope == @scope
-                        FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                        RETURN doc._key
-                """
-                bind_vars = {
-                    "org_id": f"{CollectionNames.ORGS.value}/{org_id}",
-                    "scope": scope,
-                    "normalized_name": normalized_name,
-                }
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            existing = list(results) if results else []
-            is_unique = len(existing) == 0
-
-            self.logger.info(
-                f"✅ Name uniqueness check: '{instance_name}' is {'unique' if is_unique else 'not unique'}"
-            )
-            return is_unique
-
-        except Exception as e:
-            self.logger.error(f"❌ Error checking name uniqueness: {str(e)}")
-            # On error, allow the operation (fail-open to avoid blocking)
-            return True
-
-    async def batch_update_nodes(
-        self,
-        node_ids: List[str],
-        updates: Dict[str, Any],
-        collection: str,
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Batch update multiple nodes with the same updates.
-
-        Args:
-            node_ids (List[str]): List of node IDs to update
-            updates (Dict[str, Any]): Dictionary of fields to update
-            collection (str): Collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        try:
-            self.logger.info(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._key IN @keys
-                UPDATE doc WITH @updates IN {collection}
-                RETURN NEW
-            """
-
-            bind_vars = {
-                "keys": node_ids,
-                "updates": updates
-            }
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            if results:
-                self.logger.info(f"✅ Successfully batch updated {len(results)} nodes")
-                return True
-            else:
-                self.logger.warning("⚠️ No nodes were updated")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
-            return False
-
-    async def get_connector_instances_with_filters(
-        self,
-        collection: str,
-        scope: Optional[str] = None,
-        user_id: Optional[str] = None,
-        is_admin: bool = False,
-        search: Optional[str] = None,
-        page: int = 1,
-        limit: int = 20,
-        transaction: Optional[str] = None
-    ) -> Tuple[List[Dict], int]:
-        """
-        Get connector instances with filters, pagination, and access control.
-
-        Args:
-            collection (str): Collection name
-            scope (Optional[str]): Scope filter (personal/team)
-            user_id (Optional[str]): User ID for access control
-            is_admin (bool): Whether the user is an admin
-            search (Optional[str]): Search query
-            page (int): Page number (1-indexed)
-            limit (int): Number of items per page
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Tuple[List[Dict], int]: (List of connector instances, total count)
-        """
-        try:
-            self.logger.info(
-                f"🚀 Getting connector instances with filters: scope={scope}, search={search}, page={page}"
-            )
-
-            # Build base query
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._id != null
-            """
-
-            bind_vars = {}
-
-            # Add scope filter if specified
-            if scope:
-                query += " FILTER doc.scope == @scope"
-                bind_vars["scope"] = scope
-
-            # Add access control
-            if not is_admin:
-                # Non-admins can only see their own connectors
-                query += " FILTER (doc.createdBy == @user_id)"
-                bind_vars["user_id"] = user_id
-            else:
-                # Admins can see all team connectors + their personal connectors
-                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)"
-                bind_vars["team_scope"] = "team"
-                bind_vars["user_id"] = user_id
-
-            # Add search filter if specified
-            if search:
-                query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)"
-                bind_vars["search"] = f"%{search.lower()}%"
-
-            # Get total count
-            count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
-            count_results = await self.http_client.execute_aql(
-                count_query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-            total_count = count_results[0] if count_results else 0
-
-            # Add pagination
-            query += """
-                SORT doc.createdAtTimestamp DESC
-                LIMIT @offset, @limit
-                RETURN doc
-            """
-            bind_vars["offset"] = (page - 1) * limit
-            bind_vars["limit"] = limit
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            documents = list(results) if results else []
-
-            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
-            return documents, total_count
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get connector instances with filters: {str(e)}")
-            return [], 0
-
-    async def count_connector_instances_by_scope(
-        self,
-        collection: str,
-        scope: str,
-        user_id: Optional[str] = None,
-        is_admin: bool = False,
-        transaction: Optional[str] = None
-    ) -> int:
-        """
-        Count connector instances by scope with access control.
-
-        Args:
-            collection (str): Collection name
-            scope (str): Scope filter (personal/team)
-            user_id (Optional[str]): User ID for access control
-            is_admin (bool): Whether the user is an admin
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            int: Count of connector instances
-        """
-        try:
-            self.logger.info(f"🚀 Counting connector instances for scope {scope}")
-
-            query = f"""
-            FOR doc IN {collection}
-                FILTER doc._id != null
-                FILTER doc.scope == @scope
-                FILTER doc.isConfigured == true
-            """
-
-            bind_vars = {"scope": scope}
-
-            # Add user filter for personal scope
-            if scope == "personal" and user_id:
-                query += " FILTER doc.createdBy == @user_id"
-                bind_vars["user_id"] = user_id
-
-            query += " COLLECT WITH COUNT INTO total RETURN total"
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars=bind_vars,
-                txn_id=transaction
-            )
-
-            count = results[0] if results else 0
-            self.logger.info(f"✅ Found {count} connector instances for scope {scope}")
-            return count
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to count connector instances by scope: {str(e)}")
-            return 0
 
     async def get_connector_instances_by_scope_and_user(
         self,
@@ -6783,241 +5942,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update drive sync state failed: {str(e)}")
 
     # ==================== Connector Registry Operations ====================
-
-    async def check_connector_name_exists(
-        self,
-        collection: str,
-        instance_name: str,
-        scope: str,
-        org_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        transaction: Optional[str] = None,
-    ) -> bool:
-        """Check if a connector instance name already exists for the given scope."""
-        try:
-            normalized_name = instance_name.strip().lower()
-
-            if scope == "personal":
-                query = """
-                FOR doc IN @@collection
-                    FILTER doc.scope == @scope
-                    FILTER doc.createdBy == @user_id
-                    FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                    LIMIT 1
-                    RETURN doc._key
-                """
-                bind_vars = {
-                    "@collection": collection,
-                    "scope": scope,
-                    "user_id": user_id,
-                    "normalized_name": normalized_name,
-                }
-            else:  # team scope
-                from app.config.constants.arangodb import CollectionNames
-                query = """
-                FOR edge IN @@edge_collection
-                    FILTER edge._from == @org_id
-                    FOR doc IN @@collection
-                        FILTER doc._id == edge._to
-                        FILTER doc.scope == @scope
-                        FILTER LOWER(TRIM(doc.name)) == @normalized_name
-                        LIMIT 1
-                        RETURN doc._key
-                """
-                bind_vars = {
-                    "@collection": collection,
-                    "@edge_collection": CollectionNames.ORG_APP_RELATION.value,
-                    "org_id": f"{CollectionNames.ORGS.value}/{org_id}",
-                    "scope": scope,
-                    "normalized_name": normalized_name,
-                }
-
-            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            return len(results) > 0
-
-        except Exception as e:
-            self.logger.error(f"Failed to check connector name exists: {e}")
-            return False
-
-    async def batch_update_connector_status(
-        self,
-        collection: str,
-        connector_keys: List[str],
-        is_active: bool,
-        is_agent_active: bool,
-        transaction: Optional[str] = None,
-    ) -> int:
-        """Batch update isActive and isAgentActive status for multiple connectors."""
-        try:
-            if not connector_keys:
-                return 0
-
-            from app.utils.time_conversion import get_epoch_timestamp_in_ms
-            current_timestamp = get_epoch_timestamp_in_ms()
-
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._key IN @keys
-                UPDATE doc WITH {
-                    isActive: @is_active,
-                    isAgentActive: @is_agent_active,
-                    updatedAtTimestamp: @timestamp
-                } IN @@collection
-                RETURN NEW
-            """
-            bind_vars = {
-                "@collection": collection,
-                "keys": connector_keys,
-                "is_active": is_active,
-                "is_agent_active": is_agent_active,
-                "timestamp": current_timestamp,
-            }
-            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            return len(results)
-
-        except Exception as e:
-            self.logger.error(f"Failed to batch update connector status: {e}")
-            return 0
-
-    async def get_user_connector_instances(
-        self,
-        collection: str,
-        user_id: str,
-        org_id: str,
-        team_scope: str,
-        personal_scope: str,
-        transaction: Optional[str] = None,
-    ) -> List[Dict]:
-        """Get all connector instances accessible to a user (personal + team)."""
-        try:
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER (
-                    doc.scope == @team_scope OR
-                    (doc.scope == @personal_scope AND doc.createdBy == @user_id)
-                )
-                RETURN doc
-            """
-            bind_vars = {
-                "@collection": collection,
-                "team_scope": team_scope,
-                "personal_scope": personal_scope,
-                "user_id": user_id,
-            }
-            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
-            return results or []
-
-        except Exception as e:
-            self.logger.error(f"Failed to get user connector instances: {e}")
-            return []
-
-    async def get_filtered_connector_instances(
-        self,
-        collection: str,
-        edge_collection: str,
-        org_id: str,
-        user_id: str,
-        scope: Optional[str] = None,
-        search: Optional[str] = None,
-        skip: int = 0,
-        limit: int = 20,
-        exclude_kb: bool = True,
-        kb_connector_type: Optional[str] = None,
-        is_admin: bool = False,
-        transaction: Optional[str] = None,
-    ) -> Tuple[List[Dict], int, Dict[str, int]]:
-        """Get filtered connector instances with pagination and scope counts."""
-        try:
-            from app.config.constants.arangodb import CollectionNames
-
-            # Build base query
-            query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-            """
-            bind_vars = {
-                "@collection": collection,
-            }
-
-            # Exclude KB if requested
-            if exclude_kb and kb_connector_type:
-                query += " FILTER doc.type != @kb_connector_type\n"
-                bind_vars["kb_connector_type"] = kb_connector_type
-
-            # Scope filter
-            if scope == "personal":
-                query += " FILTER doc.scope == @scope\n"
-                query += " FILTER (doc.createdBy == @user_id)\n"
-                bind_vars["scope"] = scope
-                bind_vars["user_id"] = user_id
-            elif scope == "team":
-                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)\n"
-                bind_vars["team_scope"] = "team"
-                bind_vars["user_id"] = user_id
-
-            # Search filter
-            if search:
-                query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)\n"
-                bind_vars["search"] = f"%{search.lower()}%"
-
-            # Count query
-            count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
-            count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
-            total_count = count_result[0] if count_result else 0
-
-            # Scope counts (personal and team)
-            scope_counts = {"personal": 0, "team": 0}
-
-            # Personal count
-            personal_count_query = """
-            FOR doc IN @@collection
-                FILTER doc._id != null
-                FILTER doc.scope == @personal_scope
-                FILTER doc.createdBy == @user_id
-                FILTER doc.isConfigured == true
-                COLLECT WITH COUNT INTO total
-                RETURN total
-            """
-            personal_bind_vars = {
-                "@collection": collection,
-                "personal_scope": "personal",
-                "user_id": user_id,
-            }
-            personal_result = await self.execute_query(personal_count_query, bind_vars=personal_bind_vars, transaction=transaction)
-            scope_counts["personal"] = personal_result[0] if personal_result else 0
-
-            # Team count (if admin or has team access)
-            if is_admin or scope == "team":
-                team_count_query = """
-                FOR doc IN @@collection
-                    FILTER doc._id != null
-                    FILTER doc.type != @kb_connector_type
-                    FILTER doc.scope == @team_scope
-                    FILTER doc.isConfigured == true
-                    COLLECT WITH COUNT INTO total
-                    RETURN total
-                """
-                team_bind_vars = {
-                    "@collection": collection,
-                    "kb_connector_type": kb_connector_type or "",
-                    "team_scope": "team",
-                }
-                team_result = await self.execute_query(team_count_query, bind_vars=team_bind_vars, transaction=transaction)
-                scope_counts["team"] = team_result[0] if team_result else 0
-
-            # Main query with pagination
-            query += " LIMIT @skip, @limit\n RETURN doc"
-            bind_vars["skip"] = skip
-            bind_vars["limit"] = limit
-
-            documents = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction) or []
-
-            return documents, total_count, scope_counts
-
-        except Exception as e:
-            self.logger.error(f"Failed to get filtered connector instances: {e}")
-            return [], 0, {"personal": 0, "team": 0}
 
     async def store_page_token(
         self,
@@ -9398,7 +8322,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional[Any] = None) -> Dict:
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None) -> Dict:
         """Create reindex event payload"""
         try:
             # Get extension and mimeType from file record
@@ -10062,7 +8986,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
-            user_key = user.get("_key")
             timestamp = get_epoch_timestamp_in_ms()
             processed_updates = {**updates, "updatedAtTimestamp": timestamp}
             if file_metadata:
@@ -10085,15 +9008,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             updated_record = results[0] if results else None
             if not updated_record:
                 return {"success": False, "code": 500, "reason": f"Failed to update record {record_id}"}
-            
+
             # Publish update event (after successful update)
             try:
                 # Get file record for event payload
                 file_record = await self.get_document(record_id, CollectionNames.FILES.value)
-                
+
                 # Determine if content changed (if file metadata provided, content likely changed)
                 content_changed = file_metadata is not None
-                
+
                 update_payload = await self._create_update_record_event_payload(
                     updated_record, file_record, content_changed=content_changed
                 )
@@ -10102,7 +9025,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             except Exception as event_error:
                 self.logger.error(f"❌ Failed to publish update event: {str(event_error)}")
                 # Don't fail the main operation for event publishing errors
-            
+
             return {
                 "success": True,
                 "updatedRecord": updated_record,
@@ -11321,7 +10244,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 except Exception as event_error:
                     self.logger.error(f"❌ Event publishing failed (records still created): {str(event_error)}")
                     # Don't fail the main operation - records were successfully created
-                
+
                 return {
                     "success": True,
                     "message": self._generate_upload_message(result, upload_type),
@@ -14662,399 +13585,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         result = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
         return result if result else []
 
-    async def check_record_access_with_details(
-        self,
-        user_id: str,
-        org_id: str,
-        record_id: str,
-    ) -> Optional[Dict]:
-        """
-        Check record access and return record details if accessible.
-        """
-        try:
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                self.logger.warning(f"User not found for userId: {user_id}")
-                return None
-
-            user_key = user.get("_key")
-            user_apps_ids = await self.get_user_app_ids(user_key)
-            app_record_filter = (
-                'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
-            )
-
-            access_query = f"""
-            LET userDoc = FIRST(
-                FOR user IN @@users
-                FILTER user.userId == @userId
-                RETURN user
-            )
-            LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
-
-            LET kb = FIRST(
-                FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
-                RETURN k
-            )
-            LET directAccessPermissionEdge = (
-                FOR record, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER record._key == @recordId
-                {app_record_filter}
-                RETURN {{
-                    type: 'DIRECT',
-                    source: userDoc,
-                    role: edge.role
-                }}
-            )
-            LET groupAccessPermissionEdge = (
-                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR record, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER record._key == @recordId
-                {app_record_filter}
-                RETURN {{
-                    type: 'GROUP',
-                    source: group,
-                    role: permEdge.role
-                }}
-            )
-            LET recordGroupAccess = (
-                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER groupToRecordGroupEdge.type == 'GROUP' or groupToRecordGroupEdge.type == 'ROLE'
-                FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FILTER record._key == @recordId
-                {app_record_filter}
-                RETURN {{
-                    type: 'RECORD_GROUP',
-                    source: recordGroup,
-                    role: groupToRecordGroupEdge.role
-                }}
-            )
-            LET inheritedRecordGroupAccess = (
-                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                    FILTER groupToRgEdge.type == 'GROUP' or groupToRgEdge.type == 'ROLE'
-                FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                    FILTER record._key == @recordId
-                    {app_record_filter}
-                    RETURN {{
-                        type: 'NESTED_RECORD_GROUP',
-                        source: childRecordGroup,
-                        role: groupToRgEdge.role
-                    }}
-            )
-            LET directUserToRecordGroupAccess = (
-                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                        FILTER record._key == @recordId
-                        FILTER IS_SAME_COLLECTION("records", record)
-                        {app_record_filter}
-                        LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                        RETURN {{
-                            type: 'DIRECT_USER_RECORD_GROUP',
-                            source: recordGroup,
-                            role: userToRgEdge.role,
-                            depth: LENGTH(path.edges)
-                        }}
-            )
-            LET orgAccessPermissionEdge = (
-                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                FILTER record._key == @recordId
-                {app_record_filter}
-                RETURN {{
-                    type: 'ORGANIZATION',
-                    source: org,
-                    role: permEdge.role
-                }}
-            )
-            LET orgRecordGroupAccess = (
-                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                    FILTER belongsEdge.entityType == 'ORGANIZATION'
-                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                        FILTER orgToRgEdge.type == 'ORG'
-                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
-                            FILTER record._key == @recordId
-                            FILTER IS_SAME_COLLECTION("records", record)
-                            {app_record_filter}
-                            LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
-                            RETURN {{
-                                type: 'ORG_RECORD_GROUP',
-                                source: recordGroup,
-                                role: orgToRgEdge.role,
-                                depth: LENGTH(path.edges)
-                            }}
-            )
-            LET kbDirectAccess = kb ? (
-                FOR permEdge IN @@permission
-                    FILTER permEdge._from == userDoc._id AND permEdge._to == kb._id
-                    FILTER permEdge.type == "USER"
-                    LIMIT 1
-                    LET parentFolder = FIRST(
-                        FOR parent, relEdge IN 1..1 INBOUND recordDoc._id @@record_relations
-                            FILTER relEdge.relationshipType == 'PARENT_CHILD'
-                            FILTER PARSE_IDENTIFIER(parent._id).collection == @files
-                            RETURN parent
-                    )
-                    RETURN {{
-                        type: 'KNOWLEDGE_BASE',
-                        source: kb,
-                        role: permEdge.role,
-                        folder: parentFolder
-                    }}
-            ) : []
-            LET kbTeamAccess = kb ? (
-                LET role_priority = {{
-                    "OWNER": 4,
-                    "WRITER": 3,
-                    "READER": 2,
-                    "COMMENTER": 1
-                }}
-                LET team_roles = (
-                    FOR kb_team_perm IN @@permission
-                        FILTER kb_team_perm._to == kb._id
-                        FILTER kb_team_perm.type == "TEAM"
-                        LET team_id = PARSE_IDENTIFIER(kb_team_perm._from).key
-                        FOR user_team_perm IN @@permission
-                            FILTER user_team_perm._from == userDoc._id
-                            FILTER user_team_perm._to == CONCAT('teams/', team_id)
-                            FILTER user_team_perm.type == "USER"
-                            RETURN {{
-                                role: user_team_perm.role,
-                                priority: role_priority[user_team_perm.role]
-                            }}
-                )
-                LET highest_role = LENGTH(team_roles) > 0 ? FIRST(
-                    FOR r IN team_roles
-                        SORT r.priority DESC
-                        LIMIT 1
-                        RETURN r.role
-                ) : null
-                FILTER highest_role != null
-                LET parentFolder = FIRST(
-                    FOR parent, relEdge IN 1..1 INBOUND recordDoc._id @@record_relations
-                        FILTER relEdge.relationshipType == 'PARENT_CHILD'
-                        FILTER PARSE_IDENTIFIER(parent._id).collection == @files
-                        RETURN parent
-                )
-                RETURN {{
-                    type: 'KNOWLEDGE_BASE_TEAM',
-                    source: kb,
-                    role: highest_role,
-                    folder: parentFolder
-                }}
-            ) : []
-            LET kbAccess = UNION_DISTINCT(kbDirectAccess, kbTeamAccess)
-            LET anyoneAccess = (
-                FOR records IN @@anyone
-                FILTER records.organization == @orgId
-                    AND records.file_key == @recordId
-                RETURN {{
-                    type: 'ANYONE',
-                    source: null,
-                    role: records.role
-                }}
-            )
-            LET allAccess = UNION_DISTINCT(
-                directAccessPermissionEdge,
-                recordGroupAccess,
-                groupAccessPermissionEdge,
-                inheritedRecordGroupAccess,
-                directUserToRecordGroupAccess,
-                orgAccessPermissionEdge,
-                orgRecordGroupAccess,
-                kbAccess,
-                anyoneAccess
-            )
-            RETURN LENGTH(allAccess) > 0 ? allAccess : null
-            """
-
-            bind_vars: Dict[str, Any] = {
-                "userId": user_id,
-                "orgId": org_id,
-                "recordId": record_id,
-                "user_apps_ids": user_apps_ids,
-                "@users": CollectionNames.USERS.value,
-                "records": CollectionNames.RECORDS.value,
-                "files": CollectionNames.FILES.value,
-                "@anyone": CollectionNames.ANYONE.value,
-                "@belongs_to": CollectionNames.BELONGS_TO.value,
-                "@permission": CollectionNames.PERMISSION.value,
-                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
-            }
-
-            results = await self.execute_query(access_query, bind_vars=bind_vars)
-            access_result = results[0] if results else None
-
-            if not access_result:
-                return None
-
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-            if not record:
-                return None
-
-            additional_data = None
-            if record.get("recordType") == RecordTypes.FILE.value:
-                additional_data = await self.get_document(
-                    record_id, CollectionNames.FILES.value
-                )
-            elif record.get("recordType") == RecordTypes.MAIL.value:
-                additional_data = await self.get_document(
-                    record_id, CollectionNames.MAILS.value
-                )
-                if additional_data and user:
-                    message_id = record.get("externalRecordId", "")
-                    additional_data["webUrl"] = (
-                        f"https://mail.google.com/mail?authuser={user.get('email', '')}#all/{message_id}"
-                    )
-            elif record.get("recordType") == RecordTypes.TICKET.value:
-                additional_data = await self.get_document(
-                    record_id, CollectionNames.TICKETS.value
-                )
-
-            metadata_query = f"""
-            LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
-
-            LET departments = (
-                FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
-                RETURN {{
-                    id: dept._key,
-                    name: dept.departmentName
-                }}
-            )
-
-            LET categories = (
-                FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                FILTER PARSE_IDENTIFIER(cat._id).collection == '{CollectionNames.CATEGORIES.value}'
-                RETURN {{
-                    id: cat._key,
-                    name: cat.name
-                }}
-            )
-
-            LET subcategories1 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES1.value}'
-                RETURN {{
-                    id: subcat._key,
-                    name: subcat.name
-                }}
-            )
-
-            LET subcategories2 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES2.value}'
-                RETURN {{
-                    id: subcat._key,
-                    name: subcat.name
-                }}
-            )
-
-            LET subcategories3 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
-                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES3.value}'
-                RETURN {{
-                    id: subcat._key,
-                    name: subcat.name
-                }}
-            )
-
-            LET topics = (
-                FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
-                RETURN {{
-                    id: topic._key,
-                    name: topic.name
-                }}
-            )
-
-            LET languages = (
-                FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
-                RETURN {{
-                    id: lang._key,
-                    name: lang.name
-                }}
-            )
-
-            RETURN {{
-                departments: departments,
-                categories: categories,
-                subcategories1: subcategories1,
-                subcategories2: subcategories2,
-                subcategories3: subcategories3,
-                topics: topics,
-                languages: languages
-            }}
-            """
-            metadata_results = await self.execute_query(
-                metadata_query, bind_vars={"recordId": record_id}
-            )
-            metadata_result = metadata_results[0] if metadata_results else None
-
-            kb_info = None
-            folder_info = None
-            for access in access_result:
-                if access.get("type") in ["KNOWLEDGE_BASE", "KNOWLEDGE_BASE_TEAM"]:
-                    kb = access.get("source")
-                    if kb:
-                        kb_info = {
-                            "id": kb.get("_key"),
-                            "name": kb.get("groupName"),
-                            "orgId": kb.get("orgId"),
-                        }
-                    if access.get("folder"):
-                        folder = access["folder"]
-                        folder_info = {
-                            "id": folder.get("_key"),
-                            "name": folder.get("name"),
-                        }
-                    break
-
-            permissions = []
-            for access in access_result:
-                permissions.append({
-                    "id": record.get("_key"),
-                    "name": record.get("recordName"),
-                    "type": record.get("recordType"),
-                    "relationship": access.get("role"),
-                    "accessType": access.get("type"),
-                })
-
-            return {
-                "record": {
-                    **record,
-                    "fileRecord": (
-                        additional_data
-                        if record.get("recordType") == RecordTypes.FILE.value
-                        else None
-                    ),
-                    "mailRecord": (
-                        additional_data
-                        if record.get("recordType") == RecordTypes.MAIL.value
-                        else None
-                    ),
-                    "ticketRecord": (
-                        additional_data
-                        if record.get("recordType") == RecordTypes.TICKET.value
-                        else None
-                    ),
-                },
-                "knowledgeBase": kb_info,
-                "folder": folder_info,
-                "metadata": metadata_result,
-                "permissions": permissions,
-            }
-
-        except Exception as e:
-            self.logger.error(
-                f"Failed to check record access and get details: {str(e)}"
-            )
-            raise
-
     async def get_knowledge_hub_context_permissions(
         self,
         user_key: str,
@@ -15615,48 +14145,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception:
             # self.logger.error(f"Failed to get filter options: {e}")
             return {"kbs": [], "apps": []}
-    async def get_record_by_id(
-        self,
-        record_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """
-        Get a record by its internal ID.
-
-        Args:
-            record_id (str): The internal record ID (_key) to look up
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[Dict]: Record data if found, None otherwise
-        """
-        try:
-            self.logger.info(f"🚀 Retrieving record for id {record_id}")
-
-            query = f"""
-            FOR record IN {CollectionNames.RECORDS.value}
-                FILTER record._key == @id
-                RETURN record
-            """
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"id": record_id},
-                txn_id=transaction
-            )
-
-            if results and len(results) > 0:
-                record_dict = results[0]
-                record_dict = self._translate_node_from_arango(record_dict)
-                self.logger.info(f"✅ Successfully retrieved record for id {record_id}")
-                return record_dict
-            else:
-                self.logger.warning(f"⚠️ No record found for id {record_id}")
-                return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to retrieve record for id {record_id}: {str(e)}")
-            return None
 
     async def check_record_access_with_details(
         self,
@@ -16128,328 +14616,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get account type: {str(e)}")
             return None
 
-    async def get_connector_stats(
-        self,
-        org_id: str,
-        connector_id: str,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Get connector statistics for a specific connector.
-
-        Args:
-            org_id (str): Organization ID
-            connector_id (str): Connector ID
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Statistics data with success status
-        """
-        try:
-            self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
-
-            query = f"""
-            LET org_id = @org_id
-            LET connector = FIRST(
-                FOR doc IN {CollectionNames.APPS.value}
-                    FILTER doc._key == @connector_id
-                    RETURN doc
-            )
-
-            LET records = (
-                FOR doc IN {CollectionNames.RECORDS.value}
-                    FILTER doc.orgId == org_id
-                    FILTER doc.origin == "CONNECTOR"
-                    FILTER doc.connectorId == @connector_id
-                    FILTER doc.recordType != @drive_record_type
-                    FILTER doc.isDeleted != true
-
-                    LET targetDoc = FIRST(
-                        FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
-                            LIMIT 1
-                            RETURN v
-                    )
-
-                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                    RETURN doc
-            )
-
-            LET total_stats = {{
-                total: LENGTH(records),
-                indexingStatus: {{
-                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                }}
-            }}
-
-            LET by_record_type = (
-                FOR record_type IN UNIQUE(records[*].recordType)
-                    FILTER record_type != null
-                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
-                    RETURN {{
-                        recordType: record_type,
-                        total: LENGTH(type_records),
-                        indexingStatus: {{
-                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                        }}
-                    }}
-            )
-
-            RETURN {{
-                orgId: org_id,
-                connectorId: @connector_id,
-                origin: "CONNECTOR",
-                stats: total_stats,
-                byRecordType: by_record_type
-            }}
-            """
-
-            from app.config.constants.arangodb import RecordTypes
-
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={
-                    "org_id": org_id,
-                    "connector_id": connector_id,
-                    "drive_record_type": RecordTypes.DRIVE.value
-                },
-                txn_id=transaction
-            )
-
-            if results and results[0]:
-                self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
-                return {
-                    "success": True,
-                    "data": results[0]
-                }
-            else:
-                self.logger.warning(f"⚠️ No data found for connector: {connector_id}")
-                return {
-                    "success": False,
-                    "message": "No data found for the specified connector",
-                    "data": {
-                        "org_id": org_id,
-                        "connector_id": connector_id,
-                        "origin": "CONNECTOR",
-                        "stats": {
-                            "total": 0,
-                            "indexingStatus": {
-                                "NOT_STARTED": 0,
-                                "IN_PROGRESS": 0,
-                                "COMPLETED": 0,
-                                "FAILED": 0,
-                                "FILE_TYPE_NOT_SUPPORTED": 0,
-                                "AUTO_INDEX_OFF": 0,
-                                "ENABLE_MULTIMODAL_MODELS": 0,
-                                "EMPTY": 0,
-                                "QUEUED": 0,
-                                "PAUSED": 0,
-                            }
-                        },
-                        "byRecordType": []
-                    }
-                }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get connector stats: {str(e)}")
-            return {
-                "success": False,
-                "message": str(e),
-                "data": None
-            }
-
-    async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request, depth: int = 0) -> Dict:
-        """
-        Reindex a single record with permission checks and event publishing.
-        If the record is a folder and depth > 0, also reindex children up to specified depth.
-
-        Args:
-            record_id: Record ID to reindex
-            user_id: External user ID doing the reindex
-            org_id: Organization ID
-            request: FastAPI request object
-            depth: Depth of children to reindex (-1 = unlimited/max 100, other negatives = 0,
-                   0 = only this record, 1 = direct children, etc.)
-        """
-        try:
-            self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
-
-            # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
-            if depth == -1:
-                depth = MAX_REINDEX_DEPTH
-                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
-            elif depth < 0:
-                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (single record only)")
-                depth = 0
-
-            # Get record to determine connector type
-            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
-            if not record:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"Record not found: {record_id}"
-                }
-
-            if record.get("isDeleted"):
-                return {
-                    "success": False,
-                    "code": 400,
-                    "reason": "Cannot reindex deleted record"
-                }
-
-            connector_name = record.get("connectorName", "")
-            connector_id = record.get("connectorId", "")
-            origin = record.get("origin", "")
-
-            self.logger.info(f"📋 Record details - Origin: {origin}, Connector: {connector_name}, ConnectorId: {connector_id}")
-
-            # Get user
-            user = await self.get_user_by_user_id(user_id)
-            if not user:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"User not found: {user_id}"
-                }
-
-            user_key = user.get('_key')
-
-            # Check permissions based on origin type
-            if origin == OriginTypes.UPLOAD.value:
-                # KB record - check KB permissions
-                kb_context = await self._get_kb_context_for_record(record_id)
-                if not kb_context:
-                    return {
-                        "success": False,
-                        "code": 404,
-                        "reason": f"Knowledge base context not found for record {record_id}"
-                    }
-
-                user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key)
-                if user_role not in ["OWNER", "WRITER", "READER"]:
-                    return {
-                        "success": False,
-                        "code": 403,
-                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
-                    }
-
-                connector_type = Connectors.KNOWLEDGE_BASE.value
-
-
-            elif origin == OriginTypes.CONNECTOR.value:
-                # Connector record - check connector-specific permissions
-                # Note: _check_record_permissions is not implemented in graph providers
-                # For now, we'll allow the operation and return basic info
-                user_role = "READER"  # Default role for validation
-
-                connector_type = connector_name
-            else:
-                return {
-                    "success": False,
-                    "code": 400,
-                    "reason": f"Unsupported record origin: {origin}"
-                }
-
-            # Note: Graph providers don't implement event publishing
-            # This is a simplified version that validates the record and returns info
-            # The actual event publishing would be handled by the connector service layer
-            
-            self.logger.info(f"✅ Record {record_id} validated for reindexing")
-            return {
-                "success": True,
-                "recordId": record_id,
-                "recordName": record.get("recordName"),
-                "connector": connector_type,
-                "eventPublished": False,  # Graph providers don't publish events
-                "userRole": user_role
-            }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": f"Internal error: {str(e)}"
-            }
-
-    async def reindex_record_group_records(
-        self,
-        record_group_id: str,
-        user_id: str,
-        depth: int = 1,
-        transaction: Optional[str] = None
-    ) -> Dict:
-        """
-        Reindex all records in a record group.
-
-        Args:
-            record_group_id (str): Record group ID
-            user_id (str): User ID performing the reindex
-            depth (int): Depth of children to reindex
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Dict: Result with success status
-        """
-        try:
-            self.logger.info(f"🚀 Reindexing record group {record_group_id} with depth {depth}")
-
-            # Get record group
-            record_group = await self.get_document(record_group_id, CollectionNames.RECORD_GROUPS.value)
-            if not record_group:
-                return {
-                    "success": False,
-                    "code": 404,
-                    "reason": f"Record group not found: {record_group_id}"
-                }
-
-            connector_id = record_group.get("connectorId", "")
-            connector_name = record_group.get("connectorName", "")
-
-            if not connector_id or not connector_name:
-                return {
-                    "success": False,
-                    "code": 400,
-                    "reason": "Record group does not have a connector id or name"
-                }
-
-            # For now, return success - actual reindexing logic would be handled by event service
-            # This method is mainly for validation and returning connector info
-            self.logger.info(f"✅ Record group {record_group_id} validated for reindexing")
-            return {
-                "success": True,
-                "code": 200,
-                "record_group_id": record_group_id,
-                "connector_id": connector_id,
-                "connector_name": connector_name
-            }
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record group: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": str(e)
-            }
-
     # ========================================================================
     # Move Record API Methods
     # ========================================================================
@@ -16740,4 +14906,618 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Failed to check if record is folder: {e}")
             return False
+
+    # ==================== Duplicate Detection & Relationship Management ====================
+
+    async def find_duplicate_files(
+        self,
+        file_key: str,
+        md5_checksum: str,
+        size_in_bytes: int,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Find duplicate files based on MD5 checksum and file size.
+
+        This method works for all record types despite the name "files" for backward compatibility.
+
+        Args:
+            file_key: Key of the file to exclude from results
+            md5_checksum: MD5 checksum of the file
+            size_in_bytes: Size of the file in bytes
+            transaction: Optional transaction ID
+
+        Returns:
+            List of record documents that match both criteria (excluding the file_key)
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding duplicate files with MD5: {md5_checksum} and size: {size_in_bytes} bytes"
+            )
+
+            query = f"""
+            FOR file IN {CollectionNames.FILES.value}
+                FILTER file.md5Checksum == @md5_checksum
+                AND file.sizeInBytes == @size_in_bytes
+                AND file._key != @file_key
+                LET record = (
+                    FOR r IN {CollectionNames.RECORDS.value}
+                        FILTER r._key == file._key
+                        RETURN r
+                )[0]
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "md5_checksum": md5_checksum,
+                    "size_in_bytes": size_in_bytes,
+                    "file_key": file_key
+                },
+                txn_id=transaction
+            )
+
+            duplicate_records = [r for r in results if r is not None] if results else []
+
+            if duplicate_records:
+                self.logger.info(
+                    f"✅ Found {len(duplicate_records)} duplicate record(s) matching criteria"
+                )
+            else:
+                self.logger.info("✅ No duplicate records found")
+
+            return duplicate_records
+
+        except Exception as e:
+            self.logger.error(f"❌ Find duplicate files failed: {str(e)}")
+            return []
+
+    async def copy_document_relationships(
+        self,
+        source_key: str,
+        target_key: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Copy all relationships (edges) from source document to target document.
+        This includes departments, categories, subcategories, languages, and topics.
+
+        Args:
+            source_key: Key/ID of the source document
+            target_key: Key/ID of the target document
+            transaction: Optional transaction ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
+
+            # Define collections to copy relationships from
+            edge_collections = [
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value
+            ]
+
+            source_doc = f"{CollectionNames.RECORDS.value}/{source_key}"
+            target_doc = f"{CollectionNames.RECORDS.value}/{target_key}"
+
+            for collection in edge_collections:
+                # Find all edges from source document
+                query = f"""
+                FOR edge IN {collection}
+                    FILTER edge._from == @source_doc
+                    RETURN {{
+                        from: edge._from,
+                        to: edge._to,
+                        timestamp: edge.createdAtTimestamp
+                    }}
+                """
+
+                bind_vars = {"source_doc": source_doc}
+                edges = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+
+                if edges:
+                    # Create new edges for target document
+                    for edge in edges:
+                        new_edge = {
+                            "_from": target_doc,
+                            "_to": edge["to"],
+                            "createdAtTimestamp": edge.get("timestamp", get_epoch_timestamp_in_ms())
+                        }
+                        await self.http_client.create_document(
+                            collection,
+                            new_edge,
+                            txn_id=transaction
+                        )
+
+                    self.logger.info(
+                        f"✅ Copied {len(edges)} edges from {collection}"
+                    )
+
+            self.logger.info(f"✅ Successfully copied all relationships from {source_key} to {target_key}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to copy document relationships: {str(e)}"
+            )
+            return False
+
+    async def _get_user_app_ids(self, user_id: str) -> List[str]:
+        """Gets a list of accessible app connector IDs for a user."""
+        try:
+            query = f"""
+            FOR app IN OUTBOUND
+                '{CollectionNames.USERS.value}/{user_id}'
+                {CollectionNames.USER_APP_RELATION.value}
+            RETURN app
+            """
+            user_app_docs = await self.execute_query(query)
+            # Filter out None values and apps without _key before accessing _key
+            user_apps = [app['_key'] for app in (user_app_docs or []) if app and app.get('_key')]
+            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
+            return user_apps
+        except Exception as e:
+            self.logger.error(f"Failed to get user app ids: {str(e)}")
+            raise
+
+    async def get_accessible_records(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: Optional[Dict[str, List[str]]] = None,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all records accessible to a user based on their permissions and apply filters.
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of accessible records
+        """
+        self.logger.info(
+            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
+        )
+
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return []
+
+            user_key = user.get('_key')
+            # Get user's accessible app connector ids
+            user_apps_ids = await self._get_user_app_ids(user_key)
+
+            # Extract filters
+            filters = filters or {}
+            kb_ids = filters.get("kb") if filters else None
+            connector_ids = filters.get("apps") if filters else None
+
+            # Determine filter case
+            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
+            has_app_filter = connector_ids is not None and len(connector_ids) > 0
+
+            self.logger.info(
+                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
+                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
+            )
+
+            # App filter condition - only filter connector records by user's accessible apps
+            app_filter_condition = '''
+                FILTER (
+                    record.origin == "UPLOAD" OR
+                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps_ids)
+                )
+            '''
+
+            # Build base query with common parts
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+
+            // User -> Direct Records (via permission edges)
+            LET directRecords = (
+                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Group -> Records (via belongs_to edges)
+            LET groupRecords = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Group -> Records (via permission edges)
+            LET groupRecordsPermissionEdge = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Organization -> Records (direct)
+            LET orgRecords = (
+                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Organization -> RecordGroup -> Records (direct and inherited)
+            LET orgRecordGroupRecords = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            {app_filter_condition}
+                            RETURN DISTINCT record
+            )
+
+            // User -> Group/Role -> RecordGroup -> Record
+            LET recordGroupRecords = (
+
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+
+                // Support nested RecordGroups (0..5 levels)
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
+                RETURN DISTINCT record
+            )
+
+            // User -> Group/Role -> RecordGroup -> Records (inherited)
+            LET inheritedRecordGroupRecords = (
+                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
+                RETURN DISTINCT record
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(
+                directRecords,
+                groupRecords,
+                orgRecords,
+                groupRecordsPermissionEdge,
+                recordGroupRecords,
+                inheritedRecordGroupRecords,
+                orgRecordGroupRecords
+            )
+
+            LET anyoneRecords = (
+                FOR records IN @@anyone
+                    FILTER records.organization == @orgId
+                    FOR record IN @@records
+                        FILTER record != null AND record._key == records.file_key
+                        {app_filter_condition}
+                        RETURN record
+            )
+            """
+
+            unions = []
+
+            # Case 1: Both KB and App filters applied
+            if has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 1: Both KB and App filters applied")
+
+                # Get KB records with filter
+                query += f"""
+                // Direct user-KB permissions
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+                """
+                unions.append("kbRecords")
+
+                # Get app-filtered records from direct, group, org, and anyone
+                query += """
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER record.connectorId IN @connector_ids
+                        RETURN DISTINCT record
+                )
+                """
+                unions.append("appFilteredRecords")
+
+            # Case 2: Only KB filter applied
+            elif has_kb_filter and not has_app_filter:
+                self.logger.info("🔍 Case 2: Only KB filter applied")
+
+                # Get only filtered KB records
+                query += f"""
+                // Direct user-KB permissions with filter
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                // Team-based KB permissions with filter: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+                """
+                unions.append("kbRecords")
+
+            # Case 3: Only App filter applied
+            elif not has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 3: Only App filter applied")
+
+                # Get app-filtered records from direct, group, org, and anyone
+                query += """
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER record.connectorId IN @connector_ids
+                        RETURN DISTINCT record
+                )
+                """
+                unions.append("appFilteredRecords")
+
+            # Case 4: No KB or App filters - return all accessible records
+            else:
+                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
+
+                # Get all KB records
+                query += f"""
+                // Direct user-KB permissions
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+
+                """
+                unions.append("kbRecords")
+                unions.append("directAndGroupRecords")
+                unions.append("anyoneRecords")
+
+            # Combine all unions
+            if len(unions) == 1:
+                query += f"""
+                LET allAccessibleRecords = {unions[0]}
+                """
+            else:
+                query += f"""
+                LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
+                """
+
+            # Add additional filter conditions (departments, categories, etc.)
+            filter_conditions = []
+            if filters:
+                if filters.get("departments"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                        FILTER dept.departmentName IN @departmentNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("categories"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER cat.name IN @categoryNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories1"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat1Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories2"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat2Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories3"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat3Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("languages"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                        FILTER lang.name IN @languageNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("topics"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                        FILTER topic.name IN @topicNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+            # Apply additional filters if any
+            if filter_conditions:
+                query += (
+                    """
+                FOR record IN allAccessibleRecords
+                    FILTER """
+                    + " AND ".join(filter_conditions)
+                    + """
+                    RETURN DISTINCT record
+                """
+                )
+            else:
+                query += """
+                RETURN allAccessibleRecords
+                """
+
+            # Prepare bind variables
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "user_apps_ids": user_apps_ids,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            # Add conditional bind variables
+            if has_kb_filter:
+                bind_vars["kb_ids"] = kb_ids
+
+            if has_app_filter:
+                bind_vars["connector_ids"] = connector_ids
+
+            # Add filter bind variables
+            if filters:
+                if filters.get("departments"):
+                    bind_vars["departmentNames"] = filters["departments"]
+                if filters.get("categories"):
+                    bind_vars["categoryNames"] = filters["categories"]
+                if filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = filters["subcategories1"]
+                if filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = filters["subcategories2"]
+                if filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = filters["subcategories3"]
+                if filters.get("languages"):
+                    bind_vars["languageNames"] = filters["languages"]
+                if filters.get("topics"):
+                    bind_vars["topicNames"] = filters["topics"]
+
+            # Execute query
+            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
+            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+
+            # Log results
+            record_count = 0
+            if result:
+                if isinstance(result[0], list):
+                    record_count = len(result[0])
+                    result = result[0]
+                else:
+                    record_count = len(result)
+
+            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
+
+            if has_kb_filter:
+                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
+            if has_app_filter:
+                self.logger.info(
+                    f"✅ App filtering applied for {len(connector_ids)} connector IDs"
+                )
+            if not has_kb_filter and not has_app_filter:
+                self.logger.info("✅ No KB/App filters - returned all accessible records")
+
+            return result if result else []
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
+            raise
 

@@ -12,10 +12,10 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType
 from app.config.constants.service import config_node_constants
 from app.containers.query import QueryAppContainer
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import get_generator_model
 from app.utils.cache_helpers import get_cached_user_info
 from app.utils.chat_helpers import get_flattened_results, get_message_content
@@ -297,7 +297,7 @@ async def process_chat_query_with_status(
     if yield_status:
         await yield_status("status", {"status": "processing", "message": "Processing search results..."})
 
-    blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=await get_graph_provider(request))
+    blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
 
     virtual_record_id_to_result = {}
     flattened_results = await get_flattened_results(
@@ -571,7 +571,7 @@ async def askAIStream(
 
                 yield create_sse_event("status", {"status": "processing", "message": "Processing search results..."})
 
-                blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=await get_graph_provider(request))
+                blob_store = BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider)
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(

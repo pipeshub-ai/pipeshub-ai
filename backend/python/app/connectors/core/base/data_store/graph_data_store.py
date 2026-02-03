@@ -599,7 +599,10 @@ class GraphTransactionStore(TransactionStore):
     ) -> List[Dict]:
         """Get nodes from a collection matching multiple field filters."""
         return await self.graph_provider.get_nodes_by_filters(
-            collection, filters, return_fields, transaction=self.txn
+            collection=collection,
+            filters=filters,
+            return_fields=return_fields,
+            transaction=self.txn
         )
 
 
