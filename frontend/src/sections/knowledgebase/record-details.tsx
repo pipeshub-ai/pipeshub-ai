@@ -991,7 +991,7 @@ export default function RecordDetails() {
                               overflow: 'auto',
                             }}
                           >
-                            {record._key}
+                            {record.id}
                           </Typography>
                         </Box>
                       </Stack>
