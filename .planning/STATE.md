@@ -10,7 +10,7 @@
 **Milestone:** 1 of 1 — Multi-Domain SSO Support ✓ COMPLETE
 **Phase:** 3 of 3 — Validation & Integration ✓ COMPLETE
 **Status:** Milestone Complete
-**Last activity:** 2026-02-02 — Manual verification passed, milestone complete
+**Last activity:** 2026-02-03 — Fixed API path for directSsoConfig endpoint (quick-003)
 
 ```
 Progress: [██████████] 100%
@@ -32,6 +32,9 @@ Progress: [██████████] 100%
 | Mock database, use real utility functions in tests | Isolates external dependencies while testing actual parsing logic with crafted inputs | 2026-02-01 |
 | Tenant ID fallback in initAuth | Show Microsoft SSO button even for unknown domains; let tenant ID matching handle org resolution | 2026-02-02 |
 | Auto-sync tenantId on config save | Eliminates manual DB updates when admin saves Microsoft auth config | 2026-02-02 |
+| skipEmailScreen defaults to false | Ensures backward compatibility; admins must explicitly enable direct SSO | 2026-02-03 |
+| Direct SSO config endpoint | GET /api/v1/auth/directSsoConfig checks for skipEmailScreen on unauthenticated page load | 2026-02-03 |
+| Defensive navigation pattern | Check current path before navigating to prevent re-render loops | 2026-02-02 |
 
 ## Pending Todos
 
@@ -41,12 +44,20 @@ None.
 
 None.
 
+## Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 001 | Skip email screen for direct Microsoft SSO | 2026-02-03 | 65d87f9d | [001-skip-email-screen-direct-microsoft-sso](./quick/001-skip-email-screen-direct-microsoft-sso/) |
+| 002 | Fix skip email screen navigation loop bug | 2026-02-02 | 82d7c5ce | [002-fix-skip-email-screen-not-working-for-di](./quick/002-fix-skip-email-screen-not-working-for-di/) |
+| 003 | Fix API path for directSsoConfig endpoint | 2026-02-03 | 099fd12c | [003-skip-email-entry-screen-and-show-microso](./quick/003-skip-email-entry-screen-and-show-microso/) |
+
 ## Session Continuity
 
-**Last session:** 2026-02-02
-**Stopped at:** Milestone complete - all phases verified
+**Last session:** 2026-02-03
+**Stopped at:** Quick task 003 complete - fixed API path for directSsoConfig endpoint
 **Resume file:** None
-**Next:** Create PR for merge to main
+**Next:** Deploy frontend and verify skip email screen feature works
 
 ---
 *Auto-updated by GSD workflow*

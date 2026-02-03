@@ -243,6 +243,21 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
+
+  router.get(
+    '/directSsoConfig',
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
+        await userAccountController.getDirectSsoConfig(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   // router.post('/setup', resetViaLinkValidator, userAccountSetup);
   return router;
 }

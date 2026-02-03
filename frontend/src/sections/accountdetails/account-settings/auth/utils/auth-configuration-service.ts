@@ -16,6 +16,7 @@ export interface MicrosoftAuthConfig {
   clientId: string;
   tenantId: string;
   enableJit?: boolean;
+  skipEmailScreen?: boolean;
 }
 
 export interface SamlSsoConfig {
@@ -77,6 +78,16 @@ export const getAzureAuthConfig = async (): Promise<AzureAuthConfig> => {
 export const getMicrosoftAuthConfig = async (): Promise<MicrosoftAuthConfig> => {
   try {
     const response = await axios.get(`${API_BASE_URL}/microsoft`);
+
+    // Debug logging to verify what we're receiving
+    console.log('[Auth Config] Loaded Microsoft config:', {
+      hasClientId: !!response.data.clientId,
+      hasTenantId: !!response.data.tenantId,
+      enableJit: response.data.enableJit,
+      skipEmailScreen: response.data.skipEmailScreen,
+      skipEmailScreenType: typeof response.data.skipEmailScreen,
+    });
+
     return response.data;
   } catch (error) {
     console.error('Failed to fetch Microsoft auth configuration:', error);
@@ -151,6 +162,15 @@ export const updateAzureAuthConfig = async (azureConfig: AzureAuthConfig): Promi
  */
 export const updateMicrosoftAuthConfig = async (microsoftConfig: MicrosoftAuthConfig): Promise<any> => {
   try {
+    // Debug logging to verify what we're sending
+    console.log('[Auth Config] Saving Microsoft config:', {
+      hasClientId: !!microsoftConfig.clientId,
+      hasTenantId: !!microsoftConfig.tenantId,
+      enableJit: microsoftConfig.enableJit,
+      skipEmailScreen: microsoftConfig.skipEmailScreen,
+      skipEmailScreenType: typeof microsoftConfig.skipEmailScreen,
+    });
+
     const response = await axios.post(`${API_BASE_URL}/microsoft`, microsoftConfig);
     return response.data;
   } catch (error) {

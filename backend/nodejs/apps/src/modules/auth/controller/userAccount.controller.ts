@@ -1862,4 +1862,62 @@ export class UserAccountController {
       next(error);
     }
   }
+
+  async getDirectSsoConfig(
+    _req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      // Find any org with Microsoft auth configured
+      const orgAuthConfig = await OrgAuthConfig.findOne({
+        isDeleted: false,
+        'authSteps.allowedMethods.type': 'microsoft',
+      });
+
+      if (!orgAuthConfig) {
+        this.logger.debug('getDirectSsoConfig: No org with Microsoft auth found');
+        res.json({ skipEmailScreen: false });
+        return;
+      }
+
+      this.logger.debug('getDirectSsoConfig: Found org with Microsoft auth', { orgId: orgAuthConfig.orgId });
+
+      // Get Microsoft config
+      const newUser = { orgId: orgAuthConfig.orgId, email: '' };
+      const configManagerResponse = await this.configurationManagerService.getConfig(
+        this.config.cmBackend,
+        MICROSOFT_AUTH_CONFIG_PATH,
+        newUser,
+        this.config.scopedJwtSecret,
+      );
+
+      this.logger.debug('getDirectSsoConfig: Config manager response', {
+        hasData: !!configManagerResponse.data,
+        skipEmailScreen: configManagerResponse.data?.skipEmailScreen,
+        hasClientId: !!configManagerResponse.data?.clientId,
+        hasTenantId: !!configManagerResponse.data?.tenantId,
+      });
+
+      if (configManagerResponse.data?.skipEmailScreen) {
+        this.logger.info('getDirectSsoConfig: Returning direct SSO config (skipEmailScreen=true)');
+        res.json({
+          skipEmailScreen: true,
+          microsoft: {
+            clientId: configManagerResponse.data.clientId,
+            tenantId: configManagerResponse.data.tenantId,
+            authority: configManagerResponse.data.authority,
+          },
+        });
+      } else {
+        this.logger.info('getDirectSsoConfig: Returning skipEmailScreen=false', {
+          skipEmailScreenValue: configManagerResponse.data?.skipEmailScreen,
+        });
+        res.json({ skipEmailScreen: false });
+      }
+    } catch (error) {
+      this.logger.error('getDirectSsoConfig: Error', { error });
+      next(error);
+    }
+  }
 }

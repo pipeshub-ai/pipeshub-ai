@@ -518,7 +518,7 @@ export const setAzureAdAuthConfig =
 
 export const getMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
@@ -533,8 +533,20 @@ export const getMicrosoftAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
+
+        // Debug logging
+        logger.info('getMicrosoftAuthConfig: Retrieved config', {
+          orgId: req.user?.orgId,
+          hasClientId: !!authConfig.clientId,
+          hasTenantId: !!authConfig.tenantId,
+          enableJit: authConfig.enableJit,
+          skipEmailScreen: authConfig.skipEmailScreen,
+          skipEmailScreenType: typeof authConfig.skipEmailScreen,
+        });
+
         res.status(200).json(authConfig).end();
       } else {
+        logger.info('getMicrosoftAuthConfig: No config found', { orgId: req.user?.orgId });
         res.status(200).json({}).end();
       }
     } catch (error: any) {
@@ -549,13 +561,32 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, tenantId, enableJit } = req.body;
+      const { clientId, tenantId, enableJit, skipEmailScreen } = req.body;
       const authority = `https://login.microsoftonline.com/${tenantId}`;
+
+      // Debug logging for skipEmailScreen save
+      logger.info('setMicrosoftAuthConfig: Saving config', {
+        orgId: req.user?.orgId,
+        hasClientId: !!clientId,
+        hasTenantId: !!tenantId,
+        enableJit: enableJit ?? true,
+        skipEmailScreen: skipEmailScreen ?? false,
+        skipEmailScreenRaw: skipEmailScreen,
+        skipEmailScreenType: typeof skipEmailScreen,
+      });
+
+      const configToEncrypt = {
+        clientId,
+        tenantId,
+        authority,
+        enableJit: enableJit ?? true,
+        skipEmailScreen: skipEmailScreen ?? false
+      };
 
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
+      ).encrypt(JSON.stringify(configToEncrypt));
 
       await keyValueStoreService.set<string>(
         configPaths.auth.microsoft,

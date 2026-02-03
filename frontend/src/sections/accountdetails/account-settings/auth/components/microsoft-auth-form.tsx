@@ -79,6 +79,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
       redirectUri:
         redirectUris?.recommendedRedirectUri || `${window.location.origin}/auth/microsoft/callback`,
       enableJit: true,
+      skipEmailScreen: false,
     });
 
     const [errors, setErrors] = useState({
@@ -143,6 +144,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
             clientId: config?.clientId || '',
             tenantId: config?.tenantId || '',
             enableJit: config?.enableJit ?? true,
+            skipEmailScreen: config?.skipEmailScreen ?? false,
           });
         } catch (error) {
           console.error('Failed to load Microsoft authentication configuration:', error);
@@ -207,6 +209,7 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
           clientId: formData.clientId,
           tenantId: formData.tenantId,
           enableJit: formData.enableJit,
+          skipEmailScreen: formData.skipEmailScreen,
         });
 
         showSuccessSnackbar('Microsoft authentication configuration saved successfully');
@@ -386,6 +389,39 @@ const MicrosoftAuthForm = forwardRef<MicrosoftAuthFormRef, MicrosoftAuthFormProp
                         <Typography variant="caption" color="text.secondary">
                           Automatically create user accounts when they sign in with Microsoft for the
                           first time
+                        </Typography>
+                      </Box>
+                    }
+                    sx={{ alignItems: 'flex-start', ml: 0 }}
+                  />
+                </Box>
+              </Grid>
+
+              <Grid item xs={12}>
+                <Box
+                  sx={{
+                    p: 2,
+                    borderRadius: 1,
+                    bgcolor: alpha(theme.palette.warning.main, 0.04),
+                    border: `1px solid ${alpha(theme.palette.warning.main, 0.15)}`,
+                  }}
+                >
+                  <FormControlLabel
+                    control={
+                      <Switch
+                        checked={formData.skipEmailScreen}
+                        onChange={(e) =>
+                          setFormData((prev) => ({ ...prev, skipEmailScreen: e.target.checked }))
+                        }
+                        color="warning"
+                      />
+                    }
+                    label={
+                      <Box>
+                        <Typography variant="subtitle2">Skip Email Entry Screen</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Users will be taken directly to Microsoft sign-in without entering their email first.
+                          Recommended for organizations using Microsoft as the only sign-in method.
                         </Typography>
                       </Box>
                     }
