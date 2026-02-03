@@ -59,22 +59,22 @@ Deferred to future release.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TEAM-01 | TBD | Pending |
-| TEAM-02 | TBD | Pending |
-| MEMB-01 | TBD | Pending |
-| MEMB-02 | TBD | Pending |
-| MEMB-03 | TBD | Pending |
-| MEMB-04 | TBD | Pending |
-| RELY-01 | TBD | Pending |
-| RELY-02 | TBD | Pending |
-| RELY-03 | TBD | Pending |
-| RELY-04 | TBD | Pending |
+| TEAM-01 | Phase 1: Team Foundation | Pending |
+| TEAM-02 | Phase 1: Team Foundation | Pending |
+| MEMB-01 | Phase 2: Membership Automation | Pending |
+| MEMB-02 | Phase 2: Membership Automation | Pending |
+| MEMB-03 | Phase 2: Membership Automation | Pending |
+| MEMB-04 | Phase 2: Membership Automation | Pending |
+| RELY-01 | Phase 3: Reliability & Resilience | Pending |
+| RELY-02 | Phase 3: Reliability & Resilience | Pending |
+| RELY-03 | Phase 3: Reliability & Resilience | Pending |
+| RELY-04 | Phase 3: Reliability & Resilience | Pending |
 
 **Coverage:**
 - v1 requirements: 10 total
-- Mapped to phases: 0
-- Unmapped: 10 ⚠️
+- Mapped to phases: 10
+- Unmapped: 0
 
 ---
 *Requirements defined: 2026-02-04*
-*Last updated: 2026-02-04 after initial definition*
+*Last updated: 2026-02-04 after roadmap creation*
