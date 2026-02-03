@@ -83,17 +83,19 @@ class ConnectorAppContainer(BaseAppContainer):
 
     # Graph Database Provider via Factory (HTTP mode - fully async)
     @staticmethod
-    async def _create_graphDB_provider(logger, config_service) -> IGraphDBProvider:
+    async def _create_graphDB_provider(logger, config_service, kafka_service) -> IGraphDBProvider:
         """Async factory to create graph database provider"""
         return await GraphDBProviderFactory.create_provider(
             logger=logger,
             config_service=config_service,
+            kafka_service=kafka_service,
         )
 
     graph_provider = providers.Resource(
         _create_graphDB_provider,
         logger=logger,
         config_service=config_service,
+        kafka_service=kafka_service,
     )
 
     # Graph Data Store - Transaction-based data access layer

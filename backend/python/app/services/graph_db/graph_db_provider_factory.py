@@ -40,6 +40,7 @@ class GraphDBProviderFactory:
     async def create_provider(
         logger: Logger,
         config_service: ConfigurationService,
+        kafka_service=None,
     ) -> IGraphDBProvider:
         """
         Create and initialize a graph database provider.
@@ -51,6 +52,7 @@ class GraphDBProviderFactory:
         Args:
             logger: Logger instance for logging operations
             config_service: Configuration service for database credentials
+            kafka_service: Optional Kafka service for event publishing
 
         Returns:
             IGraphDBProvider: Connected database provider instance
@@ -68,6 +70,7 @@ class GraphDBProviderFactory:
             provider = await GraphDBProviderFactory.create_provider(
                 logger=logger,
                 config_service=config_service,
+                kafka_service=kafka_service,
             )
 
             # Use provider
@@ -85,7 +88,8 @@ class GraphDBProviderFactory:
             if provider_type == "arangodb":
                 provider = await GraphDBProviderFactory._create_arango_http_provider(
                     logger=logger,
-                    config_service=config_service
+                    config_service=config_service,
+                    kafka_service=kafka_service
                 )
                 return provider
 
@@ -93,7 +97,8 @@ class GraphDBProviderFactory:
             elif provider_type == "neo4j":
                 provider = await GraphDBProviderFactory._create_neo4j_provider(
                     logger=logger,
-                    config_service=config_service
+                    config_service=config_service,
+                    kafka_service=kafka_service
                 )
                 return provider
 
@@ -108,6 +113,7 @@ class GraphDBProviderFactory:
     async def _create_arango_http_provider(
         logger: Logger,
         config_service: ConfigurationService,
+        kafka_service=None,
     ) -> ArangoHTTPProvider:
         """
         Create and connect an ArangoDB HTTP provider (fully async).
@@ -118,6 +124,7 @@ class GraphDBProviderFactory:
         Args:
             logger: Logger instance
             config_service: Configuration service
+            kafka_service: Optional Kafka service for event publishing
 
         Returns:
             ArangoHTTPProvider: Connected ArangoDB HTTP provider
@@ -129,7 +136,8 @@ class GraphDBProviderFactory:
             logger.debug("🔧 Creating ArangoDB HTTP provider...")
             provider = ArangoHTTPProvider(
                 logger=logger,
-                config_service=config_service
+                config_service=config_service,
+                kafka_service=kafka_service
             )
             logger.debug("🔌 Connecting ArangoDB HTTP provider...")
             connected = await provider.connect()
@@ -147,6 +155,7 @@ class GraphDBProviderFactory:
     async def _create_neo4j_provider(
         logger: Logger,
         config_service: ConfigurationService,
+        kafka_service=None,
     ) -> Neo4jProvider:
         """
         Create and connect a Neo4j provider.
@@ -154,6 +163,7 @@ class GraphDBProviderFactory:
         Args:
             logger: Logger instance
             config_service: Configuration service
+            kafka_service: Optional Kafka service for event publishing
 
         Returns:
             Neo4jProvider: Connected Neo4j provider
@@ -167,7 +177,8 @@ class GraphDBProviderFactory:
             # Create provider instance
             provider = Neo4jProvider(
                 logger=logger,
-                config_service=config_service
+                config_service=config_service,
+                kafka_service=kafka_service
             )
 
             logger.debug("🔌 Connecting Neo4j provider...")
@@ -191,6 +202,7 @@ class GraphDBProviderFactory:
 async def create_graph_db_provider(
     logger: Logger,
     config_service: ConfigurationService,
+    kafka_service=None,
 ) -> IGraphDBProvider:
     """
     Convenience function to create a graph database provider.
@@ -201,6 +213,7 @@ async def create_graph_db_provider(
     Args:
         logger: Logger instance
         config_service: Configuration service
+        kafka_service: Optional Kafka service for event publishing
 
     Returns:
         IGraphDBProvider: Connected database provider (HTTP-based, fully async)
@@ -215,6 +228,7 @@ async def create_graph_db_provider(
     """
     return await GraphDBProviderFactory.create_provider(
         logger=logger,
-        config_service=config_service
+        config_service=config_service,
+        kafka_service=kafka_service
     )
 
