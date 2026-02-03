@@ -49,21 +49,7 @@ class BlobStorage(Transformer):
         
         return base64.b64encode(compressed).decode('utf-8'), original_size
 
-    def _decompress_record(self, compressed_data: str) -> dict:
-        """
-        Decompress zstd-compressed record data (msgspec format).
-        """
-        import base64
-        import msgspec
-        import zstandard as zstd
-        
-        compressed_bytes = base64.b64decode(compressed_data)
-        
-        decompressor = zstd.ZstdDecompressor()
-        decompressed = decompressor.decompress(compressed_bytes)
-        
-        # Ultra-fast msgspec parsing - no UTF-8 decode needed
-        return msgspec.msgpack.decode(decompressed)
+
 
     def _decompress_bytes(self, compressed_bytes: bytes) -> bytes:
         """
@@ -210,15 +196,14 @@ class BlobStorage(Transformer):
                     )
                     await asyncio.sleep(wait_time)
                 else:
-                    self.logger.error("❌ Chunk %d download failed after %d attempts: %s", 
-                                     chunk_index, max_retries, str(e))
+                    self.logger.error("❌ Chunk %d download failed after %d attempts: %s", chunk_index, max_retries, str(e))
                     raise
 
     async def _download_with_range_requests(
         self, 
         session: aiohttp.ClientSession, 
         signed_url: str,
-        chunk_size_mb: int = 8,
+        chunk_size_mb: int = 2,
         max_connections: int = 6
     ) -> bytes:
         """
@@ -516,7 +501,7 @@ class BlobStorage(Transformer):
                                         content_type='application/json')
                         form_data.add_field('documentName', f'record_{record_id}')
                         form_data.add_field('documentPath', 'records')
-                        form_data.add_field('isVersionedFile', 'true')
+                        form_data.add_field('isVersionedFile', 'false')
                         form_data.add_field('extension', 'json')
                         form_data.add_field('recordId', record_id)
 
@@ -566,7 +551,9 @@ class BlobStorage(Transformer):
                     placeholder_data = {
                         "documentName": f"record_{record_id}",
                         "documentPath": f"records/{virtual_record_id}",
-                        "extension": "msgpack",
+                        "extension": "json",
+                        "isVersionedFile": False,
+                        "recordId": record_id,
                         "customMetadata": [
                             {
                                 "key": "compression",
@@ -579,10 +566,6 @@ class BlobStorage(Transformer):
                                     "compressed": True
                                 }
                             },
-                            {
-                                "key": "virtualRecordId",
-                                "value": virtual_record_id
-                            }
                         ]
                     }
                     compressed_record = compressed_data
@@ -593,12 +576,8 @@ class BlobStorage(Transformer):
                         "documentName": f"record_{record_id}",
                         "documentPath": f"records/{virtual_record_id}",
                         "extension": "json",
-                        "customMetadata": [
-                            {
-                                "key": "virtualRecordId",
-                                "value": virtual_record_id
-                            }
-                        ]
+                        "isVersionedFile": False,
+                        "recordId": record_id,
                     }
                     compressed_record = None
 
@@ -809,7 +788,7 @@ class BlobStorage(Transformer):
                                 if file_size_bytes is None:
                                     # Old records without stored size - use single download (no HEAD request needed)
                                     self.logger.info("⚠️ No stored file size, using single download")
-                                    use_parallel = False
+                                    use_parallel = True
                                 else:
                                     file_size_mb = file_size_bytes / (1024 * 1024)
                                     
@@ -827,7 +806,7 @@ class BlobStorage(Transformer):
                                         file_bytes = await self._download_with_range_requests(
                                             session, 
                                             signed_url,
-                                            chunk_size_mb=8,
+                                            chunk_size_mb=2,
                                             max_connections=6
                                         )
                                         
