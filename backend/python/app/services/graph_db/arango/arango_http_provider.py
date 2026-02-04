@@ -1113,8 +1113,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
         check_drive_inheritance: bool = True,
     ) -> Dict:
         """
-        Check user permission on a record (direct, group, record group, domain, anyone, drive).
-        Returns Dict with 'permission' (role) and 'source'.
+        Generic permission checker for any record type.
+        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+
+        Args:
+            record_id: The record to check permissions for
+            user_key: The user to check permissions for
+            check_drive_inheritance: Whether to check for Drive-level inherited permissions
+
+        Returns:
+            Dict with 'permission' (role) and 'source' (where permission came from)
         """
         try:
             user_from = f"{CollectionNames.USERS.value}/{user_key}"
@@ -1122,11 +1130,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
             permission_query = """
             LET user_from = @user_from
             LET record_from = @record_from
+
+            // 1. Check direct user permissions on the record
             LET direct_permission = FIRST(
                 FOR perm IN @@permission
                     FILTER perm._from == user_from AND perm._to == record_from AND perm.type == "USER"
                     RETURN perm.role
             )
+
+            // 2. Check group permissions
             LET group_permission = FIRST(
                 FOR permission IN @@permission
                     FILTER permission._from == user_from
@@ -1136,29 +1148,87 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER perm._from == group._id AND perm._to == record_from
                         RETURN perm.role
             )
+
+            // 2.5 Check inherited group->record_group permissions
             LET record_group_permission = FIRST(
+                // First hop: user -> group
                 FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                    // Second hop: group -> recordgroup
                     FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
+
+                    // Third hop: recordgroup -> record
                     FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
                         FILTER rec._id == record_from
+
+                        // The role is on the final edge from the record group to the record
                         RETURN groupToRecordGroupEdge.role
             )
+
+            LET nested_record_group_permission = FIRST(
+                // First hop: user -> group/role
+                FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                // Second hop: group -> recordgroup
+                FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                // Third hop: recordgroup -> nested record groups (0 to 5 levels) -> record
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
+                    FILTER record._id == record_from
+                    FILTER IS_SAME_COLLECTION("records", record)
+
+                    RETURN groupToRgEdge.role
+            )
+
             LET direct_user_record_group_permission = FIRST(
+                // Direct user -> record_group (with nested record groups support)
                 FOR recordGroup, userToRgEdge IN 1..1 ANY user_from @@permission
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Record group -> nested record groups (0 to 5 levels) -> record
                     FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
+                        // Only process if final vertex is the target record
                         FILTER record._id == record_from AND IS_SAME_COLLECTION("records", record)
+
                         LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
                         RETURN userToRgEdge.role
             )
+
+            // 2.6 Check inherited recordGroup permissions (record -> recordGroup hierarchy via inherit_permissions)
+            // This handles any recordGroup hierarchy (spaces, folders, etc.) where permissions are inherited
             LET inherited_record_group_permission = FIRST(
+                // Traverse up the recordGroup hierarchy (0 to 5 levels) from record
                 FOR recordGroup, inheritEdge, path IN 0..5 OUTBOUND record_from @@inherit_permissions
                     FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Check if user has direct permission on any recordGroup in the hierarchy
                     FOR perm IN @@permission
                         FILTER perm._from == user_from AND perm._to == recordGroup._id AND perm.type == "USER"
                         RETURN perm.role
             )
+
+            // 2.7 Check group -> inherited recordGroup permission
+            LET group_inherited_record_group_permission = FIRST(
+                // Traverse up the recordGroup hierarchy from record
+                FOR recordGroup, inheritEdge, path IN 0..5 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Check if user's group has permission on any recordGroup in the hierarchy
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                        FOR perm IN @@permission
+                            FILTER perm._from == group._id
+                            FILTER perm._to == recordGroup._id
+                            FILTER perm.type IN ["GROUP", "ROLE"]
+                            RETURN perm.role
+            )
+
+            // 3. Check domain/organization permissions
             LET domain_permission = FIRST(
                 FOR belongs_edge IN @@belongs_to
                     FILTER belongs_edge._from == user_from AND belongs_edge.entityType == "ORGANIZATION"
@@ -1168,32 +1238,117 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER perm._from == org._id AND perm._to == record_from AND perm.type IN ["DOMAIN", "ORG"]
                         RETURN perm.role
             )
+
+            // 4. Check 'anyone' permissions (public sharing)
+            LET user_org_id = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    RETURN org._key
+            )
+            LET anyone_permission = user_org_id ? FIRST(
+                FOR anyone_perm IN @@anyone
+                    FILTER anyone_perm.file_key == @record_id
+                    FILTER anyone_perm.organization == user_org_id
+                    FILTER anyone_perm.active == true
+                    RETURN anyone_perm.role
+            ) : null
+
+            LET org_record_group_permission = FIRST(
+                // User -> Organization -> RecordGroup -> Record (with nested record groups support)
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from AND belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+
+                    // Org -> record_group permission
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        // Record group -> nested record groups (0 to 2 levels) -> record
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id @@inherit_permissions
+                            FILTER record._id == record_from
+                            FILTER IS_SAME_COLLECTION("records", record)
+
+                            LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+                            RETURN orgToRgEdge.role
+            )
+
+            // 5. Check Drive-level access (if enabled)
+            LET drive_access = @check_drive_inheritance ? FIRST(
+                // Get the file record to find its drive
+                FOR record IN @@records
+                    FILTER record._key == @record_id
+                    FOR file_edge IN @@is_of_type
+                        FILTER file_edge._from == record._id
+                        LET file = DOCUMENT(file_edge._to)
+                        FILTER file != null
+                        // Get the drive this file belongs to
+                        LET file_drive_id = file.driveId
+                        FILTER file_drive_id != null
+                        // Check if user has access to this drive
+                        FOR drive_edge IN @@user_drive_relation
+                            FILTER drive_edge._from == user_from
+                            LET drive = DOCUMENT(drive_edge._to)
+                            FILTER drive != null
+                            FILTER drive._key == file_drive_id OR drive.driveId == file_drive_id
+                            // Map drive access level to permission role
+                            LET drive_role = (
+                                drive_edge.access_level == "owner" ? "OWNER" :
+                                drive_edge.access_level IN ["writer", "fileOrganizer"] ? "WRITER" :
+                                drive_edge.access_level IN ["commenter", "reader"] ? "READER" :
+                                null
+                            )
+                            RETURN drive_role
+            ) : null
+
+            // Return the highest permission level found (in order of precedence)
             LET final_permission = (
                 direct_permission ? direct_permission :
                 inherited_record_group_permission ? inherited_record_group_permission :
+                group_inherited_record_group_permission ? group_inherited_record_group_permission :
                 group_permission ? group_permission :
                 record_group_permission ? record_group_permission :
                 direct_user_record_group_permission ? direct_user_record_group_permission :
-                domain_permission ? domain_permission : null
+                nested_record_group_permission ? nested_record_group_permission :
+                domain_permission ? domain_permission :
+                anyone_permission ? anyone_permission :
+                org_record_group_permission ? org_record_group_permission :
+                drive_access ? drive_access :
+                null
             )
             RETURN {
                 permission: final_permission,
                 source: (
                     direct_permission ? "DIRECT" :
                     inherited_record_group_permission ? "INHERITED_RECORD_GROUP" :
+                    group_inherited_record_group_permission ? "GROUP_INHERITED_RECORD_GROUP" :
                     group_permission ? "GROUP" :
                     record_group_permission ? "RECORD_GROUP" :
                     direct_user_record_group_permission ? "DIRECT_USER_RECORD_GROUP" :
-                    domain_permission ? "DOMAIN" : "NONE"
+                    nested_record_group_permission ? "NESTED_RECORD_GROUP" :
+                    domain_permission ? "DOMAIN" :
+                    anyone_permission ? "ANYONE" :
+                    org_record_group_permission ? "ORG_RECORD_GROUP" :
+                    drive_access ? "DRIVE_ACCESS" :
+                    "NONE"
                 )
             }
             """
             bind_vars = {
                 "user_from": user_from,
                 "record_from": record_from,
+                "record_id": record_id,
+                "check_drive_inheritance": check_drive_inheritance,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "@user_drive_relation": CollectionNames.USER_DRIVE_RELATION.value,
             }
             results = await self.execute_query(permission_query, bind_vars=bind_vars)
             result = results[0] if results else None
@@ -1291,10 +1446,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Reset indexing status to QUEUED before reindexing
             await self._reset_indexing_status_to_queued(record_id)
 
-            # Create and publish reindex event
+            # Create event data for router to publish
             try:
                 if use_batch_reindex:
-                    # Publish connector reindex event for batch processing
+                    # Batch reindex - connector reindex event
                     connector_normalized = connector_name.replace(" ", "").lower()
                     event_type = f"{connector_normalized}.reindex"
 
@@ -1305,33 +1460,40 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "connectorId": connector_id
                     }
 
-                    await self._publish_sync_event(event_type, payload)
-                    self.logger.info(f"✅ Published {event_type} event for record {record_id} with depth {depth}")
+                    event_data = {
+                        "eventType": event_type,
+                        "topic": "sync-events",
+                        "payload": payload
+                    }
                 else:
                     # Single record reindex - use existing newRecord event
-                    payload = await self._create_reindex_event_payload(record, file_record, user_id, request)
-                    await self._publish_record_event("newRecord", payload)
-                    self.logger.info(f"✅ Published reindex event for record {record_id}")
+                    payload = await self._create_reindex_event_payload(record, file_record, user_id, request, record_id)
+                    event_data = {
+                        "eventType": "newRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
 
                 return {
                     "success": True,
                     "recordId": record_id,
                     "recordName": rec.get("recordName"),
                     "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
-                    "eventPublished": True,
                     "userRole": user_role,
+                    "eventData": event_data,
+                    "useBatchReindex": use_batch_reindex
                 }
 
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish reindex event: {str(event_error)}")
-                # Return success but indicate event wasn't published
+                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                # Return success but indicate event data creation failed
                 return {
                     "success": True,
                     "recordId": record_id,
                     "recordName": rec.get("recordName"),
                     "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
-                    "eventPublished": False,
                     "userRole": user_role,
+                    "eventData": None,
                     "eventError": str(event_error)
                 }
         except Exception as e:
@@ -7882,7 +8044,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         kb_id: str,
         transaction: Optional[str] = None,
-    ) -> bool:
+    ) -> Dict:
         """
         Delete a knowledge base with ALL nested content
         - All folders (recursive, any depth)
@@ -7912,7 +8074,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
                 except Exception as tx_error:
                     self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
-                    return False
+                    return {"success": False}
 
             try:
                 # Step 1: Get complete inventory of what we're deleting using graph traversal
@@ -7985,7 +8147,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.warning(f"⚠️ KB {kb_id} not found, deletion considered successful.")
                     if should_commit:
                         await self.commit_transaction(transaction)
-                    return True
+                    return {"success": True, "eventData": None}
 
                 records_with_details = inventory.get("records_with_details", [])
                 all_record_keys = inventory.get("record_keys", [])
@@ -8095,28 +8257,31 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     await self.commit_transaction(transaction)
                     self.logger.info("✅ Transaction committed successfully!")
 
-                # Step 7: Publish delete events for all records (after successful transaction)
+                # Step 7: Prepare event data for all deleted records (router will publish)
+                event_payloads = []
                 try:
-                    delete_event_tasks = []
                     for record_data in records_with_details:
                         delete_payload = await self._create_deleted_record_event_payload(
                             record_data["record"], record_data["file_record"]
                         )
                         if delete_payload:
-                            delete_event_tasks.append(
-                                self._publish_record_event("deleteRecord", delete_payload)
-                            )
+                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
 
-                    if delete_event_tasks:
-                        await asyncio.gather(*delete_event_tasks, return_exceptions=True)
-                        self.logger.info(f"✅ Published delete events for {len(delete_event_tasks)} records from KB deletion")
-
-                except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish KB deletion events: {str(event_error)}")
-                    # Don't fail the main operation for event publishing errors
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
 
                 self.logger.info(f"🎉 KB {kb_id} and ALL contents deleted successfully.")
-                return True
+                return {
+                    "success": True,
+                    "eventData": event_data
+                }
 
             except Exception as db_error:
                 self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
@@ -8127,7 +8292,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete KB {kb_id} completely: {str(e)}")
-            return False
+            return {"success": False}
 
     # ==================== Event Publishing Methods ====================
 
@@ -8384,9 +8549,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None) -> Dict:
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional[Any] = None, record_id: Optional[str] = None) -> Dict:
         """Create reindex event payload"""
         try:
+            # Handle both translated (_key -> id) and untranslated document formats
+            record_key = record.get('_key') or record.get('id') or record_id or ''
             # Get extension and mimeType from file record
             extension = ""
             mime_type = ""
@@ -8408,14 +8575,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
             else:
                 connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-                signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record['_key']}/signedUrl"
+                signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
                     mime_type = "text/gmail_content"
                     try:
                         return {
                             "orgId": record.get("orgId"),
-                            "recordId": record.get("_key"),
+                            "recordId": record_key,
                             "recordName": record.get("recordName", ""),
                             "recordType": record.get("recordType", ""),
                             "version": record.get("version", 1),
@@ -8433,7 +8600,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             return {
                 "orgId": record.get("orgId"),
-                "recordId": record.get("_key"),
+                "recordId": record_key,
                 "recordName": record.get("recordName", ""),
                 "recordType": record.get("recordType", ""),
                 "version": record.get("version", 1),
@@ -9048,6 +9215,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user = await self.get_user_by_user_id(user_id)
             if not user:
                 return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            user.get("_key")
             timestamp = get_epoch_timestamp_in_ms()
             processed_updates = {**updates, "updatedAtTimestamp": timestamp}
             if file_metadata:
@@ -9071,7 +9239,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not updated_record:
                 return {"success": False, "code": 500, "reason": f"Failed to update record {record_id}"}
 
-            # Publish update event (after successful update)
+            # Create event payload for router to publish (after successful update)
+            event_data = None
             try:
                 # Get file record for event payload
                 file_record = await self.get_document(record_id, CollectionNames.FILES.value)
@@ -9083,16 +9252,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     updated_record, file_record, content_changed=content_changed
                 )
                 if update_payload:
-                    await self._publish_record_event("updateRecord", update_payload)
+                    event_data = {
+                        "eventType": "updateRecord",
+                        "topic": "record-events",
+                        "payload": update_payload
+                    }
             except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish update event: {str(event_error)}")
-                # Don't fail the main operation for event publishing errors
+                self.logger.error(f"❌ Failed to create update event payload: {str(event_error)}")
+                # Don't fail the main operation for event payload creation errors
 
             return {
                 "success": True,
                 "updatedRecord": updated_record,
                 "recordId": record_id,
                 "timestamp": timestamp,
+                "eventData": event_data
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to update record: {str(e)}")
@@ -10296,16 +10470,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 validation_result=validation_result,
             )
             if result.get("success"):
-                # Publish events AFTER successful commit
-                try:
-                    await self._publish_upload_events(kb_id, {
-                        "created_files_data": result.get("created_files_data", []),
-                        "total_created": result["total_created"]
-                    })
-                    self.logger.info(f"✅ Published events for {result['total_created']} records")
-                except Exception as event_error:
-                    self.logger.error(f"❌ Event publishing failed (records still created): {str(event_error)}")
-                    # Don't fail the main operation - records were successfully created
+                # Prepare event data for all created records (router will publish)
+                created_files_data = result.get("created_files_data", [])
+                event_payloads = []
+                
+                if created_files_data:
+                    try:
+                        # Get storage endpoint
+                        endpoints = await self.config_service.get_config(
+                            config_node_constants.ENDPOINTS.value
+                        )
+                        storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                        
+                        for file_data in created_files_data:
+                            record_doc = file_data.get("record")
+                            file_doc = file_data.get("fileRecord")
+                            if record_doc and file_doc:
+                                create_payload = await self._create_new_record_event_payload(
+                                    record_doc, file_doc, storage_url
+                                )
+                                if create_payload:
+                                    event_payloads.append(create_payload)
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to prepare upload event payloads: {str(e)}")
+                
+                event_data = {
+                    "eventType": "newRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
 
                 return {
                     "success": True,
@@ -10316,6 +10509,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "failedFiles": result["failed_files"],
                     "kbId": kb_id,
                     "parentFolderId": parent_folder_id,
+                    "eventData": event_data
                 }
             return result
         except Exception as e:
@@ -10732,17 +10926,36 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Deleted Gmail record {record_id} with {len(attachment_ids)} attachments")
 
-            # Publish Gmail deletion event
+            # Create event payload for router to publish
             try:
-                await self._publish_gmail_deletion_event(record, mail_record, file_record)
-            except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish Gmail deletion event: {str(event_error)}")
+                data_record = mail_record or file_record
+                payload = await self._create_deleted_record_event_payload(record, data_record)
+                if payload:
+                    payload["connectorName"] = Connectors.GOOGLE_MAIL.value
+                    payload["origin"] = OriginTypes.CONNECTOR.value
+                    if mail_record:
+                        payload["threadId"] = mail_record.get("threadId", "")
+                        payload["messageId"] = mail_record.get("messageId", "")
+                    elif file_record:
+                        payload["isAttachment"] = True
+                        payload["attachmentId"] = file_record.get("attachmentId", "")
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
 
             return {
                 "success": True,
                 "record_id": record_id,
                 "connector": Connectors.GOOGLE_MAIL.value,
-                "user_role": user_role
+                "user_role": user_role,
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -10778,17 +10991,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Deleted Drive record {record_id}")
 
-            # Publish Drive deletion event
+            # Create event payload for router to publish
             try:
-                await self._publish_drive_deletion_event(record, file_record)
-            except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish Drive deletion event: {str(event_error)}")
+                payload = await self._create_deleted_record_event_payload(record, file_record)
+                if payload:
+                    payload["connectorName"] = Connectors.GOOGLE_DRIVE.value
+                    payload["origin"] = OriginTypes.CONNECTOR.value
+                    if file_record:
+                        payload["driveId"] = file_record.get("driveId", "")
+                        payload["parentId"] = file_record.get("parentId", "")
+                        payload["webViewLink"] = file_record.get("webViewLink", "")
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
 
             return {
                 "success": True,
                 "record_id": record_id,
                 "connector": Connectors.GOOGLE_DRIVE.value,
-                "user_role": user_role
+                "user_role": user_role,
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -10821,17 +11050,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Deleted KB record {record_id}")
 
-            # Publish KB deletion event
+            # Create event payload for router to publish
             try:
-                await self._publish_kb_deletion_event(record, file_record)
-            except Exception as event_error:
-                self.logger.error(f"❌ Failed to publish KB deletion event: {str(event_error)}")
+                payload = await self._create_deleted_record_event_payload(record, file_record)
+                if payload:
+                    payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                    payload["origin"] = OriginTypes.UPLOAD.value
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
 
             return {
                 "success": True,
                 "record_id": record_id,
                 "connector": Connectors.KNOWLEDGE_BASE.value,
-                "kb_context": kb_context
+                "kb_context": kb_context,
+                "eventData": event_data
             }
 
         except Exception as e:

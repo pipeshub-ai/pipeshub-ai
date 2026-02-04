@@ -1495,6 +1495,7 @@ async def delete_record(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
     Delete a specific record with permission validation
@@ -1511,6 +1512,21 @@ async def delete_record(
         )
 
         if result["success"]:
+            # Publish deletion event
+            event_data = result.get("eventData")
+            if event_data and event_data.get("payload"):
+                try:
+                    timestamp = get_epoch_timestamp_in_ms()
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": event_data["payload"]
+                    }
+                    await kafka_service.publish_event(event_data["topic"], event)
+                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+            
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {
                 "success": True,
@@ -1541,6 +1557,7 @@ async def reindex_single_record(
     record_id: str,
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
     Reindex a single record with permission validation.
@@ -1580,7 +1597,6 @@ async def reindex_single_record(
             event_data = result.get("eventData")
             if event_data:
                 try:
-                    kafka_service = container.kafka_service()
                     timestamp = get_epoch_timestamp_in_ms()
                     event = {
                         "eventType": event_data["eventType"],
@@ -1591,7 +1607,7 @@ async def reindex_single_record(
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
-
+            
             logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
