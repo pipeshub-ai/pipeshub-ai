@@ -208,7 +208,7 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
             logger=logger,
             config=sync_kafka_config
         )
-        sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container)
+        sync_message_handler = await KafkaUtils.create_sync_message_handler(app_container, graph_provider)
         await sync_kafka_consumer.start(sync_message_handler)
         consumers.append(("sync", sync_kafka_consumer))
         logger.info("✅ Sync Kafka consumer started")
