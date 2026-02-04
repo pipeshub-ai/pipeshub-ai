@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -394,12 +394,12 @@ class AzureFilesConnector(BaseConnector):
         connection_string: str,
     ) -> Optional[str]:
         """Extract account name from an Azure Storage connection string."""
-        try:
-            for part in connection_string.split(";"):
-                if part.startswith("AccountName="):
-                    return part.split("=", 1)[1] or None
-        except Exception:
-            return None
+        for part in connection_string.split(";"):
+            if not part:
+                continue
+            key_value = part.split("=", 1)
+            if len(key_value) == 2 and key_value[0] == "AccountName":
+                return key_value[1] or None
         return None
 
     def _generate_web_url(self, share_name: str, file_path: str) -> str:
@@ -1234,8 +1234,6 @@ class AzureFilesConnector(BaseConnector):
             file_path = external_record_id[len(f"{share_name}/") :]
         else:
             file_path = external_record_id.lstrip("/")
-
-        from urllib.parse import unquote
 
         file_path = unquote(file_path)
         return (share_name, file_path)
