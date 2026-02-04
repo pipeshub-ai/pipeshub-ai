@@ -110,6 +110,22 @@ function AdminRouteGuard({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
+function ConnectorAdminRouteGuard({ children }: { children: ReactNode }) {
+  const { isAdmin } = useAdmin();
+  const { user } = useAuthContext();
+  const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
+
+  if (!isBusiness) {
+    return <Navigate to="/account/individual/profile" replace />;
+  }
+
+  if (!isAdmin) {
+    return <Navigate to="/account/company-settings/personal-profile" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 export function FullNameGuard({ children }: { children: ReactNode }) {
   const { user } = useAuthContext();
 
@@ -142,6 +158,16 @@ const BusinessAdminOnlyRoute = ({ component: Component }: { component: React.Com
       <AdminRouteGuard>
         <Component />
       </AdminRouteGuard>
+    </FullNameGuard>
+  </AuthGuard>
+);
+
+const BusinessConnectorAdminRoute = ({ component: Component }: { component: React.ComponentType }) => (
+  <AuthGuard>
+    <FullNameGuard>
+      <ConnectorAdminRouteGuard>
+        <Component />
+      </ConnectorAdminRouteGuard>
     </FullNameGuard>
   </AuthGuard>
 );
@@ -335,20 +361,36 @@ export const dashboardRoutes = [
                     path: 'connector',
                     children: [
                       {
-                        element: <ConnectorSettings />,
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorSettings />
+                        ) : (
+                          <BusinessConnectorAdminRoute component={ConnectorSettings} />
+                        ),
                         index: true,
                       },
                       {
                         path: 'registry',
-                        element: <ConnectorRegistry />,
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorRegistry />
+                        ) : (
+                          <BusinessConnectorAdminRoute component={ConnectorRegistry} />
+                        ),
                       },
                       {
                         path: 'oauth/callback/:connectorId',
-                        element: <ConnectorOAuthCallback />,
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorOAuthCallback />
+                        ) : (
+                          <BusinessConnectorAdminRoute component={ConnectorOAuthCallback} />
+                        ),
                       },
                       {
                         path: ':connectorId',
-                        element: <ConnectorManagementPage />,
+                        element: CONFIG.auth.skip ? (
+                          <ConnectorManagementPage />
+                        ) : (
+                          <BusinessConnectorAdminRoute component={ConnectorManagementPage} />
+                        ),
                       },
                     ],
                   },
