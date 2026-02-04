@@ -117,7 +117,6 @@ class IndexingAppContainer(BaseAppContainer):
         logger=logger,
         processor=processor,
         graph_provider=graph_provider,
-        # arango_service=arango_service,  # For specialized methods not yet migrated
         config_service=config_service,
     )
 
