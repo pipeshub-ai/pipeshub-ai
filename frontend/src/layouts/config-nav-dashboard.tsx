@@ -24,7 +24,7 @@ export const getDashboardNavData = (accountType: string | undefined, isAdmin: bo
   
   const navigationData = [...baseNavData];
   
-  if (isBusiness) {
+  if (isBusiness && isAdmin) {
     navigationData.push({
       subheader: 'Administration',
       items: [
