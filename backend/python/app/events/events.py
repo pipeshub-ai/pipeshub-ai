@@ -13,7 +13,6 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.config.constants.http_status_code import HttpStatusCode
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 

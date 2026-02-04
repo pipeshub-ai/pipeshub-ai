@@ -511,7 +511,7 @@ class RecordEventHandler(BaseEventService):
                     self.logger.debug(f"S3 storage detected, skipping JWT header for signed URL download for record {record_id}")
             except Exception as e:
                 self.logger.error(f"Failed to get storage config: {e}")
-                raise Exception(f"Failed to get storage config: {e}")   
+                raise Exception(f"Failed to get storage config: {e}")
 
         if self.config_service and from_route and not storage_is_s3:
             try:
