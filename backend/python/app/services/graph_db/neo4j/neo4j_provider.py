@@ -2191,46 +2191,64 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get departments failed: {str(e)}")
             return []
 
-    async def find_duplicate_files(
+    async def find_duplicate_records(
         self,
-        file_key: str,
+        record_key: str,
         md5_checksum: str,
-        size_in_bytes: int,
+        record_type: Optional[str] = None,
+        size_in_bytes: Optional[int] = None,
         transaction: Optional[str] = None
     ) -> List[Dict]:
         """
-        Find duplicate files based on MD5 checksum and file size.
+        Find duplicate records based on MD5 checksum.
+        This method queries the RECORDS collection and works for all record types.
 
         Args:
-            file_key (str): Key of the file to exclude from results
-            md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
+            record_key (str): The key of the current record to exclude from results
+            md5_checksum (str): MD5 checksum of the record content
+            record_type (Optional[str]): Optional record type to filter by
+            size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            List[Dict]: List of record documents that match both criteria (excluding the file_key)
+            List[Dict]: List of duplicate records that match the criteria
         """
         try:
             self.logger.info(
-                f"🔍 Finding duplicate files with MD5: {md5_checksum} and size: {size_in_bytes} bytes"
+                f"🔍 Finding duplicate records with MD5: {md5_checksum}"
             )
 
+            # Build query with optional filters
             query = """
-            MATCH (f:File)
-            WHERE f.md5Checksum = $md5_checksum
-            AND f.sizeInBytes = $size_in_bytes
-            AND f.id <> $file_key
-            MATCH (r:Record {id: f.id})
+            MATCH (r:Record)
+            WHERE r.md5Checksum = $md5_checksum
+            AND r.id <> $record_key
+            """
+
+            params = {
+                "md5_checksum": md5_checksum,
+                "record_key": record_key,
+            }
+
+            if record_type:
+                query += """
+                AND r.recordType = $record_type
+                """
+                params["record_type"] = record_type
+
+            if size_in_bytes is not None:
+                query += """
+                AND r.sizeInBytes = $size_in_bytes
+                """
+                params["size_in_bytes"] = size_in_bytes
+
+            query += """
             RETURN r
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "file_key": file_key
-                },
+                parameters=params,
                 txn_id=transaction
             )
 
@@ -2241,16 +2259,14 @@ class Neo4jProvider(IGraphDBProvider):
                     duplicate_records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
             if duplicate_records:
-                self.logger.info(
-                    f"✅ Found {len(duplicate_records)} duplicate record(s) matching criteria"
-                )
+                self.logger.info(f"✅ Found {len(duplicate_records)} duplicate record(s)")
             else:
                 self.logger.info("✅ No duplicate records found")
 
             return duplicate_records
 
         except Exception as e:
-            self.logger.error(f"❌ Find duplicate files failed: {str(e)}")
+            self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
             return []
 
     async def update_queued_duplicates_status(

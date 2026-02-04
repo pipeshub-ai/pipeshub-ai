@@ -1735,24 +1735,27 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def find_duplicate_files(
+    async def find_duplicate_records(
         self,
-        file_key: str,
+        record_key: str,
         md5_checksum: str,
-        size_in_bytes: int,
+        record_type: Optional[str] = None,
+        size_in_bytes: Optional[int] = None,
         transaction: Optional[str] = None
     ) -> List[Dict]:
         """
-        Find duplicate files based on MD5 checksum and file size.
+        Find duplicate records based on MD5 checksum.
+        This method queries the RECORDS collection and works for all record types.
 
         Args:
-            file_key (str): Key of the file to exclude from results
-            md5_checksum (str): MD5 checksum of the file
-            size_in_bytes (int): Size of the file in bytes
+            record_key (str): The key of the current record to exclude from results
+            md5_checksum (str): MD5 checksum of the record content
+            record_type (Optional[str]): Optional record type to filter by
+            size_in_bytes (Optional[int]): Optional file size in bytes to filter by
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            List[Dict]: List of record documents that match both criteria (excluding the file_key)
+            List[Dict]: List of duplicate records that match the criteria
         """
         pass
 

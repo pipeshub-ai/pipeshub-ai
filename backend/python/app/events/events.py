@@ -91,10 +91,11 @@ class EventProcessor:
         if not md5_checksum:
             return False
 
-        duplicate_records = await self.graph_provider.find_duplicate_files(
-            doc.get('_key'),
-            md5_checksum,
-            size_in_bytes
+        duplicate_records = await self.graph_provider.find_duplicate_records(
+            record_key=doc.get('_key'),
+            md5_checksum=md5_checksum,
+            record_type=record_type,
+            size_in_bytes=size_in_bytes
         )
 
         duplicate_records = [r for r in duplicate_records if r is not None]
