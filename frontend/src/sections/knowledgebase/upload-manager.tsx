@@ -100,6 +100,8 @@ export default function UploadManager({
   // Refs for file inputs
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  // Guard against double submission (e.g. double-click or S3 slow response)
+  const uploadInProgressRef = useRef(false);
 
   const formatFileSize = (bytes: number): string => {
     if (bytes === 0) return '0 Bytes';
@@ -228,6 +230,19 @@ export default function UploadManager({
       mounted = false;
     };
   }, []);
+
+  // Warn user when trying to refresh/close the page while upload is in progress
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (uploading) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [uploading]);
+
   const BATCH_SIZE = 10; // safe per-request files count
   const CONCURRENCY = 5; // parallel requests
 
@@ -266,8 +281,14 @@ export default function UploadManager({
       setUploadError({ show: true, message: 'Collection id missing. Please refresh' });
       return;
     }
+    // Prevent duplicate submission (avoids duplicate toasts when storage is S3 or user double-clicks)
+    if (uploadInProgressRef.current) {
+      return;
+    }
+    uploadInProgressRef.current = true;
 
     if (fileStats.oversized > 0) {
+      uploadInProgressRef.current = false;
       setUploadError({
         show: true,
         message: `Cannot upload: ${fileStats.oversized} file(s) exceed the ${formatFileSize(maxFileSize)} limit. Please remove them to continue.`,
@@ -515,17 +536,21 @@ export default function UploadManager({
       setUploadStatus(null);
     } finally {
       setUploading(false);
+      uploadInProgressRef.current = false;
     }
   };
 
   const handleClose = () => {
-    if (!uploading) {
-      setFiles([]);
-      setUploadError({ show: false, message: '' });
-      setUploadProgress(0);
-      setUploadStatus(null);
+    if (uploading) {
+      // Allow closing the modal during upload; upload continues in the background
       onClose();
+      return;
     }
+    setFiles([]);
+    setUploadError({ show: false, message: '' });
+    setUploadProgress(0);
+    setUploadStatus(null);
+    onClose();
   };
 
   // Group files by folders for display
@@ -950,7 +975,6 @@ export default function UploadManager({
           </Box>
           <IconButton
             onClick={handleClose}
-            disabled={uploading}
             sx={{
               color: 'text.secondary',
               '&:hover': {
@@ -1290,7 +1314,7 @@ export default function UploadManager({
             <Button
               onClick={handleUpload}
               variant="contained"
-              disabled={files.length === 0 || fileStats.oversized > 0}
+              disabled={uploading || files.length === 0 || fileStats.oversized > 0}
               disableElevation
               startIcon={<Icon icon={cloudIcon} fontSize={20} />}
               sx={{
