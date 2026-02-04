@@ -34,6 +34,7 @@ from app.config.constants.neo4j import (
     edge_collection_to_relationship,
     parse_node_id,
 )
+from app.config.constants.service import config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppRole,
@@ -1970,7 +1971,7 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (app:App {id: $connector_id})
             MATCH (u:User)-[r:USER_APP_RELATION]->(app)
             MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(o:Organization {id: $org_id})
-            RETURN u, r.sourceUserId AS sourceUserId, app.name AS appName
+            RETURN u, r.sourceUserId AS sourceUserId, app.type AS appName
             """
 
             results = await self.client.execute_query(
@@ -7082,9 +7083,12 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Get storage endpoint
             try:
-                endpoints = await self.config_service.get_config("endpoints")
-                self.logger.info(f"This the the endpoint {endpoints}")
-                storage_url = endpoints.get("storage", {}).get("endpoint", "http://localhost:3000")
+                endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+                if endpoints and isinstance(endpoints, dict):
+                    storage_url = endpoints.get("storage", {}).get("endpoint", "http://localhost:3000")
+                else:
+                    self.logger.warning("⚠️ Endpoints config not found, using default storage URL")
+                    storage_url = "http://localhost:3000"
             except Exception as config_error:
                 self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
                 storage_url = "http://localhost:3000"  # Fallback
@@ -8624,30 +8628,59 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def check_connector_name_exists(
         self,
-        connector_name: str,
-        org_id: str,
-        exclude_connector_id: Optional[str] = None,
-        transaction: Optional[str] = None
+        collection: str,
+        instance_name: str,
+        scope: str,
+        org_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        transaction: Optional[str] = None,
     ) -> bool:
-        """Check if connector name exists in org."""
+        """Check if a connector instance name already exists for the given scope."""
         try:
-            query = """
-            MATCH (app:App {name: $connector_name, orgId: $org_id})
-            WHERE $exclude_connector_id IS NULL OR app.id <> $exclude_connector_id
-            RETURN count(app) > 0 as exists
-            """
+            normalized_name = instance_name.strip().lower()
+            label = self._get_label(collection)
+
+            if scope == "personal":
+                # For personal scope: check existence within user's personal connectors
+                query = f"""
+                MATCH (doc:{label})
+                WHERE doc.scope = $scope
+                AND doc.createdBy = $user_id
+                AND toLower(trim(doc.name)) = $normalized_name
+                RETURN doc.id AS id
+                LIMIT 1
+                """
+                parameters = {
+                    "scope": scope,
+                    "user_id": user_id,
+                    "normalized_name": normalized_name,
+                }
+            else:  # team scope
+                # For team scope: check existence within organization's team connectors
+                edge_collection = CollectionNames.ORG_APP_RELATION.value
+                rel_type = self._get_relationship_type(edge_collection)
+                query = f"""
+                MATCH (org:Organization {{id: $org_id}})-[r:{rel_type}]->(doc:{label})
+                WHERE doc.scope = $scope
+                AND toLower(trim(doc.name)) = $normalized_name
+                RETURN doc.id AS id
+                LIMIT 1
+                """
+                parameters = {
+                    "org_id": org_id,
+                    "scope": scope,
+                    "normalized_name": normalized_name,
+                }
+
             results = await self.client.execute_query(
                 query,
-                parameters={
-                    "connector_name": connector_name,
-                    "org_id": org_id,
-                    "exclude_connector_id": exclude_connector_id
-                },
+                parameters=parameters,
                 txn_id=transaction
             )
-            return results[0].get("exists", False) if results else False
+            return len(results) > 0
+
         except Exception as e:
-            self.logger.error(f"❌ Check connector name exists failed: {str(e)}")
+            self.logger.error(f"Failed to check connector name exists: {e}")
             return False
 
     async def count_kb_owners(
@@ -9076,7 +9109,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             query = f"""
             MATCH (n:{label})
-            WHERE n.orgId = $org_id
+            WHERE n.id IS NOT NULL
               AND (
                 n.scope = $team_scope OR
                 (n.scope = $personal_scope AND n.createdBy = $user_id)
@@ -9086,14 +9119,15 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.client.execute_query(
                 query,
                 parameters={
-                    "org_id": org_id,
                     "team_scope": team_scope,
                     "personal_scope": personal_scope,
                     "user_id": user_id
                 },
                 txn_id=transaction
             )
-            return [r.get("n", {}) for r in results]
+
+            # Convert Neo4j nodes to ArangoDB format
+            return [self._neo4j_to_arango_node(dict(r.get("n", {})), collection) for r in results]
         except Exception as e:
             self.logger.error(f"❌ Get user connector instances failed: {str(e)}")
             return []

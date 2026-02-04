@@ -9,8 +9,8 @@ from dependency_injector import providers
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.connector import ConnectorAppContainer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class EventService:
@@ -20,10 +20,10 @@ class EventService:
         self,
         logger: logging.Logger,
         app_container: ConnectorAppContainer,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
     ) -> None:
         self.logger = logger
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.app_container = app_container
 
     def _get_connector(self, connector_id: str) -> Optional[BaseConnector]:
@@ -83,7 +83,7 @@ class EventService:
             from app.connectors.core.base.data_store.graph_data_store import (
                 GraphDataStore,
             )
-            data_store_provider = GraphDataStore(self.logger, self.arango_service)
+            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
                 name=connector_name,
@@ -197,7 +197,7 @@ class EventService:
                 # Fetch batch of typed Record instances based on mode
                 if record_id is not None:
                     # Mode 1: Reindex a folder and its children
-                    records = await self.arango_service.get_records_by_parent_record(
+                    records = await self.graph_provider.get_records_by_parent_record(
                         parent_record_id=record_id,
                         connector_id=connector_id,
                         org_id=org_id,
@@ -208,7 +208,7 @@ class EventService:
                     )
                 elif record_group_id is not None:
                     # Mode 2: Reindex records in a record group
-                    records = await self.arango_service.get_records_by_record_group(
+                    records = await self.graph_provider.get_records_by_record_group(
                         record_group_id=record_group_id,
                         connector_id=connector_id,
                         org_id=org_id,
@@ -218,7 +218,7 @@ class EventService:
                     )
                 else:
                     # Mode 3: Reindex by status
-                    records = await self.arango_service.get_records_by_status(
+                    records = await self.graph_provider.get_records_by_status(
                         org_id=org_id,
                         connector_id=connector_id,
                         status_filters=status_filters,

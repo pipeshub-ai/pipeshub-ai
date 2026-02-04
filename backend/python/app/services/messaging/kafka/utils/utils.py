@@ -210,10 +210,9 @@ class KafkaUtils:
         return handle_record_message
 
     @staticmethod
-    async def create_sync_message_handler(app_container: ConnectorAppContainer) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
+    async def create_sync_message_handler(app_container: ConnectorAppContainer, graph_provider) -> Callable[[Dict[str, Any]], Awaitable[bool]]:
         """Create a message handler for sync events"""
         logger = app_container.logger()
-        arango_service = await app_container.arango_service()
 
         async def handle_sync_message(message: Dict[str, Any]) -> bool:
             """Handle incoming sync messages"""
@@ -243,7 +242,7 @@ class KafkaUtils:
 
                 event_service = EventService(
                     logger=logger,
-                    arango_service=arango_service,
+                    graph_provider=graph_provider,
                     app_container=app_container,
                 )
                 logger.info(f"Processing sync event: {event_type} for {connector}")
