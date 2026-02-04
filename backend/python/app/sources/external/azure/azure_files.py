@@ -138,6 +138,7 @@ class AzureFilesDataSource:
             async for item in directory_client.list_directories_and_files(
                 name_starts_with=name_starts_with
             ):
+                content_settings = getattr(item, "content_settings", None)
                 item_info = {
                     "name": item.name,
                     "is_directory": item.is_directory,
@@ -145,12 +146,20 @@ class AzureFilesDataSource:
                     "last_modified": getattr(item, "last_modified", None),
                     "etag": getattr(item, "etag", None),
                     "content_length": getattr(item, "content_length", None),
+                    "file_id": getattr(item, "file_id", None),
                     # Build full path
                     "path": f"{directory_path}/{item.name}".lstrip("/")
                     if directory_path
                     else item.name,
                     "parent_path": directory_path or None,
                 }
+                if content_settings is not None:
+                    item_info["content_md5"] = getattr(
+                        content_settings, "content_md5", None
+                    )
+                    item_info["content_type"] = getattr(
+                        content_settings, "content_type", None
+                    )
                 items.append(item_info)
 
             return self._handle_response(data=items)
