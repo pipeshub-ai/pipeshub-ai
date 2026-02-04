@@ -22,6 +22,12 @@ logging.basicConfig(
     encoding="utf-8",
 )
 
+# Suppress Neo4j notification warnings (missing labels, etc.)
+data_store = os.getenv("DATA_STORE", "arangodb").lower()
+if data_store == "neo4j":
+    neo4j_notifications_logger = logging.getLogger("neo4j.notifications")
+    neo4j_notifications_logger.setLevel(logging.ERROR)  # Only show errors, suppress warnings
+
 
 def create_logger(service_name: str) -> logging.Logger:
     """
