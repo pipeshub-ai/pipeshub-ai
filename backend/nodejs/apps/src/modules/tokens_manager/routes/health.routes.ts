@@ -42,9 +42,10 @@ export function createHealthRouter(
   const redis = container.get<RedisService>(TYPES.RedisService);
   const kafka = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
   const mongooseService = container.get<MongoService>(TYPES.MongoService);
-  const arangoService = knowledgeBaseContainer.get<ArangoService>(
-    TYPES.ArangoService,
-  );
+  // Only get ArangoService if it's bound (depends on DATA_STORE setting)
+  const arangoService = knowledgeBaseContainer.isBound(TYPES.ArangoService)
+    ? knowledgeBaseContainer.get<ArangoService>(TYPES.ArangoService)
+    : null;
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
     TYPES.KeyValueStoreService,
   );
@@ -94,7 +95,7 @@ export function createHealthRouter(
 
       // ArangoDB check - only when using ArangoDB as the graph database
       const dataStore = (process.env.DATA_STORE || 'neo4j').toLowerCase();
-      if (dataStore === 'arangodb') {
+      if (dataStore === 'arangodb' && arangoService) {
         try {
           const isArangoHealthy = await arangoService.isConnected();
           health.services.arangodb = isArangoHealthy ? 'healthy' : 'unhealthy';

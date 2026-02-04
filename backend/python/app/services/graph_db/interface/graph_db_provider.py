@@ -249,8 +249,8 @@ class IGraphDBProvider(ABC):
     async def update_node(
         self,
         key: str,
-        node_updates: Dict,
         collection: str,
+        node_updates: Dict,
         transaction: Optional[str] = None
     ) -> bool:
         """
@@ -258,8 +258,8 @@ class IGraphDBProvider(ABC):
 
         Args:
             key (str): Document key to update
-            node_updates (Dict): Fields to update
             collection (str): Collection/table name
+            node_updates (Dict): Fields to update
             transaction (Optional[Any]): Optional transaction context
 
         Returns:

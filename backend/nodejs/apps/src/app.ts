@@ -28,6 +28,7 @@ import { createSamlRouter } from './modules/auth/routes/saml.routes';
 import { createOrgAuthConfigRouter } from './modules/auth/routes/orgAuthConfig.routes';
 import { KnowledgeBaseContainer } from './modules/knowledge_base/container/kb_container';
 import { createKnowledgeBaseRouter } from './modules/knowledge_base/routes/kb.routes';
+import { createKnowledgeBaseProxyRouter } from './modules/knowledge_base/routes/kb.proxy.routes';
 import { createStorageRouter } from './modules/storage/routes/storage.routes';
 import { createConfigurationManagerRouter } from './modules/configuration_manager/routes/cm_routes';
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
@@ -396,10 +397,21 @@ export class Application {
     );
 
     // knowledge base routes
-    this.app.use(
-      '/api/v1/knowledgeBase',
-      createKnowledgeBaseRouter(this.knowledgeBaseContainer),
-    );
+    const dataStore = (process.env.DATA_STORE || 'neo4j').toLowerCase();
+    if (dataStore === 'arangodb') {
+      // Use direct ArangoDB routes
+      this.app.use(
+        '/api/v1/knowledgeBase',
+        createKnowledgeBaseRouter(this.knowledgeBaseContainer),
+      );
+    } else {
+      // Use proxy routes that forward to Python connector service (supports Neo4j)
+      this.logger.info(`Using Knowledge Base proxy routes (DATA_STORE=${dataStore})`);
+      this.app.use(
+        '/api/v1/knowledgeBase',
+        createKnowledgeBaseProxyRouter(this.knowledgeBaseContainer),
+      );
+    }
 
     // configuration manager routes
     this.app.use(

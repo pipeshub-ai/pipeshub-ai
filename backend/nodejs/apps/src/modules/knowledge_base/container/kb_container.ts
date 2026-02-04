@@ -42,12 +42,18 @@ export class KnowledgeBaseContainer {
     appConfig: AppConfig,
   ): Promise<void> {
     try {
-      // Initialize services
-      const arangoService = new ArangoService(appConfig.arango);
-      await arangoService.initialize();
-      container
-        .bind<ArangoService>('ArangoService')
-        .toConstantValue(arangoService);
+      // Initialize ArangoDB only when DATA_STORE is set to 'arangodb'
+      const dataStore = (process.env.DATA_STORE || 'neo4j').toLowerCase();
+      if (dataStore === 'arangodb') {
+        const arangoService = new ArangoService(appConfig.arango);
+        await arangoService.initialize();
+        container
+          .bind<ArangoService>('ArangoService')
+          .toConstantValue(arangoService);
+        this.logger.info('ArangoDB service initialized');
+      } else {
+        this.logger.info(`Skipping ArangoDB initialization (DATA_STORE=${dataStore})`);
+      }
 
       const configurationManagerConfig =
         container.get<ConfigurationManagerConfig>('ConfigurationManagerConfig');
