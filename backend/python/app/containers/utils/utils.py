@@ -1,3 +1,4 @@
+import os
 from logging import Logger
 
 from arango import ArangoClient  # type: ignore
@@ -61,8 +62,14 @@ class ContainerUtils:
         arango_client: ArangoClient,
         config_service: ConfigurationService,
         kafka_service,
-    ) -> BaseArangoService:
+    ) -> BaseArangoService | None:
         """Async factory to create and connect BaseArangoService (without schema init)"""
+        # Skip ArangoDB service creation if using a different graph database
+        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
+            return None
+
         service = BaseArangoService(
             logger,
             arango_client,

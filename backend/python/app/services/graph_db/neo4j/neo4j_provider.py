@@ -643,8 +643,8 @@ class Neo4jProvider(IGraphDBProvider):
     async def update_node(
         self,
         key: str,
-        node_updates: Dict,
         collection: str,
+        node_updates: Dict,
         transaction: Optional[str] = None
     ) -> bool:
         """
@@ -652,8 +652,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         Args:
             key: Document key
-            node_updates: Fields to update
             collection: Collection name
+            node_updates: Fields to update
             transaction: Optional transaction ID
 
         Returns:
@@ -5690,7 +5690,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             RETURN {
                 id: kb.id,
-                name: kb.groupName,
+                name: COALESCE(kb.groupName, 'Untitled'),
                 createdAtTimestamp: kb.createdAtTimestamp,
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,
@@ -5862,7 +5862,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             RETURN {{
                 id: kb.id,
-                name: kb.groupName,
+                name: COALESCE(kb.groupName, 'Untitled'),
                 createdAtTimestamp: kb.createdAtTimestamp,
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,
@@ -7840,15 +7840,17 @@ class Neo4jProvider(IGraphDBProvider):
                 folder_match = " AND folder.id = $folder_id"
                 params["folder_id"] = folder_id
 
-            # Main query - get all records from folders
+            # Main query - get all records from folders AND KB root
+            # Uses UNION to combine folder-based records and root-level records
             main_query = f"""
+            // Part 1: Records in folders
             MATCH (kb:RecordGroup {{id: $kb_id}})
             MATCH (folder:Record)-[:BELONGS_TO]->(kb)
             WHERE folder.isFile = false{folder_match}
             MATCH (folder)-[rel:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
             WHERE record.isDeleted <> true
             AND record.orgId = $org_id
-            AND record.isFile <> false
+            AND record.recordType = "FILE"
             {record_filter}
             OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
 
@@ -7887,6 +7889,56 @@ class Neo4jProvider(IGraphDBProvider):
                 folder: {{id: folder.id, name: folder.recordName}}
             }} AS result
 
+            UNION
+
+            // Part 2: Records at KB root (no parent folder)
+            MATCH (kb:RecordGroup {{id: $kb_id}})
+            MATCH (record:Record)-[:BELONGS_TO]->(kb)
+            WHERE record.isDeleted <> true
+            AND record.orgId = $org_id
+            AND record.recordType = "FILE"
+            AND NOT EXISTS {{
+                MATCH (parentFolder:Record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record)
+                WHERE parentFolder.recordType <> "FILE"
+            }}
+            {record_filter}
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+
+            WITH record, file, $user_permission AS user_permission, $kb_id AS kb_id
+
+            RETURN {{
+                id: record.id,
+                externalRecordId: record.externalRecordId,
+                externalRevisionId: record.externalRevisionId,
+                recordName: record.recordName,
+                recordType: record.recordType,
+                origin: record.origin,
+                connectorName: COALESCE(record.connectorName, "KNOWLEDGE_BASE"),
+                indexingStatus: record.indexingStatus,
+                createdAtTimestamp: record.createdAtTimestamp,
+                updatedAtTimestamp: record.updatedAtTimestamp,
+                sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                orgId: record.orgId,
+                version: record.version,
+                isDeleted: record.isDeleted,
+                deletedByUserId: record.deletedByUserId,
+                isLatestVersion: COALESCE(record.isLatestVersion, true),
+                webUrl: record.webUrl,
+                fileRecord: CASE WHEN file IS NOT NULL THEN {{
+                    id: file.id,
+                    name: file.name,
+                    extension: file.extension,
+                    mimeType: file.mimeType,
+                    sizeInBytes: file.sizeInBytes,
+                    isFile: file.isFile,
+                    webUrl: file.webUrl
+                }} ELSE null END,
+                permission: {{role: user_permission, type: "USER"}},
+                kb_id: kb_id,
+                folder: null
+            }} AS result
+
             ORDER BY result.{sort_by} {sort_order.upper()}
             SKIP $skip
             LIMIT $limit
@@ -7895,24 +7947,40 @@ class Neo4jProvider(IGraphDBProvider):
             results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
             records = [r["result"] for r in results if r.get("result")]
 
-            # Count query
+            # Count query - includes both folder-based and root-level records
             count_params = {k: v for k, v in params.items() if k not in ["skip", "limit", "user_permission"]}
             count_query = f"""
+            // Count records in folders
             MATCH (kb:RecordGroup {{id: $kb_id}})
-            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
+            OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
             WHERE folder.isFile = false{folder_match}
-            MATCH (folder)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(record:Record)
-            WHERE record.isDeleted <> true
-            AND record.orgId = $org_id
-            AND record.isFile <> false
-            {record_filter}
-            RETURN count(DISTINCT record) AS total
+            OPTIONAL MATCH (folder)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(folderRecord:Record)
+            WHERE folderRecord.isDeleted <> true
+            AND folderRecord.orgId = $org_id
+            AND folderRecord.recordType = "FILE"
+            {record_filter.replace('record.', 'folderRecord.')}
+
+            // Count records at KB root
+            OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
+            WHERE rootRecord.isDeleted <> true
+            AND rootRecord.orgId = $org_id
+            AND rootRecord.recordType = "FILE"
+            AND NOT EXISTS {{
+                MATCH (parentFolder:Record)-[:RECORD_RELATION {{relationshipType: "PARENT_CHILD"}}]->(rootRecord)
+                WHERE parentFolder.recordType <> "FILE"
+            }}
+            {record_filter.replace('record.', 'rootRecord.')}
+
+            WITH collect(DISTINCT folderRecord) + collect(DISTINCT rootRecord) AS allRecords
+            UNWIND allRecords AS record
+            WITH DISTINCT record WHERE record IS NOT NULL
+            RETURN count(record) AS total
             """
 
             count_results = await self.client.execute_query(count_query, parameters=count_params, txn_id=transaction)
             total_count = count_results[0]["total"] if count_results else 0
 
-            # Filters query - get available filter values
+            # Filters query - get available filter values (includes root-level records)
             filters_params = {
                 "kb_id": kb_id,
                 "org_id": org_id,
@@ -7920,20 +7988,35 @@ class Neo4jProvider(IGraphDBProvider):
             }
             filters_query = """
             MATCH (kb:RecordGroup {id: $kb_id})
-            MATCH (folder:Record)-[:BELONGS_TO]->(kb)
-            WHERE folder.isFile = false
-            MATCH (folder)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(record:Record)
-            WHERE record.isDeleted <> true
-            AND record.orgId = $org_id
-            AND record.isFile <> false
 
-            WITH DISTINCT record, folder
+            // Get records from folders
+            OPTIONAL MATCH (folder:Record)-[:BELONGS_TO]->(kb)
+            WHERE folder.isFile = false
+            OPTIONAL MATCH (folder)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(folderRecord:Record)
+            WHERE folderRecord.isDeleted <> true
+            AND folderRecord.orgId = $org_id
+            AND folderRecord.recordType = "FILE"
+
+            // Get records at KB root
+            OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
+            WHERE rootRecord.isDeleted <> true
+            AND rootRecord.orgId = $org_id
+            AND rootRecord.recordType = "FILE"
+            AND NOT EXISTS {
+                MATCH (pf:Record)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(rootRecord)
+                WHERE pf.recordType <> "FILE"
+            }
+
+            WITH collect(DISTINCT folderRecord) + collect(DISTINCT rootRecord) AS allRecords,
+                 collect(DISTINCT folder) AS allFolders
+            UNWIND allRecords AS record
+            WITH DISTINCT record, allFolders WHERE record IS NOT NULL
 
             WITH collect(DISTINCT record.recordType) AS recordTypes,
                  collect(DISTINCT record.origin) AS origins,
                  collect(DISTINCT record.connectorName) AS connectors,
                  collect(DISTINCT record.indexingStatus) AS indexingStatus,
-                 collect(DISTINCT {id: folder.id, name: folder.recordName}) AS folders
+                 allFolders
 
             RETURN {
                 recordTypes: [r IN recordTypes WHERE r IS NOT NULL],
@@ -7941,7 +8024,7 @@ class Neo4jProvider(IGraphDBProvider):
                 connectors: [c IN connectors WHERE c IS NOT NULL],
                 indexingStatus: [i IN indexingStatus WHERE i IS NOT NULL],
                 permissions: [$user_permission],
-                folders: [f IN folders WHERE f.id IS NOT NULL]
+                folders: [f IN allFolders WHERE f IS NOT NULL AND f.id IS NOT NULL | {id: f.id, name: f.recordName}]
             } AS filters
             """
 
@@ -8731,40 +8814,116 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_filtered_connector_instances(
         self,
+        collection: str,
+        edge_collection: str,
         org_id: str,
-        connector_name: Optional[str] = None,
-        is_active: Optional[bool] = None,
-        transaction: Optional[str] = None
-    ) -> List[Dict]:
-        """Get filtered connector instances."""
+        user_id: str,
+        scope: Optional[str] = None,
+        search: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+        exclude_kb: bool = True,
+        kb_connector_type: Optional[str] = None,
+        is_admin: bool = False,
+        transaction: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict[str, int]]:
+        """Get filtered connector instances with pagination and scope counts."""
         try:
-            conditions = ["app.orgId = $org_id"]
-            params = {"org_id": org_id}
+            label = self._get_label(collection)
 
-            if connector_name:
-                conditions.append("app.name = $connector_name")
-                params["connector_name"] = connector_name
+            # Build WHERE conditions
+            conditions = ["doc.id IS NOT NULL"]
+            params = {}
 
-            if is_active is not None:
-                conditions.append("app.isActive = $is_active")
-                params["is_active"] = is_active
+            # Exclude KB if requested
+            if exclude_kb and kb_connector_type:
+                conditions.append("doc.type <> $kb_connector_type")
+                params["kb_connector_type"] = kb_connector_type
+
+            # Scope filter
+            if scope == "personal":
+                conditions.append("doc.scope = $scope")
+                conditions.append("doc.createdBy = $user_id")
+                params["scope"] = scope
+                params["user_id"] = user_id
+            elif scope == "team":
+                conditions.append("(doc.scope = $team_scope OR doc.createdBy = $user_id)")
+                params["team_scope"] = "team"
+                params["user_id"] = user_id
+
+            # Search filter
+            if search:
+                search_pattern = f"(?i).*{search}.*"
+                conditions.append("(doc.name =~ $search OR doc.type =~ $search OR doc.appGroup =~ $search)")
+                params["search"] = search_pattern
 
             where_clause = " AND ".join(conditions)
 
-            query = f"""
-            MATCH (app:App)
+            # Count query
+            count_query = f"""
+            MATCH (doc:{label})
             WHERE {where_clause}
-            RETURN app
+            RETURN count(doc) as total
             """
-            results = await self.client.execute_query(
-                query,
-                parameters=params,
+            count_result = await self.client.execute_query(count_query, parameters=params, txn_id=transaction)
+            total_count = count_result[0]["total"] if count_result else 0
+
+            # Scope counts (personal and team)
+            scope_counts = {"personal": 0, "team": 0}
+
+            # Personal count
+            personal_query = f"""
+            MATCH (doc:{label})
+            WHERE doc.id IS NOT NULL
+            AND doc.scope = $personal_scope
+            AND doc.createdBy = $user_id
+            AND doc.isConfigured = true
+            RETURN count(doc) as total
+            """
+            personal_result = await self.client.execute_query(
+                personal_query,
+                parameters={"personal_scope": "personal", "user_id": user_id},
                 txn_id=transaction
             )
-            return [r.get("app", {}) for r in results]
+            scope_counts["personal"] = personal_result[0]["total"] if personal_result else 0
+
+            # Team count (if admin or has team access)
+            if is_admin or scope == "team":
+                team_query = f"""
+                MATCH (doc:{label})
+                WHERE doc.id IS NOT NULL
+                AND doc.type <> $kb_connector_type
+                AND doc.scope = $team_scope
+                AND doc.isConfigured = true
+                RETURN count(doc) as total
+                """
+                team_result = await self.client.execute_query(
+                    team_query,
+                    parameters={"kb_connector_type": kb_connector_type or "", "team_scope": "team"},
+                    txn_id=transaction
+                )
+                scope_counts["team"] = team_result[0]["total"] if team_result else 0
+
+            # Main query with pagination
+            main_query = f"""
+            MATCH (doc:{label})
+            WHERE {where_clause}
+            RETURN doc
+            SKIP $skip
+            LIMIT $limit
+            """
+            params["skip"] = skip
+            params["limit"] = limit
+
+            results = await self.client.execute_query(main_query, parameters=params, txn_id=transaction)
+            documents = [self._neo4j_to_arango_node(dict(r["doc"]), collection) for r in results] if results else []
+
+            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
+            return documents, total_count, scope_counts
+
         except Exception as e:
             self.logger.error(f"❌ Get filtered connector instances failed: {str(e)}")
-            return []
+            return [], 0, {"personal": 0, "team": 0}
 
     async def get_kb_permissions(
         self,
@@ -8903,22 +9062,38 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def get_user_connector_instances(
         self,
-        user_key: str,
+        collection: str,
+        user_id: str,
         org_id: str,
+        team_scope: str,
+        personal_scope: str,
         transaction: Optional[str] = None
     ) -> List[Dict]:
-        """Get connector instances accessible by user."""
+        """Get all connector instances accessible to a user (personal + team)."""
         try:
-            query = """
-            MATCH (u:User {id: $user_key})-[:PERMISSION]->(app:App {orgId: $org_id})
-            RETURN app
+            # Map collection name to Neo4j label
+            label = collection_to_label(collection)
+
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.orgId = $org_id
+              AND (
+                n.scope = $team_scope OR
+                (n.scope = $personal_scope AND n.createdBy = $user_id)
+              )
+            RETURN n
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"user_key": user_key, "org_id": org_id},
+                parameters={
+                    "org_id": org_id,
+                    "team_scope": team_scope,
+                    "personal_scope": personal_scope,
+                    "user_id": user_id
+                },
                 txn_id=transaction
             )
-            return [r.get("app", {}) for r in results]
+            return [r.get("n", {}) for r in results]
         except Exception as e:
             self.logger.error(f"❌ Get user connector instances failed: {str(e)}")
             return []
@@ -10390,8 +10565,12 @@ class Neo4jProvider(IGraphDBProvider):
                       rg_org.connectorId = app.id
               END
 
+        // First collect org_rgs with explicit grouping keys
+        WITH app, u, parent_id, is_kb_app, direct_rgs, group_rgs, collect(DISTINCT rg_org) AS org_rgs
+
+        // Now combine all record groups
         WITH app, u, parent_id, is_kb_app,
-             direct_rgs + group_rgs + collect(DISTINCT rg_org) AS all_rgs_raw
+             direct_rgs + group_rgs + org_rgs AS all_rgs_raw
 
         // Filter out nulls and get unique record groups
         WITH app, u, parent_id, is_kb_app,
@@ -10425,7 +10604,7 @@ class Neo4jProvider(IGraphDBProvider):
                       })
                  )
              |
-                 {{
+                 {
                      id: rg.id,
                      name: rg.groupName,
                      nodeType: 'recordGroup',
@@ -10442,7 +10621,7 @@ class Neo4jProvider(IGraphDBProvider):
                      extension: null,
                      webUrl: rg.webUrl,
                      hasChildren: EXISTS((rg)<-[:BELONGS_TO]-(:RecordGroup)) OR EXISTS((rg)<-[:BELONGS_TO]-(:Record))
-                 }}
+                 }
              ] AS raw_children
 
         RETURN raw_children
@@ -10581,18 +10760,16 @@ class Neo4jProvider(IGraphDBProvider):
         Children are found via RECORD_RELATION edges with relationshipType
         IN ['PARENT_CHILD', 'ATTACHMENT'].
 
-        For connector records, permission checking is applied:
-        1. inheritPermissions edge (record -> recordGroup)
-        2. Direct user -> record permission
-        3. User -> group -> record permission
-        4. User -> org -> record permission
-        5. User -> org -> recordGroup -> record (via inheritPermissions)
-
+        For connector records, permission checking is applied.
         For KB records, all children are visible (KB-level permission applies).
+
+        This matches the ArangoDB implementation behavior.
         """
         return """
         MATCH (parent_record:Record {id: $parent_id})
-        MATCH (u:User {id: $user_key})
+
+        // User is optional - use for permission checks only
+        OPTIONAL MATCH (u:User {id: $user_key})
 
         // Determine if parent is from KB or connector
         OPTIONAL MATCH (parent_connector:RecordGroup {id: parent_record.connectorId})
@@ -10602,39 +10779,43 @@ class Neo4jProvider(IGraphDBProvider):
              (parent_record.connectorName = 'KB' OR
               (parent_connector IS NOT NULL AND parent_connector.type = 'KB')) AS is_kb_parent
 
-        // Get children via RECORD_RELATION
+        // Get children via RECORD_RELATION (direction: parent -> child)
         OPTIONAL MATCH (parent_record)-[rr:RECORD_RELATION]->(record:Record)
         WHERE rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
               AND NOT coalesce(record.isDeleted, false)
-              AND record.orgId = $org_id
 
-        WITH parent_record, u, parent_id, is_kb_parent,
-             [rec IN collect(DISTINCT record) WHERE
+        WITH parent_record, u, parent_id, is_kb_parent, collect(DISTINCT record) AS all_children
+
+        // Filter by permissions - for KB, allow all; for connector, check permission paths
+        WITH parent_record, parent_id, is_kb_parent, u, all_children,
+             [rec IN all_children WHERE rec IS NOT NULL AND (
                  // For KB: Allow all (KB-level permission applies)
                  is_kb_parent
-                 // For Connector: Check 5 permission paths
+                 // For Connector: Check permission paths
                  OR EXISTS((rec)-[:INHERIT_PERMISSIONS]->(:RecordGroup))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(rec))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(:Group|Role)-[:PERMISSION]->(rec))
-                 OR EXISTS((u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->()-[:PERMISSION {{type: 'ORG'}}]->(rec))
-                 OR EXISTS((u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->()-[:PERMISSION {{type: 'ORG'}}]->(:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec))
-             ] AS permitted_records
+                 OR (u IS NOT NULL AND EXISTS((u)-[:PERMISSION]->(rec)))
+                 OR (u IS NOT NULL AND EXISTS((u)-[:PERMISSION]->(:Group)-[:PERMISSION]->(rec)))
+                 OR (u IS NOT NULL AND EXISTS((u)-[:PERMISSION]->(:Role)-[:PERMISSION]->(rec)))
+                 OR (u IS NOT NULL AND EXISTS((u)-[:BELONGS_TO]->()-[:PERMISSION]->(rec)))
+                 OR (u IS NOT NULL AND EXISTS((u)-[:BELONGS_TO]->()-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec)))
+             )] AS permitted_records
 
         // ============================================
         // BUILD RECORD NODES
         // ============================================
         WITH parent_record, parent_id,
              [record IN permitted_records |
-                 {{
+                 {
                      id: record.id,
                      name: record.recordName,
-                     nodeType: CASE WHEN EXISTS((record)-[:IS_OF_TYPE]->(:File {{isFile: false}})) THEN 'folder' ELSE 'record' END,
+                     nodeType: CASE WHEN EXISTS((record)-[:IS_OF_TYPE]->(:File)) THEN
+                         CASE WHEN head([(record)-[:IS_OF_TYPE]->(f:File) | f.isFile]) = false THEN 'folder' ELSE 'record' END
+                         ELSE 'record' END,
                      parentId: 'records/' + parent_id,
-                     source: CASE WHEN EXISTS((:RecordGroup {{id: record.connectorId, connectorName: 'KB'}}))
-                                  THEN 'KB' ELSE 'CONNECTOR' END,
+                     source: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
                      connector: record.connectorName,
                      connectorId: record.connectorId,
-                     kbId: null,
+                     kbId: CASE WHEN record.connectorName = 'KB' THEN record.connectorId ELSE null END,
                      recordType: record.recordType,
                      recordGroupType: null,
                      indexingStatus: record.indexingStatus,
@@ -10646,45 +10827,8 @@ class Neo4jProvider(IGraphDBProvider):
                      webUrl: record.webUrl,
                      hasChildren: EXISTS((record)-[:RECORD_RELATION]->(:Record)),
                      previewRenderable: coalesce(record.previewRenderable, true)
-                 }}
+                 }
              ] AS raw_children
-
-        RETURN raw_children
-
-        // For KB: All children count
-        // For Connector: Need permission-aware child counting
-        // Calculate child count based on permission (simplified - counting all visible children)
-        WITH u, parent_id, is_kb_parent, record, f, is_folder, source,
-             CASE
-                 WHEN is_kb_parent THEN size(children)
-                 ELSE size([c IN children WHERE c IS NOT NULL])
-             END AS child_count
-
-        // For connector children, we should ideally check permissions on each child
-        // However, for performance, we simplify to count all children when parent has permission
-        // (If user can see parent, they can see children based on folder structure)
-
-        WITH collect({
-            id: record.id,
-            name: record.recordName,
-            nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
-            parentId: 'records/' + parent_id,
-            source: source,
-            connector: record.connectorName,
-            connectorId: CASE WHEN source = 'CONNECTOR' THEN record.connectorId ELSE null END,
-            kbId: CASE WHEN source = 'KB' THEN record.connectorId ELSE null END,
-            recordType: record.recordType,
-            recordGroupType: null,
-            indexingStatus: record.indexingStatus,
-            createdAt: record.createdAtTimestamp,
-            updatedAt: record.updatedAtTimestamp,
-            sizeInBytes: coalesce(record.sizeInBytes, f.fileSizeInBytes),
-            mimeType: record.mimeType,
-            extension: f.extension,
-            webUrl: record.webUrl,
-            hasChildren: child_count > 0,
-            previewRenderable: coalesce(record.previewRenderable, true)
-        }) AS raw_children
 
         RETURN raw_children
         """
