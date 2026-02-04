@@ -306,6 +306,7 @@ class EventTypes(Enum):
     DELETE_RECORD = "deleteRecord"
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
+    BULK_DELETE_RECORDS = "bulkDeleteRecords"
 
 class AccountType(Enum):
     INDIVIDUAL = "individual"

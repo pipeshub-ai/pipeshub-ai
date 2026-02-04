@@ -3241,6 +3241,507 @@ class BaseArangoService:
                 "reason": f"Internal error: {str(e)}"
             }
 
+    async def delete_connector_instance(self, connector_id: str, org_id: str) -> Dict:
+        """
+        Delete a connector instance and ALL its related data using a generic graph-based approach.
+
+        This method dynamically discovers and deletes all edges connected to nodes,
+        making it future-proof when new collections/edges are added.
+
+        Flow:
+        1. Collect all node IDs (records, record groups, roles, groups, drives, app)
+        2. Get all edge collections from the graph definition
+        3. Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges
+        4. Delete all edges connected to these nodes (dynamically)
+        5. Delete isOfType target nodes using pre-collected targets
+        6. Delete the nodes themselves
+        7. Return virtualRecordIds for Qdrant cleanup
+
+        Classification nodes (departments, categories, topics, languages) are NOT deleted
+        as they are shared resources.
+        Users are NOT deleted - only userAppRelation edges are removed.
+
+        Args:
+            connector_id: The connector instance ID (_key in apps collection)
+            org_id: The organization ID for validation
+
+        Returns:
+            Dict with success status, deletion counts, and virtualRecordIds for Qdrant
+        """
+        try:
+            self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
+
+            # Step 1: Verify connector exists
+            connector = await self.get_document(connector_id, CollectionNames.APPS.value)
+            if not connector:
+                return {
+                    "success": False,
+                    "error": f"Connector instance {connector_id} not found"
+                }
+
+            # Step 2: Collect all entities for this connector
+            collected = await self._collect_connector_entities(connector_id)
+
+            # Step 3: Get all edge collections from graph definition
+            edge_collections = await self._get_all_edge_collections()
+
+            # Step 4: Define all node collections that might have documents to delete
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.ROLES.value,
+                CollectionNames.GROUPS.value,
+                CollectionNames.SYNC_POINTS.value,
+                CollectionNames.FILES.value,
+                CollectionNames.MAILS.value,
+                CollectionNames.WEBPAGES.value,
+                CollectionNames.COMMENTS.value,
+                CollectionNames.TICKETS.value,
+                CollectionNames.APPS.value,
+                CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+            ]
+
+            # Start transaction
+            # Note: lock_timeout is set to 60 seconds (60000ms).
+            # For very large connector instances with millions of records, this may need to be increased.
+            # Consider implementing a more granular deletion strategy for extremely large datasets if timeouts occur.
+            transaction = self.db.begin_transaction(
+                read=edge_collections + node_collections,
+                write=edge_collections + node_collections,
+                exclusive=[],
+                allow_implicit=True,
+                lock_timeout=60000,  # 60 seconds - may need adjustment for very large deletions
+            )
+
+            try:
+                # Step 5: Collect isOfType targets BEFORE deleting edges
+                isoftype_targets = await self._collect_isoftype_targets(
+                    transaction,
+                    collected["record_ids"]
+                )
+
+                # Step 6: Delete all edges connected to nodes
+                await self._delete_all_edges_for_nodes(
+                    transaction,
+                    collected["all_node_ids"],
+                    edge_collections
+                )
+
+                # Step 7: Delete isOfType target nodes (files, mails, etc.)
+                await self._delete_isoftype_targets_from_collected(
+                    transaction,
+                    isoftype_targets,
+                    edge_collections
+                )
+
+                # Step 8: Delete records
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_keys"],
+                    CollectionNames.RECORDS.value
+                )
+
+                # Step 9: Delete record groups
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_group_keys"],
+                    CollectionNames.RECORD_GROUPS.value
+                )
+
+                # Step 10: Delete roles
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["role_keys"],
+                    CollectionNames.ROLES.value
+                )
+
+                # Step 11: Delete groups
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["group_keys"],
+                    CollectionNames.GROUPS.value
+                )
+
+                # Step 12: Delete syncPoints and blocks
+                await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.SYNC_POINTS.value
+                )
+
+
+                # Step 13: Delete the app itself
+                await self._delete_nodes_by_keys(
+                    transaction,
+                    [connector_id],
+                    CollectionNames.APPS.value
+                )
+
+                # Commit the transaction
+                transaction.commit_transaction()
+
+                self.logger.info(
+                    f"✅ Connector instance {connector_id} deleted successfully. "
+                    f"Records: {len(collected['record_keys'])}, "
+                    f"RecordGroups: {len(collected['record_group_keys'])}, "
+                    f"Roles: {len(collected['role_keys'])}, "
+                    f"Groups: {len(collected['group_keys'])}, "
+                    f"Drives: {len(collected['drive_keys'])}"
+                )
+
+                return {
+                    "success": True,
+                    "deleted_records_count": len(collected["record_keys"]),
+                    "deleted_record_groups_count": len(collected["record_group_keys"]),
+                    "deleted_roles_count": len(collected["role_keys"]),
+                    "deleted_groups_count": len(collected["group_keys"]),
+                    "deleted_drives_count": len(collected["drive_keys"]),
+                    "virtual_record_ids": collected["virtual_record_ids"],
+                    "connector_id": connector_id
+                }
+
+            except Exception as tx_error:
+                try:
+                    transaction.abort_transaction()
+                except Exception as abort_error:
+                    self.logger.error(
+                        f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
+                        f"Original error: {tx_error}"
+                    )
+                raise tx_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}")
+            return {
+                "success": False,
+                "error": f"Failed to delete connector instance: {str(e)}"
+            }
+
+    async def _collect_connector_entities(self, connector_id: str) -> Dict:
+        """
+        Collect all entity IDs for a connector in a single pass.
+        Returns record keys, virtual record IDs, and full node IDs for edge deletion.
+        """
+        result = {
+            "record_keys": [],
+            "record_ids": [],
+            "virtual_record_ids": [],
+            "record_group_keys": [],
+            "role_keys": [],
+            "group_keys": [],
+            "drive_keys": [],
+            "all_node_ids": []
+        }
+
+        # Collect records
+        query = """
+        FOR r IN @@collection FILTER r.connectorId == @connector_id
+        RETURN { _key: r._key, virtualRecordId: r.virtualRecordId }
+        """
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.RECORDS.value,
+            "connector_id": connector_id
+        })
+        for doc in cursor:
+            result["record_keys"].append(doc["_key"])
+            result["record_ids"].append(f"records/{doc['_key']}")
+            if doc.get("virtualRecordId"):
+                result["virtual_record_ids"].append(doc["virtualRecordId"])
+
+        # Collect record groups
+        query = "FOR rg IN @@collection FILTER rg.connectorId == @connector_id RETURN rg._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.RECORD_GROUPS.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["record_group_keys"].append(key)
+
+        # Collect roles
+        query = "FOR role IN @@collection FILTER role.connectorId == @connector_id RETURN role._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.ROLES.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["role_keys"].append(key)
+
+        # Collect groups
+        query = "FOR grp IN @@collection FILTER grp.connectorId == @connector_id RETURN grp._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.GROUPS.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["group_keys"].append(key)
+
+        # Collect drives
+        query = "FOR drive IN @@collection FILTER drive.connectorId == @connector_id RETURN drive._key"
+        cursor = self.db.aql.execute(query, bind_vars={
+            "@collection": CollectionNames.DRIVES.value,
+            "connector_id": connector_id
+        })
+        for key in cursor:
+            result["drive_keys"].append(key)
+
+        # Build all_node_ids list for edge deletion
+        result["all_node_ids"].extend(result["record_ids"])
+        result["all_node_ids"].extend([f"recordGroups/{k}" for k in result["record_group_keys"]])
+        result["all_node_ids"].extend([f"roles/{k}" for k in result["role_keys"]])
+        result["all_node_ids"].extend([f"groups/{k}" for k in result["group_keys"]])
+        result["all_node_ids"].extend([f"drives/{k}" for k in result["drive_keys"]])
+        result["all_node_ids"].append(f"apps/{connector_id}")
+
+        self.logger.info(
+            f"📊 Collected entities for connector {connector_id}: "
+            f"records={len(result['record_keys'])}, "
+            f"recordGroups={len(result['record_group_keys'])}, "
+            f"roles={len(result['role_keys'])}, "
+            f"groups={len(result['group_keys'])}, "
+            f"drives={len(result['drive_keys'])}"
+        )
+
+        return result
+
+    async def _get_all_edge_collections(self) -> List[str]:
+        """
+        Get all edge collection names from the graph definition.
+        This makes the deletion future-proof when new edge types are added.
+
+        Raises:
+            Exception: If the graph or edge definitions cannot be retrieved.
+        """
+        graph = self.db.graph(GraphNames.KNOWLEDGE_GRAPH.value)
+        edge_definitions = graph.edge_definitions()
+        edge_collections = [ed['edge_collection'] for ed in edge_definitions]
+        self.logger.debug(f"📊 Found {len(edge_collections)} edge collections from graph")
+        return edge_collections
+
+    async def _delete_all_edges_for_nodes(
+        self,
+        transaction,
+        node_ids: List[str],
+        edge_collections: List[str]
+    ) -> int:
+        """
+        Delete all edges where _from or _to matches any of the node_ids.
+        Iterates through each edge collection dynamically.
+        """
+        if not node_ids:
+            return 0
+
+        total_deleted = 0
+
+        deletion_query = """
+        FOR edge IN @@edge_collection
+            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        for edge_collection in edge_collections:
+            try:
+                cursor = transaction.aql.execute(deletion_query, bind_vars={
+                    "@edge_collection": edge_collection,
+                    "node_ids": node_ids
+                })
+                deleted_count = len(list(cursor))
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Error deleting from {edge_collection}: {e}")
+                # Continue with other collections
+
+        self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+        return total_deleted
+
+    async def _collect_isoftype_targets(self, transaction, record_ids: List[str]) -> List[Dict]:
+        """
+        Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
+        This must be called before _delete_all_edges_for_nodes to ensure we can find the targets.
+
+        Returns:
+            List of target dictionaries with keys: collection, key, full_id
+        """
+        if not record_ids:
+            return []
+
+        collect_query = """
+        FOR edge IN @@isOfType
+            FILTER edge._from IN @record_ids
+            LET target = PARSE_IDENTIFIER(edge._to)
+            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        """
+
+        try:
+            cursor = transaction.aql.execute(collect_query, bind_vars={
+                "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                "record_ids": record_ids
+            })
+            targets = list(cursor)
+            self.logger.debug(f"📊 Collected {len(targets)} isOfType targets before edge deletion")
+            return targets
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error collecting isOfType targets: {e}")
+            return []
+
+    async def _delete_isoftype_targets_from_collected(
+        self,
+        transaction,
+        targets: List[Dict],
+        edge_collections: List[str]
+    ) -> int:
+        """
+        Delete isOfType target nodes using pre-collected targets.
+        This is called after edges are deleted, using targets collected before deletion.
+
+        Args:
+            transaction: The transaction object
+            targets: List of target dicts with keys: collection, key, full_id (from _collect_isoftype_targets)
+            edge_collections: List of edge collection names for cleanup
+        """
+        if not targets:
+            return 0
+
+        # Build list of type node IDs for edge cleanup
+        type_node_ids = [target["full_id"] for target in targets]
+
+        # Delete edges connected to type nodes BEFORE deleting the nodes
+        await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
+
+        # Group targets by collection
+        targets_by_collection: Dict[str, List[str]] = {}
+        for target in targets:
+            coll = target["collection"]
+            key = target["key"]
+            if coll not in targets_by_collection:
+                targets_by_collection[coll] = []
+            targets_by_collection[coll].append(key)
+
+        # Delete from each collection
+        total_deleted = 0
+        for collection, keys in targets_by_collection.items():
+            deleted = await self._delete_nodes_by_keys(transaction, keys, collection)
+            total_deleted += deleted
+
+        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        return total_deleted
+
+    async def _delete_isoftype_targets(self, transaction, record_ids: List[str], edge_collections: List[str]) -> int:
+        """
+        Delete nodes that records point to via isOfType edges (files, mails, etc.).
+        Dynamically discovers target collection from edge._to.
+        Also deletes any edges connected to these type nodes first.
+        """
+        if not record_ids:
+            return 0
+
+        # First, collect all targets from isOfType edges
+        collect_query = """
+        FOR edge IN @@isOfType
+            FILTER edge._from IN @record_ids
+            LET target = PARSE_IDENTIFIER(edge._to)
+            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        """
+
+        try:
+            cursor = transaction.aql.execute(collect_query, bind_vars={
+                "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                "record_ids": record_ids
+            })
+            targets = list(cursor)
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error collecting isOfType targets: {e}")
+            return 0
+
+        if not targets:
+            return 0
+
+        # Build list of type node IDs for edge cleanup
+        type_node_ids = [target["full_id"] for target in targets]
+
+        # Step 6.5: Delete edges connected to type nodes BEFORE deleting the nodes
+        await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
+
+        # Group targets by collection
+        targets_by_collection: Dict[str, List[str]] = {}
+        for target in targets:
+            coll = target["collection"]
+            key = target["key"]
+            if coll not in targets_by_collection:
+                targets_by_collection[coll] = []
+            targets_by_collection[coll].append(key)
+
+        # Delete from each collection
+        total_deleted = 0
+        for collection, keys in targets_by_collection.items():
+            deleted = await self._delete_nodes_by_keys(transaction, keys, collection)
+            total_deleted += deleted
+
+        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        return total_deleted
+
+    async def _delete_nodes_by_keys(self, transaction, keys: List[str], collection: str, batch_size: int = 1000) -> int:
+        """Delete documents by their _key values using batching."""
+        if not keys:
+            return 0
+
+        total_deleted = 0
+
+        # Process in batches to avoid query size limits
+        for i in range(0, len(keys), batch_size):
+            batch_keys = keys[i:i + batch_size]
+
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                REMOVE doc IN @@collection
+                RETURN 1
+            """
+
+            try:
+                cursor = transaction.aql.execute(query, bind_vars={
+                    "@collection": collection,
+                    "keys": batch_keys
+                })
+                deleted = len(list(cursor))
+                total_deleted += deleted
+            except Exception as e:
+                self.logger.warning(f"⚠️ Error deleting batch from {collection}: {e}")
+                # Continue with next batch even if one fails
+
+        if total_deleted > 0:
+            self.logger.debug(f"🗑️ Deleted {total_deleted} documents from {collection}")
+
+        return total_deleted
+
+    async def _delete_nodes_by_connector_id(self, transaction, connector_id: str, collection: str) -> int:
+        """Delete all documents with matching connectorId."""
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.connectorId == @connector_id
+            REMOVE doc IN @@collection
+            RETURN 1
+        """
+
+        try:
+            cursor = transaction.aql.execute(query, bind_vars={
+                "@collection": collection,
+                "connector_id": connector_id
+            })
+            deleted = len(list(cursor))
+            if deleted > 0:
+                self.logger.debug(f"🗑️ Deleted {deleted} documents from {collection}")
+            return deleted
+        except Exception as e:
+            self.logger.warning(f"⚠️ Error deleting from {collection}: {e}")
+            return 0
+
+
+
     async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str, transaction: Optional[TransactionDatabase] = None) -> None:
         """
         Delete a record by external ID
@@ -10085,10 +10586,18 @@ class BaseArangoService:
         kb_id: str,
         folder_name: str,
         parent_folder_id: Optional[str] = None,
+        exclude_folder_id: Optional[str] = None,
         transaction: Optional[TransactionDatabase] = None
     ) -> Optional[Dict]:
         """
         Find a folder by name within a specific parent (KB root or folder)
+
+        Args:
+            kb_id: Knowledge base ID
+            folder_name: Name of the folder to find
+            parent_folder_id: Parent folder ID (None for KB root)
+            exclude_folder_id: Optional folder ID to exclude from search (useful for rename operations)
+            transaction: Optional transaction
         """
         try:
             db = transaction if transaction else self.db

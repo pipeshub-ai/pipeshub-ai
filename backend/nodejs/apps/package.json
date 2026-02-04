@@ -86,7 +86,7 @@
     "mongoose": "^8.9.2",
     "morgan": "^1.10.1",
     "msal-node": "^0.0.1-security",
-    "multer": "^2.0.0",
+    "multer": "^2.0.2",
     "nodemailer": "^7.0.11",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
@@ -102,6 +102,7 @@
     "zod": "^3.24.1"
   },
   "overrides": {
-    "qs": "6.14.1"
+    "qs": "6.14.1",
+    "fast-xml-parser": "5.3.4"
   }
 }

@@ -5623,13 +5623,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        filter_clause: str,
-        bind_vars: Dict[str, Any],
-        only_containers: bool,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Unified method to get children of any node type.
+
+        ArangoDB implementation: Converts structured parameters to AQL.
 
         Args:
             parent_id: The ID of the parent node.
@@ -5640,8 +5650,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             limit: Maximum number of items to return.
             sort_field: Field to sort by.
             sort_dir: Sort direction ('ASC' or 'DESC').
-            filter_clause: AQL filter clause string.
-            bind_vars: Bind variables for the filter clause.
+            search_query: Optional search query to filter by name.
+            node_types: Optional list of node types to filter by.
+            record_types: Optional list of record types to filter by.
+            origins: Optional list of origins to filter by (KB/CONNECTOR).
+            connector_ids: Optional list of connector IDs to filter by.
+            kb_ids: Optional list of KB IDs to filter by.
+            indexing_status: Optional list of indexing statuses to filter by.
+            created_at: Optional date range filter for creation date.
+            updated_at: Optional date range filter for update date.
+            size: Optional size range filter.
             only_containers: If True, only return nodes that can have children.
             transaction: Optional transaction ID.
         """
@@ -5655,13 +5673,101 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             return {"nodes": [], "total": 0}
 
+        # Build AQL filter conditions from structured parameters
+        filter_conditions = []
+        bind_vars = {
+            "org_id": org_id,
+            "user_key": user_key,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+            **parent_bind_vars,
+        }
+
+        # Search query filter
+        if search_query:
+            bind_vars["search_query"] = search_query.lower()
+            filter_conditions.append("LOWER(node.name) LIKE CONCAT('%', @search_query, '%')")
+
+        # Node type filter
+        if node_types:
+            type_conditions = []
+            for nt in node_types:
+                if nt == "folder":
+                    type_conditions.append('node.nodeType == "folder"')
+                elif nt == "record":
+                    type_conditions.append('node.nodeType == "record"')
+                elif nt == "recordGroup":
+                    type_conditions.append('node.nodeType == "recordGroup"')
+            if type_conditions:
+                filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+        # Record type filter
+        if record_types:
+            bind_vars["record_types"] = record_types
+            filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
+
+        # Indexing status filter
+        if indexing_status:
+            bind_vars["indexing_status"] = indexing_status
+            filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
+
+        # Created date filter
+        if created_at:
+            if created_at.get("gte"):
+                bind_vars["created_at_gte"] = created_at["gte"]
+                filter_conditions.append("node.createdAt >= @created_at_gte")
+            if created_at.get("lte"):
+                bind_vars["created_at_lte"] = created_at["lte"]
+                filter_conditions.append("node.createdAt <= @created_at_lte")
+
+        # Updated date filter
+        if updated_at:
+            if updated_at.get("gte"):
+                bind_vars["updated_at_gte"] = updated_at["gte"]
+                filter_conditions.append("node.updatedAt >= @updated_at_gte")
+            if updated_at.get("lte"):
+                bind_vars["updated_at_lte"] = updated_at["lte"]
+                filter_conditions.append("node.updatedAt <= @updated_at_lte")
+
+        # Size filter
+        if size:
+            if size.get("gte"):
+                bind_vars["size_gte"] = size["gte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
+            if size.get("lte"):
+                bind_vars["size_lte"] = size["lte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
+
+        # Origins filter
+        if origins:
+            bind_vars["origins"] = origins
+            filter_conditions.append("node.source IN @origins")
+
+        # Connector/KB IDs filter
+        if connector_ids and kb_ids:
+            bind_vars["connector_ids"] = connector_ids
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("(node.appId IN @connector_ids OR node.kbId IN @kb_ids)")
+        elif connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            filter_conditions.append("node.appId IN @connector_ids")
+        elif kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("node.kbId IN @kb_ids")
+
+        # Build final filter clause
+        filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
+
         # Common template for filtering, sorting, pagination
         query = f"""
         {sub_query}
 
         LET filtered_children = (
             FOR node IN raw_children
-                FILTER {filter_clause if filter_clause else "true"}
+                FILTER {filter_clause}
                 // Include all container types (app, kb, recordGroup, folder) even if empty
                 FILTER @only_containers == false OR node.hasChildren == true OR node.nodeType IN ["app", "kb", "recordGroup", "folder"]
                 RETURN node
@@ -5673,18 +5779,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         RETURN {{ nodes: paginated_children, total: total_count }}
         """
 
-        all_bind_vars = {
-            "org_id": org_id,
-            "skip": skip,
-            "limit": limit,
-            "sort_field": sort_field,
-            "sort_dir": sort_dir,
-            "only_containers": only_containers,
-            **parent_bind_vars,
-            **bind_vars,
-        }
-
-        result = await self.http_client.execute_aql(query, bind_vars=all_bind_vars, txn_id=transaction)
+        result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
         return result[0] if result else {"nodes": [], "total": 0}
 
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
@@ -5713,19 +5808,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // KB: Find via belongsTo edge
             FOR edge IN belongsTo
                 FILTER edge._to == app._id AND STARTS_WITH(edge._from, "recordGroups/")
-                LET rg = DOCUMENT(edge._from)
-                FILTER rg != null AND rg.connectorName == "KB"
+                LET rg_kb = DOCUMENT(edge._from)
+                FILTER rg_kb != null AND rg_kb.connectorName == "KB"
                 FOR perm IN permission
-                    FILTER perm._from == user_from AND perm._to == rg._id AND perm.type == "USER"
-                    RETURN rg._key
+                    FILTER perm._from == user_from AND perm._to == rg_kb._id
+                    RETURN rg_kb._key
         ) : (
             // Connector: Existing logic
             FOR perm IN permission
                 FILTER perm._from == user_from
                 FILTER STARTS_WITH(perm._to, "recordGroups/")
-                LET rg = DOCUMENT(perm._to)
-                FILTER rg != null AND rg.connectorId == @app_id
-                RETURN rg._key
+                LET rg_conn = DOCUMENT(perm._to)
+                FILTER rg_conn != null AND rg_conn.connectorId == @app_id
+                RETURN rg_conn._key
         )
 
         // Permission Path 2: User -> Group -> recordGroup permission
@@ -5735,20 +5830,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                 FOR edge IN belongsTo
                     FILTER edge._to == app._id AND STARTS_WITH(edge._from, "recordGroups/")
-                    LET rg = DOCUMENT(edge._from)
-                    FILTER rg != null AND rg.connectorName == "KB"
+                    LET rg_kb2 = DOCUMENT(edge._from)
+                    FILTER rg_kb2 != null AND rg_kb2.connectorName == "KB"
                     FOR perm IN permission
-                        FILTER perm._from == group._id AND perm._to == rg._id AND (perm.type == "GROUP" OR perm.type == "ROLE")
-                        RETURN rg._key
+                        FILTER perm._from == group._id AND perm._to == rg_kb2._id
+                        RETURN rg_kb2._key
         ) : (
             // Connector: Existing logic
             FOR group, userEdge IN 1..1 ANY user_from permission
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR rg, groupEdge IN 1..1 ANY group._id permission
-                    FILTER groupEdge.type == "GROUP" OR groupEdge.type == "ROLE"
-                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
-                    FILTER rg.connectorId == @app_id
-                    RETURN rg._key
+                FOR rg_conn2, groupEdge IN 1..1 ANY group._id permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg_conn2)
+                    FILTER rg_conn2.connectorId == @app_id
+                    RETURN rg_conn2._key
         )
 
         // Permission Path 3: User -> Org -> recordGroup permission
@@ -5758,20 +5852,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER belongsEdge.entityType == "ORGANIZATION"
                 FOR edge IN belongsTo
                     FILTER edge._to == app._id AND STARTS_WITH(edge._from, "recordGroups/")
-                    LET rg = DOCUMENT(edge._from)
-                    FILTER rg != null AND rg.connectorName == "KB"
+                    LET rg_kb3 = DOCUMENT(edge._from)
+                    FILTER rg_kb3 != null AND rg_kb3.connectorName == "KB"
                     FOR perm IN permission
-                        FILTER perm._from == org._id AND perm._to == rg._id AND perm.type == "ORG"
-                        RETURN rg._key
+                        FILTER perm._from == org._id AND perm._to == rg_kb3._id
+                        RETURN rg_kb3._key
         ) : (
             // Connector: Existing logic
             FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                 FILTER belongsEdge.entityType == "ORGANIZATION"
-                FOR rg, orgPerm IN 1..1 ANY org._id permission
-                    FILTER orgPerm.type == "ORG"
-                    FILTER IS_SAME_COLLECTION("recordGroups", rg)
-                    FILTER rg.connectorId == @app_id
-                    RETURN rg._key
+                FOR rg_conn3, orgPerm IN 1..1 ANY org._id permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", rg_conn3)
+                    FILTER rg_conn3.connectorId == @app_id
+                    RETURN rg_conn3._key
         )
 
         LET accessible_rg_ids = UNION_DISTINCT(direct_rg_ids, group_rg_ids, org_rg_ids)
@@ -5823,16 +5916,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             LET child_rg = DOCUMENT(edge._from)
                             FILTER child_rg != null AND child_rg.connectorName == "KB" AND child_rg.isDeleted != true
                             // Check if user has permission to this nested record group
-                            LET child_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == child_rg._id AND perm.type == "USER" RETURN 1) > 0
+                            LET child_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == child_rg._id RETURN 1) > 0
                             LET child_has_group = LENGTH(
                                 FOR group, userEdge IN 1..1 ANY user_from permission
                                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                    FOR perm IN permission FILTER perm._from == group._id AND perm._to == child_rg._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == group._id AND perm._to == child_rg._id RETURN 1
                             ) > 0
                             LET child_has_org = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
-                                    FOR perm IN permission FILTER perm._from == org._id AND perm._to == child_rg._id FILTER perm.type == "ORG" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == org._id AND perm._to == child_rg._id RETURN 1
                             ) > 0
                             FILTER child_has_direct OR child_has_group OR child_has_org
                             RETURN 1
@@ -5849,19 +5942,55 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 // Option 2: Connected via parentExternalGroupId field
                                 (child_rg.parentExternalGroupId != null AND child_rg.parentExternalGroupId == rg.externalGroupId)
                             )
-                            // Check if user has permission to this nested record group
-                            LET child_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == child_rg._id AND perm.type == "USER" RETURN 1) > 0
+                            // Check if user has permission to this nested record group (6 paths)
+                            // Path 1: Direct user -> child_rg permission
+                            LET child_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == child_rg._id RETURN 1) > 0
+                            // Path 2: User -> group/role -> child_rg permission
                             LET child_has_group = LENGTH(
                                 FOR group, userEdge IN 1..1 ANY user_from permission
                                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                    FOR perm IN permission FILTER perm._from == group._id AND perm._to == child_rg._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == group._id AND perm._to == child_rg._id RETURN 1
                             ) > 0
+                            // Path 3: User -> org -> child_rg permission
                             LET child_has_org = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
-                                    FOR perm IN permission FILTER perm._from == org._id AND perm._to == child_rg._id FILTER perm.type == "ORG" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == org._id AND perm._to == child_rg._id RETURN 1
                             ) > 0
-                            FILTER child_has_direct OR child_has_group OR child_has_org
+                            // Path 4, 5, 6: Check for inherited permissions from any accessible parent record group
+                            LET accessible_parent_rgs = UNION_DISTINCT(
+                                (
+                                    // user -> parent_rg permission
+                                    FOR parent_rg, userPerm IN 1..1 ANY user_from permission
+                                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                        RETURN parent_rg
+                                ),
+                                (
+                                    // user -> group -> parent_rg permission
+                                    FOR group, userEdge IN 1..1 ANY user_from permission
+                                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                                        FOR parent_rg, groupPerm IN 1..1 ANY group._id permission
+                                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                            RETURN parent_rg
+                                ),
+                                (
+                                    // user -> org -> parent_rg permission
+                                    FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                                        FOR parent_rg, orgPerm IN 1..1 ANY org._id permission
+                                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                            RETURN parent_rg
+                                )
+                            )
+                            LET child_has_inherited_perm = LENGTH(
+                                // parent_rg -> inheritPermissions -> child_rg permission
+                                FOR parent_rg IN accessible_parent_rgs
+                                    FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                        FILTER inherited_rg._id == child_rg._id
+                                        LIMIT 1
+                                        RETURN 1
+                            ) > 0
+                            FILTER child_has_direct OR child_has_group OR child_has_org OR child_has_inherited_perm
                             RETURN 1
                     ) > 0
                 )
@@ -5908,49 +6037,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER record != null
                         // Check if user has permission to this record
                         // Path 1: Direct user -> record permission
-                        LET rec_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == record._id AND perm.type == "USER" RETURN 1) > 0
+                        LET rec_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == record._id RETURN 1) > 0
                         // Path 2: User -> group -> record permission
                         LET rec_has_group = LENGTH(
                             FOR group, userEdge IN 1..1 ANY user_from permission
                                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                FOR perm IN permission FILTER perm._from == group._id AND perm._to == record._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
+                                FOR perm IN permission FILTER perm._from == group._id AND perm._to == record._id RETURN 1
                         ) > 0
                         // Path 3: User -> org -> record permission
                         LET rec_has_org = LENGTH(
                             FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                 FILTER belongsEdge.entityType == "ORGANIZATION"
-                                FOR perm IN permission FILTER perm._from == org._id AND perm._to == record._id FILTER perm.type == "ORG" RETURN 1
+                                FOR perm IN permission FILTER perm._from == org._id AND perm._to == record._id RETURN 1
                         ) > 0
-                        // Path 4: User -> recordGroup (via inheritPermissions) -> record
-                        LET rec_has_inherit_rg = LENGTH(
-                            FOR recordGroup, userToRgEdge IN 1..1 ANY user_from permission
-                                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                        // Path 4, 5, 6: Check for inherited permissions from any accessible record group
+                        LET accessible_rgs = UNION_DISTINCT(
+                            (FOR acc_rg1, userPerm IN 1..1 ANY user_from permission FILTER IS_SAME_COLLECTION("recordGroups", acc_rg1) RETURN acc_rg1),
+                            (FOR group, userEdge IN 1..1 ANY user_from permission FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group) FOR acc_rg2, groupPerm IN 1..1 ANY group._id permission FILTER IS_SAME_COLLECTION("recordGroups", acc_rg2) RETURN acc_rg2),
+                            (FOR org, belongsEdge IN 1..1 ANY user_from belongsTo FILTER belongsEdge.entityType == "ORGANIZATION" FOR acc_rg3, orgPerm IN 1..1 ANY org._id permission FILTER IS_SAME_COLLECTION("recordGroups", acc_rg3) RETURN acc_rg3)
+                        )
+                        LET rec_has_inherited_perm = LENGTH(
+                            FOR acc_rg IN accessible_rgs
+                                FOR nested_rg IN 0..10 INBOUND acc_rg._id inheritPermissions
+                                FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
                                 FOR inheritEdge IN inheritPermissions
-                                    FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
+                                    FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
+                                    LIMIT 1
                                     RETURN 1
                         ) > 0
-                        // Path 5: User -> group -> recordGroup (via inheritPermissions) -> record
-                        LET rec_has_group_rg = LENGTH(
-                            FOR group, userEdge IN 1..1 ANY user_from permission
-                                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id permission
-                                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
-                                        RETURN 1
-                        ) > 0
-                        // Path 6: User -> org -> recordGroup (via inheritPermissions) -> record
-                        LET rec_has_org_rg = LENGTH(
-                            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
-                                FILTER belongsEdge.entityType == "ORGANIZATION"
-                                FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
-                                    FILTER orgPerm.type == "ORG"
-                                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
-                                        RETURN 1
-                        ) > 0
-                        FILTER rec_has_direct OR rec_has_group OR rec_has_org OR rec_has_inherit_rg OR rec_has_group_rg OR rec_has_org_rg
+                        FILTER rec_has_direct OR rec_has_group OR rec_has_org OR rec_has_inherited_perm
                         RETURN 1
                 ) > 0
                 RETURN {
@@ -5966,10 +6081,86 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         return sub_query, {"app_id": app_id, "user_key": user_key}
 
+    def _generate_record_permission_check_aql(self, record_var: str = "record", user_from_var: str = "user_from") -> str:
+        """
+        Generate AQL code to check if user has permission to a record via 6 paths.
+
+        Args:
+            record_var: Name of the record variable in AQL
+            user_from_var: Name of the user_from variable in AQL
+
+        Returns:
+            AQL code snippet that evaluates to a boolean
+        """
+        return f"""(
+            // Path 1: user->org<-record (direct org permission to record)
+            LENGTH(
+                FOR org, belongsEdge IN 1..1 ANY {user_from_var} belongsTo
+                    FILTER belongsEdge.entityType == "ORGANIZATION"
+                    FOR perm IN permission
+                        FILTER perm._from == org._id AND perm._to == {record_var}._id
+                        RETURN 1
+            ) > 0 OR
+            // Path 2: user->org->recordGroup->(RG inheritance chain)->record (org permission to recordGroup, then nested recordGroups via inheritPermissions, then record via inheritPermissions)
+            LENGTH(
+                FOR org, belongsEdge IN 1..1 ANY {user_from_var} belongsTo
+                    FILTER belongsEdge.entityType == "ORGANIZATION"
+                    FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                        // Traverse RG inheritance chain (child RGs inherit from parent), then check inheritPermissions to record
+                        FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                            FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                            FOR inheritEdge IN inheritPermissions
+                                FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == {record_var}._id
+                                RETURN 1
+            ) > 0 OR
+            // Path 3: user->record (direct user permission to record)
+            LENGTH(
+                FOR perm IN permission
+                    FILTER perm._from == {user_from_var} AND perm._to == {record_var}._id
+                    RETURN 1
+            ) > 0 OR
+            // Path 4: user->recordGroup->(RG inheritance chain)->record (user permission to recordGroup, then nested recordGroups via inheritPermissions, then record via inheritPermissions)
+            LENGTH(
+                FOR recordGroup, userPerm IN 1..1 ANY {user_from_var} permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                    // Traverse RG inheritance chain (child RGs inherit from parent), then check inheritPermissions to record
+                    FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                        FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                        FOR inheritEdge IN inheritPermissions
+                            FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == {record_var}._id
+                            RETURN 1
+            ) > 0 OR
+            // Path 5: user->group->record (group permission to record)
+            LENGTH(
+                FOR group, userEdge IN 1..1 ANY {user_from_var} permission
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                    FOR perm IN permission
+                        FILTER perm._from == group._id AND perm._to == {record_var}._id
+                        RETURN 1
+            ) > 0 OR
+            // Path 6: user->group->recordGroup->(RG inheritance chain)->record (group permission to recordGroup, then nested recordGroups via inheritPermissions, then record via inheritPermissions)
+            LENGTH(
+                FOR group, userEdge IN 1..1 ANY {user_from_var} permission
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                    FOR recordGroup, groupPerm IN 1..1 ANY group._id permission
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                        // Traverse RG inheritance chain (child RGs inherit from parent), then check inheritPermissions to record
+                        FOR nested_rg IN 0..10 INBOUND recordGroup._id inheritPermissions
+                            FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
+                            FOR inheritEdge IN inheritPermissions
+                                FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == {record_var}._id
+                                RETURN 1
+            ) > 0
+        )"""
+
     def _get_record_group_children_subquery(self, rg_id: str, org_id: str, parent_type: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
         """Generate AQL sub-query to fetch children of a KB or RecordGroup with permission filtering."""
         rg_doc_id = f"recordGroups/{rg_id}"
         source = "KB" if parent_type == "kb" else "CONNECTOR"
+
+        # Generate the permission check AQL code once
+        permission_check = self._generate_record_permission_check_aql("record", "user_from")
 
         sub_query = f"""
         LET rg = DOCUMENT(@rg_doc_id)
@@ -5979,10 +6170,42 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // Determine if this is a KB or App record group
         LET is_kb_rg = rg.connectorName == "KB"
 
+        LET user_from = CONCAT("users/", @user_key)
+
+        // If record group is internal, fetch all records connected via belongsTo with permission checks
+        LET internal_records = rg.isInternal == true ? (
+            FOR edge IN belongsTo
+                FILTER edge._to == @rg_doc_id AND edge._from LIKE "records/%"
+                LET record = DOCUMENT(edge._from)
+                FILTER record != null AND record.isDeleted != true
+
+                // Check if user has permission to this record via 6 paths
+                FILTER {permission_check}
+
+                LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = LENGTH(FOR ce IN recordRelations FILTER ce._from == record._id AND ce.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"] LET c = DOCUMENT(ce._to) FILTER c != null AND c.isDeleted != true RETURN 1) > 0
+                RETURN {{
+                    id: record._key, name: record.recordName, nodeType: is_folder ? "folder" : "record",
+                    parentId: @rg_doc_id,
+                    source: "{source}",
+                    connector: record.connectorName,
+                    connectorId: "{source}" == "CONNECTOR" ? record.connectorId : null,
+                    kbId: "{source}" == "KB" ? record.connectorId : null,
+                    recordType: record.recordType, recordGroupType: null, indexingStatus: record.indexingStatus,
+                    createdAt: record.createdAtTimestamp, updatedAt: record.updatedAtTimestamp,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes, mimeType: record.mimeType,
+                    extension: file_info.extension, webUrl: record.webUrl,
+                    hasChildren: has_children,
+                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true
+                }}
+        ) : []
+
         // Get all child record groups
         // For KB: use belongsTo edges
         // For Connector: use parentExternalGroupId to find children
-        LET all_nested_rgs = is_kb_rg ? (
+        // Skip calculating if isInternal is true (optimization)
+        LET all_nested_rgs = rg.isInternal == true ? [] : (is_kb_rg ? (
             // KB: Use belongsTo edges
             FOR edge IN belongsTo
                 FILTER edge._to == rg._id AND STARTS_WITH(edge._from, "recordGroups/")
@@ -5994,51 +6217,85 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER child_rg.connectorId == rg.connectorId
                 FILTER child_rg.parentExternalGroupId == rg.externalGroupId
                 RETURN child_rg
-        )
+        ))
 
         // For connector record groups, check permissions; for KB, allow all (KB-level permission applies)
         // For connector record groups:
         // Since we already verified access to the parent RG (in the query calling this),
         // we can assume access to its children for Drive-like connectors.
         // For KB, we also allow all children (KB permission applies).
-        LET accessible_nested_rg_ids = (
+        // Skip calculating if isInternal is true (optimization)
+        LET accessible_nested_rg_ids = rg.isInternal == true ? [] : (
             FOR child_rg IN all_nested_rgs RETURN child_rg._key
         )
 
-        LET user_from = CONCAT("users/", @user_key)
-
         // For connector record groups, check permissions for nested record groups
-        LET accessible_nested_rg_ids_with_perm = is_kb_rg ? accessible_nested_rg_ids : (
+        // Skip calculating if isInternal is true (optimization)
+        LET accessible_nested_rg_ids_with_perm = rg.isInternal == true ? [] : (is_kb_rg ? accessible_nested_rg_ids : (
             FOR child_rg IN all_nested_rgs
                 // Check if user has permission to this nested record group
+                // Path 1: Direct user -> child_rg permission
                 LET has_direct_perm = LENGTH(
                     FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == child_rg._id AND perm.type == "USER"
+                        FILTER perm._from == user_from AND perm._to == child_rg._id
                         RETURN 1
                 ) > 0
+                // Path 2: User -> group/role -> child_rg permission
                 LET has_group_perm = LENGTH(
                     FOR group, userEdge IN 1..1 ANY user_from permission
                         FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                         FOR perm IN permission
                             FILTER perm._from == group._id AND perm._to == child_rg._id
-                            FILTER perm.type == "GROUP" OR perm.type == "ROLE"
                             RETURN 1
                 ) > 0
+                // Path 3: User -> org -> child_rg permission
                 LET has_org_perm = LENGTH(
                     FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR perm IN permission
                             FILTER perm._from == org._id AND perm._to == child_rg._id
-                            FILTER perm.type == "ORG"
                             RETURN 1
                 ) > 0
-                FILTER has_direct_perm OR has_group_perm OR has_org_perm
-                RETURN child_rg._key
-        )
+                // Path 4, 5, 6: Check for inherited permissions from any accessible parent record group
+                LET accessible_parent_rgs = UNION_DISTINCT(
+                    (
+                        FOR parent_rg, userPerm IN 1..1 ANY user_from permission
+                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                            RETURN parent_rg
+                    ),
+                    (
+                        FOR group, userEdge IN 1..1 ANY user_from permission
+                            FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                            FOR parent_rg, groupPerm IN 1..1 ANY group._id permission
+                                FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                RETURN parent_rg
+                    ),
+                    (
+                        FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                            FILTER belongsEdge.entityType == "ORGANIZATION"
+                            FOR parent_rg, orgPerm IN 1..1 ANY org._id permission
+                                FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                RETURN parent_rg
+                    )
+                )
+                LET has_inherited_perm = LENGTH(
+                    FOR parent_rg IN accessible_parent_rgs
+                        FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                            FILTER inherited_rg._id == child_rg._id
+                            LIMIT 1
+                            RETURN 1
+                ) > 0
 
-        LET nested_rgs = (
-            FOR child_rg IN all_nested_rgs
-                FILTER is_kb_rg OR child_rg._key IN accessible_nested_rg_ids_with_perm
+                FILTER has_direct_perm OR has_group_perm OR has_org_perm OR has_inherited_perm
+                RETURN child_rg._key
+        ))
+
+        // Calculate if nested_rgs has children
+        // Skip calculating nested_rgs if isInternal is true
+        LET nested_rgs = rg.isInternal == true ? [] : (
+            FOR child_rg_key IN accessible_nested_rg_ids_with_perm
+                LET child_rg = DOCUMENT(CONCAT("recordGroups/", child_rg_key))
+                FILTER child_rg != null
                 // Check if user has permission to see nested record groups
                 LET has_child_rgs = is_kb_rg ? (
                     // KB: Use belongsTo edges
@@ -6051,21 +6308,64 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     ) > 0
                 ) : (
                     LENGTH(
-                        FOR sub_rg IN recordGroups
-                            FILTER sub_rg.parentId == child_rg._key AND sub_rg.isDeleted != true
-                            // Check permission for nested record groups
-                            LET sub_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == sub_rg._id AND perm.type == "USER" RETURN 1) > 0
+                        // Find sub record groups using BOTH parentId field AND inheritPermissions edges
+                        FOR sub_rg IN UNION_DISTINCT(
+                            // Method 1: Using parentId field
+                            FOR inner_rg IN recordGroups
+                                FILTER inner_rg.parentId == child_rg._key AND inner_rg.isDeleted != true
+                                RETURN inner_rg,
+                            // Method 2: Using inheritPermissions edges (RG -> RG inheritance)
+                            FOR inherit_edge IN inheritPermissions
+                                FILTER inherit_edge._to == child_rg._id AND STARTS_WITH(inherit_edge._from, "recordGroups/")
+                                LET inner_rg2 = DOCUMENT(inherit_edge._from)
+                                FILTER inner_rg2 != null AND inner_rg2.isDeleted != true
+                                RETURN inner_rg2
+                        )
+                            // Check permission for nested record groups (6 paths)
+                            // Path 1: Direct user -> sub_rg permission
+                            LET sub_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == sub_rg._id RETURN 1) > 0
+                            // Path 2: User -> group/role -> sub_rg permission
                             LET sub_has_group = LENGTH(
                                 FOR group, userEdge IN 1..1 ANY user_from permission
                                     FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                    FOR perm IN permission FILTER perm._from == group._id AND perm._to == sub_rg._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == group._id AND perm._to == sub_rg._id RETURN 1
                             ) > 0
+                            // Path 3: User -> org -> sub_rg permission
                             LET sub_has_org = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
-                                    FOR perm IN permission FILTER perm._from == org._id AND perm._to == sub_rg._id FILTER perm.type == "ORG" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == org._id AND perm._to == sub_rg._id RETURN 1
                             ) > 0
-                            FILTER sub_has_direct OR sub_has_group OR sub_has_org
+                            // Path 4, 5, 6: Check for inherited permissions from any accessible parent record group
+                            LET accessible_parent_rgs = UNION_DISTINCT(
+                                (
+                                    FOR parent_rg, userPerm IN 1..1 ANY user_from permission
+                                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                        RETURN parent_rg
+                                ),
+                                (
+                                    FOR group, userEdge IN 1..1 ANY user_from permission
+                                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                                        FOR parent_rg, groupPerm IN 1..1 ANY group._id permission
+                                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                            RETURN parent_rg
+                                ),
+                                (
+                                    FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
+                                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                                        FOR parent_rg, orgPerm IN 1..1 ANY org._id permission
+                                            FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                                            RETURN parent_rg
+                                )
+                            )
+                            LET sub_has_inherited_perm = LENGTH(
+                                FOR parent_rg IN accessible_parent_rgs
+                                    FOR inherited_rg IN 0..10 INBOUND parent_rg._id inheritPermissions
+                                        FILTER inherited_rg._id == sub_rg._id
+                                        LIMIT 1
+                                        RETURN 1
+                            ) > 0
+                            FILTER sub_has_direct OR sub_has_group OR sub_has_org OR sub_has_inherited_perm
                             RETURN 1
                     ) > 0
                 )
@@ -6111,49 +6411,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER r != null
                         // Check if user has permission to this record
                         // Path 1: Direct user -> record permission
-                        LET r_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == r._id AND perm.type == "USER" RETURN 1) > 0
+                        LET r_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == r._id RETURN 1) > 0
                         // Path 2: User -> group -> record permission
                         LET r_has_group = LENGTH(
                             FOR group, userEdge IN 1..1 ANY user_from permission
                                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                FOR perm IN permission FILTER perm._from == group._id AND perm._to == r._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
+                                FOR perm IN permission FILTER perm._from == group._id AND perm._to == r._id RETURN 1
                         ) > 0
                         // Path 3: User -> org -> record permission
                         LET r_has_org = LENGTH(
                             FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                 FILTER belongsEdge.entityType == "ORGANIZATION"
-                                FOR perm IN permission FILTER perm._from == org._id AND perm._to == r._id FILTER perm.type == "ORG" RETURN 1
+                                FOR perm IN permission FILTER perm._from == org._id AND perm._to == r._id RETURN 1
                         ) > 0
-                        // Path 4: User -> recordGroup (via inheritPermissions) -> record
-                        LET r_has_inherit_rg = LENGTH(
-                            FOR recordGroup, userToRgEdge IN 1..1 ANY user_from permission
-                                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+                        // Path 4, 5, 6: Check for inherited permissions from any accessible record group
+                        LET accessible_rgs = UNION_DISTINCT(
+                            (FOR acc_rg1, userPerm IN 1..1 ANY user_from permission FILTER IS_SAME_COLLECTION("recordGroups", acc_rg1) RETURN acc_rg1),
+                            (FOR group, userEdge IN 1..1 ANY user_from permission FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group) FOR acc_rg2, groupPerm IN 1..1 ANY group._id permission FILTER IS_SAME_COLLECTION("recordGroups", acc_rg2) RETURN acc_rg2),
+                            (FOR org, belongsEdge IN 1..1 ANY user_from belongsTo FILTER belongsEdge.entityType == "ORGANIZATION" FOR acc_rg3, orgPerm IN 1..1 ANY org._id permission FILTER IS_SAME_COLLECTION("recordGroups", acc_rg3) RETURN acc_rg3)
+                        )
+                        LET r_has_inherited_perm = LENGTH(
+                            FOR acc_rg IN accessible_rgs
+                                FOR nested_rg IN 0..10 INBOUND acc_rg._id inheritPermissions
+                                FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
                                 FOR inheritEdge IN inheritPermissions
-                                    FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == r._id
+                                    FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == r._id
+                                    LIMIT 1
                                     RETURN 1
                         ) > 0
-                        // Path 5: User -> group -> recordGroup (via inheritPermissions) -> record
-                        LET r_has_group_rg = LENGTH(
-                            FOR group, userEdge IN 1..1 ANY user_from permission
-                                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                                FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id permission
-                                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == r._id
-                                        RETURN 1
-                        ) > 0
-                        // Path 6: User -> org -> recordGroup (via inheritPermissions) -> record
-                        LET r_has_org_rg = LENGTH(
-                            FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
-                                FILTER belongsEdge.entityType == "ORGANIZATION"
-                                FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
-                                    FILTER orgPerm.type == "ORG"
-                                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                                    FOR inheritEdge IN inheritPermissions
-                                        FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == r._id
-                                        RETURN 1
-                        ) > 0
-                        FILTER r_has_direct OR r_has_group OR r_has_org OR r_has_inherit_rg OR r_has_group_rg OR r_has_org_rg
+                        FILTER r_has_direct OR r_has_group OR r_has_org OR r_has_inherited_perm
                         RETURN 1
                     ) > 0
                 )
@@ -6173,7 +6459,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // Find direct children records
         // KB: Use belongsTo edges (FROM record TO recordGroup)
         // App: Use belongsTo edges (FROM record TO recordGroup)
-        LET records = is_kb_rg ? (
+        // Skip calculating if isInternal is true (optimization)
+        LET records = rg.isInternal == true ? [] : (is_kb_rg ? (
             // KB: Use belongsTo edges (record -> belongsTo -> recordGroup)
             // Only direct children: externalParentId must be null
             FOR edge IN belongsTo
@@ -6205,80 +6492,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR edge IN belongsTo
                 FILTER edge._from LIKE "records/%" AND edge._to == @rg_doc_id
                 LET record = DOCUMENT(edge._from)
+
                 FILTER record != null AND record.isDeleted != true AND record.externalParentId == null
 
-                // Check if user has permission to this record via 6 paths:
-                // Path 1: user->org<-record (direct org permission to record)
-                LET path1_org_record = LENGTH(
-                    FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
-                        FILTER belongsEdge.entityType == "ORGANIZATION"
-                        FOR perm IN permission
-                            FILTER perm._from == org._id AND perm._to == record._id AND perm.type == "ORG"
-                            RETURN 1
-                ) > 0
-
-                // Path 2: user->org<-recordGroup<-..nested recordGroup..<-record (org permission to recordGroup, then nested recordGroups via belongsTo, then record via inheritPermissions)
-                LET path2_org_rg_record = LENGTH(
-                    FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
-                        FILTER belongsEdge.entityType == "ORGANIZATION"
-                        FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
-                            FILTER orgPerm.type == "ORG"
-                            FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                            // Traverse nested recordGroups via belongsTo edges, then check inheritPermissions to record
-                            FOR nested_rg, rgEdge IN 0..10 OUTBOUND recordGroup._id belongsTo
-                                FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
-                                FOR inheritEdge IN inheritPermissions
-                                    FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
-                                    RETURN 1
-                ) > 0
-
-                // Path 3: user->record (direct user permission to record)
-                LET path3_user_record = LENGTH(
-                    FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == record._id AND perm.type == "USER"
-                        RETURN 1
-                ) > 0
-
-                // Path 4: user->recordGroup->..nested recordGroup..->record (user permission to recordGroup, then nested recordGroups via belongsTo, then record via inheritPermissions)
-                LET path4_user_rg_record = LENGTH(
-                    FOR recordGroup, userPerm IN 1..1 ANY user_from permission
-                        FILTER userPerm.type == "USER"
-                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                        // Traverse nested recordGroups via belongsTo edges, then check inheritPermissions to record
-                        FOR nested_rg, rgEdge IN 0..10 OUTBOUND recordGroup._id belongsTo
-                            FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
-                            FOR inheritEdge IN inheritPermissions
-                                FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
-                                RETURN 1
-                ) > 0
-
-                // Path 5: user->group->record (group permission to record)
-                LET path5_group_record = LENGTH(
-                    FOR group, userEdge IN 1..1 ANY user_from permission
-                        FILTER userEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                        FOR perm IN permission
-                            FILTER perm._from == group._id AND perm._to == record._id AND (perm.type == "GROUP" OR perm.type == "ROLE")
-                            RETURN 1
-                ) > 0
-
-                // Path 6: user->group->recordGroup->..nested recordGroup..->record (group permission to recordGroup, then nested recordGroups via belongsTo, then record via inheritPermissions)
-                LET path6_group_rg_record = LENGTH(
-                    FOR group, userEdge IN 1..1 ANY user_from permission
-                        FILTER userEdge.type == "USER"
-                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                        FOR recordGroup, groupPerm IN 1..1 ANY group._id permission
-                            FILTER groupPerm.type == "GROUP" OR groupPerm.type == "ROLE"
-                            FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
-                            // Traverse nested recordGroups via belongsTo edges, then check inheritPermissions to record
-                            FOR nested_rg, rgEdge IN 0..10 OUTBOUND recordGroup._id belongsTo
-                                FILTER IS_SAME_COLLECTION("recordGroups", nested_rg)
-                                FOR inheritEdge IN inheritPermissions
-                                    FILTER inheritEdge._to == nested_rg._id AND inheritEdge._from == record._id
-                                    RETURN 1
-                ) > 0
-
-                FILTER path1_org_record OR path2_org_rg_record OR path3_user_record OR path4_user_rg_record OR path5_group_record OR path6_group_rg_record
+                // Check if user has permission to this record via 6 paths
+                FILTER {permission_check}
 
                 LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
                 LET is_folder = file_info != null AND file_info.isFile == false
@@ -6298,9 +6516,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true
                 }}
-        )
+        ))
 
-        LET raw_children = UNION(nested_rgs, records)
+        LET raw_children = rg.isInternal == true ? internal_records : UNION(nested_rgs, records)
         """
         return sub_query, {"rg_doc_id": rg_doc_id, "org_id": org_id, "user_key": user_key}
 
@@ -6336,7 +6554,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ) > 0
                 LET has_direct_perm = LENGTH(
                     FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == record._id AND perm.type == "USER"
+                        FILTER perm._from == user_from AND perm._to == record._id
                         RETURN 1
                 ) > 0
                 LET has_group_perm = LENGTH(
@@ -6344,7 +6562,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
                         FOR perm IN permission
                             FILTER perm._from == group._id AND perm._to == record._id
-                            FILTER perm.type == "GROUP" OR perm.type == "ROLE"
                             RETURN 1
                 ) > 0
                 LET has_org_perm = LENGTH(
@@ -6352,14 +6569,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR perm IN permission
                             FILTER perm._from == org._id AND perm._to == record._id
-                            FILTER perm.type == "ORG"
                             RETURN 1
                 ) > 0
                 LET has_org_rg_perm = LENGTH(
                     FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                         FILTER belongsEdge.entityType == "ORGANIZATION"
                         FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
-                            FILTER orgPerm.type == "ORG"
                             FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
                             FOR inheritEdge IN inheritPermissions
                                 FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == record._id
@@ -6379,25 +6594,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             LET c = DOCUMENT(ce._to)
                             FILTER c != null AND c.isDeleted != true
                             LET c_has_ip = LENGTH(FOR ip IN inheritPermissions FILTER ip._from == c._id RETURN 1) > 0
-                            LET c_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == c._id AND perm.type == "USER" RETURN 1) > 0
+                            LET c_has_direct = LENGTH(FOR perm IN permission FILTER perm._from == user_from AND perm._to == c._id RETURN 1) > 0
                             LET c_has_group = LENGTH(
                                 FOR grp, ue IN 1..1 ANY user_from permission
                                     FILTER IS_SAME_COLLECTION("groups", grp) OR IS_SAME_COLLECTION("roles", grp)
-                                    FOR perm IN permission FILTER perm._from == grp._id AND perm._to == c._id FILTER perm.type == "GROUP" OR perm.type == "ROLE" RETURN 1
+                                    FOR perm IN permission FILTER perm._from == grp._id AND perm._to == c._id RETURN 1
                             ) > 0
                             LET c_has_org = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
                                     FOR perm IN permission
                                         FILTER perm._from == org._id AND perm._to == c._id
-                                        FILTER perm.type == "ORG"
                                         RETURN 1
                             ) > 0
                             LET c_has_org_rg = LENGTH(
                                 FOR org, belongsEdge IN 1..1 ANY user_from belongsTo
                                     FILTER belongsEdge.entityType == "ORGANIZATION"
                                     FOR recordGroup, orgPerm IN 1..1 ANY org._id permission
-                                        FILTER orgPerm.type == "ORG"
                                         FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
                                         FOR inheritEdge IN inheritPermissions
                                             FILTER inheritEdge._to == recordGroup._id AND inheritEdge._from == c._id
@@ -6436,15 +6649,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int,
         sort_field: str,
         sort_dir: str,
-        search_query: Optional[str],
-        filter_clause: str,
-        bind_vars: Dict[str, Any],
-        only_containers: bool,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Search recursively within a parent node and all its descendants.
         Uses graph traversal to find all nested children.
+
+        ArangoDB implementation: Converts structured parameters to AQL.
         """
         # Determine the starting node ID
         if parent_type in ("kb", "recordGroup"):
@@ -6456,11 +6678,97 @@ class ArangoHTTPProvider(IGraphDBProvider):
         else:
             return {"nodes": [], "total": 0}
 
-        # Build search filter for name
+        # Build AQL filter conditions from structured parameters
+        filter_conditions = []
+        bind_vars = {
+            "parent_doc_id": parent_doc_id,
+            "org_id": org_id,
+            "user_key": user_key,
+            "skip": skip,
+            "limit": limit,
+            "sort_field": sort_field,
+            "sort_dir": sort_dir,
+            "only_containers": only_containers,
+        }
+
+        # Search query filter (handled separately in recursive search)
         search_filter = ""
         if search_query:
             bind_vars["search_query"] = search_query.lower()
             search_filter = "FILTER LOWER(node.name) LIKE CONCAT('%', @search_query, '%')"
+
+        # Node type filter
+        if node_types:
+            type_conditions = []
+            for nt in node_types:
+                if nt == "folder":
+                    type_conditions.append('node.nodeType == "folder"')
+                elif nt == "record":
+                    type_conditions.append('node.nodeType == "record"')
+                elif nt == "recordGroup":
+                    type_conditions.append('node.nodeType == "recordGroup"')
+            if type_conditions:
+                filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+        # Record type filter
+        if record_types:
+            bind_vars["record_types"] = record_types
+            filter_conditions.append("(node.recordType != null AND node.recordType IN @record_types)")
+
+        # Indexing status filter
+        if indexing_status:
+            bind_vars["indexing_status"] = indexing_status
+            filter_conditions.append("(node.indexingStatus == null OR node.indexingStatus IN @indexing_status)")
+
+        # Created date filter
+        if created_at:
+            if created_at.get("gte"):
+                bind_vars["created_at_gte"] = created_at["gte"]
+                filter_conditions.append("node.createdAt >= @created_at_gte")
+            if created_at.get("lte"):
+                bind_vars["created_at_lte"] = created_at["lte"]
+                filter_conditions.append("node.createdAt <= @created_at_lte")
+
+        # Updated date filter
+        if updated_at:
+            if updated_at.get("gte"):
+                bind_vars["updated_at_gte"] = updated_at["gte"]
+                filter_conditions.append("node.updatedAt >= @updated_at_gte")
+            if updated_at.get("lte"):
+                bind_vars["updated_at_lte"] = updated_at["lte"]
+                filter_conditions.append("node.updatedAt <= @updated_at_lte")
+
+        # Size filter
+        if size:
+            if size.get("gte"):
+                bind_vars["size_gte"] = size["gte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes >= @size_gte)")
+            if size.get("lte"):
+                bind_vars["size_lte"] = size["lte"]
+                filter_conditions.append("(node.sizeInBytes == null OR node.sizeInBytes <= @size_lte)")
+
+        # Origins filter
+        if origins:
+            bind_vars["origins"] = origins
+            filter_conditions.append("node.source IN @origins")
+
+        # Connector/KB IDs filter
+        if connector_ids and kb_ids:
+            bind_vars["connector_ids"] = connector_ids
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append(
+                "((node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids) OR "
+                "(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids))"
+            )
+        elif connector_ids:
+            bind_vars["connector_ids"] = connector_ids
+            filter_conditions.append("(node.nodeType == 'app' AND node.id IN @connector_ids) OR (node.connectorId IN @connector_ids)")
+        elif kb_ids:
+            bind_vars["kb_ids"] = kb_ids
+            filter_conditions.append("(node.nodeType == 'kb' AND node.id IN @kb_ids) OR (node.kbId IN @kb_ids)")
+
+        # Build final filter clause
+        filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
 
         # Build recordGroup query based on parent type
         source_value = "KB" if parent_type == "kb" else "CONNECTOR"
@@ -6477,8 +6785,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # For folder/record types, set dummy value (won't be used but required by AQL)
             bind_vars["parent_id_for_rg"] = parent_id
             rg_parent_filter = "false"
-
-        bind_vars["user_key"] = user_key
 
         query = f"""
         LET parent = DOCUMENT(@parent_doc_id)

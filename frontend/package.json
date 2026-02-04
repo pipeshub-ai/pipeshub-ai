@@ -92,7 +92,6 @@
     "@xyflow/react": "^12.8.3",
     "apexcharts": "^3.52.0",
     "autosuggest-highlight": "^3.3.4",
-    "aws-amplify": "^6.5.1",
     "axios": "^1.12.0",
     "dayjs": "^1.11.18",
     "docx-preview": "^0.3.5",

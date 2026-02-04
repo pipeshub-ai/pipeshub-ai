@@ -6,6 +6,7 @@ object storage systems. The base classes and utilities here are used by both
 S3Connector and MinIOConnector to avoid code duplication.
 """
 
+import asyncio
 import mimetypes
 import uuid
 from abc import abstractmethod
@@ -91,6 +92,32 @@ def get_parent_path_from_key(key: str) -> Optional[str]:
     return parent_path if parent_path else None
 
 
+def get_folder_path_segments_from_key(key: str) -> List[str]:
+    """Derives folder path segments from an S3 key for hierarchy creation.
+
+    S3 list_objects only returns object keys (files); there are no separate folder objects.
+    For each file key (e.g. a/b/c/file.txt), returns the folder path segments that must exist:
+    e.g. ['a', 'a/b', 'a/b/c']. For a root-level key (e.g. file.txt) returns [].
+
+    Args:
+        key: S3 object key (may have leading/trailing slashes)
+
+    Returns:
+        List of cumulative path segments (folders only), root to leaf, no duplicates.
+    """
+    if not key:
+        return []
+    normalized = key.lstrip("/").rstrip("/")
+    if not normalized or "/" not in normalized:
+        return []
+    parts = normalized.split("/")
+    # Last part is the file (or folder key); segments are the folder path prefix
+    segments = []
+    for i in range(1, len(parts)):
+        segments.append("/".join(parts[:i]))
+    return segments
+
+
 def get_parent_weburl_for_s3(parent_external_id: str, base_console_url: str = "https://s3.console.aws.amazon.com") -> str:
     """Generate webUrl for an S3/MinIO directory based on parent external_id.
 
@@ -160,6 +187,14 @@ def parse_parent_external_id(parent_external_id: str) -> Tuple[str, Optional[str
         return bucket_name, None
 
 
+def make_s3_composite_revision(bucket_name: str, normalized_key: str, raw_etag: Optional[str]) -> str:
+    """Build external_revision_id for S3. Uses bucket/etag so move/rename can be detected
+    (same etag in same bucket). When etag is missing, falls back to bucket/key for uniqueness."""
+    if raw_etag:
+        return f"{bucket_name}/{raw_etag}"
+    return f"{bucket_name}/{normalized_key}|"
+
+
 def get_mimetype_for_s3(key: str, is_folder: bool = False) -> str:
     """Determines the correct MimeTypes string value for an S3 object."""
     if is_folder:
@@ -191,32 +226,6 @@ class S3CompatibleDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         self.parent_url_generator = parent_url_generator or (
             lambda parent_external_id: get_parent_weburl_for_s3(parent_external_id, base_console_url)
         )
-
-    def _create_placeholder_parent_record(
-        self,
-        parent_external_id: str,
-        parent_record_type: RecordType,
-        record: Record,
-    ) -> Record:
-        """
-        Create a placeholder parent record with S3-specific weburl and path.
-
-        Overrides the base implementation to use connector-specific URL generation
-        for parent folder URLs.
-        """
-        parent_record = super()._create_placeholder_parent_record(
-            parent_external_id, parent_record_type, record
-        )
-
-        if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
-            weburl = self.parent_url_generator(parent_external_id)
-            path = get_parent_path_for_s3(parent_external_id)
-            parent_record.weburl = weburl
-            parent_record.path = path
-            parent_record.is_internal = True
-            parent_record.hide_weburl = True
-
-        return parent_record
 
 
 class S3CompatibleBaseConnector(BaseConnector):
@@ -392,15 +401,34 @@ class S3CompatibleBaseConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
-        """Create record groups for buckets with appropriate permissions."""
+        """Create record groups for buckets with appropriate permissions.
+        Only creates record groups for buckets that do not already have one,
+        to avoid duplicate BELONGS_TO edges in the graph on every sync.
+        """
         if not bucket_names:
             return
 
-        record_groups = []
-        for bucket_name in bucket_names:
-            if not bucket_name:
-                continue
+        # Only create record groups for buckets that don't already have one
+        new_bucket_names: List[str] = []
+        async with self.data_store_provider.transaction() as tx_store:
+            for bucket_name in bucket_names:
+                if not bucket_name:
+                    continue
+                existing = await tx_store.get_record_group_by_external_id(
+                    connector_id=self.connector_id,
+                    external_id=bucket_name,
+                )
+                if existing is None:
+                    new_bucket_names.append(bucket_name)
 
+        if not new_bucket_names:
+            self.logger.info(
+                "All buckets already have record groups; skipping record group creation"
+            )
+            return
+
+        record_groups = []
+        for bucket_name in new_bucket_names:
             permissions = []
             if self.connector_scope == ConnectorScope.TEAM.value:
                 permissions.append(
@@ -636,10 +664,10 @@ class S3CompatibleBaseConnector(BaseConnector):
                     if not response.success:
                         error_msg = response.error or "Unknown error"
                         if "AccessDenied" in error_msg or "not authorized" in error_msg:
-                            self.logger.error(
+                            self.logger.warning(
                                 f"Access denied when listing objects in bucket {bucket_name}: {error_msg}."
                             )
-                            self.logger.error(
+                            self.logger.warning(
                                 f"Please verify your IAM policy includes the following permissions for bucket '{bucket_name}':\n"
                                 f"  - s3:ListBucket on arn:aws:s3:::{bucket_name}\n"
                                 f"  - s3:GetBucketLocation on arn:aws:s3:::{bucket_name}\n"
@@ -704,6 +732,12 @@ class S3CompatibleBaseConnector(BaseConnector):
                                         obj_timestamp_ms = int(last_modified.timestamp() * 1000)
                                         max_timestamp = max(max_timestamp, obj_timestamp_ms)
 
+                            # Ensure folder hierarchy exists from file path (S3 has no folder objects)
+                            if not is_folder:
+                                path_segments = get_folder_path_segments_from_key(key)
+                                if path_segments:
+                                    await self._ensure_parent_folders_exist(bucket_name, path_segments)
+
                             record, permissions = await self._process_s3_object(
                                 obj, bucket_name
                             )
@@ -759,6 +793,74 @@ class S3CompatibleBaseConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
+    async def _ensure_parent_folders_exist(
+        self, bucket_name: str, path_segments: List[str]
+    ) -> None:
+        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+
+        S3 list_objects only returns object keys; there are no separate folder objects.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
+        already exist (by external_id = bucket_name/segment). Process in order so parent
+        exists before child. Aligns with Box _ensure_parent_folders_exist pattern.
+        """
+        if not path_segments:
+            return
+        timestamp_ms = get_epoch_timestamp_in_ms()
+        external_ids = [f"{bucket_name}/{segment}" for segment in path_segments]
+        async with self.data_store_provider.transaction() as tx_store:
+            results = await asyncio.gather(
+                *[
+                    tx_store.get_record_by_external_id(
+                        connector_id=self.connector_id, external_id=eid
+                    )
+                    for eid in external_ids
+                ]
+            )
+        existing_external_ids = {
+            eid for eid, rec in zip(external_ids, results) if rec is not None
+        }
+        for i, segment in enumerate(path_segments):
+            external_id = f"{bucket_name}/{segment}"
+            if external_id in existing_external_ids:
+                continue
+            # Root folder: first segment has no parent. Others: parent is previous segment.
+            parent_external_id = (
+                f"{bucket_name}/{path_segments[i - 1]}" if i > 0 else None
+            )
+            parent_record_type = RecordType.FILE if parent_external_id else None
+            record_name = segment.split("/")[-1] if segment else segment
+            web_url = self._generate_web_url(bucket_name, segment + "/")
+            folder_record = FileRecord(
+                id=str(uuid.uuid4()),
+                record_name=record_name,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.BUCKET.value,
+                external_record_group_id=bucket_name,
+                external_record_id=external_id,
+                external_revision_id=None,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_created_at=timestamp_ms,
+                source_updated_at=timestamp_ms,
+                weburl=web_url,
+                signed_url=None,
+                fetch_signed_url=None,
+                hide_weburl=True,
+                is_internal=True,
+                parent_external_record_id=parent_external_id,
+                parent_record_type=parent_record_type,
+                size_in_bytes=0,
+                is_file=False,
+                extension=None,
+                path=segment,
+                mime_type=MimeTypes.FOLDER.value,
+                etag=None,
+            )
+            permissions = await self._create_s3_permissions(bucket_name, segment + "/")
+            await self.data_entities_processor.on_new_records([(folder_record, permissions)])
+
     async def _process_s3_object(
         self, obj: Dict, bucket_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
@@ -802,6 +904,7 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             external_record_id = f"{bucket_name}/{normalized_key}"
             current_etag = obj.get("ETag", "").strip('"')
+            composite_revision = make_s3_composite_revision(bucket_name, normalized_key, current_etag or None)
 
             # 2. PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
@@ -812,58 +915,60 @@ class S3CompatibleBaseConnector(BaseConnector):
             is_move = False
 
             if existing_record:
-                # Found by path - check if etag changed (content change)
-                stored_etag = existing_record.external_revision_id or ""
+                # Found by path - check if revision (composite) changed (content change)
+                stored_revision = existing_record.external_revision_id or ""
 
-                # If both externalRecordId and externalRevisionId are the same, skip
-                if current_etag and stored_etag and current_etag == stored_etag:
+                # If composite external_revision_id unchanged, skip
+                if composite_revision and stored_revision and composite_revision == stored_revision:
                     self.logger.debug(
                         f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
                     )
                     return None, []
 
-                # Content changed or missing etag - sync properly from S3
-                if current_etag and stored_etag and current_etag != stored_etag:
+                # Content changed or missing - sync properly from S3
+                if composite_revision and stored_revision and composite_revision != stored_revision:
                     self.logger.info(
-                        f"Content change detected: {normalized_key} - externalRevisionId changed from {stored_etag} to {current_etag}"
+                        f"Content change detected: {normalized_key} - externalRevisionId changed from {stored_revision} to {composite_revision}"
                     )
-                elif not current_etag or not stored_etag:
+                elif not composite_revision or not stored_revision:
                     if not current_etag:
                         self.logger.warning(
                             f"Current ETag missing for {normalized_key}, processing record"
                         )
-                    if not stored_etag:
+                    if not stored_revision:
                         self.logger.debug(
-                            f"Stored ETag missing for {normalized_key}, processing record"
+                            f"Stored revision missing for {normalized_key}, processing record"
                         )
-            elif current_etag:
-                # Not found by path - FALLBACK: try etag-based lookup (for move/rename detection)
+            else:
+                # Not found by path - FALLBACK: try composite revision lookup (for move/rename detection)
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_etag
+                        connector_id=self.connector_id, external_revision_id=composite_revision
                     )
 
                 if existing_record:
-                    # Found by etag but not by path - this is a move/rename
-                    is_move = True
-                    self.logger.info(
-                        f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
-                    )
+                    # Same composite can only match same key; if path differs it's a move/rename (key changed, etag same)
+                    if existing_record.external_record_id != external_record_id:
+                        is_move = True
+                        self.logger.info(
+                            f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
+                        )
                 else:
-                    # Not found by path or etag - new file
                     self.logger.debug(f"New document: {normalized_key}")
-            else:
-                # No etag available - treat as new file
-                self.logger.debug(f"New document: {normalized_key} (no etag available)")
 
-            # Prepare record data
-            record_type = RecordType.FOLDER if is_folder else RecordType.FILE
+            # Prepare record data: all items are RecordType.FILE; folders have is_file=False
+            record_type = RecordType.FILE
 
             extension = get_file_extension(normalized_key) if is_file else None
             mime_type = get_mimetype_for_s3(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_external_id = (f"{bucket_name}/{parent_path}" if parent_path else None)
+            parent_record_type = RecordType.FILE if parent_path else None
+            # Root-level items: parent must be null, not the bucket
+            if parent_external_id == bucket_name:
+                parent_external_id = None
+                parent_record_type = None
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
@@ -890,7 +995,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=composite_revision,
                 version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -903,7 +1008,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=obj.get("Size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -911,6 +1016,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                 mime_type=mime_type,
                 etag=current_etag,
             )
+
+            # Root-level items: do not link to the bucket as a parent
+            if (
+                file_record.parent_external_record_id
+                and file_record.external_record_group_id
+                and file_record.parent_external_record_id == file_record.external_record_group_id
+            ):
+                file_record.parent_external_record_id = None
+                file_record.parent_record_type = None
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
@@ -1263,13 +1377,14 @@ class S3CompatibleBaseConnector(BaseConnector):
                 return None
 
             current_etag = obj_metadata.get("ETag", "").strip('"')
-            stored_etag = record.external_revision_id
+            composite_revision = make_s3_composite_revision(bucket_name, normalized_key, current_etag or None)
+            stored_revision = record.external_revision_id
 
-            if current_etag == stored_etag:
-                self.logger.debug(f"Record {record.id}: external_revision_id unchanged ({current_etag})")
+            if composite_revision and stored_revision and composite_revision == stored_revision:
+                self.logger.debug(f"Record {record.id}: external_revision_id unchanged ({composite_revision})")
                 return None
 
-            self.logger.debug(f"Record {record.id}: external_revision_id changed from {stored_etag} to {current_etag}")
+            self.logger.debug(f"Record {record.id}: external_revision_id changed from {stored_revision} to {composite_revision}")
 
             last_modified = obj_metadata.get("LastModified")
             if last_modified:
@@ -1287,7 +1402,12 @@ class S3CompatibleBaseConnector(BaseConnector):
             mime_type = get_mimetype_for_s3(normalized_key, is_folder)
 
             parent_path = get_parent_path_from_key(normalized_key)
-            parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else bucket_name
+            parent_external_id = (f"{bucket_name}/{parent_path}" if parent_path else None)
+            parent_record_type = RecordType.FILE if parent_path else None
+            # Root-level items: parent must be null, not the bucket
+            if parent_external_id == bucket_name:
+                parent_external_id = None
+                parent_record_type = None
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
@@ -1297,14 +1417,15 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             updated_external_record_id = f"{bucket_name}/{normalized_key}"
 
+            # All items are RecordType.FILE; folders have is_file=False
             updated_record = FileRecord(
                 id=record.id,
                 record_name=record_name,
-                record_type=RecordType.FOLDER if is_folder else RecordType.FILE,
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.BUCKET.value,
                 external_record_group_id=bucket_name,
                 external_record_id=updated_external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=composite_revision,
                 version=record.version + 1,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -1317,7 +1438,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=obj_metadata.get("ContentLength", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -1325,6 +1446,15 @@ class S3CompatibleBaseConnector(BaseConnector):
                 mime_type=mime_type,
                 etag=current_etag,
             )
+
+            # Root-level items: do not link to the bucket as a parent
+            if (
+                updated_record.parent_external_record_id
+                and updated_record.external_record_group_id
+                and updated_record.parent_external_record_id == updated_record.external_record_group_id
+            ):
+                updated_record.parent_external_record_id = None
+                updated_record.parent_record_type = None
 
             if hasattr(self, 'indexing_filters') and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(IndexingFilterKey.FILES, default=True):
