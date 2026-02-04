@@ -395,11 +395,11 @@ class AzureFilesConnector(BaseConnector):
     ) -> Optional[str]:
         """Extract account name from an Azure Storage connection string."""
         for part in connection_string.split(";"):
-            if not part:
+            if not part or "=" not in part:
                 continue
-            key_value = part.split("=", 1)
-            if len(key_value) == 2 and key_value[0] == "AccountName":
-                return key_value[1] or None
+            key, value = part.split("=", 1)
+            if key == "AccountName":
+                return value or None
         return None
 
     def _generate_web_url(self, share_name: str, file_path: str) -> str:
