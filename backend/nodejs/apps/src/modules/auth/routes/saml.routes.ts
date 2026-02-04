@@ -28,6 +28,7 @@ import { UserAccountController } from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
 import { ConfigurationManagerService } from '../services/cm.service';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
+import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 
 const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
@@ -255,6 +256,7 @@ export function createSamlRouter(container: Container) {
               ),
               logger,
               container.get<JitProvisioningService>('JitProvisioningService'),
+              container.get<EntitiesEventProducer>('EntitiesEventProducer'),
             );
           });
         container

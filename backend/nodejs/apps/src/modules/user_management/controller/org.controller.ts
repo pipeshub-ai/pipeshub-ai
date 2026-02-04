@@ -38,6 +38,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { PrometheusService } from '../../../libs/services/prometheus/prometheus.service';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { ORG_CREATED_ACTIVITY } from '../constants/constants';
+import { GlobalReaderTeamService } from '../services/globalReaderTeam.service';
 
 @injectable()
 export class OrgController {
@@ -47,6 +48,8 @@ export class OrgController {
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer')
     private eventService: EntitiesEventProducer,
+    @inject('GlobalReaderTeamService')
+    private globalReaderTeamService: GlobalReaderTeamService,
   ) {}
 
   getDomainFromEmail(email: string) {
@@ -317,11 +320,23 @@ export class OrgController {
           fullName: adminUser.fullName,
           email: adminUser.email,
           syncAction: 'none',
+          isAdmin: true,
         } as UserAddedEvent,
       };
       await this.eventService.publishEvent(event);
 
       await this.eventService.stop();
+
+      // Create Global Reader team for the new organization
+      // This is non-blocking - errors are logged but don't fail org creation
+      await this.globalReaderTeamService.ensureGlobalReaderTeamExists(
+        org._id.toString(),
+        adminUser._id.toString(),
+        {
+          'Content-Type': 'application/json',
+        },
+      );
+
       res.status(200).json(org);
     } catch (error) {
       throw new InternalServerError(

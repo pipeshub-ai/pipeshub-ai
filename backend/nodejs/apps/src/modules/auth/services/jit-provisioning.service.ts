@@ -69,7 +69,7 @@ export class JitProvisioningService {
       { $addToSet: { users: newUser._id } },
     );
 
-    // Publish user creation event
+    // Publish user creation event (Global Reader team membership handled by Kafka consumer)
     try {
       await this.eventService.start();
       await this.eventService.publishEvent({
@@ -81,6 +81,7 @@ export class JitProvisioningService {
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
+          isAdmin: false,
         } as UserAddedEvent,
       });
     } catch (eventError) {
