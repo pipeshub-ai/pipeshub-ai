@@ -357,6 +357,11 @@ async def initialize_container(container) -> bool:
 
         logger.info("✅ Container initialization completed successfully")
 
+        # Skip all migrations if Neo4j is configured (migrations are ArangoDB-specific)
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping all migrations (DATA_STORE={data_store}, migrations are ArangoDB-specific)")
+            return True
+
         migration_state = await get_migration_state()
 
         if migration_completed(migration_state, "knowledgeBase"):
