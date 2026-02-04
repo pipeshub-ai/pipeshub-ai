@@ -12124,8 +12124,7 @@ class JiraDataSource:
             _query['orderBy'] = orderBy
         if id is not None:
             _query['id'] = id
-        if keys is not None:
-            _query['keys'] = keys
+        # NOTE: 'keys' handled separately - Jira API requires multiple 'keys' params (keys=A&keys=B), not comma-separated (keys=A,B)
         if query is not None:
             _query['query'] = query
         if typeKey is not None:
@@ -12145,12 +12144,35 @@ class JiraDataSource:
         _body = None
         rel_path = '/rest/api/3/project/search'
         url = self.base_url + _safe_format_url(rel_path, _path)
+
+        # Build query params - handle 'keys' specially for multiple values
+        # Jira API requires keys=A&keys=B format, not keys=A,B
+        query_params = _as_str_dict(_query)
+
+        # For multiple keys, build params list for httpx (it handles multiple params with same name)
+        if keys is not None and isinstance(keys, (list, tuple)) and len(keys) > 0:
+            # Build params as list of tuples: httpx will create keys=A&keys=B format
+            httpx_params = [(k, v) for k, v in query_params.items()]
+            httpx_params.extend([('keys', str(k)) for k in keys])
+
+            # Use httpx directly for this special case
+            httpx_client = await self._client._ensure_client()
+            merged_headers = {**self._client.headers, **_as_str_dict(_headers)}
+            response = await httpx_client.request(
+                'GET',
+                url,
+                params=httpx_params,
+                headers=merged_headers,
+            )
+            return HTTPResponse(response)
+
+        # Normal path: single key or no keys
         req = HTTPRequest(
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
             path=_as_str_dict(_path),
-            query=_as_str_dict(_query),
+            query=query_params,
             body=_body,
         )
         resp = await self._client.execute(req)
