@@ -73,12 +73,21 @@ async def create_knowledge_base(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid request body"
             )
+
+        # Validate required field - accept both "name" and "kbName" for compatibility
+        name = body.get("name") or body.get("kbName")
+        if not name or not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Knowledge base name is required (use 'name' or 'kbName' field)"
+            )
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         result = await kb_service.create_knowledge_base(
             user_id=user_id,
             org_id=org_id,
-            name=body.get("name"),
+            name=name.strip(),
         )
 
         if not result or result.get("success") is False:
@@ -491,9 +500,16 @@ async def create_folder_in_kb_root(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        # Accept both "name" and "folderName" for compatibility
+        folder_name = body.get("name") or body.get("folderName")
+        if not folder_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Folder name is required (use 'name' or 'folderName' field)"
+            )
         result = await kb_service.create_folder_in_kb(
             kb_id=kb_id,
-            name=body.get("name"),
+            name=folder_name,
             user_id=user_id,
             org_id=org_id
         )
@@ -536,10 +552,17 @@ async def create_nested_folder(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        # Accept both "name" and "folderName" for compatibility
+        folder_name = body.get("name") or body.get("folderName")
+        if not folder_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Folder name is required (use 'name' or 'folderName' field)"
+            )
         result = await kb_service.create_nested_folder(
             kb_id=kb_id,
             parent_folder_id=parent_folder_id,
-            name=body.get("name"),
+            name=folder_name,
             user_id=user_id,
             org_id=org_id
         )

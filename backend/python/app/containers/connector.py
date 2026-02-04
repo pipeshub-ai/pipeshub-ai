@@ -60,8 +60,14 @@ class ConnectorAppContainer(BaseAppContainer):
 
     # First create an async factory for the connected BaseArangoService
     @staticmethod
-    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService:
+    async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService | None:
         """Async factory to create and connect BaseArangoService (with schema init allowed)"""
+        # Skip ArangoDB service creation if using a different graph database
+        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        if data_store != "arangodb":
+            logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
+            return None
+
         service = BaseArangoService(
             logger,
             arango_client,

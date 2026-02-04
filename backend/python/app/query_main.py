@@ -158,42 +158,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         retrieval_service = await container.retrieval_service()
         await retrieval_service.get_embedding_model_instance()
 
-    arango_config_dict = await container.config_service().get_config(
-        config_node_constants.ARANGODB.value
-    )
-    arango_config = ArangoConfig(**arango_config_dict)
+    # Tools DB and registry - only for ArangoDB
+    import os
+    data_store_type = os.getenv("DATA_STORE", "neo4j").lower()
 
-    # Create ToolsDBManager
-    logger.info("Creating ToolsDBManager...")
-    tools_db = await ToolsDBManager.create(logger, arango_config)
+    if data_store_type == "arangodb":
+        arango_config_dict = await container.config_service().get_config(
+            config_node_constants.ARANGODB.value
+        )
+        arango_config = ArangoConfig(**arango_config_dict)
 
-    # Connect to ArangoDB
-    logger.info("Connecting to ArangoDB...")
-    await tools_db.graph_service.connect()
+        # Create ToolsDBManager
+        logger.info("Creating ToolsDBManager...")
+        tools_db = await ToolsDBManager.create(logger, arango_config)
 
-    # initialize collections
-    await tools_db.graph_service.create_collection("tools")
-    await tools_db.graph_service.create_collection("tools_ctags")
+        # Connect to ArangoDB
+        logger.info("Connecting to ArangoDB...")
+        await tools_db.graph_service.connect()
 
-    # Use the warmup class to import all tools automatically
-    logger.info("Using tools warmup to register all available tools...")
-    from app.agents.tools.discovery import discover_tools
+        # initialize collections
+        await tools_db.graph_service.create_collection("tools")
+        await tools_db.graph_service.create_collection("tools_ctags")
 
-    discovery_results = discover_tools(logger)
-    logger.info(f"Discovery completed: {discovery_results['total_tools']} tools registered")
+        # Use the warmup class to import all tools automatically
+        logger.info("Using tools warmup to register all available tools...")
+        from app.agents.tools.discovery import discover_tools
 
-    # Create a sample tool registry (this would normally come from your actual registry)
-    logger.info("Setting up sample tool registry...")
-    tool_registry = _global_tools_registry
+        discovery_results = discover_tools(logger)
+        logger.info(f"Discovery completed: {discovery_results['total_tools']} tools registered")
 
+        # Create a sample tool registry (this would normally come from your actual registry)
+        logger.info("Setting up sample tool registry...")
+        tool_registry = _global_tools_registry
 
-    # Sync tools from registry to ArangoDB
-    logger.info("Syncing tools from registry to ArangoDB...")
-    await tools_db.sync_tools_from_registry(tool_registry)
+        # Sync tools from registry to ArangoDB
+        logger.info("Syncing tools from registry to ArangoDB...")
+        await tools_db.sync_tools_from_registry(tool_registry)
 
-    # List all tools in the registry
-    registry_tools = tool_registry.list_tools()
-    logger.info(f"Tools in registry: {registry_tools}")
+        # List all tools in the registry
+        registry_tools = tool_registry.list_tools()
+        logger.info(f"Tools in registry: {registry_tools}")
+    else:
+        logger.info(f"⏭️ Skipping ToolsDB initialization (DATA_STORE={data_store_type})")
 
     yield
     # Shutdown
