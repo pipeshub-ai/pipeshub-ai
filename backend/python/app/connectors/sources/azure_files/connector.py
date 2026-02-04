@@ -11,11 +11,12 @@ Key differences from Azure Blob/S3:
 - Recursive directory traversal is required
 """
 
+import base64
 import mimetypes
 import uuid
 from datetime import datetime, timedelta, timezone
 from logging import Logger
-from typing import Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 from aiolimiter import AsyncLimiter
@@ -59,11 +60,11 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
+    FilterOperator,
     FilterOption,
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
-    ListOperator,
     MultiselectOperator,
     OptionSourceType,
     SyncFilterKey,
@@ -131,11 +132,7 @@ def get_mimetype_for_azure_files(file_path: str, is_directory: bool = False) -> 
 
 
 class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
-    """Azure Files processor that handles real directory records.
-
-    Unlike S3/Azure Blob where folders are virtual (internal placeholders),
-    Azure Files has real directories that should be visible to users.
-    """
+    """Azure Files processor that handles directory placeholder records similar to other object storage connectors."""
 
     def __init__(
         self,
@@ -153,28 +150,19 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
         parent_record_type: RecordType,
         record: Record,
     ) -> Record:
-        """
-        Create a placeholder parent record with Azure Files-specific handling.
-
-        Unlike S3/Azure Blob, Azure Files directories are REAL entities,
-        so they should NOT be marked as internal placeholders.
-        """
+        """Create a placeholder parent record with Azure Files-specific handling."""
         parent_record = super()._create_placeholder_parent_record(
             parent_external_id, parent_record_type, record
         )
 
-        if parent_record_type == RecordType.FILE and isinstance(
-            parent_record, FileRecord
-        ):
-            # Azure Files directories are REAL, not placeholders
-            # They have navigable URLs in Azure Portal
+        if parent_record_type == RecordType.FILE and isinstance(parent_record, FileRecord):
             weburl = self._generate_directory_url(parent_external_id)
             path = self._extract_path_from_external_id(parent_external_id)
             parent_record.weburl = weburl
             parent_record.path = path
-            # Key difference: directories are NOT internal in Azure Files
-            parent_record.is_internal = False
-            parent_record.hide_weburl = False
+            # Match Azure Blob / GCS behavior: parent directory placeholders are internal and weburl is hidden
+            parent_record.is_internal = True
+            parent_record.hide_weburl = True
 
         return parent_record
 
@@ -217,51 +205,15 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
     .with_auth([
-        AuthBuilder.type(AuthType.ACCOUNT_KEY).fields([
+        AuthBuilder.type(AuthType.CONNECTION_STRING).fields([
             AuthField(
-                name="accountName",
-                display_name="Account Name",
-                placeholder="mystorageaccount",
-                description="The Azure Storage account name",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
-            ),
-            AuthField(
-                name="accountKey",
-                display_name="Account Key",
-                placeholder="Your account key",
-                description="The Azure Storage account key",
+                name="connectionString",
+                display_name="Connection String",
+                placeholder="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net",
+                description="The Azure Storage connection string from Azure Portal (Storage account > Access keys)",
                 field_type="PASSWORD",
                 max_length=2000,
                 is_secret=True
-            ),
-            AuthField(
-                name="shareName",
-                display_name="Share Name",
-                placeholder="my-file-share",
-                description="Optional: specific file share to sync. Leave empty to sync all shares.",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
-            ),
-            AuthField(
-                name="endpointProtocol",
-                display_name="Endpoint Protocol",
-                placeholder="https",
-                description="The Endpoint Protocol (default: https)",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
-            ),
-            AuthField(
-                name="endpointSuffix",
-                display_name="Endpoint Suffix",
-                placeholder="core.windows.net",
-                description="The Endpoint Suffix (default: core.windows.net)",
-                field_type="TEXT",
-                max_length=2000,
-                is_secret=False
             ),
         ])
     ])\
@@ -287,16 +239,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             default_value=[],
             default_operator=MultiselectOperator.IN.value
         ))
-        .add_filter_field(FilterField(
-            name="file_extensions",
-            display_name="File Extensions",
-            filter_type=FilterType.LIST,
-            category=FilterCategory.SYNC,
-            description="Filter files by extension (e.g., pdf, docx, txt). Leave empty to sync all files.",
-            option_source_type=OptionSourceType.MANUAL,
-            default_value=[],
-            default_operator=ListOperator.IN.value
-        ))
+        .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -354,6 +297,7 @@ class AzureFilesConnector(BaseConnector):
         self.share_name: Optional[str] = None
         self.connector_scope: Optional[str] = None
         self.created_by: Optional[str] = None
+        self.creator_email: Optional[str] = None  # Cached to avoid repeated DB queries
         self.account_name: Optional[str] = None
 
         # Initialize filter collections
@@ -378,7 +322,7 @@ class AzureFilesConnector(BaseConnector):
         ]
 
     async def init(self) -> bool:
-        """Initializes the Azure Files client using credentials from the config service."""
+        """Initializes the Azure Files client using connection string from the config service."""
         config = await self.config_service.get_config(
             f"/services/connectors/{self.connector_id}/config"
         )
@@ -387,17 +331,16 @@ class AzureFilesConnector(BaseConnector):
             return False
 
         auth_config = config.get("auth", {})
-        account_name = auth_config.get("accountName")
-        account_key = auth_config.get("accountKey")
-        self.share_name = auth_config.get("shareName")
+        connection_string = auth_config.get("connectionString")
 
-        if not account_name or not account_key:
-            self.logger.error(
-                "Azure Files account name or account key not found in configuration."
-            )
+        if not connection_string:
+            self.logger.error("Azure Files connectionString not found in configuration.")
             return False
 
-        self.account_name = account_name
+        # Derive account name for web URL generation
+        self.account_name = self._extract_account_name_from_connection_string(
+            connection_string
+        )
 
         # Get connector scope
         self.connector_scope = ConnectorScope.PERSONAL.value
@@ -406,6 +349,18 @@ class AzureFilesConnector(BaseConnector):
         scope_from_config = config.get("scope")
         if scope_from_config:
             self.connector_scope = scope_from_config
+
+        # Fetch creator email once to avoid repeated DB queries during sync
+        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
+            try:
+                async with self.data_store_provider.transaction() as tx_store:
+                    user = await tx_store.get_user_by_id(self.created_by)
+                    if user and user.get("email"):
+                        self.creator_email = user.get("email")
+            except Exception as e:
+                self.logger.warning(
+                    f"Could not get user for created_by {self.created_by}: {e}"
+                )
 
         try:
             client = await AzureFilesClient.build_from_services(
@@ -419,7 +374,7 @@ class AzureFilesConnector(BaseConnector):
             if isinstance(
                 self.data_entities_processor, AzureFilesDataSourceEntitiesProcessor
             ):
-                self.data_entities_processor.account_name = self.account_name
+                self.data_entities_processor.account_name = self.account_name or ""
 
             # Load connector filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -433,6 +388,19 @@ class AzureFilesConnector(BaseConnector):
                 f"Failed to initialize Azure Files client: {e}", exc_info=True
             )
             return False
+
+    @staticmethod
+    def _extract_account_name_from_connection_string(
+        connection_string: str,
+    ) -> Optional[str]:
+        """Extract account name from an Azure Storage connection string."""
+        try:
+            for part in connection_string.split(";"):
+                if part.startswith("AccountName="):
+                    return part.split("=", 1)[1] or None
+        except Exception:
+            return None
+        return None
 
     def _generate_web_url(self, share_name: str, file_path: str) -> str:
         """Generate the web URL for an Azure file."""
@@ -476,10 +444,7 @@ class AzureFilesConnector(BaseConnector):
 
             # List all shares or use configured share
             shares_to_sync = []
-            if self.share_name:
-                shares_to_sync = [self.share_name]
-                self.logger.info(f"Using configured share: {self.share_name}")
-            elif selected_shares:
+            if selected_shares:
                 shares_to_sync = selected_shares
                 self.logger.info(f"Using filtered shares: {shares_to_sync}")
             else:
@@ -531,19 +496,6 @@ class AzureFilesConnector(BaseConnector):
         if not share_names:
             return
 
-        # Get user info once upfront to avoid repeated transactions
-        creator_email = None
-        if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
-            try:
-                async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
-                    if user and user.get("email"):
-                        creator_email = user.get("email")
-            except Exception as e:
-                self.logger.warning(
-                    f"Could not get user for created_by {self.created_by}: {e}"
-                )
-
         record_groups = []
         for share_name in share_names:
             if not share_name:
@@ -559,12 +511,13 @@ class AzureFilesConnector(BaseConnector):
                     )
                 )
             else:
-                if creator_email:
+                # Use cached creator_email from init() instead of querying DB again
+                if self.creator_email:
                     permissions.append(
                         Permission(
                             type=PermissionType.OWNER,
                             entity_type=EntityType.USER,
-                            email=creator_email,
+                            email=self.creator_email,
                             external_id=self.created_by,
                         )
                     )
@@ -709,6 +662,69 @@ class AzureFilesConnector(BaseConnector):
 
         return True
 
+    def _pass_extension_filter(self, item_path: str, is_directory: bool = False) -> bool:
+        """
+        Checks if the Azure Files item passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Folders always pass this filter to maintain directory structure.
+
+        Args:
+            item_path: The path of the file or directory
+            is_directory: Whether this is a directory
+
+        Returns:
+            True if the item passes the filter (should be kept), False otherwise
+        """
+        # 1. ALWAYS Allow Folders
+        # We must sync folders regardless of extension to ensure the directory structure
+        # exists for any files that might be inside them.
+        if is_directory:
+            return True
+
+        # 2. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 3. Get the file extension from the item path
+        file_extension = get_file_extension(item_path)
+
+        # 4. Handle files without extensions
+        if file_extension is None:
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            # If using NOT_IN operator, files without extensions pass (not in excluded list)
+            # If using IN operator, files without extensions fail (not in allowed list)
+            return operator_str == FilterOperator.NOT_IN
+
+        # 5. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
+        return True
+
     async def _get_signed_url_route(self, record_id: str) -> str:
         """Generate the signed URL route for a record."""
         endpoints = await self.config_service.get_config(
@@ -730,20 +746,15 @@ class AzureFilesConnector(BaseConnector):
             else FilterCollection()
         )
 
-        file_extensions_filter = sync_filters.get("file_extensions")
-        allowed_extensions = []
-        if file_extensions_filter and not file_extensions_filter.is_empty():
-            filter_value = file_extensions_filter.value
-            if isinstance(filter_value, list):
-                allowed_extensions = [
-                    ext.lower().lstrip(".") for ext in filter_value if ext
-                ]
-            elif isinstance(filter_value, str):
-                allowed_extensions = [filter_value.lower().lstrip(".")]
-
-        if allowed_extensions:
+        # Log extension filter status if configured
+        extensions_filter = sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+        if extensions_filter and not extensions_filter.is_empty():
+            filter_value = extensions_filter.value
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
             self.logger.info(
-                f"File extensions filter active for share {share_name}: {allowed_extensions}"
+                f"File extensions filter active for share {share_name}: "
+                f"operator={operator_str}, extensions={filter_value}"
             )
 
         (
@@ -798,19 +809,12 @@ class AzureFilesConnector(BaseConnector):
                             is_directory = item.get("is_directory", False)
                             item_path = item.get("path", item_name)
 
-                            # Skip file extension filter for directories
-                            if not is_directory and allowed_extensions:
-                                ext = get_file_extension(item_name)
-                                if not ext:
-                                    self.logger.debug(
-                                        f"Skipping {item_path}: no file extension found"
-                                    )
-                                    continue
-                                if ext not in allowed_extensions:
-                                    self.logger.debug(
-                                        f"Skipping {item_path}: extension '{ext}' not in allowed extensions"
-                                    )
-                                    continue
+                            # Check extension filter
+                            if not self._pass_extension_filter(item_path, is_directory):
+                                self.logger.debug(
+                                    f"Skipping {item_path}: does not pass extension filter"
+                                )
+                                continue
 
                             if not self._pass_date_filters(
                                 item,
@@ -898,6 +902,42 @@ class AzureFilesConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"Error in _remove_old_parent_relationship: {e}")
 
+    def _get_azure_files_revision_id(self, item: Dict) -> str:
+        """
+        Determines a stable revision ID for an Azure Files item.
+
+        Prefers file_id (SMB FileId from list API) when available, as it is stable
+        across renames. Then content_md5 (stable across renames), then etag.
+
+        Note: Azure Files etag changes on every modification including metadata changes
+        and renames. Therefore file_id or content_md5 must be used for reliable
+        move/rename detection when available.
+
+        Args:
+            item: Azure Files item metadata dictionary
+
+        Returns:
+            Revision ID string (file_id, content_md5, or etag)
+        """
+        file_id = item.get("file_id")
+        if file_id is not None:
+            return str(file_id)
+
+        content_md5 = item.get("content_md5")
+        if content_md5:
+            if isinstance(content_md5, (bytes, bytearray)):
+                return base64.b64encode(bytes(content_md5)).decode("utf-8")
+            elif isinstance(content_md5, str):
+                return content_md5
+
+        # Fall back to etag if no file_id or MD5 available
+        # Note: etag-based move detection may be unreliable as Azure etag changes on copy
+        etag = item.get("etag")
+        if etag:
+            return etag.strip('"')
+
+        return ""
+
     async def _process_azure_files_item(
         self, item: Dict, share_name: str
     ) -> Tuple[Optional[FileRecord], List[Permission]]:
@@ -912,7 +952,8 @@ class AzureFilesConnector(BaseConnector):
 
             is_directory = item.get("is_directory", False)
             is_file = not is_directory
-            item_path = item.get("path", item_name)
+            raw_path = (item.get("path") or item_name).strip()
+            normalized_path = raw_path.lstrip("/").rstrip("/") if raw_path else ""
 
             # Parse timestamps
             last_modified = item.get("last_modified")
@@ -950,10 +991,11 @@ class AzureFilesConnector(BaseConnector):
             else:
                 created_timestamp_ms = timestamp_ms
 
-            external_record_id = f"{share_name}/{item_path}"
-            current_etag = item.get("etag", "").strip('"') if item.get("etag") else ""
+            external_record_id = f"{share_name}/{normalized_path}"
+            current_revision_id = self._get_azure_files_revision_id(item)
+            raw_etag = item.get("etag", "").strip('"') if item.get("etag") else ""
 
-            # Check for existing record
+            # PRIMARY: Try lookup by path (externalRecordId)
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id, external_id=external_record_id
@@ -962,49 +1004,68 @@ class AzureFilesConnector(BaseConnector):
             is_move = False
 
             if existing_record:
-                stored_etag = existing_record.external_revision_id or ""
-                if current_etag and stored_etag and current_etag == stored_etag:
-                    self.logger.debug(f"Skipping {item_path}: revision unchanged")
+                stored_revision = existing_record.external_revision_id or ""
+                if current_revision_id and stored_revision and current_revision_id == stored_revision:
+                    self.logger.debug(
+                        f"Skipping {normalized_path}: externalRecordId and externalRevisionId unchanged"
+                    )
                     return None, []
 
-                if current_etag != stored_etag:
-                    self.logger.info(f"Content change detected: {item_path}")
-            elif current_etag:
-                # Try lookup by revision ID for move detection
+                # Content changed or missing revision - sync properly from Azure Files
+                if current_revision_id and stored_revision and current_revision_id != stored_revision:
+                    self.logger.info(
+                        f"Content change detected: {normalized_path} - externalRevisionId changed from {stored_revision} to {current_revision_id}"
+                    )
+                elif not current_revision_id or not stored_revision:
+                    if not current_revision_id:
+                        self.logger.warning(
+                            f"Current revision missing for {normalized_path}, processing record"
+                        )
+                    if not stored_revision:
+                        self.logger.debug(
+                            f"Stored revision missing for {normalized_path}, processing record"
+                        )
+            elif current_revision_id:
+                # Not found by path - FALLBACK: try revision-based lookup (for move/rename detection)
                 async with self.data_store_provider.transaction() as tx_store:
                     existing_record = await tx_store.get_record_by_external_revision_id(
-                        connector_id=self.connector_id, external_revision_id=current_etag
+                        connector_id=self.connector_id, external_revision_id=current_revision_id
                     )
 
                 if existing_record:
                     is_move = True
-                    self.logger.info(f"Move/rename detected: {item_path}")
+                    self.logger.info(
+                        f"Move/rename detected: {normalized_path} - file moved from {existing_record.external_record_id} to {external_record_id}"
+                    )
                 else:
-                    self.logger.debug(f"New item: {item_path}")
+                    self.logger.debug(f"New item: {normalized_path}")
             else:
-                self.logger.debug(f"New item: {item_path}")
+                self.logger.debug(f"New item: {normalized_path} (no revision available)")
 
             # Prepare record data
-            record_type = RecordType.FOLDER if is_directory else RecordType.FILE
-            extension = get_file_extension(item_path) if is_file else None
+            # Use RecordType.FILE for both files and directories; directories are distinguished via is_file flag.
+            record_type = RecordType.FILE
+            extension = get_file_extension(normalized_path) if is_file else None
             mime_type = (
                 item.get("content_type")
-                or get_mimetype_for_azure_files(item_path, is_directory)
+                or get_mimetype_for_azure_files(normalized_path, is_directory)
             )
 
-            parent_path = get_parent_path(item_path)
+            parent_path = get_parent_path(normalized_path)
             parent_external_id = (
                 f"{share_name}/{parent_path}" if parent_path else share_name
             )
+            # Match Azure Blob / GCS behavior: parent is always treated as a FILE record
+            parent_record_type = RecordType.FILE
 
             if is_directory:
-                web_url = self._generate_directory_url(share_name, item_path)
+                web_url = self._generate_directory_url(share_name, normalized_path)
             else:
-                web_url = self._generate_web_url(share_name, item_path)
+                web_url = self._generate_web_url(share_name, normalized_path)
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             signed_url_route = await self._get_signed_url_route(record_id)
-            record_name = item_name
+            record_name = normalized_path.rstrip("/").split("/")[-1] or normalized_path.rstrip("/")
 
             # For moves/renames, remove old parent relationship
             if is_move and existing_record:
@@ -1016,12 +1077,13 @@ class AzureFilesConnector(BaseConnector):
             else:
                 version = existing_record.version + 1
 
-            # Get content MD5 hash
+            # Get content MD5 hash for md5_hash field (same handling as Azure Blob)
             content_md5 = item.get("content_md5")
-            if content_md5 and isinstance(content_md5, bytes):
-                import base64
-
-                content_md5 = base64.b64encode(content_md5).decode("utf-8")
+            if content_md5:
+                if isinstance(content_md5, (bytes, bytearray)):
+                    content_md5 = base64.b64encode(bytes(content_md5)).decode("utf-8")
+                elif not isinstance(content_md5, str):
+                    content_md5 = str(content_md5)
 
             file_record = FileRecord(
                 id=record_id,
@@ -1030,7 +1092,7 @@ class AzureFilesConnector(BaseConnector):
                 record_group_type=RecordGroupType.FILE_SHARE.value,
                 external_record_group_id=share_name,
                 external_record_id=external_record_id,
-                external_revision_id=current_etag,
+                external_revision_id=current_revision_id,
                 version=version,
                 origin=OriginTypes.CONNECTOR.value,
                 connector_name=self.connector_name,
@@ -1042,22 +1104,30 @@ class AzureFilesConnector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,
                 fetch_signed_url=signed_url_route if is_file else None,
-                # KEY DIFFERENCE: Azure Files directories are NOT internal
-                # They are real entities with navigable URLs
-                hide_weburl=False,
-                is_internal=False,
+                # Match Azure Blob / GCS behavior: directories are internal placeholders with hidden weburl
+                hide_weburl=True,
+                is_internal=True if is_directory else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=item.get("size", 0) or item.get("content_length", 0)
                 if is_file
                 else 0,
                 is_file=is_file,
                 extension=extension,
-                path=item_path,
+                path=normalized_path,
                 mime_type=mime_type,
                 md5_hash=content_md5,
-                etag=current_etag,
+                etag=raw_etag,
             )
+
+            # Root-level items: do not link to the share as a parent
+            if (
+                file_record.parent_external_record_id
+                and file_record.external_record_group_id
+                and file_record.parent_external_record_id == file_record.external_record_group_id
+            ):
+                file_record.parent_external_record_id = None
+                file_record.parent_record_type = None
 
             if hasattr(self, "indexing_filters") and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(
@@ -1066,7 +1136,7 @@ class AzureFilesConnector(BaseConnector):
                     file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
             permissions = await self._create_azure_files_permissions(
-                share_name, item_path
+                share_name, normalized_path
             )
 
             return file_record, permissions
@@ -1080,7 +1150,7 @@ class AzureFilesConnector(BaseConnector):
     ) -> List[Permission]:
         """Create permissions for an Azure Files item based on connector scope."""
         try:
-            permissions = []
+            permissions: List[Permission] = []
 
             if self.connector_scope == ConnectorScope.TEAM.value:
                 permissions.append(
@@ -1091,23 +1161,16 @@ class AzureFilesConnector(BaseConnector):
                     )
                 )
             else:
-                if self.created_by:
-                    try:
-                        async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
-                            if user and user.get("email"):
-                                permissions.append(
-                                    Permission(
-                                        type=PermissionType.OWNER,
-                                        entity_type=EntityType.USER,
-                                        email=user.get("email"),
-                                        external_id=self.created_by,
-                                    )
-                                )
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Could not get user for created_by {self.created_by}: {e}"
+                # Use cached creator_email from init() instead of querying DB for each item
+                if self.creator_email:
+                    permissions.append(
+                        Permission(
+                            type=PermissionType.OWNER,
+                            entity_type=EntityType.USER,
+                            email=self.creator_email,
+                            external_id=self.created_by,
                         )
+                    )
 
                 if not permissions:
                     permissions.append(
@@ -1149,31 +1212,44 @@ class AzureFilesConnector(BaseConnector):
             )
             return False
 
+    def _extract_file_path_info(self, record: Record) -> Optional[Tuple[str, str]]:
+        """Extract share name and file path from record.
+
+        Returns:
+            Tuple of (share_name, file_path) if successful, None otherwise
+        """
+        share_name = record.external_record_group_id
+        if not share_name:
+            self.logger.warning(f"No share name found for record: {record.id}")
+            return None
+
+        external_record_id = record.external_record_id
+        if not external_record_id:
+            self.logger.warning(
+                f"No external_record_id found for record: {record.id}"
+            )
+            return None
+
+        if external_record_id.startswith(f"{share_name}/"):
+            file_path = external_record_id[len(f"{share_name}/") :]
+        else:
+            file_path = external_record_id.lstrip("/")
+
+        from urllib.parse import unquote
+
+        file_path = unquote(file_path)
+        return (share_name, file_path)
+
     async def get_signed_url(self, record: Record) -> Optional[str]:
         """Generate a SAS URL for an Azure file."""
         if not self.data_source:
             return None
         try:
-            share_name = record.external_record_group_id
-            if not share_name:
-                self.logger.warning(f"No share name found for record: {record.id}")
+            path_info = self._extract_file_path_info(record)
+            if not path_info:
                 return None
 
-            external_record_id = record.external_record_id
-            if not external_record_id:
-                self.logger.warning(
-                    f"No external_record_id found for record: {record.id}"
-                )
-                return None
-
-            if external_record_id.startswith(f"{share_name}/"):
-                file_path = external_record_id[len(f"{share_name}/") :]
-            else:
-                file_path = external_record_id.lstrip("/")
-
-            from urllib.parse import unquote
-
-            file_path = unquote(file_path)
+            share_name, file_path = path_info
 
             self.logger.debug(
                 f"Generating SAS URL - Share: {share_name}, "
@@ -1203,6 +1279,24 @@ class AzureFilesConnector(BaseConnector):
             )
             return None
 
+    async def _stream_file_content(
+        self, content: bytes, chunk_size: int = 8192
+    ) -> AsyncGenerator[bytes, None]:
+        """Stream file content in chunks.
+
+        Args:
+            content: The file content as bytes
+            chunk_size: Size of each chunk to yield (default: 8KB)
+
+        Yields:
+            Chunks of bytes
+        """
+        offset = 0
+        while offset < len(content):
+            chunk = content[offset : offset + chunk_size]
+            yield chunk
+            offset += len(chunk)
+
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream Azure file content."""
         if isinstance(record, FileRecord) and not record.is_file:
@@ -1211,19 +1305,87 @@ class AzureFilesConnector(BaseConnector):
                 detail="Cannot stream directory content",
             )
 
-        signed_url = await self.get_signed_url(record)
-        if not signed_url:
+        if not self.data_source:
             raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail="File not found or access denied",
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Data source not initialized",
             )
 
-        return create_stream_record_response(
-            stream_content(signed_url, record_id=record.id, file_name=record.record_name),
-            filename=record.record_name,
-            mime_type=record.mime_type if record.mime_type else "application/octet-stream",
-            fallback_filename=f"record_{record.id}"
+        # Extract file path information
+        path_info = self._extract_file_path_info(record)
+        if not path_info:
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail="File not found or invalid record",
+            )
+
+        share_name, file_path = path_info
+
+        # Try to generate SAS URL first
+        signed_url = await self.get_signed_url(record)
+
+        if signed_url:
+            # Use SAS URL streaming (existing behavior)
+            return create_stream_record_response(
+                stream_content(signed_url, record_id=record.id, file_name=record.record_name),
+                filename=record.record_name,
+                mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+                fallback_filename=f"record_{record.id}"
+            )
+
+        # Fallback: Download file directly when SAS URL generation fails
+        # This handles cases where account key is missing from connection string
+        self.logger.info(
+            f"SAS URL generation failed, falling back to direct download - "
+            f"Share: {share_name} | File: {file_path} | Record ID: {record.id}"
         )
+
+        try:
+            download_response = await self.data_source.download_file(
+                share_name=share_name,
+                file_path=file_path,
+            )
+
+            if not download_response.success:
+                error_msg = download_response.error or "Unknown error"
+                if "not found" in error_msg.lower():
+                    raise HTTPException(
+                        status_code=HttpStatusCode.NOT_FOUND.value,
+                        detail=f"File not found: {share_name}/{file_path}",
+                    )
+                else:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail=f"Failed to download file: {error_msg}",
+                    )
+
+            # Get file content from response
+            file_content = download_response.data.get("content")
+            if not file_content:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Downloaded file has no content",
+                )
+
+            # Stream the content in chunks
+            return create_stream_record_response(
+                self._stream_file_content(file_content),
+                filename=record.record_name,
+                mime_type=record.mime_type if record.mime_type else "application/octet-stream",
+                fallback_filename=f"record_{record.id}"
+            )
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            self.logger.error(
+                f"Error downloading file directly for record {record.id}: {e}",
+                exc_info=True
+            )
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail=f"Failed to stream file: {str(e)}",
+            )
 
     async def cleanup(self) -> None:
         """Clean up resources used by the connector."""
@@ -1466,6 +1628,8 @@ class AzureFilesConnector(BaseConnector):
             parent_external_id = (
                 f"{share_name}/{parent_path}" if parent_path else share_name
             )
+            # Match Azure Blob / GCS behavior: parent is always treated as a FILE record
+            parent_record_type = RecordType.FILE
 
             if is_directory:
                 web_url = self._generate_directory_url(share_name, item_path)
@@ -1488,7 +1652,8 @@ class AzureFilesConnector(BaseConnector):
             updated_record = FileRecord(
                 id=record.id,
                 record_name=record_name,
-                record_type=RecordType.FOLDER if is_directory else RecordType.FILE,
+                # Use RecordType.FILE for both files and directories; directories are distinguished via is_file flag.
+                record_type=RecordType.FILE,
                 record_group_type=RecordGroupType.FILE_SHARE.value,
                 external_record_group_id=share_name,
                 external_record_id=updated_external_record_id,
@@ -1502,10 +1667,11 @@ class AzureFilesConnector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,
                 fetch_signed_url=signed_url_route if is_file else None,
-                hide_weburl=False,
-                is_internal=False,
+                # Match Azure Blob / GCS behavior: directories are internal placeholders with hidden weburl
+                hide_weburl=True,
+                is_internal=True if is_directory else False,
                 parent_external_record_id=parent_external_id,
-                parent_record_type=RecordType.FILE,
+                parent_record_type=parent_record_type,
                 size_in_bytes=item_metadata.get("size", 0) if is_file else 0,
                 is_file=is_file,
                 extension=extension,
@@ -1514,6 +1680,15 @@ class AzureFilesConnector(BaseConnector):
                 md5_hash=content_md5,
                 etag=current_etag,
             )
+
+            # Root-level items: do not link to the share as a parent
+            if (
+                updated_record.parent_external_record_id
+                and updated_record.external_record_group_id
+                and updated_record.parent_external_record_id == updated_record.external_record_group_id
+            ):
+                updated_record.parent_external_record_id = None
+                updated_record.parent_record_type = None
 
             if hasattr(self, "indexing_filters") and self.indexing_filters:
                 if not self.indexing_filters.is_enabled(
@@ -1555,10 +1730,7 @@ class AzureFilesConnector(BaseConnector):
             )
 
             shares_to_sync = []
-            if self.share_name:
-                shares_to_sync = [self.share_name]
-                self.logger.info(f"Using configured share: {self.share_name}")
-            elif selected_shares:
+            if selected_shares:
                 shares_to_sync = selected_shares
                 self.logger.info(f"Using filtered shares: {shares_to_sync}")
             else:
@@ -1611,7 +1783,12 @@ class AzureFilesConnector(BaseConnector):
         account_name = ""
         if config:
             auth_config = config.get("auth", {})
-            account_name = auth_config.get("accountName", "")
+            connection_string = auth_config.get("connectionString", "")
+            if connection_string:
+                extracted = cls._extract_account_name_from_connection_string(
+                    connection_string
+                )
+                account_name = extracted or ""
 
         data_entities_processor = AzureFilesDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service, account_name=account_name
