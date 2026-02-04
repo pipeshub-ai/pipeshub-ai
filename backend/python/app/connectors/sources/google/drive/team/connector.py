@@ -715,6 +715,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         permissions: List[Permission] = []
         page_token: Optional[str] = None
+        anyone_with_link_permission_type: Optional[PermissionType] = None
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
@@ -767,6 +768,10 @@ class GoogleDriveTeamConnector(BaseConnector):
                             entity_type=entity_type
                         )
                         permissions.append(permission)
+
+                        # Track "anyone with link" permission type for fallback
+                        if entity_type == EntityType.ANYONE:
+                            anyone_with_link_permission_type = permission_type
 
                     except Exception as e:
                         resource_type = "drive" if is_drive else "file"
@@ -834,6 +839,24 @@ class GoogleDriveTeamConnector(BaseConnector):
                     # For files, return empty list on error instead of raising, to allow processing to continue
                     self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}", exc_info=True)
                     return (permissions, False)
+
+        # If we found an "anyone with link" permission and have a user_email, create a fallback permission
+        if anyone_with_link_permission_type is not None and user_email:
+            # Check if user_email is already in the permissions list
+            user_already_has_permission = any(
+                perm.email == user_email for perm in permissions
+            )
+
+            self.logger.info(f"\n\n\nUser already has permission: {user_already_has_permission}")
+
+            if not user_already_has_permission:
+                fallback_permission = Permission(
+                    email=user_email,
+                    type=anyone_with_link_permission_type,
+                    entity_type=EntityType.USER
+                )
+                self.logger.info("Anyone with link permission found for file")
+                return ([fallback_permission], True)
 
         return (permissions, False)
 
@@ -1010,6 +1033,18 @@ class GoogleDriveTeamConnector(BaseConnector):
                 source_created_at=user.source_created_at
             )
 
+            # Create record group for the user's shared with me files
+            shared_with_me_record_group = RecordGroup(
+                name=f"{user.full_name}'s Shared with Me",
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=f"0S:{user.email}",
+                description="Shared with Me",
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.DRIVE,
+                is_internal=True,
+            )
+
             # Create owner permission for the user
             owner_permission = Permission(
                 email=user.email,
@@ -1019,9 +1054,9 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             # Submit to processor
             await self.data_entities_processor.on_new_record_groups(
-                [(my_drive_record_group, [owner_permission])]
+                [(my_drive_record_group, [owner_permission]), (shared_with_me_record_group, [owner_permission])]
             )
-            self.logger.debug(f"Created 'My Drive' record group for user {user.email} with drive ID {drive_id}")
+            self.logger.debug(f"Created 'My Drive' and 'Shared with Me' record groups for user {user.email} with drive ID {drive_id}")
 
         except Exception as e:
             self.logger.error(
@@ -1387,10 +1422,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                     metadata_changed = True
                     is_updated = True
 
-                if existing_record.external_record_group_id is None:
-                    is_updated = True
-                    metadata_changed = True
-
                 external_revision_id = metadata.get("headRevisionId") or metadata.get("version")
                 if existing_record.external_revision_id != external_revision_id:
                     content_changed = True
@@ -1408,9 +1439,9 @@ class GoogleDriveTeamConnector(BaseConnector):
             owner_emails = [owner.get("emailAddress") for owner in owners if owner.get("emailAddress")]
             is_shared_with_me = is_shared and user_email not in owner_emails
 
-            if not is_shared_drive:
+            if not is_shared_drive and not is_shared_with_me:
 
-                if existing_record and drive_id != existing_record.external_record_group_id:
+                if existing_record and existing_record.external_record_group_id is None:
                     is_updated = True
                     metadata_changed = True
 
@@ -1471,6 +1502,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.debug(f"No content change for file {file_record.record_name} setting indexing status as prev value")
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
+
+            if is_shared_with_me:
+                file_record.external_record_group_id = None
+
+                async with self.data_store_provider.transaction() as tx_store:
+                    shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=self.connector_id, external_id=f"0S:{user_email}")
+                    if not shared_with_me_record_group:
+                        raise ValueError("Create a shared with me record group first")
+                    await tx_store.create_record_group_relation(file_record.id, shared_with_me_record_group.id)
 
             # Handle Permissions - fetch new permissions
             new_permissions = []
@@ -1793,13 +1833,14 @@ class GoogleDriveTeamConnector(BaseConnector):
                     file_metadata = change.get("file")
 
                     if is_removed:
-
                         existing_record = None
                         async with self.data_store_provider.transaction() as tx_store:
                             existing_record = await tx_store.get_record_by_external_id(
                                 connector_id=self.connector_id,
                                 external_id=change.get("fileId")
                             )
+
+                        self.logger.info(f"Removing permission from record {existing_record.record_name} for user {user.email}")
 
                         if existing_record and existing_record.id:
                             await self.data_entities_processor.delete_permission_from_record(

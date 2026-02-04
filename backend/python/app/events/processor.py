@@ -1045,13 +1045,19 @@ class Processor:
         """
         Build the final BlocksContainer with updated indices.
 
+        Handles both:
+        - BlockGroups with requires_processing=True: blocks from docling processing
+        - BlockGroups with requires_processing=False: existing blocks from connector
+
+        All blocks are assigned sequential indices in BlockGroup order.
+
         Args:
             block_containers: Original BlocksContainer
             block_groups_with_index: Block groups with valid indices
             block_groups_without_index: Block groups without indices
             processing_results: Map of parent_index -> (new_block_groups, new_blocks)
             index_shift_map: Map of original_index to shift amount
-            initial_block_count: Initial count of blocks
+            initial_block_count: Initial count of blocks (unused, kept for compatibility)
 
         Returns:
             New BlocksContainer with processed blocks merged in
@@ -1060,10 +1066,26 @@ class Processor:
         new_blocks: List[Block] = []
         processed_indices = set(processing_results.keys())
 
-        # Track block index offset (blocks are appended at the end)
-        block_index_offset = initial_block_count
+        # Group existing blocks by their original parent_index
+        # (before any shifting is applied to BlockGroup indices)
+        existing_blocks_by_parent: Dict[int, List[Block]] = {}
+        for block in block_containers.blocks:
+            parent_idx = block.parent_index
+            if parent_idx is not None:
+                if parent_idx not in existing_blocks_by_parent:
+                    existing_blocks_by_parent[parent_idx] = []
+                existing_blocks_by_parent[parent_idx].append(block)
 
-        # Build new block_groups list
+        # Sort blocks within each parent group by their original index to maintain relative order
+        for parent_idx in existing_blocks_by_parent:
+            existing_blocks_by_parent[parent_idx].sort(
+                key=lambda b: b.index if b.index is not None else float('inf')
+            )
+
+        # Track current block index for sequential assignment
+        current_block_index = 0
+
+        # Build new block_groups list and assign block indices in BlockGroup order
         for bg in block_groups_with_index:
             original_index = bg.index
             shift_amount = index_shift_map[original_index]
@@ -1076,29 +1098,26 @@ class Processor:
             if bg.parent_index is not None and bg.parent_index in index_shift_map:
                 bg.parent_index += index_shift_map[bg.parent_index]
 
-            # Update children references
-            if bg.children:
-                # Shift block_group ranges that reference shifted block groups
-                # Must expand ranges, apply individual shifts, then reconstruct
-                # (different indices within a range may need different shifts)
-                if bg.children.block_group_ranges:
-                    shifted_indices = []
-                    for range_obj in bg.children.block_group_ranges:
-                        for idx in range(range_obj.start, range_obj.end + 1):
-                            if idx in index_shift_map:
-                                shifted_indices.append(idx + index_shift_map[idx])
-                            else:
-                                shifted_indices.append(idx)
-                    # Reconstruct ranges from shifted indices
-                    bg.children.block_group_ranges = BlockGroupChildren.from_indices(
-                        block_group_indices=shifted_indices
-                    ).block_group_ranges
+            # Update children.block_group_ranges references
+            if bg.children and bg.children.block_group_ranges:
+                shifted_indices = []
+                for range_obj in bg.children.block_group_ranges:
+                    for idx in range(range_obj.start, range_obj.end + 1):
+                        if idx in index_shift_map:
+                            shifted_indices.append(idx + index_shift_map[idx])
+                        else:
+                            shifted_indices.append(idx)
+                # Reconstruct ranges from shifted indices
+                bg.children.block_group_ranges = BlockGroupChildren.from_indices(
+                    block_group_indices=shifted_indices
+                ).block_group_ranges
 
             # Add the block_group to the result
             new_block_groups.append(bg)
 
-            # If this block_group was processed, insert its children and mark as processed
+            # Handle blocks for this BlockGroup
             if original_index in processed_indices:
+                # Case 1: BlockGroup was processed by docling - use new blocks
                 bg.requires_processing = False
 
                 # Get processing results
@@ -1109,36 +1128,15 @@ class Processor:
                 if bg.children is None:
                     bg.children = BlockGroupChildren()
 
-                # Assign indices to new block_groups and update references
-                for i, new_bg in enumerate(new_block_groups_list):
-                    new_bg.index = insertion_index + i
+                # Clear existing block_ranges since we're replacing with processed blocks
+                bg.children.block_ranges = []
 
-                    # Set parent_index to parent's final index if not set
-                    if new_bg.parent_index is None:
-                        new_bg.parent_index = final_index
-                    else:
-                        # If parent_index exists, it's a relative index from docling
-                        new_bg.parent_index = new_bg.parent_index + insertion_index
-
-                    # Update children indices in the new block_group
-                    if new_bg.children:
-                        # Shift ranges
-                        for range_obj in new_bg.children.block_ranges:
-                            range_obj.start += block_index_offset
-                            range_obj.end += block_index_offset
-                        for range_obj in new_bg.children.block_group_ranges:
-                            range_obj.start += insertion_index
-                            range_obj.end += insertion_index
-
-                    new_block_groups.append(new_bg)
-
-                    # Add to parent's children
-                    bg.children.add_block_group_index(new_bg.index)
-
-                # Process new blocks with sequential indices
-                for block_i, new_block in enumerate(new_blocks_list):
+                # First, assign indices to all blocks (docling gives proper order)
+                # This ensures we know the final indices before updating nested block_group ranges
+                block_start_index = current_block_index
+                for new_block in new_blocks_list:
                     # Assign sequential block index
-                    new_block.index = block_index_offset + block_i
+                    new_block.index = current_block_index
 
                     # Set parent_index
                     if new_block.parent_index is None:
@@ -1153,20 +1151,64 @@ class Processor:
                     if new_block.parent_index == final_index:
                         bg.children.add_block_index(new_block.index)
 
-                # Note: Sorting is handled automatically by BlockGroupChildren.add_block_index()
-                # and add_block_group_index() methods which sort ranges internally.
-                # The structure also inherently separates block_group_ranges from block_ranges.
+                    current_block_index += 1
 
-                # Update block offset for next iteration
-                block_index_offset += len(new_blocks_list)
+                # Now assign indices to new block_groups and update their ranges
+                # (ranges can now reference the correctly assigned block indices)
+                for i, new_bg in enumerate(new_block_groups_list):
+                    new_bg.index = insertion_index + i
+
+                    # Set parent_index to parent's final index if not set
+                    if new_bg.parent_index is None:
+                        new_bg.parent_index = final_index
+                    else:
+                        # If parent_index exists, it's a relative index from docling
+                        new_bg.parent_index = new_bg.parent_index + insertion_index
+
+                    # Update children indices in the new block_group
+                    # Since blocks are already assigned, shift ranges by block_start_index
+                    if new_bg.children:
+                        # Shift block_ranges (docling returns ranges relative to its output starting at 0)
+                        for range_obj in new_bg.children.block_ranges:
+                            range_obj.start += block_start_index
+                            range_obj.end += block_start_index
+
+                        # Shift block_group_ranges
+                        for range_obj in new_bg.children.block_group_ranges:
+                            range_obj.start += insertion_index
+                            range_obj.end += insertion_index
+
+                    new_block_groups.append(new_bg)
+
+                    # Add to parent's children
+                    bg.children.add_block_group_index(new_bg.index)
+
+            elif original_index in existing_blocks_by_parent:
+                # Case 2: BlockGroup has existing blocks from connector - reassign indices
+                existing_blocks = existing_blocks_by_parent[original_index]
+
+                # Initialize children if needed
+                if bg.children is None:
+                    bg.children = BlockGroupChildren()
+
+                # Clear and rebuild block_ranges with new indices
+                bg.children.block_ranges = []
+
+                for block in existing_blocks:
+                    # Update parent_index to the shifted BlockGroup index
+                    block.parent_index = final_index
+
+                    # Assign new sequential block index
+                    block.index = current_block_index
+                    new_blocks.append(block)
+
+                    # Add to parent's children
+                    bg.children.add_block_index(block.index)
+
+                    current_block_index += 1
 
         # Append block_groups with None index at end
         new_block_groups.extend(block_groups_without_index)
-
-        # Update all original blocks' parent_index references
-        for block in block_containers.blocks:
-            if block.parent_index is not None and block.parent_index in index_shift_map:
-                block.parent_index += index_shift_map[block.parent_index]
 
         # Sort block_groups by index to ensure list position matches index value
         sorted_block_groups = sorted(
@@ -1175,9 +1217,8 @@ class Processor:
         )
 
         # Sort blocks by index to ensure list position matches index value
-        all_blocks = list(block_containers.blocks) + new_blocks
         sorted_blocks = sorted(
-            all_blocks,
+            new_blocks,
             key=lambda b: b.index if b.index is not None else float('inf')
         )
 

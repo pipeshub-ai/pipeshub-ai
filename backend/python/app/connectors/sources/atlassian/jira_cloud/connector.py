@@ -2374,16 +2374,27 @@ class JiraConnector(BaseConnector):
         # Read project sync point
         project_sync_data = await self._get_project_sync_checkpoint(project_key)
 
+        # Check if this is a new project (no checkpoint exists)
+        is_new_project = not project_sync_data or (
+            not project_sync_data.get("last_issue_updated") and
+            not project_sync_data.get("last_sync_time")
+        )
+
         # Use last_issue_updated if available (works for both resume and incremental sync)
-        # Fall back to project sync time, then global sync time
-        resume_from_timestamp = project_sync_data.get("last_issue_updated")
-        if not resume_from_timestamp:
-            resume_from_timestamp = project_sync_data.get("last_sync_time") or global_last_sync_time
+        # For new projects, don't use any timestamp to fetch ALL issues
+        # Fall back to project sync time, then global sync time (only for existing projects)
+        resume_from_timestamp = None
+        if not is_new_project:
+            resume_from_timestamp = project_sync_data.get("last_issue_updated")
+            if not resume_from_timestamp:
+                resume_from_timestamp = project_sync_data.get("last_sync_time") or global_last_sync_time
 
         # Set project_last_sync_time for fallback in _fetch_issues_batched
-        project_last_sync_time = project_sync_data.get("last_sync_time") or global_last_sync_time
+        project_last_sync_time = project_sync_data.get("last_sync_time") or global_last_sync_time if not is_new_project else None
 
-        if resume_from_timestamp:
+        if is_new_project:
+            self.logger.info(f"🆕 New project detected: {project_key}. Fetching ALL issues (no timestamp filter).")
+        elif resume_from_timestamp:
             self.logger.info(f"🔄 Starting sync for project {project_key} from timestamp {resume_from_timestamp}")
 
         # Fetch and process issues in batches

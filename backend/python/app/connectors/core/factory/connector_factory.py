@@ -23,8 +23,7 @@ from app.connectors.sources.atlassian.confluence_cloud.connector import (
 )
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.azure_blob.connector import AzureBlobConnector
-
-# from app.connectors.sources.azure_files.connector import AzureFilesConnector
+from app.connectors.sources.azure_files.connector import AzureFilesConnector
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.connectors.sources.box.connector import BoxConnector
 from app.connectors.sources.dropbox.connector import DropboxConnector
@@ -82,7 +81,7 @@ class ConnectorFactory:
         "gcs": GCSConnector,
         "kb": KnowledgeBaseConnector,
         "azureblob": AzureBlobConnector,
-        # "azurefiles": AzureFilesConnector,
+        "azurefiles": AzureFilesConnector,
         "linear": LinearConnector,
         "notion": NotionConnector,
         "zammad": ZammadConnector,

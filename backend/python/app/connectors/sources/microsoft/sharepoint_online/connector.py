@@ -133,6 +133,134 @@ class SiteMetadata:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class MicrosoftRegion(str, Enum):
+    """Microsoft 365 Multi-Geo region codes for Search API."""
+
+    APC = "APC"  # Asia Pacific (Singapore, Malaysia, Hong Kong)
+    AUS = "AUS"  # Australia
+    AUT = "AUT"  # Austria
+    BRA = "BRA"  # Brazil
+    CAN = "CAN"  # Canada
+    CHL = "CHL"  # Chile
+    EUR = "EUR"  # Europe (Netherlands, Ireland, Finland)
+    FRA = "FRA"  # France
+    DEU = "DEU"  # Germany
+    IND = "IND"  # India
+    IDN = "IDN"  # Indonesia
+    ISR = "ISR"  # Israel
+    ITA = "ITA"  # Italy
+    JPN = "JPN"  # Japan
+    KOR = "KOR"  # South Korea
+    MEX = "MEX"  # Mexico
+    NZL = "NZL"  # New Zealand
+    NOR = "NOR"  # Norway
+    POL = "POL"  # Poland
+    QAT = "QAT"  # Qatar
+    ZAF = "ZAF"  # South Africa
+    ESP = "ESP"  # Spain
+    SWE = "SWE"  # Sweden
+    CHE = "CHE"  # Switzerland
+    TWN = "TWN"  # Taiwan
+    ARE = "ARE"  # United Arab Emirates
+    GBR = "GBR"  # United Kingdom
+    NAM = "NAM"  # North America (United States)
+
+
+class CountryToRegionMapper:
+
+    _COUNTRY_TO_REGION: dict[str, MicrosoftRegion] = {
+        "SG": MicrosoftRegion.APC,
+        "MY": MicrosoftRegion.APC,
+        "HK": MicrosoftRegion.APC,
+        "AU": MicrosoftRegion.AUS,
+        "AT": MicrosoftRegion.AUT,
+        "BR": MicrosoftRegion.BRA,
+        "CA": MicrosoftRegion.CAN,
+        "CL": MicrosoftRegion.CHL,
+        "NL": MicrosoftRegion.EUR,
+        "IE": MicrosoftRegion.EUR,
+        "FI": MicrosoftRegion.EUR,
+        "FR": MicrosoftRegion.FRA,
+        "DE": MicrosoftRegion.DEU,
+        "IN": MicrosoftRegion.IND,
+        "ID": MicrosoftRegion.IDN,
+        "IL": MicrosoftRegion.ISR,
+        "IT": MicrosoftRegion.ITA,
+        "JP": MicrosoftRegion.JPN,
+        "KR": MicrosoftRegion.KOR,
+        "MX": MicrosoftRegion.MEX,
+        "NZ": MicrosoftRegion.NZL,
+        "NO": MicrosoftRegion.NOR,
+        "PL": MicrosoftRegion.POL,
+        "QA": MicrosoftRegion.QAT,
+        "ZA": MicrosoftRegion.ZAF,
+        "ES": MicrosoftRegion.ESP,
+        "SE": MicrosoftRegion.SWE,
+        "CH": MicrosoftRegion.CHE,
+        "TW": MicrosoftRegion.TWN,
+        "AE": MicrosoftRegion.ARE,
+        "GB": MicrosoftRegion.GBR,
+        "US": MicrosoftRegion.NAM,
+    }
+
+    DEFAULT_REGION = MicrosoftRegion.NAM
+
+    @classmethod
+    def get_region(cls, country_code: Optional[str]) -> MicrosoftRegion:
+        """
+        Get the Microsoft region for a given ISO country code.
+
+        Args:
+            country_code: ISO 3166-1 alpha-2 country code (e.g., "US", "GB", "IN")
+
+        Returns:
+            MicrosoftRegion enum value
+        """
+        if not country_code:
+            return cls.DEFAULT_REGION
+
+        return cls._COUNTRY_TO_REGION.get(country_code.upper(), cls.DEFAULT_REGION)
+
+    @classmethod
+    def get_region_string(cls, country_code: Optional[str]) -> str:
+        """
+        Get the Microsoft region string for a given ISO country code.
+
+        Args:
+            country_code: ISO 3166-1 alpha-2 country code (e.g., "US", "GB", "IN")
+
+        Returns:
+            Region code string (e.g., "NAM", "GBR", "IND")
+        """
+        return cls.get_region(country_code).value
+
+    @classmethod
+    def is_valid_region(cls, region: str) -> bool:
+        """
+        Check if a region code is valid.
+
+        Args:
+            region: Region code to validate
+
+        Returns:
+            True if valid, False otherwise
+        """
+        try:
+            MicrosoftRegion(region.upper())
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def get_all_regions(cls) -> list[str]:
+        """Get all valid region codes."""
+        return [r.value for r in MicrosoftRegion]
+
+    @classmethod
+    def get_all_country_codes(cls) -> list[str]:
+        """Get all supported country codes."""
+        return list(cls._COUNTRY_TO_REGION.keys())
+
 @ConnectorBuilder("SharePoint Online")\
     .in_group("Microsoft 365")\
     .with_description("Sync documents and lists from SharePoint Online")\
@@ -285,6 +413,7 @@ class SharePointConnector(BaseConnector):
         # Cache for site metadata
         self.site_cache: Dict[str, SiteMetadata] = {}
 
+        self.tenant_region: str = None
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
 
@@ -480,6 +609,50 @@ class SharePointConnector(BaseConnector):
             scopes=["https://graph.microsoft.com/.default"]
         )
         self.msgraph_client = MSGraphClient(self.connector_name, self.connector_id, self.client, self.logger)
+
+        try:
+            self.logger.info("🔍 Fetching tenant region...")
+
+            from msgraph.generated.sites.item.site_item_request_builder import (
+                SiteItemRequestBuilder,
+            )
+
+            query_params = SiteItemRequestBuilder.SiteItemRequestBuilderGetQueryParameters(
+                select=["siteCollection"]
+            )
+            request_config = SiteItemRequestBuilder.SiteItemRequestBuilderGetRequestConfiguration(
+                query_parameters=query_params
+            )
+
+            root_site = await self.client.sites.by_site_id("root").get(request_configuration=request_config)
+
+            if (
+                root_site
+                and root_site.site_collection
+                and root_site.site_collection.data_location_code
+            ):
+                self.tenant_region = root_site.site_collection.data_location_code.upper()
+                self.logger.info(f"✅ Region detected via Root Site: {self.tenant_region}")
+            else:
+                self.logger.info("🔍 Root site dataLocationCode empty, trying organization endpoint...")
+
+                org_collection = await self.client.organization.get()
+
+                if org_collection and org_collection.value:
+                    country_code = org_collection.value[0].country_letter_code
+                    self.logger.info(f"🔍 Tenant country code: {country_code}")
+
+                    # Use the mapper
+                    self.tenant_region = CountryToRegionMapper.get_region_string(country_code)
+                    self.logger.info(
+                        f"✅ Region mapped from country '{country_code}': {self.tenant_region}"
+                    )
+                else:
+                    self.logger.warning("⚠️ Could not determine region, filter site/pages/drives might not work.")
+
+        except Exception as e:
+            self.logger.warning(f"⚠️ Failed to fetch tenant region: {e}. Filter site/pages/drives might not work.")
+
         return True
 
 
@@ -987,11 +1160,21 @@ class SharePointConnector(BaseConnector):
             if not item_id:
                 return None
 
+            is_root = hasattr(item, 'root') and item.root is not None
+
+            external_record_id = None
+            # Create a composite ID that includes drive_id for root folders
+            if is_root:
+                external_record_id = f"{drive_id}:root:{item_id}"
+            else:
+                external_record_id = item_id
+
+
             # Check if item is deleted
             if hasattr(item, 'deleted') and item.deleted is not None:
                 return RecordUpdate(
                     record=None,
-                    external_record_id=item_id,
+                    external_record_id=external_record_id,
                     is_new=False,
                     is_updated=False,
                     is_deleted=True,
@@ -1012,7 +1195,7 @@ class SharePointConnector(BaseConnector):
             async with self.data_store_provider.transaction() as tx_store:
                 existing_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
-                    external_id=item_id
+                    external_id=external_record_id
                 )
 
             is_new = existing_record is None
@@ -1077,6 +1260,13 @@ class SharePointConnector(BaseConnector):
             if not item_id:
                 return None
 
+            is_root = hasattr(item, 'root') and item.root is not None
+            external_record_id = None
+            if is_root:
+                external_record_id = f"{drive_id}:root:{item_id}"
+            else:
+                external_record_id = item_id
+
             # Determine if it's a file or folder
             is_file = hasattr(item, 'folder') and item.folder is None
             record_type = RecordType.FILE
@@ -1126,6 +1316,13 @@ class SharePointConnector(BaseConnector):
                 parent_id = getattr(item.parent_reference, 'id', None)
                 path = getattr(item.parent_reference, 'path', None)
 
+                # Check if parent is root - if path ends with '/root:' or is '/drive/root:', parent is root
+                # Convert parent_id to composite format if parent is root
+                if parent_id and path:
+                    # Check if parent is at root level (path ends with '/root:' or '/drive/root:')
+                    if path.endswith('/root:') or path == '/drive/root:':
+                        parent_id = f"{drive_id}:root:{parent_id}"
+
             return FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=item_name,
@@ -1133,7 +1330,7 @@ class SharePointConnector(BaseConnector):
                 record_status=ProgressStatus.NOT_STARTED if not existing_record else existing_record.record_status,
                 record_group_type=RecordGroupType.DRIVE,
                 parent_record_type=RecordType.FILE,
-                external_record_id=item_id,
+                external_record_id=external_record_id,
                 external_revision_id=getattr(item, 'e_tag', None),
                 version=0 if not existing_record else existing_record.version + 1,
                 origin=OriginTypes.CONNECTOR,
@@ -3954,7 +4151,8 @@ class SharePointConnector(BaseConnector):
             entity_types=["site"],
             query=search_query,
             page=page,
-            limit=limit
+            limit=limit,
+            region=self.tenant_region
         )
 
         options = []
@@ -4022,7 +4220,8 @@ class SharePointConnector(BaseConnector):
             entity_types=["listItem"],
             query=full_query,
             page=page,
-            limit=limit
+            limit=limit,
+            region=self.tenant_region
         )
 
         options = []
@@ -4119,7 +4318,8 @@ class SharePointConnector(BaseConnector):
             entity_types=["list"],
             query=full_query,
             page=page,
-            limit=limit
+            limit=limit,
+            region=self.tenant_region
         )
 
         options = []
