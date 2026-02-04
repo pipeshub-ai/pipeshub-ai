@@ -524,7 +524,6 @@ const SingleFileUploadDialog: React.FC<SingleFileUploadDialogProps> = ({
               },
             }}
           >
-            {/* Hide input and control it programmatically */}
             <input
               type="file"
               id="fileInput"
@@ -614,7 +613,6 @@ const SingleFileUploadDialog: React.FC<SingleFileUploadDialogProps> = ({
                 onClick={() => {
                   setFile(null);
                   setFileError(null);
-                  // Reset the file input when removing a file
                   if (fileInputRef.current) {
                     fileInputRef.current.value = '';
                   }
