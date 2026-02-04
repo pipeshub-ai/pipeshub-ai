@@ -11314,7 +11314,7 @@ class Neo4jProvider(IGraphDBProvider):
                      CASE WHEN f IS NOT NULL AND f.isFile = false THEN 'folder' ELSE 'record' END AS nodeType,
                      count(DISTINCT child) AS child_count
 
-                WITH rg_nodes + collect(DISTINCT {{
+                WITH rg_nodes, collect(DISTINCT {{
                     id: record.id,
                     name: record.recordName,
                     nodeType: nodeType,
@@ -11334,7 +11334,10 @@ class Neo4jProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: child_count > 0,
                     previewRenderable: coalesce(record.previewRenderable, true)
-                }}) AS all_nodes_raw
+                }}) AS record_nodes
+
+                // Combine after both are fully collected
+                WITH rg_nodes + record_nodes AS all_nodes_raw
 
                 // Filter nulls and deduplicate
                 WITH [n IN all_nodes_raw WHERE n.id IS NOT NULL] AS all_nodes
