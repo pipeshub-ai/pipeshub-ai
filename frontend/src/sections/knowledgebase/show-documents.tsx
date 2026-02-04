@@ -543,7 +543,7 @@ const RecordDocumentViewer = ({ record }: RecordDocumentViewerProps) => {
     try {
       setIsDownloading(true);
       // Always use record._key - the backend handles both KB and connector records via unified stream API
-      await KnowledgeBaseAPI.handleDownloadDocument(record._key, recordName);
+      await KnowledgeBaseAPI.handleDownloadDocument(record.id, recordName);
     } catch (error) {
       console.error('Failed to download document:', error);
       setSnackbar({
