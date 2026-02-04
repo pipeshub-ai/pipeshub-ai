@@ -24,7 +24,9 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinKBResponse,
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 async def get_kb_service(request: Request) -> KnowledgeBaseService:
@@ -37,6 +39,12 @@ async def get_kb_service(request: Request) -> KnowledgeBaseService:
     graph_provider = request.app.state.graph_provider
     kafka_service = container.kafka_service()
     return KnowledgeBaseService(logger=logger, graph_provider=graph_provider, kafka_service=kafka_service)
+
+
+async def get_kafka_service(request: Request) -> KafkaService:
+    """Get KafkaService from container."""
+    container: ConnectorAppContainer = request.app.container
+    return container.kafka_service()
 
 
 # Constants for HTTP status codes
@@ -251,8 +259,11 @@ async def delete_knowledge_base(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> SuccessResponse:
     try:
+        container = request.app.container
+        logger = container.logger()
         user_id = request.state.user.get("userId")
         result = await kb_service.delete_knowledge_base(kb_id=kb_id, user_id=user_id)
         if not result or result.get("success") is False:
@@ -262,6 +273,28 @@ async def delete_knowledge_base(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+        
+        # Publish batch deletion events
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish deletion events: {str(e)}")
+        
         return SuccessResponse(message="Knowledge base deleted successfully")
 
     except HTTPException as he:
@@ -332,6 +365,7 @@ async def upload_records_to_kb(
     kb_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Union[UploadRecordsinKBResponse, Dict[str, Any]]:
     """
     ⭐ UNIFIED: Upload records to KB root using consolidated service
@@ -386,6 +420,29 @@ async def upload_records_to_kb(
                 detail=error_reason
             )
 
+        # Publish batch events
+        container = request.app.container
+        logger = container.logger()
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish upload events: {str(e)}")
+
         # Return unified response
         return result
 
@@ -413,6 +470,7 @@ async def upload_records_to_folder(
     folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Union[UploadRecordsinFolderResponse, Dict[str, Any]]:
     """
     ⭐ UNIFIED: Upload records to specific folder using consolidated service
@@ -466,6 +524,29 @@ async def upload_records_to_folder(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        # Publish batch events
+        container = request.app.container
+        logger = container.logger()
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
         # Return unified response
         return result
@@ -1109,8 +1190,11 @@ async def update_record(
     record_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Union[UpdateRecordResponse, Dict[str, Any]]:
     try:
+        container = request.app.container
+        logger = container.logger()
         try:
             body = await request.json()
         except Exception:
@@ -1132,6 +1216,21 @@ async def update_record(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        # Publish update event
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payload"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                event = {
+                    "eventType": event_data["eventType"],
+                    "timestamp": timestamp,
+                    "payload": event_data["payload"]
+                }
+                await kafka_service.publish_event(event_data["topic"], event)
+                logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish update event: {str(e)}")
 
         return result
 
