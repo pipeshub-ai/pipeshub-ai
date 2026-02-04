@@ -1036,6 +1036,7 @@ class RecordGroup(BaseModel):
     source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
     source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
     inherit_permissions: Optional[bool] = Field(default=False, description="Permissions for the record group")
+    is_internal: Optional[bool] = Field(default=False, description="Flag indicating if the record group is for internal use")
 
     def to_arango_base_record_group(self) -> Dict:
         doc = {
@@ -1049,6 +1050,7 @@ class RecordGroup(BaseModel):
             "connectorName": self.connector_name.value,
             "connectorId": self.connector_id,
             "groupType": self.group_type.value,
+            "isInternal": self.is_internal,
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
@@ -1070,6 +1072,7 @@ class RecordGroup(BaseModel):
             connector_name=arango_base_record_group["connectorName"],
             connector_id=arango_base_record_group.get("connectorId"),
             group_type=arango_base_record_group["groupType"],
+            is_internal=arango_base_record_group.get("isInternal", False),
             web_url=arango_base_record_group.get("webUrl", None),
             created_at=arango_base_record_group["createdAtTimestamp"],
             updated_at=arango_base_record_group["updatedAtTimestamp"],
