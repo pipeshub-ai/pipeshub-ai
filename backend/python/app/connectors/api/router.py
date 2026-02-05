@@ -1384,7 +1384,7 @@ async def delete_record(
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to publish deletion event: {str(e)}")
-            
+
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {
                 "success": True,
@@ -1459,7 +1459,7 @@ async def reindex_single_record(
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
-            
+
             logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
@@ -3534,117 +3534,6 @@ async def update_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
         )
-
-
-@router.delete("/api/v1/connectors/{connector_id}")
-async def delete_connector_instance(
-    connector_id: str,
-    request: Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
-) -> Dict[str, Any]:
-    """
-    Delete a connector instance and its configuration.
-
-    Args:
-        connector_id: Unique instance key
-        request: FastAPI request object
-        graph_provider: Injected graph DB provider
-
-    Returns:
-        Dictionary with success status
-
-    Raises:
-        HTTPException: 404 if instance not found
-    """
-    container = request.app.container
-    logger = container.logger()
-    connector_registry = request.app.state.connector_registry
-
-    try:
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-        is_admin = request.headers.get("X-Is-Admin", "false").lower() == "true"
-        if not user_id or not org_id:
-            logger.error(f"User not authenticated: {user_id} {org_id}")
-            raise HTTPException(
-                status_code=HttpStatusCode.UNAUTHORIZED.value,
-                detail="User not authenticated"
-            )
-        # Verify instance exists
-        instance = await connector_registry.get_connector_instance(
-            connector_id=connector_id,
-            user_id=user_id,
-            org_id=org_id,
-            is_admin=is_admin
-        )
-        if not instance:
-            logger.error(f"Connector instance {connector_id} not found or access denied")
-            raise HTTPException(
-                status_code=HttpStatusCode.NOT_FOUND.value,
-                detail=f"Connector instance {connector_id} not found or access denied"
-            )
-        if instance.get("scope") == ConnectorScope.TEAM.value and not is_admin:
-            logger.error("Only administrators can delete team connectors")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only administrators can delete team connectors"
-            )
-        if instance.get("createdBy") != user_id and not is_admin:
-            logger.error("Only the creator or an administrator can delete this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator or an administrator can delete this connector"
-            )
-        if instance.get("scope") == ConnectorScope.PERSONAL.value and instance.get("createdBy") != user_id:
-            logger.error("Only the creator can delete this connector")
-            raise HTTPException(
-                status_code=HttpStatusCode.FORBIDDEN.value,
-                detail="Only the creator can delete this connector"
-            )
-
-        connector_type = instance.get("type", "")
-        await check_beta_connector_access(connector_type, request)
-
-        # Delete configuration from etcd
-        config_service = container.config_service()
-        config_path = _get_config_path_for_instance(connector_id)
-
-        try:
-            await config_service.delete_config(config_path)
-        except Exception as e:
-            logger.warning(f"Could not delete config for {connector_id}: {e}")
-
-        # Delete instance from database
-        await graph_provider.delete_nodes(
-            [connector_id],
-            CollectionNames.APPS.value
-        )
-
-        await graph_provider.delete_edge(
-            from_id=org_id,
-            from_collection=CollectionNames.ORGS.value,
-            to_id=connector_id,
-            to_collection=CollectionNames.APPS.value,
-            collection=CollectionNames.ORG_APP_RELATION.value
-        )
-
-        logger.info(f"Deleted connector instance {connector_id}")
-
-        return {
-            "success": True,
-            "message": f"Connector instance {connector_id} deleted successfully"
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting instance {connector_id}: {e}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to delete connector instance: {str(e)}"
-        )
-
-
 @router.put("/api/v1/connectors/{connector_id}/name")
 async def update_connector_instance_name(
     connector_id: str,
@@ -5620,7 +5509,7 @@ async def toggle_connector_instance(
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Dict[str, Any]:
     """
     Delete a connector instance and all its related data.
@@ -5640,7 +5529,7 @@ async def delete_connector_instance(
     Args:
         connector_id: Unique connector instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with deletion statistics
@@ -5718,8 +5607,8 @@ async def delete_connector_instance(
             # Continue with deletion - data cleanup is more important than event publishing
             # Manual cleanup of sync services may be needed if this event fails
 
-        # 5. Delete from ArangoDB (returns records for Qdrant cleanup)
-        deletion_result = await arango_service.delete_connector_instance(
+        # 5. Delete from graph database (returns records for Qdrant cleanup)
+        deletion_result = await graph_provider.delete_connector_instance(
             connector_id=connector_id,
             org_id=org_id
         )
