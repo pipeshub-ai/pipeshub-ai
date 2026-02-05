@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.localKB.api.models import (
     CreateFolderResponse,
     CreateKnowledgeBaseResponse,
@@ -24,7 +25,6 @@ from app.connectors.sources.localKB.api.models import (
     UploadRecordsinKBResponse,
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
-from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -273,7 +273,7 @@ async def delete_knowledge_base(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
-        
+
         # Publish batch deletion events
         event_data = result.get("eventData")
         if event_data and event_data.get("payloads"):
@@ -294,7 +294,7 @@ async def delete_knowledge_base(
                 logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish deletion events: {str(e)}")
-        
+
         return SuccessResponse(message="Knowledge base deleted successfully")
 
     except HTTPException as he:

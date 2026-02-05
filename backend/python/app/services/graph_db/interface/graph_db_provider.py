@@ -2434,6 +2434,45 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def delete_connector_instance(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Delete a connector instance and all its related data.
+
+        This method performs a comprehensive deletion of:
+        - All records associated with the connector
+        - All record groups, roles, groups, drives
+        - All edges (permissions, relations, classifications)
+        - The connector app node itself
+        - Org-app relation edges
+
+        Classification nodes (departments, categories, topics, languages) are NOT deleted
+        as they are shared resources across connectors.
+        Users are NOT deleted - only userAppRelation edges are removed.
+
+        Args:
+            connector_id (str): The connector instance ID
+            org_id (str): The organization ID for validation
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict[str, Any]: Dictionary containing:
+                - success (bool): Whether deletion was successful
+                - virtual_record_ids (List[str]): List of virtual record IDs for Qdrant cleanup
+                - deleted_records_count (int): Number of records deleted
+                - deleted_record_groups_count (int): Number of record groups deleted
+                - deleted_roles_count (int): Number of roles deleted
+                - deleted_groups_count (int): Number of groups deleted
+                - deleted_drives_count (int): Number of drives deleted
+                - error (str, optional): Error message if deletion failed
+        """
+        pass
+
+    @abstractmethod
     async def get_key_by_external_file_id(
         self,
         external_file_id: str

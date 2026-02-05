@@ -11,6 +11,7 @@ import asyncio
 from collections import defaultdict
 import unicodedata
 import uuid
+from collections import defaultdict
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
@@ -1387,7 +1388,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Normalize depth to MAX_REINDEX_DEPTH if it's -1 or exceeds limit
             if depth == -1 or depth > MAX_REINDEX_DEPTH:
                 depth = MAX_REINDEX_DEPTH
-            
+
             record = await self.get_document(record_id, CollectionNames.RECORDS.value)
             if not record:
                 return {"success": False, "code": 404, "reason": f"Record not found: {record_id}"}
@@ -1439,10 +1440,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            # Get file record for event payload
-            file_record = await self.get_document(record_id, CollectionNames.FILES.value) if rec.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
-
-            # Reset indexing status to QUEUED before reindexing
             await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
@@ -5575,6 +5572,233 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
+
+    async def delete_connector_instance(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Delete a connector instance and all its related data.
+
+        This method performs a comprehensive deletion using AQL queries to:
+        - Collect all virtual record IDs for Qdrant cleanup
+        - Delete all records, record groups, roles, groups, drives
+        - Delete all edges connected to these nodes
+        - Delete the connector app node itself
+
+        Args:
+            connector_id: The connector instance ID
+            org_id: The organization ID for validation
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict containing deletion statistics and virtual_record_ids for Qdrant cleanup
+        """
+        try:
+            self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
+
+            # Step 1: Verify connector exists
+            connector_query = """
+            FOR app IN apps
+                FILTER app._key == @connector_id
+                RETURN app
+            """
+            connector_result = await self.http_client.execute_aql(
+                query=connector_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            if not connector_result or len(connector_result) == 0:
+                return {
+                    "success": False,
+                    "error": f"Connector instance {connector_id} not found"
+                }
+
+            # Step 2: Collect virtual record IDs for Qdrant cleanup
+            virtual_records_query = """
+            FOR record IN records
+                FILTER record.connectorId == @connector_id
+                RETURN record.virtualRecordId
+            """
+            virtual_record_ids = await self.http_client.execute_aql(
+                query=virtual_records_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+            virtual_record_ids = [vid for vid in (virtual_record_ids or []) if vid]
+
+            # Step 3: Count and collect entities
+            counts_query = """
+            LET records = (FOR r IN records FILTER r.connectorId == @connector_id RETURN r._key)
+            LET recordGroups = (FOR rg IN recordGroups FILTER rg.connectorId == @connector_id RETURN rg._key)
+            LET roles = (FOR role IN roles FILTER role.connectorId == @connector_id RETURN role._key)
+            LET groups = (FOR grp IN groups FILTER grp.connectorId == @connector_id RETURN grp._key)
+            LET drives = (FOR d IN drives FILTER d.connectorId == @connector_id RETURN d._key)
+
+            RETURN {
+                record_keys: records,
+                record_group_keys: recordGroups,
+                role_keys: roles,
+                group_keys: groups,
+                drive_keys: drives
+            }
+            """
+            counts_result = await self.http_client.execute_aql(
+                query=counts_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            collected = counts_result[0] if counts_result else {
+                "record_keys": [],
+                "record_group_keys": [],
+                "role_keys": [],
+                "group_keys": [],
+                "drive_keys": []
+            }
+
+            # Step 4: Delete all edges connected to records
+            delete_edges_query = """
+            FOR record IN records
+                FILTER record.connectorId == @connector_id
+                FOR edge IN 1..1 ANY record._id GRAPH 'pipeshubGraph'
+                    REMOVE edge IN edge._collection
+            """
+            await self.http_client.execute_aql(
+                query=delete_edges_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 5: Delete records
+            delete_records_query = """
+            FOR record IN records
+                FILTER record.connectorId == @connector_id
+                REMOVE record IN records
+            """
+            await self.http_client.execute_aql(
+                query=delete_records_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 6: Delete record groups
+            delete_rg_query = """
+            FOR rg IN recordGroups
+                FILTER rg.connectorId == @connector_id
+                REMOVE rg IN recordGroups
+            """
+            await self.http_client.execute_aql(
+                query=delete_rg_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 7: Delete roles
+            delete_roles_query = """
+            FOR role IN roles
+                FILTER role.connectorId == @connector_id
+                REMOVE role IN roles
+            """
+            await self.http_client.execute_aql(
+                query=delete_roles_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 8: Delete groups
+            delete_groups_query = """
+            FOR grp IN groups
+                FILTER grp.connectorId == @connector_id
+                REMOVE grp IN groups
+            """
+            await self.http_client.execute_aql(
+                query=delete_groups_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 9: Delete drives
+            delete_drives_query = """
+            FOR drive IN drives
+                FILTER drive.connectorId == @connector_id
+                REMOVE drive IN drives
+            """
+            await self.http_client.execute_aql(
+                query=delete_drives_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 10: Delete sync points
+            delete_sync_query = """
+            FOR sp IN syncPoints
+                FILTER sp.connectorId == @connector_id
+                REMOVE sp IN syncPoints
+            """
+            await self.http_client.execute_aql(
+                query=delete_sync_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            # Step 11: Delete org-app relation edge
+            delete_org_edge_query = """
+            FOR edge IN orgAppRelation
+                FILTER edge._from == @org_from
+                FILTER edge._to == @app_to
+                REMOVE edge IN orgAppRelation
+            """
+            await self.http_client.execute_aql(
+                query=delete_org_edge_query,
+                bind_vars={
+                    "org_from": f"orgs/{org_id}",
+                    "app_to": f"apps/{connector_id}"
+                },
+                txn_id=transaction
+            )
+
+            # Step 12: Delete the connector app itself
+            delete_app_query = """
+            FOR app IN apps
+                FILTER app._key == @connector_id
+                REMOVE app IN apps
+            """
+            await self.http_client.execute_aql(
+                query=delete_app_query,
+                bind_vars={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            self.logger.info(
+                f"✅ Connector instance {connector_id} deleted successfully. "
+                f"Records: {len(collected['record_keys'])}, "
+                f"RecordGroups: {len(collected['record_group_keys'])}, "
+                f"Roles: {len(collected['role_keys'])}, "
+                f"Groups: {len(collected['group_keys'])}, "
+                f"Drives: {len(collected['drive_keys'])}"
+            )
+
+            return {
+                "success": True,
+                "deleted_records_count": len(collected["record_keys"]),
+                "deleted_record_groups_count": len(collected["record_group_keys"]),
+                "deleted_roles_count": len(collected["role_keys"]),
+                "deleted_groups_count": len(collected["group_keys"]),
+                "deleted_drives_count": len(collected["drive_keys"]),
+                "virtual_record_ids": virtual_record_ids,
+                "connector_id": connector_id
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "error": f"Failed to delete connector instance: {str(e)}"
+            }
 
     # ==================== Connector-Specific Delete Methods ====================
 
@@ -10835,7 +11059,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # Prepare event data for all created records (router will publish)
                 created_files_data = result.get("created_files_data", [])
                 event_payloads = []
-                
+
                 if created_files_data:
                     try:
                         # Get storage endpoint
@@ -10843,7 +11067,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             config_node_constants.ENDPOINTS.value
                         )
                         storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-                        
+
                         for file_data in created_files_data:
                             record_doc = file_data.get("record")
                             file_doc = file_data.get("fileRecord")
@@ -10855,7 +11079,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                     event_payloads.append(create_payload)
                     except Exception as e:
                         self.logger.error(f"❌ Failed to prepare upload event payloads: {str(e)}")
-                
+
                 event_data = {
                     "eventType": "newRecord",
                     "topic": "record-events",
@@ -15731,7 +15955,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.warning(f"User not found for userId: {user_id}")
                 return []
 
-            user_key = user.get('_key')
             # Get user's accessible app connector ids (function expects external userId, not user_key)
             user_apps_ids = await self._get_user_app_ids(user_id)
 

@@ -2498,25 +2498,6 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return -1
 
-    async def find_next_queued_duplicate(
-        self,
-        record_id: str,
-        transaction: Optional[str] = None,
-    ) -> Optional[dict]:
-        """
-        Find the next QUEUED duplicate record with the same md5 hash.
-        Not implemented for Neo4j provider - returns None.
-
-        Args:
-            record_id (str): The record ID to use as reference for finding duplicates
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            Optional[dict]: Always returns None for Neo4j provider
-        """
-        # Not implemented for Neo4j - return None
-        return None
-
     async def copy_document_relationships(
         self,
         source_key: str,
@@ -4023,6 +4004,194 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Remove user access to record failed: {str(e)}")
             raise
+
+    async def delete_connector_instance(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Delete a connector instance and all its related data.
+
+        This method performs a comprehensive deletion using Cypher queries to:
+        - Collect all virtual record IDs for Qdrant cleanup
+        - Delete all records, record groups, roles, groups, drives
+        - Delete all relationships connected to these nodes
+        - Delete the connector app node itself
+
+        Args:
+            connector_id: The connector instance ID
+            org_id: The organization ID for validation
+            transaction: Optional transaction context
+
+        Returns:
+            Dict containing deletion statistics and virtual_record_ids for Qdrant cleanup
+        """
+        try:
+            self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
+
+            # Step 1: Verify connector exists
+            verify_query = """
+            MATCH (app:App {id: $connector_id})
+            RETURN app
+            """
+            connector_result = await self.client.execute_query(
+                verify_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            if not connector_result or len(connector_result) == 0:
+                return {
+                    "success": False,
+                    "error": f"Connector instance {connector_id} not found"
+                }
+
+            # Step 2: Collect virtual record IDs for Qdrant cleanup and count entities
+            stats_query = """
+            MATCH (r:Record {connectorId: $connector_id})
+            WITH collect(r.virtualRecordId) AS virtualRecordIds, collect(r.id) AS recordIds
+
+            OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
+            WITH virtualRecordIds, recordIds, collect(rg.id) AS recordGroupIds
+
+            OPTIONAL MATCH (role:Role {connectorId: $connector_id})
+            WITH virtualRecordIds, recordIds, recordGroupIds, collect(role.id) AS roleIds
+
+            OPTIONAL MATCH (grp:Group {connectorId: $connector_id})
+            WITH virtualRecordIds, recordIds, recordGroupIds, roleIds, collect(grp.id) AS groupIds
+
+            OPTIONAL MATCH (d:Drive {connectorId: $connector_id})
+            WITH virtualRecordIds, recordIds, recordGroupIds, roleIds, groupIds, collect(d.id) AS driveIds
+
+            RETURN {
+                virtualRecordIds: [vid IN virtualRecordIds WHERE vid IS NOT NULL],
+                recordCount: size(recordIds),
+                recordGroupCount: size(recordGroupIds),
+                roleCount: size(roleIds),
+                groupCount: size(groupIds),
+                driveCount: size(driveIds)
+            } AS stats
+            """
+            stats_result = await self.client.execute_query(
+                stats_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            stats = stats_result[0]["stats"] if stats_result else {
+                "virtualRecordIds": [],
+                "recordCount": 0,
+                "recordGroupCount": 0,
+                "roleCount": 0,
+                "groupCount": 0,
+                "driveCount": 0
+            }
+
+            # Step 3: Delete all records and their relationships
+            delete_records_query = """
+            MATCH (r:Record {connectorId: $connector_id})
+            DETACH DELETE r
+            """
+            await self.client.execute_query(
+                delete_records_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            # Step 4: Delete record groups and their relationships
+            delete_rg_query = """
+            MATCH (rg:RecordGroup {connectorId: $connector_id})
+            DETACH DELETE rg
+            """
+            await self.client.execute_query(
+                delete_rg_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            # Step 5: Delete roles and their relationships
+            delete_roles_query = """
+            MATCH (role:Role {connectorId: $connector_id})
+            DETACH DELETE role
+            """
+            await self.client.execute_query(
+                delete_roles_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            # Step 6: Delete groups and their relationships
+            delete_groups_query = """
+            MATCH (grp:Group {connectorId: $connector_id})
+            DETACH DELETE grp
+            """
+            await self.client.execute_query(
+                delete_groups_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            # Step 7: Delete drives and their relationships
+            delete_drives_query = """
+            MATCH (d:Drive {connectorId: $connector_id})
+            DETACH DELETE d
+            """
+            await self.client.execute_query(
+                delete_drives_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            # Step 8: Delete sync points
+            delete_sync_query = """
+            MATCH (sp:SyncPoint {connectorId: $connector_id})
+            DETACH DELETE sp
+            """
+            await self.client.execute_query(
+                delete_sync_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            # Step 9: Delete the connector app and its relationships
+            delete_app_query = """
+            MATCH (app:App {id: $connector_id})
+            DETACH DELETE app
+            """
+            await self.client.execute_query(
+                delete_app_query,
+                parameters={"connector_id": connector_id},
+                transaction=transaction
+            )
+
+            self.logger.info(
+                f"✅ Connector instance {connector_id} deleted successfully. "
+                f"Records: {stats['recordCount']}, "
+                f"RecordGroups: {stats['recordGroupCount']}, "
+                f"Roles: {stats['roleCount']}, "
+                f"Groups: {stats['groupCount']}, "
+                f"Drives: {stats['driveCount']}"
+            )
+
+            return {
+                "success": True,
+                "deleted_records_count": stats["recordCount"],
+                "deleted_record_groups_count": stats["recordGroupCount"],
+                "deleted_roles_count": stats["roleCount"],
+                "deleted_groups_count": stats["groupCount"],
+                "deleted_drives_count": stats["driveCount"],
+                "virtual_record_ids": stats["virtualRecordIds"],
+                "connector_id": connector_id
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "error": f"Failed to delete connector instance: {str(e)}"
+            }
 
     async def get_key_by_external_file_id(
         self,
