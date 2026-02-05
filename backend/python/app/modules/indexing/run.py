@@ -421,204 +421,6 @@ class IndexingPipeline:
                     details={"collection": self.collection_name, "error": str(e)},
                 )
 
-    async def get_embedding_model_instance(self) -> bool:
-        try:
-            self.logger.info("Getting embedding model")
-            dense_embeddings = None
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-            embedding_configs = ai_models.get("embedding", [])
-            if not embedding_configs:
-                dense_embeddings = get_default_embedding_model()
-            else:
-                dense_embeddings = None
-                for config in embedding_configs:
-                    if config.get("isDefault", False):
-                        provider = config["provider"]
-                        dense_embeddings = get_embedding_model(provider, config)
-                        break
-
-                if not dense_embeddings:
-                    self.logger.info("No default embedding model found, using first available provider")
-                    for config in embedding_configs:
-                        provider = config["provider"]
-                        dense_embeddings = get_embedding_model(provider, config)
-                        break
-
-                if not dense_embeddings:
-                    raise IndexingError("No default embedding model found")
-
-            # Get the embedding dimensions from the model
-            try:
-                sample_embedding = dense_embeddings.embed_query("test")
-                embedding_size = len(sample_embedding)
-            except Exception as e:
-                self.logger.warning(
-                    f"Error with configured embedding model, falling back to default: {str(e)}"
-                )
-                raise IndexingError(
-                    "Failed to get embedding model: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Get model name safely
-            model_name = None
-            if hasattr(dense_embeddings, "model_name"):
-                model_name = dense_embeddings.model_name
-            elif hasattr(dense_embeddings, "model"):
-                model_name = dense_embeddings.model
-            else:
-                model_name = "unknown"
-
-            self.logger.info(
-                f"Using embedding model: {model_name}, embedding_size: {embedding_size}"
-            )
-
-            # Initialize collection with correct embedding size
-            await self._initialize_collection(embedding_size=embedding_size)
-
-            # Initialize vector store with same configuration
-            self.vector_store: QdrantVectorStore = QdrantVectorStore(
-                client=self.vector_db_service.get_service_client(),
-                collection_name=self.collection_name,
-                vector_name="dense",
-                sparse_vector_name="sparse",
-                embedding=dense_embeddings,
-                sparse_embedding=self.sparse_embeddings,
-                retrieval_mode=RetrievalMode.HYBRID,
-            )
-
-            # Initialize custom semantic chunker with BGE embeddings
-            try:
-                self.text_splitter = CustomChunker(
-                    logger=self.logger,
-                    embeddings=dense_embeddings,
-                    breakpoint_threshold_type="percentile",
-                    breakpoint_threshold_amount=95,
-                )
-            except IndexingError as e:
-                raise IndexingError(
-                    "Failed to initialize text splitter: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            return True
-        except IndexingError as e:
-            self.logger.error(f"Error getting embedding model: {str(e)}")
-            raise IndexingError(
-                "Failed to get embedding model: " + str(e), details={"error": str(e)}
-            )
-
-    async def _create_embeddings(self, chunks: List[Document]) -> None:
-        """
-        Create both sparse and dense embeddings for document chunks and store them in vector store.
-
-        Args:
-            chunks: List of document chunks to embed
-
-        Raises:
-            EmbeddingError: If there's an error creating embeddings
-            VectorStoreError: If there's an error storing embeddings
-            MetadataProcessingError: If there's an error processing metadata
-            DocumentProcessingError: If there's an error updating document status
-        """
-        try:
-            # Validate input
-            if not chunks:
-                raise EmbeddingError("No chunks provided for embedding creation")
-
-            # Process metadata for each chunk
-            for chunk in chunks:
-                try:
-                    virtual_record_id = chunk.metadata["virtualRecordId"]
-                    meta = chunk.metadata
-                    enhanced_metadata = self._process_metadata(meta)
-                    chunk.metadata = enhanced_metadata
-
-                except Exception as e:
-                    raise MetadataProcessingError(
-                        "Failed to process metadata for chunk: " + str(e),
-                        details={"error": str(e), "metadata": meta},
-                    )
-
-            self.logger.debug("Enhanced metadata processed")
-
-            # Store in vector store
-            try:
-                start_time = time.perf_counter()
-                self.logger.info(f"⏱️ Starting embeddings insertion for {len(chunks)} chunks into vector store")
-
-                await self.vector_store.aadd_documents(chunks)
-
-                elapsed_time = time.perf_counter() - start_time
-                if len(chunks) > 0:
-                    self.logger.info(
-                        f"✅ Successfully added {len(chunks)} documents to vector store in {elapsed_time:.2f}s (avg: {elapsed_time/len(chunks)*1000:.2f}ms per document)"
-                    )
-                else:
-                    self.logger.info(
-                        f"✅ Successfully added 0 documents to vector store in {elapsed_time:.2f}s"
-                    )
-            except Exception as e:
-                raise VectorStoreError(
-                    "Failed to store documents in vector store: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Update record with indexing status
-            try:
-                record = await self.arango_service.get_document(
-                    meta["recordId"], CollectionNames.RECORDS.value
-                )
-                if not record:
-                    raise DocumentProcessingError(
-                        "Record not found in database",
-                        doc_id=meta["recordId"],
-                    )
-
-                doc = dict(record)
-                doc.update(
-                    {
-                        "indexingStatus": "COMPLETED",
-                        "isDirty": False,
-                        "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
-                        "virtualRecordId": virtual_record_id,
-                    }
-                )
-
-                docs = [doc]
-
-                success = await self.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-                if not success:
-                    raise DocumentProcessingError(
-                        "Failed to update indexing status", doc_id=meta["recordId"]
-                    )
-                return
-
-            except DocumentProcessingError:
-                raise
-            except Exception as e:
-                raise DocumentProcessingError(
-                    "Error updating record status: " + str(e),
-                    doc_id=meta.get("recordId"),
-                    details={"error": str(e)},
-                )
-
-        except (
-            EmbeddingError,
-            VectorStoreError,
-            MetadataProcessingError,
-            DocumentProcessingError,
-        ):
-            raise
-        except Exception as e:
-            raise IndexingError(
-                "Unexpected error during embedding creation: " + str(e),
-                details={"error": str(e)},
-            )
 
     async def delete_embeddings(self, record_id: str, virtual_record_id: str) -> None:
         """
@@ -668,29 +470,10 @@ class IndexingPipeline:
                     must={"virtualRecordId": virtual_record_id}
                 )
 
-                result = await self.vector_db_service.scroll(
+                self.vector_db_service.delete_points(
                     collection_name=self.collection_name,
-                    scroll_filter=filter_dict,
-                    limit=1000000,
+                    filter=filter_dict,
                 )
-
-                if not result:
-                    self.logger.info(f"No embeddings found for record {record_id}")
-                    return
-
-                ids = [point.id for point in result[0]] #type: ignore
-
-                try:
-                    await self.get_embedding_model_instance()
-                except Exception as e:
-                    raise IndexingError(
-                        "Failed to get embedding model instance: " + str(e),
-                        details={"error": str(e)},
-                    )
-
-                if ids:
-                    await self.vector_store.adelete(ids=ids)
-
 
                 self.logger.info(
                     f"✅ Successfully deleted embeddings for record {record_id}"
@@ -753,14 +536,6 @@ class IndexingPipeline:
                 )
                 # Continue with Qdrant cleanup as primary goal, but error is logged
 
-            # Initialize embedding model to set up vector store
-            try:
-                await self.get_embedding_model_instance()
-            except Exception as e:
-                self.logger.warning(f"Failed to get embedding model instance: {e}")
-                # We can still try Qdrant deletion directly
-
-            total_deleted = 0
 
             # Process in batches to avoid filter size limits
             for i in range(0, len(virtual_record_ids), QDRANT_BULK_DELETE_BATCH_SIZE):
@@ -773,67 +548,20 @@ class IndexingPipeline:
                         should={"virtualRecordId": batch}
                     )
 
-                    # Scroll and delete all points matching the filter
-                    # Continue scrolling until no more points are returned to ensure complete deletion
-                    batch_deleted = 0
-                    scroll_iteration = 0
-                    max_iterations = 1000  # Safety limit to prevent infinite loops
-
-                    while scroll_iteration < max_iterations:
-                        scroll_iteration += 1
-                        # Scroll to get point IDs matching the filter
-                        result = await self.vector_db_service.scroll(
-                            collection_name=self.collection_name,
-                            scroll_filter=filter_dict,
-                            limit=QDRANT_SCROLL_LIMIT,
-                        )
-
-                        if not result or not result[0]:
-                            # No more points to delete
-                            break
-
-                        ids = [point.id for point in result[0]]
-                        if not ids:
-                            # Empty result - no more points
-                            break
-
-                        # Delete the points
-                        await self.vector_store.adelete(ids=ids)
-                        batch_deleted += len(ids)
-                        total_deleted += len(ids)
-                        self.logger.debug(
-                            f"Deleted {len(ids)} embeddings in batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}, "
-                            f"scroll iteration {scroll_iteration}"
-                        )
-
-                        # If we got fewer than the limit, we've reached the end
-                        if len(ids) < QDRANT_SCROLL_LIMIT:
-                            break
-
-                        # If we got exactly the limit, there might be more points
-                        # Continue scrolling to check for additional points
-                    else:
-                        # Reached max_iterations - log warning
-                        self.logger.warning(
-                            f"Reached maximum scroll iterations ({max_iterations}) for batch "
-                            f"{i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}. Some embeddings may remain."
-                        )
-
-                    if batch_deleted > 0:
-                        self.logger.info(
-                            f"✅ Deleted {batch_deleted} embeddings for batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1} "
-                            f"(across {scroll_iteration} scroll iteration{'s' if scroll_iteration > 1 else ''})"
-                        )
+                    self.vector_db_service.delete_points(
+                        collection_name=self.collection_name,
+                        filter=filter_dict,
+                    )
+                    self.logger.info(f"✅ Deleted embeddings for batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}")
 
                 except Exception as e:
-                    self.logger.error(f"❌ Failed to delete batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}: {e}")
+                    self.logger.error(f"❌ Failed to delete embeddings for batch {i // QDRANT_BULK_DELETE_BATCH_SIZE + 1}: {e}")
                     # Continue with next batch even if one fails
                     continue
 
-            self.logger.info(f"✅ Bulk deletion complete: {total_deleted} embeddings deleted for {len(virtual_record_ids)} virtual record IDs")
+            self.logger.info(f"✅ Bulk deletion complete: embeddings deleted for {len(virtual_record_ids)} virtual record IDs")   
 
             return {
-                "deleted_count": total_deleted,
                 "virtual_record_ids_processed": len(virtual_record_ids),
                 "success": True
             }
@@ -847,100 +575,6 @@ class IndexingPipeline:
             )
 
 
-    async def index_documents(
-        self, sentences: List[Dict[str, Any]],record_id: str
-    ) -> List[Document]:
-        """
-        Main method to index documents through the entire pipeline.
-
-        Args:
-            sentences: List of dictionaries containing text and metadata
-                    Each dict should have 'text' and 'metadata' keys
-
-        Raises:
-            DocumentProcessingError: If there's an error processing the documents
-            ChunkingError: If there's an error during document chunking
-            EmbeddingError: If there's an error creating embeddings
-        """
-        try:
-
-
-            # Convert sentences to custom Document class
-            try:
-                if sentences is not None and isinstance(sentences, list) and len(sentences) > 0:
-                    documents = [
-                        Document(
-                            page_content=sentence["text"],
-                            metadata=sentence.get("metadata", {}),
-                        )
-                        for sentence in sentences if sentence["text"] is not None and isinstance(sentence["text"], str) and sentence["text"].strip() != ""
-                    ]
-                else:
-                    documents = []
-            except Exception as e:
-                raise DocumentProcessingError(
-                    "Failed to create document objects: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            if len(documents) == 0:
-                record_dict = await self.arango_service.get_document(
-                    record_id, CollectionNames.RECORDS.value
-                )
-
-                if record_dict is None:
-                    self.logger.error(f"Record {record_id} not found in database")
-                    raise DocumentProcessingError(
-                        "Record not found in database",
-                        doc_id=record_id,
-                    )
-                timestamp = get_epoch_timestamp_in_ms()
-                record_dict.update(
-                    {
-                        "indexingStatus": ProgressStatus.EMPTY.value,
-                        "isDirty": False,
-                        "extractionStatus": ProgressStatus.EMPTY.value,
-                        "lastExtractionTimestamp": timestamp,
-                        "lastIndexTimestamp": timestamp,
-                    }
-                )
-
-                docs = [record_dict]
-                success = await self.arango_service.batch_upsert_nodes(
-                    docs, CollectionNames.RECORDS.value
-                )
-                if not success:
-                    raise DocumentProcessingError(
-                        "Failed to update indexing status for record id: " + record_id
-                    )
-                return []
-            try:
-                await self.get_embedding_model_instance()
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to get embedding model instance: " + str(e),
-                    details={"error": str(e)},
-                )
-
-            # Create and store embeddings
-            try:
-                await self._create_embeddings(documents)
-            except Exception as e:
-                raise EmbeddingError(
-                    "Failed to create or store embeddings: " + str(e),
-                    details={"error": str(e)},
-                )
-            return documents
-
-        except IndexingError:
-            # Re-raise any of our custom exceptions
-            raise
-        except Exception as e:
-            # Catch any unexpected errors
-            raise IndexingError(
-                f"Unexpected error during indexing: {str(e)}",
-                details={"error_type": type(e).__name__},
-            )
 
     def _process_metadata(self, meta: Dict[str, Any]) -> Dict[str, Any]:
         """
