@@ -3598,7 +3598,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: Optional[str] = None,
     ) -> int:
         """
-        Find all QUEUED duplicate records with the same file md5 hash and update their status.
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
@@ -3614,61 +3615,58 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @record_id
-                RETURN file
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
             """
 
             results = await self.http_client.execute_aql(
-                file_query,
+                record_query,
                 bind_vars={"record_id": record_id},
                 txn_id=transaction
             )
 
-            file_doc = None
-            if results:
-                try:
-                    file_doc = results[0]
-                except (IndexError, StopIteration):
-                    pass
-
-            if not file_doc:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+            if not results:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            ref_record = results[0]
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records
+            # Find all queued duplicate records directly from RECORDS collection
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @record_id
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        AND r.indexingStatus == @queued_status
-                        RETURN r
-                )[0]
-                FILTER record != null
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 RETURN record
             """
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                },
+                bind_vars=bind_vars,
                 txn_id=transaction
             )
 
@@ -14902,6 +14900,99 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
             return []
+
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[dict]: The next queued record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding next QUEUED duplicate record for record {record_id}"
+            )
+
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                record_query,
+                bind_vars={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            if not results:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
+                return None
+
+            ref_record = results[0]
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
+
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                return None
+
+            # Find the first queued duplicate record
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
+                LIMIT 1
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            if results:
+                queued_record = results[0]
+                self.logger.info(
+                    f"✅ Found QUEUED duplicate record: {queued_record.get('_key')}"
+                )
+                return queued_record
+
+            self.logger.info("✅ No QUEUED duplicate record found")
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to find next queued duplicate: {str(e)}"
+            )
+            return None
 
     async def copy_document_relationships(
         self,

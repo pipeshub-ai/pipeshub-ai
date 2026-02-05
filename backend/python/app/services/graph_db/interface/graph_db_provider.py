@@ -1760,6 +1760,25 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: The next queued record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
     async def copy_document_relationships(
         self,
         source_key: str,
