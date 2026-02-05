@@ -513,7 +513,24 @@ class RecordEventHandler(BaseEventService):
 
         headers = {}
 
-        if self.config_service and from_route:
+        # Check storage type - don't add JWT for S3 pre-signed URLs
+        storage_is_s3 = True
+        if self.config_service:
+            try:
+                storage_config = await self.config_service.get_config(
+                    config_node_constants.STORAGE.value, default={}
+                )
+                storage_type = storage_config.get("storageType") if isinstance(storage_config, dict) else None
+                if not storage_type:
+                    raise Exception("Missing storage type configuration")
+                storage_is_s3 = storage_type == "s3"
+                if storage_is_s3:
+                    self.logger.debug(f"S3 storage detected, skipping JWT header for signed URL download for record {record_id}")
+            except Exception as e:
+                self.logger.error(f"Failed to get storage config: {e}")
+                raise Exception(f"Failed to get storage config: {e}")
+
+        if self.config_service and from_route and not storage_is_s3:
             try:
                 org_id = doc.get("orgId")
                 if org_id:

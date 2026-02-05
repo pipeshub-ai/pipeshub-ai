@@ -1066,6 +1066,10 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             displayLabel = 'In Progress';
             color = theme.palette.info.main;
             break;
+          case 'PROCESSING':
+            displayLabel = 'PROCESSING';
+            color = theme.palette.info.main;
+            break;
           case 'FAILED':
             displayLabel = 'Failed';
             color = theme.palette.error.main;
@@ -1106,10 +1110,35 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             displayLabel = status.replace(/_/g, ' ');
         }
 
+        displayLabel = displayLabel
+        .split(' ')
+        .map((word: string) => word.charAt(0).toUpperCase() + word.slice(1))
+        .join(' ');
+        const isProcessing = status === 'PROCESSING';
+
         return (
-          <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
-            {displayLabel}
-          </Typography>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 0.75,
+              mt: 2.4,
+            }}
+          >
+            {isProcessing && (
+              <CircularProgress
+                size={12}
+                thickness={4}
+                sx={{
+                  color: theme.palette.info.main,
+                }}
+              />
+            )}
+            <Typography variant="caption" sx={{ color, fontWeight: 500 }}>
+              {displayLabel}
+            </Typography>
+          </Box>
         );
       },
     },

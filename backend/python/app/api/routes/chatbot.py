@@ -511,7 +511,6 @@ async def askAIStream(
                 is_multimodal_llm = config.get("isMultimodal")
                 context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
 
-                logger.info(f"Context length: {context_length}")
 
                 if llm is None :
                     raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
@@ -650,6 +649,7 @@ async def askAIStream(
                 all_queries = all_queries
 
             except HTTPException as e:
+                logger.error(f"HTTPException: {str(e)}", exc_info=True)
                 result = e.detail
                 yield create_sse_event("error", {
                     "status": result.get("status", "error"),
@@ -657,6 +657,7 @@ async def askAIStream(
                 })
                 return
             except Exception as e:
+                logger.error(f"Exception: {str(e)}", exc_info=True)
                 yield create_sse_event("error", {"error": str(e)})
                 logger.error(f"Error in streaming AI: {str(e)}", exc_info=True)
                 return

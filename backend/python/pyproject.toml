@@ -77,6 +77,7 @@ dependencies = [
     "markdown==3.8",
     "mmh3==4.1.0",
     "monday-api-python-sdk>=0.1.0",
+    "msgspec==0.20.0",
     "snowflake-connector-python",
     "msgraph-sdk==1.16.0",
     "nats-py==2.1.0",
@@ -111,6 +112,7 @@ dependencies = [
     "thrift>=0.16.0",
     "uuid==1.30",
     "uvicorn==0.30.6",
+    "zstandard==0.25.0",
 ]
 
 [tool.setuptools.packages.find]

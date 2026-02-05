@@ -69,7 +69,7 @@ class DocumentExtraction(Transformer):
         self.logger.info("🎯 Document extraction completed successfully")
 
 
-    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int | None) -> List[dict]:
+    def _prepare_content(self, blocks: List[Block], is_multimodal_llm: bool, context_length: int) -> List[dict]:
         MAX_TOKENS = int(context_length * CONTENT_TOKEN_RATIO)
         MAX_IMAGES = 50
         total_tokens = 0

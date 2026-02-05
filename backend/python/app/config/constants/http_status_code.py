@@ -10,6 +10,7 @@ class HttpStatusCode(Enum):
     CREATED = 201
     ACCEPTED = 202
     NO_CONTENT = 204
+    PARTIAL_CONTENT = 206
 
     # 4xx Client Errors
     BAD_REQUEST = 400

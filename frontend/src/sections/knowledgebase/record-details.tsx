@@ -53,12 +53,10 @@ import { useUsers } from 'src/context/UserContext';
 import { KnowledgeBaseAPI } from './services/api';
 import RecordSalesAgent from './ask-me-anything';
 import RecordDocumentViewer from './show-documents';
-import EditRecordDialog from './edit-record-dialog';
 import DeleteRecordDialog from './delete-record-dialog';
 import type { MetadataItem, Permissions, RecordDetailsResponse } from './types/record-details';
 import {
   DeleteButton,
-  EditButton,
   OpenButton,
   ReindexButton,
   SummaryButton,
@@ -77,7 +75,6 @@ export default function RecordDetails() {
   const [recordData, setRecordData] = useState<RecordDetailsResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [isChatOpen, setIsChatOpen] = useState<boolean>(false);
-  const [isEditDialogOpen, setIsEditDialogOpen] = useState<boolean>(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState<boolean>(false);
   const users = useUsers() as User[];
   const theme = useTheme();
@@ -429,11 +426,6 @@ export default function RecordDetails() {
                   },
                 }}
               >
-                {/* Edit button */}
-                {!isRecordConnector && (
-                  <EditButton onClick={() => setIsEditDialogOpen(true)} variant="default" />
-                )}
-
                 {/* Summary button */}
                 {record.summaryDocumentId && (
                   <SummaryButton onClick={handleShowSummary} variant="default" />
@@ -468,11 +460,6 @@ export default function RecordDetails() {
                   },
                 }}
               >
-                {/* Edit button */}
-                {!isRecordConnector && (
-                  <EditButton onClick={() => setIsEditDialogOpen(true)} variant="default" />
-                )}
-
                 {/* Summary button */}
                 {record.summaryDocumentId && (
                   <SummaryButton onClick={handleShowSummary} variant="default" />
@@ -506,11 +493,6 @@ export default function RecordDetails() {
                   flexWrap: 'wrap',
                 }}
               >
-                {/* Edit button - Compact */}
-                {!isRecordConnector && (
-                  <EditButton onClick={() => setIsEditDialogOpen(true)} variant="compact" />
-                )}
-
                 {/* Summary button - Compact */}
                 {record.summaryDocumentId && (
                   <SummaryButton onClick={handleShowSummary} variant="compact" />
@@ -552,11 +534,6 @@ export default function RecordDetails() {
                     mt: 1,
                   }}
                 >
-                  {/* Most important action - Edit (if available) */}
-                  {!isRecordConnector && (
-                    <EditButton onClick={() => setIsEditDialogOpen(true)} variant="mobile" />
-                  )}
-
                   {/* Actions Menu Button */}
                   <Button
                     variant="outlined"
@@ -1780,17 +1757,6 @@ export default function RecordDetails() {
             </Grid>
           </Grid>
         </Container>
-        {/* Edit Record Dialog */}
-        {recordData && recordData.record && recordData.knowledgeBase && (
-          <EditRecordDialog
-            open={isEditDialogOpen}
-            onClose={() => setIsEditDialogOpen(false)}
-            onRecordUpdated={refreshRecordData}
-            storageDocumentId={record.externalRecordId}
-            recordId={record._key}
-            record={record}
-          />
-        )}
         {recordData && recordData.record && (
           <DeleteRecordDialog
             open={isDeleteDialogOpen}

@@ -399,6 +399,5 @@ class ConfigurationService:
                     self.logger.info("📦 Entire cache cleared via etcd watch")
                 else:
                     self.cache.pop(key, None)
-                    self.logger.debug("📦 Cache invalidated for key: %s", key)
         except Exception as e:
             self.logger.error("❌ Error in etcd watch callback: %s", str(e))

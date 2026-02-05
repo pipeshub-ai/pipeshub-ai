@@ -1468,4 +1468,3 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
     return current_message_tokens, new_tokens
 
-

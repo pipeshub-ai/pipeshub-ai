@@ -24,9 +24,13 @@ import {
   Divider,
 } from '@mui/material';
 import { UnifiedPermission } from 'src/components/permissions/UnifiedPermissionsDialog';
-import UploadManager from './upload-manager';
+import { useSocket } from 'src/hooks/use-socket';
 import { useRouter } from './hooks/use-router';
 import { KnowledgeBaseAPI } from './services/api';
+import UploadManager from './upload-manager';
+import { UploadNotification } from './components/upload-notification';
+import { useUploadNotifications } from './hooks/use-upload-notifications';
+import { useUploadIntegration } from './hooks/use-upload-integration';
 import DashboardComponent from './components/dashboard';
 import { EditFolderDialog } from './components/dialogs/edit-dialogs';
 import { CreateFolderDialog, DeleteConfirmDialog } from './components/dialogs';
@@ -42,6 +46,9 @@ import type {
   UpdatePermissionRequest,
   RemovePermissionRequest,
 } from './types/kb';
+// OLD: ActiveUpload and FailedFileInfo types no longer needed - using new notification system
+import { ORIGIN } from './constants/knowledge-search';
+// OLD: ACTIVE_UPLOADS_STORAGE_KEY and SOCKET_EVENT_TIMEOUT_MS no longer needed
 
 type ViewMode = 'grid' | 'list';
 
@@ -89,6 +96,7 @@ export default function Collections() {
   const isViewInitiallyLoading = useRef(true);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const lastLoadParams = useRef<string>('');
+  // OLD: fallbackTimeoutsRef removed - new notification system handles timeouts
 
   const [currentKB, setCurrentKB] = useState<KnowledgeBase | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -124,6 +132,11 @@ export default function Collections() {
     Array<{ id: string; name: string; type: 'kb' | 'folder' }>
   >([]);
 
+  // Track active uploads per KB/folder (Google Drive-like experience)
+  // Use sessionStorage to persist across refreshes
+  // OLD activeUploads state and storage functions removed
+  // Now provided by useUploadNotifications hook
+
   const stableRoute = useMemo(() => route, [route]);
 
   const loadKBContents = useCallback(
@@ -156,11 +169,13 @@ export default function Collections() {
 
         const records = (data.records || []).map((record) => ({
           ...record,
+          id: record._key || record.id,
+          _key: record._key,
           name: record.recordName || record.name,
           type: 'file' as const,
           createdAt: record.createdAtTimestamp || Date.now(),
           updatedAt: record.updatedAtTimestamp || Date.now(),
-          extension: record.fileRecord?.extension,
+          extension: record.fileRecord?.extension ?? undefined,
           sizeInBytes: record.fileRecord?.sizeInBytes,
         }));
 
@@ -535,20 +550,117 @@ export default function Collections() {
     }
   };
 
-  const handleUploadSuccess = useCallback(async () => {
-    if (!currentKB) return;
-    setPageLoading(true);
-    try {
-      setSuccess('Successfully uploaded file(s)');
-      setUploadDialog(false);
+  // Socket.IO integration for real-time updates (replaces polling)
+  const { on, off, isConnected: socketConnected } = useSocket({
+    onConnect: () => {
+      // eslint-disable-next-line no-console
+    },
+    onDisconnect: () => {
+      // eslint-disable-next-line no-console
+    },
+    onError: (socketError) => {
+      // eslint-disable-next-line no-console
+      console.error('Socket.IO error', socketError);
+    },
+  });
 
-      await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
-    } catch (err: any) {
-      setError(err.message || 'Upload failed');
-    } finally {
-      setPageLoading(false);
-    }
-  }, [stableRoute.folderId, loadKBContents, currentKB]);
+  // Upload notification system hooks
+  const {
+    uploads: activeUploads,
+    manager: uploadManager,
+    startUpload,
+    markFileUploading,
+    updateFileProgress,
+    markFileFailed,
+    handleUploadComplete,
+    dismissUpload,
+  } = useUploadNotifications({
+    currentKBId: currentKB?.id,
+    currentFolderId: route.folderId,
+    socketOn: on,
+    socketOff: off,
+    socketConnected,
+    // Update items list when records are processed (indexing complete)
+    // Do a full refresh to get correct record data from backend
+    onRecordsProcessed: useCallback((recordIds: string[]) => {
+      if (currentKB && recordIds.length > 0) {
+        // Refresh the list to get correct data
+        loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      }
+    }, [currentKB, stableRoute.folderId, loadKBContents]),
+    // Remove failed records from items list
+    onRecordsFailed: useCallback((recordIds: string[]) => {
+      setItems((prev) =>
+        prev.filter((item) => !recordIds.includes(item.id || item._key || ''))
+      );
+    }, []),
+  });
+
+  // Integration callbacks for UploadManager
+  const {
+    handleUploadStart: integrationUploadStart,
+    handleFileUploadStart,
+    handleFileUploadProgress,
+    handleFileUploadComplete,
+    handleFileUploadFailed,
+    handleUploadSuccess: integrationUploadSuccess,
+  } = useUploadIntegration({
+    manager: uploadManager,
+    currentKBId: currentKB?.id || '',
+    currentFolderId: route.folderId,
+  });
+
+  // Socket events are now ONLY handled by useUploadNotifications hook
+  // No duplicate handlers here to prevent excessive API refreshes
+
+  // Handle upload start - use new notification system
+  const handleUploadStart = useCallback(
+    (files: string[], kbId: string, folderId?: string) => 
+      // NEW: Use integration hook which creates upload with files in 'queued' state
+      integrationUploadStart(files, kbId, folderId)
+    ,
+    [integrationUploadStart]
+  );
+
+  const handleUploadSuccess = useCallback(
+    async (message?: string, records?: any[], failedFiles?: Array<{fileName: string; filePath: string; error: string}>) => {
+      if (!currentKB) {
+        console.error('handleUploadSuccess: No currentKB');
+        return;
+      }
+
+      try {
+        // NEW: Call the upload complete handler from the notification system
+        // This updates the notification with file statuses
+        handleUploadComplete(
+          currentKB.id,
+          stableRoute.folderId,
+          records || [],
+          failedFiles
+        );
+
+        // Show error snackbar for failed files
+        if (failedFiles && failedFiles.length > 0) {
+          const failedCount = failedFiles.length;
+          if (!records || records.length === 0) {
+            // All files failed
+            setError(`Failed to upload ${failedCount} file${failedCount > 1 ? 's' : ''}`);
+          } else {
+            // Partial failure - some succeeded, some failed
+            setError(`${failedCount} file${failedCount > 1 ? 's' : ''} failed to upload`);
+          }
+        }
+
+        // Refresh the list to get the latest data from backend
+        // This ensures we have correct indexing status and all record details
+        await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
+      } catch (err: unknown) {
+        const uploadError = err instanceof Error ? err : new Error(String(err));
+        setError(uploadError.message || 'Upload failed');
+      }
+    },
+    [stableRoute.folderId, loadKBContents, currentKB, handleUploadComplete]
+  );
 
   const handleDelete = async () => {
     if (!itemToDelete) return;
@@ -1021,10 +1133,18 @@ export default function Collections() {
 
       <UploadManager
         open={uploadDialog}
-        onClose={() => setUploadDialog(false)}
+        onClose={() => {
+          setUploadDialog(false);
+          // OLD storage loading logic removed - notification system manages state
+        }}
         knowledgeBaseId={currentKB?.id}
         folderId={stableRoute.folderId}
         onUploadSuccess={handleUploadSuccess}
+        onUploadStart={handleUploadStart}
+        onFileUploadStart={handleFileUploadStart}
+        onFileUploadProgress={handleFileUploadProgress}
+        onFileUploadComplete={handleFileUploadComplete}
+        onFileUploadFailed={handleFileUploadFailed}
       />
 
       <DeleteConfirmDialog
@@ -1048,6 +1168,15 @@ export default function Collections() {
 
       {/* Context Menu */}
       {renderContextMenu()}
+
+      {/* Upload Notification - Bottom Right Corner (Google Drive-like) */}
+      {/* Only show notifications for the current KB/folder being viewed */}
+      <UploadNotification
+        uploads={activeUploads}
+        currentKBId={currentKB?.id}
+        currentFolderId={stableRoute.folderId}
+        onDismiss={dismissUpload}
+      />
 
       {/* Snackbars */}
       <Snackbar
