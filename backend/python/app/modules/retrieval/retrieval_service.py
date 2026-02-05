@@ -400,7 +400,7 @@ class RetrievalService:
                             is_block_group = meta.get("isBlockGroup")
                             if is_block_group is not None:
                                 if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(meta,virtual_id,virtual_record_id_to_record,self.blob_store,org_id)
+                                    await get_record(virtual_id,virtual_record_id_to_record,self.blob_store,org_id,virtual_to_record_map)
                                     record = virtual_record_id_to_record[virtual_id]
                                     if record is None:
                                         continue
