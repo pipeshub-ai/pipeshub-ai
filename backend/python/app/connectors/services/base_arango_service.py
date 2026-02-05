@@ -9617,10 +9617,22 @@ class BaseArangoService:
                 "updatedAtTimestamp": timestamp,
             })
 
+            # Record -> KB inheritPermission edge
+            # KB records inherit permissions from KB by default
+            edges_to_create.append({
+                "_from": f"records/{record_id}",
+                "_to": f"recordGroups/{kb_id}",
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+
         # Step 5: Batch create edges by type
         parent_child_edges = [e for e in edges_to_create if e.get("relationshipType") == "PARENT_CHILD"]
         is_of_type_edges = [e for e in edges_to_create if e["_to"].startswith("files/") and not e.get("relationshipType")]
-        belongs_to_kb_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/")]
+        # belongsTo edges have entityType set (e.g., Connectors.KNOWLEDGE_BASE.value)
+        belongs_to_kb_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/") and e.get("entityType") == Connectors.KNOWLEDGE_BASE.value]
+        # inheritPermission edges point to recordGroups but don't have entityType
+        inherit_permission_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/") and not e.get("entityType")]
 
         if parent_child_edges:
             await self.batch_create_edges(parent_child_edges, CollectionNames.RECORD_RELATIONS.value, transaction)
@@ -9628,6 +9640,8 @@ class BaseArangoService:
             await self.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value, transaction)
         if belongs_to_kb_edges:
             await self.batch_create_edges(belongs_to_kb_edges, CollectionNames.BELONGS_TO.value, transaction)
+        if inherit_permission_edges:
+            await self.batch_create_edges(inherit_permission_edges, CollectionNames.INHERIT_PERMISSIONS.value, transaction)
 
         # Step 6: Store skipped files for reporting (optional)
         if hasattr(self, '_current_upload_skipped_files'):
@@ -9705,6 +9719,7 @@ class BaseArangoService:
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.BELONGS_TO.value,
+                    CollectionNames.INHERIT_PERMISSIONS.value,
                 ]
             )
 
@@ -10781,6 +10796,7 @@ class BaseArangoService:
                         CollectionNames.IS_OF_TYPE.value,
                         CollectionNames.BELONGS_TO.value,
                         CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.INHERIT_PERMISSIONS.value,
                     ]
                 )
 
@@ -10848,6 +10864,8 @@ class BaseArangoService:
                     "extractionStatus": "COMPLETED",
                     "isLatestVersion": True,
                     "isDirty": False,
+                    # Note: inheritPermissions is not stored on the record document (not in schema)
+                    # but we default to True for KB folders when creating inheritPermission edges
                 }
 
                 self.logger.debug(
@@ -10889,6 +10907,16 @@ class BaseArangoService:
                     "updatedAtTimestamp": timestamp,
                 }
                 edges_to_create.append((kb_relationship_edge, CollectionNames.BELONGS_TO.value))
+
+                # Create inheritPermission edge (RECORDS -> KB)
+                # KB folders inherit permissions from KB by default
+                inherit_permission_edge = {
+                    "_from": f"{CollectionNames.RECORDS.value}/{folder_id}",
+                    "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                edges_to_create.append((inherit_permission_edge, CollectionNames.INHERIT_PERMISSIONS.value))
 
                 # Create parent-child relationship (RECORDS -> RECORDS)
                 if parent_folder_id:

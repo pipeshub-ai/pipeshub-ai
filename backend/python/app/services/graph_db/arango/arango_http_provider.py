@@ -7857,6 +7857,221 @@ class ArangoHTTPProvider(IGraphDBProvider):
         result = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
         return result[0] if result else {"nodes": [], "total": 0}
 
+    def _build_unified_permission_check_aql(
+        self,
+        target_id_var: str,
+        user_from_var: str = "user_from"
+    ) -> str:
+        """
+        Build unified AQL subquery for permission checking.
+
+        This checks all 10 permission paths:
+        1. Direct user -> target
+        2. User -> target via inheritPermissions (recordGroup hierarchy)
+        3. User -> groups -> target
+        4. User -> groups -> recordGroup -> target (via inheritPermissions)
+        5. User -> roles -> target
+        6. User -> roles -> recordGroup -> target (via inheritPermissions)
+        7. User -> teams -> target
+        8. User -> teams -> recordGroup -> target (via inheritPermissions)
+        9. User -> org -> target
+        10. User -> org -> recordGroup -> target (via inheritPermissions)
+
+        For each path, takes the MINIMUM role along the path.
+        Final result is the MAXIMUM role across all paths.
+
+        Args:
+            target_id_var: AQL variable containing the target ID (e.g., "target_id")
+            user_from_var: AQL variable containing user ID (default: "user_from")
+
+        Returns:
+            AQL string that defines permission checking logic and exposes 'final_role'
+        """
+        return f"""
+                // Find all parent recordGroups via inheritPermissions (OUTBOUND traversal)
+                LET parent_rgs = (
+                    FOR parent_rg, edge, path IN 0..10 OUTBOUND {target_id_var} inheritPermissions
+                        FILTER IS_SAME_COLLECTION("recordGroups", parent_rg)
+                        RETURN {{
+                            id: parent_rg._id,
+                            depth: LENGTH(path.edges)
+                        }}
+                )
+
+                // Path 1: Direct user -> target permission
+                LET path1_roles = (
+                    FOR perm IN permission
+                        FILTER perm._from == {user_from_var} AND perm._to == {target_id_var} AND perm.type == "USER"
+                        FILTER perm.role != null AND perm.role != ""
+                        RETURN perm.role
+                )
+
+                // Path 2: User -> recordGroup (via inheritPermissions) -> target
+                LET path2_roles = (
+                    FOR parent_rg IN parent_rgs
+                        FOR perm IN permission
+                            FILTER perm._from == {user_from_var} AND perm._to == parent_rg.id AND perm.type == "USER"
+                            FILTER perm.role != null AND perm.role != ""
+                            RETURN perm.role
+                )
+
+                // Path 3: User -> groups -> target
+                LET path3_roles = (
+                    FOR user_group_perm IN permission
+                        FILTER user_group_perm._from == {user_from_var}
+                        FILTER user_group_perm.type == "USER"
+                        FILTER STARTS_WITH(user_group_perm._to, "groups/")
+                        FILTER user_group_perm.role != null AND user_group_perm.role != ""
+                        FOR group_target_perm IN permission
+                            FILTER group_target_perm._from == user_group_perm._to
+                            FILTER group_target_perm._to == {target_id_var}
+                            FILTER group_target_perm.type == "GROUP"
+                            FILTER group_target_perm.role != null AND group_target_perm.role != ""
+                            // MIN of user->group role and group->target role
+                            RETURN role_priority[user_group_perm.role] < role_priority[group_target_perm.role]
+                                ? user_group_perm.role
+                                : group_target_perm.role
+                )
+
+                // Path 4: User -> groups -> recordGroup -> target (via inheritPermissions)
+                LET path4_roles = (
+                    FOR parent_rg IN parent_rgs
+                        FOR user_group_perm IN permission
+                            FILTER user_group_perm._from == {user_from_var}
+                            FILTER user_group_perm.type == "USER"
+                            FILTER STARTS_WITH(user_group_perm._to, "groups/")
+                            FILTER user_group_perm.role != null AND user_group_perm.role != ""
+                            FOR group_rg_perm IN permission
+                                FILTER group_rg_perm._from == user_group_perm._to
+                                FILTER group_rg_perm._to == parent_rg.id
+                                FILTER group_rg_perm.type == "GROUP"
+                                FILTER group_rg_perm.role != null AND group_rg_perm.role != ""
+                                // MIN of user->group and group->rg roles
+                                RETURN role_priority[user_group_perm.role] < role_priority[group_rg_perm.role]
+                                    ? user_group_perm.role
+                                    : group_rg_perm.role
+                )
+
+                // Path 5: User -> roles -> target
+                LET path5_roles = (
+                    FOR user_role_perm IN permission
+                        FILTER user_role_perm._from == {user_from_var}
+                        FILTER user_role_perm.type == "USER"
+                        FILTER STARTS_WITH(user_role_perm._to, "roles/")
+                        FILTER user_role_perm.role != null AND user_role_perm.role != ""
+                        FOR role_target_perm IN permission
+                            FILTER role_target_perm._from == user_role_perm._to
+                            FILTER role_target_perm._to == {target_id_var}
+                            FILTER role_target_perm.type == "ROLE"
+                            FILTER role_target_perm.role != null AND role_target_perm.role != ""
+                            // MIN of user->role and role->target roles
+                            RETURN role_priority[user_role_perm.role] < role_priority[role_target_perm.role]
+                                ? user_role_perm.role
+                                : role_target_perm.role
+                )
+
+                // Path 6: User -> roles -> recordGroup -> target (via inheritPermissions)
+                LET path6_roles = (
+                    FOR parent_rg IN parent_rgs
+                        FOR user_role_perm IN permission
+                            FILTER user_role_perm._from == {user_from_var}
+                            FILTER user_role_perm.type == "USER"
+                            FILTER STARTS_WITH(user_role_perm._to, "roles/")
+                            FILTER user_role_perm.role != null AND user_role_perm.role != ""
+                            FOR role_rg_perm IN permission
+                                FILTER role_rg_perm._from == user_role_perm._to
+                                FILTER role_rg_perm._to == parent_rg.id
+                                FILTER role_rg_perm.type == "ROLE"
+                                FILTER role_rg_perm.role != null AND role_rg_perm.role != ""
+                                // MIN of user->role and role->rg roles
+                                RETURN role_priority[user_role_perm.role] < role_priority[role_rg_perm.role]
+                                    ? user_role_perm.role
+                                    : role_rg_perm.role
+                )
+
+                // Path 7: User -> teams -> target
+                LET path7_roles = (
+                    FOR user_team_perm IN permission
+                        FILTER user_team_perm._from == {user_from_var}
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        FILTER user_team_perm.role != null AND user_team_perm.role != ""
+                        FOR team_target_perm IN permission
+                            FILTER team_target_perm._from == user_team_perm._to
+                            FILTER team_target_perm._to == {target_id_var}
+                            FILTER team_target_perm.type == "TEAM"
+                            FILTER team_target_perm.role != null AND team_target_perm.role != ""
+                            // MIN of user->team and team->target roles
+                            RETURN role_priority[user_team_perm.role] < role_priority[team_target_perm.role]
+                                ? user_team_perm.role
+                                : team_target_perm.role
+                )
+
+                // Path 8: User -> teams -> recordGroup -> target (via inheritPermissions)
+                LET path8_roles = (
+                    FOR parent_rg IN parent_rgs
+                        FOR user_team_perm IN permission
+                            FILTER user_team_perm._from == {user_from_var}
+                            FILTER user_team_perm.type == "USER"
+                            FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                            FILTER user_team_perm.role != null AND user_team_perm.role != ""
+                            FOR team_rg_perm IN permission
+                                FILTER team_rg_perm._from == user_team_perm._to
+                                FILTER team_rg_perm._to == parent_rg.id
+                                FILTER team_rg_perm.type == "TEAM"
+                                FILTER team_rg_perm.role != null AND team_rg_perm.role != ""
+                                // MIN of user->team and team->rg roles
+                                RETURN role_priority[user_team_perm.role] < role_priority[team_rg_perm.role]
+                                    ? user_team_perm.role
+                                    : team_rg_perm.role
+                )
+
+                // Path 9: User -> org -> target
+                LET path9_roles = (
+                    FOR belongs_edge IN belongsTo
+                        FILTER belongs_edge._from == {user_from_var}
+                        FILTER belongs_edge.entityType == "ORGANIZATION"
+                        LET org_id = belongs_edge._to
+                        FOR org_target_perm IN permission
+                            FILTER org_target_perm._from == org_id
+                            FILTER org_target_perm._to == {target_id_var}
+                            FILTER org_target_perm.type == "ORG"
+                            FILTER org_target_perm.role != null AND org_target_perm.role != ""
+                            RETURN org_target_perm.role
+                )
+
+                // Path 10: User -> org -> recordGroup -> target (via inheritPermissions)
+                LET path10_roles = (
+                    FOR parent_rg IN parent_rgs
+                        FOR belongs_edge IN belongsTo
+                            FILTER belongs_edge._from == {user_from_var}
+                            FILTER belongs_edge.entityType == "ORGANIZATION"
+                            LET org_id = belongs_edge._to
+                            FOR org_rg_perm IN permission
+                                FILTER org_rg_perm._from == org_id
+                                FILTER org_rg_perm._to == parent_rg.id
+                                FILTER org_rg_perm.type == "ORG"
+                                FILTER org_rg_perm.role != null AND org_rg_perm.role != ""
+                                RETURN org_rg_perm.role
+                )
+
+                // Combine all roles from all paths
+                LET all_roles = UNION(
+                    path1_roles, path2_roles, path3_roles, path4_roles, path5_roles,
+                    path6_roles, path7_roles, path8_roles, path9_roles, path10_roles
+                )
+
+                // Get the MAX priority role (highest permission)
+                LET final_role = LENGTH(all_roles) > 0 ? (
+                    FIRST(
+                        FOR r IN all_roles
+                            SORT role_priority[r] DESC
+                            LIMIT 1
+                            RETURN r
+                    )
+                ) : "READER"
+        """
+
     async def get_knowledge_hub_node_permissions(
         self,
         user_key: str,
@@ -7875,169 +8090,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         permissions = {}
 
-        # Query record group permissions
+        # Query record group permissions using unified permission check
         if record_group_ids:
-            query = """
+            permission_check_aql = self._build_unified_permission_check_aql("target_id", "user_from")
+            query = f"""
             LET user_from = CONCAT('users/', @user_key)
-            LET role_priority = {
+            LET role_priority = {{
                 "OWNER": 6,
                 "ADMIN": 5,
                 "EDITOR": 4,
                 "WRITER": 3,
                 "COMMENTER": 2,
                 "READER": 1
-            }
+            }}
             FOR rg_id IN @record_group_ids
-                LET rg_doc = DOCUMENT(CONCAT('recordGroups/', rg_id))
-                LET rg_to = CONCAT('recordGroups/', rg_id)
-
-                // Check if this is a root KB
-                LET is_kb = rg_doc != null AND rg_doc.connectorName == "KB"
-
-                // Check if this record group is nested under a KB (for fallback permission)
-                LET is_nested_under_kb = is_kb ? false : (
-                    // Check if traversing up finds a KB
-                    LENGTH(
-                        FOR v, e, p IN 0..10 INBOUND CONCAT("recordGroups/", rg_doc._key) belongsTo
-                            FILTER v != null AND v.connectorName == "KB"
-                            RETURN 1
-                    ) > 0
-                )
-
-                // Priority 1: Direct user permission on record group
-                LET direct_perm = FIRST(
-                    FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == rg_to AND perm.type == "USER"
-                        FILTER perm.role != null AND perm.role != ""
-                        RETURN {
-                            role: perm.role,
-                            priority: role_priority[perm.role] || 1
-                        }
-                )
-
-                // Priority 2: Team permissions on record group
-                LET team_perms = (
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == user_from
-                        FILTER user_team_perm.type == "USER"
-                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
-                        FILTER user_team_perm.role != null AND user_team_perm.role != ""
-                        FOR team_rg_perm IN permission
-                            FILTER team_rg_perm._from == user_team_perm._to
-                            FILTER team_rg_perm._to == rg_to
-                            FILTER team_rg_perm.type == "TEAM"
-                            RETURN {
-                                role: user_team_perm.role,
-                                priority: role_priority[user_team_perm.role] || 1
-                            }
-                )
-
-                // Priority 3: Group permissions on record group
-                LET group_perms = (
-                    FOR rg_group_perm IN permission
-                        FILTER rg_group_perm._to == rg_to AND (rg_group_perm.type == "GROUP" OR rg_group_perm.type == "ROLE")
-                        FILTER rg_group_perm.role != null AND rg_group_perm.role != ""
-                        LET group_to = rg_group_perm._from
-                        FOR user_group_perm IN permission
-                            FILTER user_group_perm._from == user_from AND user_group_perm._to == group_to
-                            RETURN {
-                                role: rg_group_perm.role,
-                                priority: role_priority[rg_group_perm.role] || 1
-                            }
-                )
-
-                // Priority 4: For nested KB record groups, find root KB and check permission
-                // Compute root KB unconditionally (will be null for non-nested or root KBs)
-                LET root_kb_from_traversal = (rg_doc != null AND NOT is_kb) ? (
-                    FOR v, e, p IN 0..10 INBOUND CONCAT("recordGroups/", rg_doc._key) belongsTo
-                        FILTER v != null AND v.connectorName == "KB"
-                        LIMIT 1
-                        RETURN v
-                ) : []
-                LET root_kb = LENGTH(root_kb_from_traversal) > 0 ? root_kb_from_traversal[0] : null
-                LET root_kb_to = root_kb != null ? CONCAT("recordGroups/", root_kb._key) : null
-
-                // Check direct user permission on root KB
-                LET root_kb_direct = root_kb_to != null ? FIRST(
-                    FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == root_kb_to AND perm.type == "USER"
-                        FILTER perm.role != null AND perm.role != ""
-                        RETURN {
-                            role: perm.role,
-                            priority: role_priority[perm.role] || 1
-                        }
-                ) : null
-
-                // Check team permissions on root KB
-                LET root_kb_team = root_kb_to != null ? FIRST(
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == user_from
-                        FILTER user_team_perm.type == "USER"
-                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
-                        FOR team_kb_perm IN permission
-                            FILTER team_kb_perm._from == user_team_perm._to
-                            FILTER team_kb_perm._to == root_kb_to
-                            FILTER team_kb_perm.type == "TEAM"
-                            FILTER team_kb_perm.role != null AND team_kb_perm.role != ""
-                            RETURN {
-                                role: team_kb_perm.role,
-                                priority: role_priority[team_kb_perm.role] || 1
-                            }
-                ) : null
-
-                // Check group permissions on root KB
-                LET root_kb_group = root_kb_to != null ? FIRST(
-                    FOR kb_group_perm IN permission
-                        FILTER kb_group_perm._to == root_kb_to AND (kb_group_perm.type == "GROUP" OR kb_group_perm.type == "ROLE")
-                        FILTER kb_group_perm.role != null AND kb_group_perm.role != ""
-                        LET group_to = kb_group_perm._from
-                        FOR user_group_perm IN permission
-                            FILTER user_group_perm._from == user_from AND user_group_perm._to == group_to
-                            RETURN {
-                                role: kb_group_perm.role,
-                                priority: role_priority[kb_group_perm.role] || 1
-                            }
-                ) : null
-
-                // Get highest priority root KB permission (only for nested KB record groups)
-                LET all_root_kb_perms = REMOVE_VALUE(
-                    FLATTEN([
-                        root_kb_direct != null ? [root_kb_direct] : [],
-                        root_kb_team != null ? [root_kb_team] : [],
-                        root_kb_group != null ? [root_kb_group] : []
-                    ]),
-                    null
-                )
-                LET root_kb_perm = (is_nested_under_kb AND LENGTH(all_root_kb_perms) > 0) ? (
-                    FIRST(
-                        FOR p IN all_root_kb_perms
-                            SORT p.priority DESC
-                            LIMIT 1
-                            RETURN p
-                    )
-                ) : null
-
-                // Combine all permissions and get highest priority role
-                LET all_perms = REMOVE_VALUE(
-                    FLATTEN([
-                        direct_perm != null ? [direct_perm] : [],
-                        team_perms,
-                        group_perms,
-                        root_kb_perm != null ? [root_kb_perm] : []
-                    ]),
-                    null
-                )
-                LET highest_perm = LENGTH(all_perms) > 0 ? (
-                    FIRST(
-                        FOR p IN all_perms
-                            SORT p.priority DESC
-                            LIMIT 1
-                            RETURN p
-                    )
-                ) : null
-                // Only default to READER if NO permissions were found
-                LET role = highest_perm != null ? highest_perm.role : "READER"
-                RETURN { id: rg_id, role: role }
+                LET target_id = CONCAT('recordGroups/', rg_id)
+                {permission_check_aql}
+                RETURN {{ id: rg_id, role: final_role }}
             """
             results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "record_group_ids": record_group_ids}, txn_id=transaction)
             for r in (results or []):
@@ -8048,181 +8117,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         for app_id in app_ids:
             permissions[app_id] = {"role": "READER", "canEdit": False, "canDelete": False}
 
-        # Query record permissions
+        # Query record permissions using unified permission check
         if record_ids:
-            query = """
+            permission_check_aql = self._build_unified_permission_check_aql("target_id", "user_from")
+            query = f"""
             LET user_from = CONCAT('users/', @user_key)
-            LET role_priority = {
+            LET role_priority = {{
                 "OWNER": 6,
                 "ADMIN": 5,
                 "EDITOR": 4,
                 "WRITER": 3,
                 "COMMENTER": 2,
                 "READER": 1
-            }
+            }}
             FOR rec_id IN @record_ids
-                LET record_doc = DOCUMENT(CONCAT('records/', rec_id))
-                LET record_from = CONCAT('records/', rec_id)
-
-                // Determine if record belongs to KB (either directly or through nested record groups)
-                LET record_connector = record_doc != null ? (
-                    DOCUMENT(CONCAT("recordGroups/", record_doc.connectorId)) ||
-                    DOCUMENT(CONCAT("apps/", record_doc.connectorId))
-                ) : null
-                LET is_direct_kb = record_connector != null AND record_connector.connectorName == "KB"
-                LET is_nested_under_kb = is_direct_kb ? false : (
-                    record_connector != null ? (
-                        // Check if traversing up from connector finds a KB
-                        LENGTH(
-                            FOR v, e, p IN 0..10 INBOUND CONCAT("recordGroups/", record_connector._key) belongsTo
-                                FILTER v != null AND v.connectorName == "KB"
-                                RETURN 1
-                        ) > 0
-                    ) : false
-                )
-                LET is_kb_record = is_direct_kb OR is_nested_under_kb
-
-                // Priority 1: Direct user permission on record
-                LET direct_perm = FIRST(
-                    FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == record_from AND perm.type == "USER"
-                        FILTER perm.role != null AND perm.role != ""
-                        RETURN {
-                            role: perm.role,
-                            priority: role_priority[perm.role] || 1
-                        }
-                )
-
-                // Priority 2: Team permissions on record
-                LET team_perms = (
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == user_from
-                        FILTER user_team_perm.type == "USER"
-                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
-                        FILTER user_team_perm.role != null AND user_team_perm.role != ""
-                        FOR team_record_perm IN permission
-                            FILTER team_record_perm._from == user_team_perm._to
-                            FILTER team_record_perm._to == record_from
-                            FILTER team_record_perm.type == "TEAM"
-                            RETURN {
-                                role: user_team_perm.role,
-                                priority: role_priority[user_team_perm.role] || 1
-                            }
-                )
-
-                // Priority 3: Group permissions on record
-                LET group_perms = (
-                    FOR record_group_perm IN permission
-                        FILTER record_group_perm._to == record_from AND record_group_perm.type == "GROUP"
-                        FILTER record_group_perm.role != null AND record_group_perm.role != ""
-                        LET group_to = record_group_perm._from
-                        FOR user_group_perm IN permission
-                            FILTER user_group_perm._from == user_from AND user_group_perm._to == group_to
-                            RETURN {
-                                role: record_group_perm.role,
-                                priority: role_priority[record_group_perm.role] || 1
-                            }
-                )
-
-                // Priority 4: For KB records, find root KB and check permission
-                // Compute root KB unconditionally (will be null for non-KB records)
-                LET start_rg_id = record_doc != null ? record_doc.connectorId : null
-                LET connector_rg = start_rg_id != null ? DOCUMENT(CONCAT("recordGroups/", start_rg_id)) : null
-                LET is_connector_kb = connector_rg != null AND connector_rg.connectorName == "KB"
-
-                // If connector is root KB, use it; otherwise traverse up to find KB
-                LET root_kb_from_traversal = (connector_rg != null AND NOT is_connector_kb) ? (
-                    FOR v, e, p IN 0..10 INBOUND CONCAT("recordGroups/", connector_rg._key) belongsTo
-                        FILTER v != null AND v.connectorName == "KB"
-                        LIMIT 1
-                        RETURN v
-                ) : []
-                LET root_kb = is_connector_kb ? connector_rg : (
-                    LENGTH(root_kb_from_traversal) > 0 ? root_kb_from_traversal[0] : null
-                )
-                LET root_kb_to = root_kb != null ? CONCAT("recordGroups/", root_kb._key) : null
-
-                // Check direct user permission on root KB
-                LET root_kb_direct = root_kb_to != null ? FIRST(
-                    FOR perm IN permission
-                        FILTER perm._from == user_from AND perm._to == root_kb_to AND perm.type == "USER"
-                        FILTER perm.role != null AND perm.role != ""
-                        RETURN {
-                            role: perm.role,
-                            priority: role_priority[perm.role] || 1
-                        }
-                ) : null
-
-                // Check team permissions on root KB
-                LET root_kb_team = root_kb_to != null ? FIRST(
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from == user_from
-                        FILTER user_team_perm.type == "USER"
-                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
-                        FOR team_kb_perm IN permission
-                            FILTER team_kb_perm._from == user_team_perm._to
-                            FILTER team_kb_perm._to == root_kb_to
-                            FILTER team_kb_perm.type == "TEAM"
-                            FILTER team_kb_perm.role != null AND team_kb_perm.role != ""
-                            RETURN {
-                                role: team_kb_perm.role,
-                                priority: role_priority[team_kb_perm.role] || 1
-                            }
-                ) : null
-
-                // Check group permissions on root KB
-                LET root_kb_group = root_kb_to != null ? FIRST(
-                    FOR kb_group_perm IN permission
-                        FILTER kb_group_perm._to == root_kb_to AND kb_group_perm.type == "GROUP"
-                        FILTER kb_group_perm.role != null AND kb_group_perm.role != ""
-                        LET group_to = kb_group_perm._from
-                        FOR user_group_perm IN permission
-                            FILTER user_group_perm._from == user_from AND user_group_perm._to == group_to
-                            RETURN {
-                                role: kb_group_perm.role,
-                                priority: role_priority[kb_group_perm.role] || 1
-                            }
-                ) : null
-
-                // Get highest priority root KB permission
-                LET all_root_kb_perms = REMOVE_VALUE(
-                    FLATTEN([
-                        root_kb_direct != null ? [root_kb_direct] : [],
-                        root_kb_team != null ? [root_kb_team] : [],
-                        root_kb_group != null ? [root_kb_group] : []
-                    ]),
-                    null
-                )
-                LET root_kb_perm = (is_kb_record AND LENGTH(all_root_kb_perms) > 0) ? (
-                    FIRST(
-                        FOR p IN all_root_kb_perms
-                            SORT p.priority DESC
-                            LIMIT 1
-                            RETURN p
-                    )
-                ) : null
-
-                // Combine all permissions and get highest priority role
-                LET all_perms = REMOVE_VALUE(
-                    FLATTEN([
-                        direct_perm != null ? [direct_perm] : [],
-                        team_perms,
-                        group_perms,
-                        root_kb_perm != null ? [root_kb_perm] : []
-                    ]),
-                    null
-                )
-                LET highest_perm = LENGTH(all_perms) > 0 ? (
-                    FIRST(
-                        FOR p IN all_perms
-                            SORT p.priority DESC
-                            LIMIT 1
-                            RETURN p
-                    )
-                ) : null
-                // Only default to READER if NO permissions were found
-                LET role = highest_perm != null ? highest_perm.role : "READER"
-                RETURN { id: rec_id, role: role }
+                LET target_id = CONCAT('records/', rec_id)
+                {permission_check_aql}
+                RETURN {{ id: rec_id, role: final_role }}
             """
             results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "record_ids": record_ids}, txn_id=transaction)
             for r in (results or []):
