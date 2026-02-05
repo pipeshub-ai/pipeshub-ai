@@ -9629,7 +9629,9 @@ class BaseArangoService:
         # Step 5: Batch create edges by type
         parent_child_edges = [e for e in edges_to_create if e.get("relationshipType") == "PARENT_CHILD"]
         is_of_type_edges = [e for e in edges_to_create if e["_to"].startswith("files/") and not e.get("relationshipType")]
-        belongs_to_kb_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/") and e.get("entityType")]
+        # belongsTo edges have entityType set (e.g., Connectors.KNOWLEDGE_BASE.value)
+        belongs_to_kb_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/") and e.get("entityType") == Connectors.KNOWLEDGE_BASE.value]
+        # inheritPermission edges point to recordGroups but don't have entityType
         inherit_permission_edges = [e for e in edges_to_create if e["_to"].startswith("recordGroups/") and not e.get("entityType")]
 
         if parent_child_edges:
