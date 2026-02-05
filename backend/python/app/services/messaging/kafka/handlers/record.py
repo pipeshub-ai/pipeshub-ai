@@ -108,7 +108,7 @@ class RecordEventHandler(BaseEventService):
                 )
 
                 self.logger.info(
-                    f"✅ Bulk deletion complete:"
+                    f"✅ Bulk deletion complete: "
                     f"for {result.get('virtual_record_ids_processed', 0)} virtual record IDs"
                 )
                 yield {"event": "parsing_complete", "data": {"record_id": "bulk_delete", "count": len(virtual_record_ids)}}

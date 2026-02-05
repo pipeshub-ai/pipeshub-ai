@@ -1,26 +1,20 @@
-import time
 from typing import Any, Dict, List
 
 from langchain_core.documents import Document
 from langchain_experimental.text_splitter import SemanticChunker
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from langchain_qdrant import FastEmbedSparse
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.config.constants.service import config_node_constants
+from app.config.constants.arangodb import CollectionNames
 from app.exceptions.indexing_exceptions import (
     ChunkingError,
-    DocumentProcessingError,
     EmbeddingDeletionError,
-    EmbeddingError,
     IndexingError,
     MetadataProcessingError,
     VectorStoreError,
 )
 from app.services.vector_db.const.const import ORG_ID_FIELD, VIRTUAL_RECORD_ID_FIELD
 from app.services.vector_db.interface.vector_db import IVectorDBService
-from app.utils.aimodels import get_default_embedding_model, get_embedding_model
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for bulk deletion
 QDRANT_BULK_DELETE_BATCH_SIZE = 100
@@ -559,7 +553,7 @@ class IndexingPipeline:
                     # Continue with next batch even if one fails
                     continue
 
-            self.logger.info(f"✅ Bulk deletion complete: embeddings deleted for {len(virtual_record_ids)} virtual record IDs")   
+            self.logger.info(f"✅ Bulk deletion complete: embeddings deleted for {len(virtual_record_ids)} virtual record IDs")
 
             return {
                 "virtual_record_ids_processed": len(virtual_record_ids),
