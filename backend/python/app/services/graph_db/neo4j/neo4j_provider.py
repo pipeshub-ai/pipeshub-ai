@@ -2498,6 +2498,25 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return -1
 
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Not implemented for Neo4j provider - returns None.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[dict]: Always returns None for Neo4j provider
+        """
+        # Not implemented for Neo4j - return None
+        return None
+
     async def copy_document_relationships(
         self,
         source_key: str,
