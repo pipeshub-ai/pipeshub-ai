@@ -86,6 +86,19 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_record_path(self, record_id: str) -> Optional[str]:
+        """
+        Get full hierarchical path for a record by traversing parent-child edges.
+
+        Args:
+            record_id: The record _key to get the path for.
+
+        Returns:
+            Optional[str]: Path string (e.g. "Folder1/Subfolder/File.txt") or None.
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_status(self, org_id: str, connector_id: str, status_filters: List[str], limit: Optional[int] = None, offset: int = 0) -> List[Record]:
         """Get records by their indexing status with pagination support. Returns typed Record instances."""
         pass
@@ -263,12 +276,12 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def delete_parent_child_edges_to(self, to_key: str) -> int:
+    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
         """
         Delete PARENT_CHILD edges pointing to a specific target record.
 
         Args:
-            to_key: The target node key (e.g., "records/12345")
+            record_id: The record_id for which the parent_child edge has to be deleted
 
         Returns:
             int: Number of edges deleted

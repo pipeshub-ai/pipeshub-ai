@@ -25,7 +25,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.data_store.data_store import (
+    DataStoreProvider,
+    TransactionStore,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -763,7 +766,7 @@ class NextcloudConnector(BaseConnector):
                 is_file=is_file,
                 preview_renderable=is_file,
                 extension=get_file_extension(display_name) if is_file else "",
-                path=path,
+                path=None,  # Path derived at runtime via parent-child graph (get_record_path)
                 mime_type=get_mimetype_enum_for_nextcloud(content_type, is_collection),
                 etag=etag,
                 ctag="",
@@ -905,6 +908,21 @@ class NextcloudConnector(BaseConnector):
             self.logger.debug(f"Error fetching shares for {path}: {e}")
             return []
 
+    async def _clear_parent_child_edges_for_records(
+        self, records_with_permissions: List[Tuple[Record, List]]
+    ) -> None:
+        """Nextcloud single-parent: remove existing PARENT_CHILD edges so records don't appear in both old and new location."""
+        if not records_with_permissions:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            for record, _ in records_with_permissions:
+                deleted = await tx_store.delete_parent_child_edge_to_record(record.id)
+                if deleted:
+                    self.logger.debug(
+                        "Removed %d existing PARENT_CHILD edge(s) to %s (Nextcloud single-parent)",
+                        deleted, record.id,
+                    )
+
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """Handle record updates (modified or deleted records). Follows Box connector pattern."""
         try:
@@ -920,10 +938,9 @@ class NextcloudConnector(BaseConnector):
                         )
 
             elif record_update.is_updated:
-                # Update the record - this ensures proper indexing queue updates
-                await self.data_entities_processor.on_new_records([
-                    (record_update.record, record_update.new_permissions or [])
-                ])
+                records_batch = [(record_update.record, record_update.new_permissions or [])]
+                await self._clear_parent_child_edges_for_records(records_batch)
+                await self.data_entities_processor.on_new_records(records_batch)
 
         except Exception as e:
             self.logger.error(f"Error handling record update: {e}", exc_info=True)
@@ -1015,6 +1032,7 @@ class NextcloudConnector(BaseConnector):
 
                     if batch_count >= self.batch_size:
                         self.logger.info(f"Processing batch of {batch_count} records")
+                        await self._clear_parent_child_edges_for_records(batch_records)
                         await self.data_entities_processor.on_new_records(batch_records)
                         batch_records = []
                         batch_count = 0
@@ -1023,6 +1041,7 @@ class NextcloudConnector(BaseConnector):
             # Process remaining records
             if batch_records:
                 self.logger.info(f"Processing final batch of {len(batch_records)} records")
+                await self._clear_parent_child_edges_for_records(batch_records)
                 await self.data_entities_processor.on_new_records(batch_records)
 
             self.logger.info(
@@ -1501,17 +1520,18 @@ class NextcloudConnector(BaseConnector):
 
                                                     if parent_update and parent_update.record:
                                                         if parent_update.is_new:
-                                                            await self.data_entities_processor.on_new_records([
-                                                                (parent_update.record, parent_update.new_permissions or [])
-                                                            ])
+                                                            await self.data_entities_processor.on_new_records(
+                                                                [(parent_update.record, parent_update.new_permissions or [])],
+                                                            )
                                                             self.logger.info(f"✅ [Incremental Sync] Created parent folder: {parent_path}")
                                                         else:
                                                             await self._handle_record_updates(parent_update)
                                                             self.logger.debug(f"✅ [Incremental Sync] Updated parent folder: {parent_path}")
 
-                                                        # Cache the parent
-                                                        if parent_update.record.path:
-                                                            clean_path = parent_update.record.path.rstrip('/')
+                                                        # Cache the parent (path may be dynamic from get_record_path)
+                                                        parent_path_str = await tx_store.get_record_path(parent_update.record.id)
+                                                        if parent_path_str:
+                                                            clean_path = parent_path_str.rstrip('/')
                                                             path_to_external_id[clean_path] = parent_update.record.external_record_id
                                                             self.logger.debug(f"📌 [Incremental Sync] Cached parent: {clean_path} -> {parent_update.record.external_record_id}")
 
@@ -1561,9 +1581,9 @@ class NextcloudConnector(BaseConnector):
                         if record_update:
                             # For incremental sync: send new records immediately, handle updates separately
                             if record_update.is_new and record_update.record:
-                                await self.data_entities_processor.on_new_records([
-                                    (record_update.record, record_update.new_permissions or [])
-                                ])
+                                await self.data_entities_processor.on_new_records(
+                                    [(record_update.record, record_update.new_permissions or [])],
+                                )
                             else:
                                 # Handle updates and deletions
                                 await self._handle_record_updates(record_update)
@@ -1592,11 +1612,21 @@ class NextcloudConnector(BaseConnector):
                 detail="Data source not initialized"
             )
 
-        # Get file record to get path
+        # Get file record and path (path may be stored or derived from parent-child graph)
         async with self.data_store_provider.transaction() as tx_store:
             file_record = await tx_store.get_file_record_by_id(record.id)
+            path = None
+            if file_record:
+                path = await tx_store.get_record_path(record.id)
+        # Fallback: root-level or when graph path unavailable, use record name (WebDAV path = single segment)
+        if file_record and (path is None or path.strip() == ""):
+            path = record.record_name or file_record.record_name
 
-        if not file_record or not file_record.path:
+        if not file_record or not path:
+            self.logger.debug(
+                "stream_record path resolution failed: record_id=%s file_record=%s path=%s",
+                record.id, file_record is not None, path,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="File not found or access denied"
@@ -1609,11 +1639,10 @@ class NextcloudConnector(BaseConnector):
                 detail="Cannot download folders"
             )
 
-        # Extract relative path from full WebDAV path
-        path = file_record.path
+        # Extract relative path from full WebDAV path (path is already relative to user root)
         relative_path = path
-        if '/files/' in path:
-            parts = path.split('/files/')
+        if relative_path and '/files/' in relative_path:
+            parts = relative_path.split('/files/')
             if len(parts) > 1:
                 user_and_path = parts[1]
                 path_parts = user_and_path.split('/', 1)
@@ -1621,8 +1650,8 @@ class NextcloudConnector(BaseConnector):
                     relative_path = path_parts[1]
                 else:
                     relative_path = ''
-        else:
-            relative_path = path.lstrip('/')
+        elif relative_path:
+            relative_path = relative_path.lstrip('/')
 
         # Download file using authenticated WebDAV client
         try:
@@ -1866,21 +1895,24 @@ class NextcloudConnector(BaseConnector):
         for record in record_results:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                        f"{CollectionNames.RECORDS.value}/{record.id}"
-                    )
-
+                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
                     file_record = await tx_store.get_file_record_by_id(record.id)
+                    path = None
+                    if file_record:
+                        path = await tx_store.get_record_path(record.id)
 
-                if not user_with_permission or not file_record or not file_record.path:
+                if file_record and (path is None or path.strip() == ""):
+                    path = record.record_name or file_record.record_name
+
+                if not user_with_permission or not file_record or not path:
                     failed_count += 1
                     continue
 
                 async with self.rate_limiter:
                     response = await self.data_source.list_directory(
                         user_id=user_with_permission.source_user_id,
-                        path=file_record.path,
-                        depth="0"
+                        path=path,
+                        depth=0,
                     )
 
                 if not is_response_successful(response):

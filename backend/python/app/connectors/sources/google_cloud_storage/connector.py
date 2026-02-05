@@ -887,8 +887,7 @@ class GCSConnector(BaseConnector):
     ) -> None:
         """Remove old PARENT_CHILD relationships for a record."""
         try:
-            record_key = f"{CollectionNames.RECORDS.value}/{record_id}"
-            deleted_count = await tx_store.delete_parent_child_edges_to(to_key=record_key)
+            deleted_count = await tx_store.delete_parent_child_edge_to_record(record_id)
             if deleted_count > 0:
                 self.logger.info(f"Removed {deleted_count} old parent relationship(s) for record {record_id}")
         except Exception as e:
