@@ -1449,7 +1449,7 @@ async def reindex_single_record(
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
-            
+
             logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,

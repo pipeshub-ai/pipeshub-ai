@@ -14,6 +14,8 @@ from datetime import datetime
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from fastapi import Request
+
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -32,7 +34,7 @@ from app.config.constants.neo4j import (
     edge_collection_to_relationship,
     parse_node_id,
 )
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppRole,
@@ -40,18 +42,17 @@ from app.models.entities import (
     AppUserGroup,
     CommentRecord,
     FileRecord,
+    IndexingStatus,
     MailRecord,
     Record,
     RecordGroup,
     TicketRecord,
     User,
     WebpageRecord,
-    IndexingStatus
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from fastapi import Request
 
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
@@ -4614,21 +4615,22 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: Optional[str] = None
     ) -> Optional[Dict]:
         """
-        Get a record by its internal ID.
+        Get a record by its internal ID with associated type document (file/mail/etc.).
 
         Args:
             record_id (str): The internal record ID to look up
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
-            Optional[Dict]: Record data if found, None otherwise
+            Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
         """
         try:
             self.logger.info(f"🚀 Retrieving record for id {record_id}")
 
             query = """
             MATCH (record:Record {id: $record_id})
-            RETURN record
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+            RETURN record, typeDoc
             LIMIT 1
             """
 
@@ -4639,10 +4641,17 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if results and len(results) > 0:
-                record_dict = dict(results[0]["record"])
-                self.logger.info(f"✅ Successfully retrieved record for id {record_id} Record: {record_dict}")
-                record = Record.from_arango_base_record(record_dict)
-                return record
+                result = results[0]
+                record_dict = dict(result["record"])
+                record_dict = self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value)
+
+                type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
+                if type_doc:
+                    type_doc = self._neo4j_to_arango_node(type_doc, "")
+
+                typed_record = self._create_typed_record_from_neo4j(record_dict, type_doc)
+                self.logger.info(f"✅ Successfully retrieved record for id {record_id}")
+                return typed_record
             else:
                 self.logger.warning(f"⚠️ No record found for id {record_id}")
                 return None
@@ -7530,8 +7539,6 @@ class Neo4jProvider(IGraphDBProvider):
     async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None) -> Dict:
         """Create reindex event payload"""
         try:
-            from app.config.constants.service import DefaultEndpoints, config_node_constants
-            
             # Get extension and mimeType from file record
             extension = ""
             mime_type = ""
@@ -7548,7 +7555,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
             signed_url_route = ""
             file_content = ""
-            
+
             if record.get("origin") == OriginTypes.UPLOAD.value:
                 storage_url = endpoints.get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
@@ -9424,7 +9431,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
             if results:
                 record_data = results[0].get("r", {})
-                return self._create_typed_record_from_neo4j(record_data)
+                return self._create_typed_record_from_neo4j_simple(record_data)
             return None
         except Exception as e:
             self.logger.error(f"❌ Get record by external revision ID failed: {str(e)}")
@@ -9450,7 +9457,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
             if results:
                 record_data = results[0].get("r", {})
-                return self._create_typed_record_from_neo4j(record_data)
+                return self._create_typed_record_from_neo4j_simple(record_data)
             return None
         except Exception as e:
             self.logger.error(f"❌ Get record by web URL failed: {str(e)}")
@@ -9502,7 +9509,7 @@ class Neo4jProvider(IGraphDBProvider):
             records = []
             for result in results:
                 record_data = result.get("r", {})
-                typed_record = self._create_typed_record_from_neo4j(record_data)
+                typed_record = self._create_typed_record_from_neo4j_simple(record_data)
                 if typed_record:
                     records.append(typed_record)
             return records
@@ -9650,30 +9657,23 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Update record external parent ID failed: {str(e)}")
             return False
 
-    def _create_typed_record_from_neo4j(self, record_data: Dict) -> Optional[Record]:
-        """Create typed Record instance from Neo4j data."""
+    def _create_typed_record_from_neo4j_simple(self, record_data: Dict) -> Optional[Record]:
+        """
+        Create base Record instance from Neo4j data (without type_doc).
+        Matches ArangoDB behavior where methods like get_record_by_external_revision_id
+        and get_record_by_weburl return base Record objects, not typed records.
+        """
         if not record_data:
             return None
 
         try:
-            record_type = record_data.get("recordType", "FILE")
-
-            # Map to appropriate Record subclass
-            if record_type == "FILE":
-                return FileRecord(**record_data)
-            elif record_type == "MAIL":
-                return MailRecord(**record_data)
-            elif record_type == "COMMENT":
-                return CommentRecord(**record_data)
-            elif record_type == "WEBPAGE":
-                return WebpageRecord(**record_data)
-            elif record_type == "TICKET":
-                return TicketRecord(**record_data)
-            else:
-                return Record(**record_data)
+            # Convert Neo4j format to ArangoDB-compatible format
+            record_dict = self._neo4j_to_arango_node(record_data, CollectionNames.RECORDS.value)
+            # Return base Record (matching ArangoDB pattern)
+            return Record.from_arango_base_record(record_dict)
         except Exception as e:
-            self.logger.warning(f"Failed to create typed record: {str(e)}")
-            return Record(**record_data)
+            self.logger.warning(f"Failed to create record from Neo4j data: {str(e)}")
+            return None
 
     # ==================== Knowledge Hub API Methods ====================
 
