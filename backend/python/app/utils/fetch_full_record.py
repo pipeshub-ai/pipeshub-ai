@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-
-from app.modules.transformers.blob_storage import BlobStorage
 
 
 class FetchFullRecordArgs(BaseModel):
