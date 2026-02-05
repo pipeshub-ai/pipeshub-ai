@@ -10451,6 +10451,312 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user app IDs failed: {str(e)}")
             return []
 
+    def _get_permission_role_cypher(
+        self,
+        node_type: str,
+        node_var: str = "node",
+        user_var: str = "u",
+    ) -> str:
+        """
+        Generate a CALL subquery that returns the user's highest permission role on a node.
+
+        This function generates a reusable Cypher CALL block that checks all permission paths
+        and returns the highest priority role for the user on the specified node.
+
+        Args:
+            node_type: Type of node - 'record', 'recordGroup', 'app', or 'kb'
+            node_var: Variable name of the node in the outer query (default: 'node')
+            user_var: Variable name of the user in the outer query (default: 'u')
+
+        Required outer query parameters:
+            - $org_id: Organization ID parameter
+
+        Returns:
+            Cypher CALL block string that yields: permission_role (string)
+
+        Permission model (10 paths for record/recordGroup):
+            1. user-[PERMISSION]->node (direct)
+            2. user-[PERMISSION]->ancestorRG (via INHERIT_PERMISSIONS chain)
+            3. user-[PERMISSION]->group-[PERMISSION]->node
+            4. user-[PERMISSION]->group-[PERMISSION]->ancestorRG
+            5. user-[PERMISSION]->role-[PERMISSION]->node
+            6. user-[PERMISSION]->role-[PERMISSION]->ancestorRG
+            7. user-[PERMISSION]->team-[PERMISSION]->node
+            8. user-[PERMISSION]->team-[PERMISSION]->ancestorRG
+            9. user-[BELONGS_TO]->org-[PERMISSION]->node
+            10. user-[BELONGS_TO]->org-[PERMISSION]->ancestorRG
+
+        Node type specific behavior:
+            - record: Checks all 10 paths (node + ancestors via INHERIT_PERMISSIONS)
+            - recordGroup: Checks all paths (node + ancestors via INHERIT_PERMISSIONS)
+            - kb: Same as recordGroup (KB is a root RecordGroup, no ancestors found)
+            - app: Uses USER_APP_RELATION based permission (different model)
+
+        The permission model is the same for KB and connector - no special handling.
+        Highest priority role wins: OWNER > ADMIN > EDITOR > WRITER > COMMENTER > READER
+
+        Usage example:
+            permission_call = self._get_permission_role_cypher(
+                node_type="record",
+                node_var="record",
+                user_var="u"
+            )
+            query = f'''
+            MATCH (record:Record {{id: $record_id}})
+            MATCH (u:User {{id: $user_key}})
+            {permission_call}
+            RETURN record, permission_role
+            '''
+        """
+        # Role priority map used for determining highest role
+        role_priority_map = "{{OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1}}"
+
+        if node_type == "record":
+            return self._get_record_permission_role_cypher(node_var, user_var, role_priority_map)
+        elif node_type in ("recordGroup", "kb"):
+            # KB is a RecordGroup at root level, same permission logic applies
+            # INHERIT_PERMISSIONS query works for both - KB just won't have ancestors
+            return self._get_record_group_permission_role_cypher(node_var, user_var, role_priority_map)
+        elif node_type == "app":
+            return self._get_app_permission_role_cypher(node_var, user_var, role_priority_map)
+        else:
+            raise ValueError(f"Unsupported node_type: {node_type}. Must be 'record', 'recordGroup', 'app', or 'kb'")
+
+    def _get_record_permission_role_cypher(
+        self,
+        node_var: str,
+        user_var: str,
+        role_priority_map: str,
+    ) -> str:
+        """
+        Generate CALL subquery for Record permission role.
+
+        Implements all 10 permission paths:
+        1. user-[PERMISSION]->record (direct)
+        2. user-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        3. user-[PERMISSION]->group-[PERMISSION]->record
+        4. user-[PERMISSION]->group-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        5. user-[PERMISSION]->role-[PERMISSION]->record
+        6. user-[PERMISSION]->role-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        7. user-[PERMISSION]->team-[PERMISSION]->record
+        8. user-[PERMISSION]->team-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        9. user-[BELONGS_TO]->org-[PERMISSION]->record
+        10. user-[BELONGS_TO]->org-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+
+        Checks permissions on the record AND all ancestor RecordGroups via INHERIT_PERMISSIONS chain.
+        Returns highest priority role across all paths.
+        """
+        return f"""
+        CALL {{
+            WITH {node_var}, {user_var}
+
+            // Role priority map
+            WITH {node_var}, {user_var}, {role_priority_map} AS role_priority
+
+            // Step 1: Get all permission targets (record + ancestor RGs via INHERIT_PERMISSIONS)
+            // The record itself is a permission target
+            // Plus all RecordGroups reachable via INHERIT_PERMISSIONS chain
+            OPTIONAL MATCH ({node_var})-[:INHERIT_PERMISSIONS*1..20]->(ancestor_rg:RecordGroup)
+
+            WITH {node_var}, {user_var}, role_priority,
+                 [{node_var}] + collect(DISTINCT ancestor_rg) AS permission_targets_raw
+
+            // Filter out nulls
+            WITH {node_var}, {user_var}, role_priority,
+                 [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
+
+            // Step 2: Check all 10 permission paths across all targets
+            // Unwind targets to check each one
+            UNWIND permission_targets AS target
+
+            // Path 1: Direct user permission on target
+            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            WHERE p1.role IS NOT NULL AND p1.role <> ''
+
+            // Path 3: User -> Group -> target
+            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            WHERE p3.role IS NOT NULL AND p3.role <> ''
+
+            // Path 5: User -> Role -> target
+            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            WHERE p5.role IS NOT NULL AND p5.role <> ''
+
+            // Path 7: User -> Team -> target
+            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Team)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            WHERE p7.role IS NOT NULL AND p7.role <> ''
+
+            // Path 9: User -> Org -> target
+            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            WHERE p9.role IS NOT NULL AND p9.role <> ''
+
+            // Collect all found permissions for this target
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
+                 collect(DISTINCT p7.role) + collect(DISTINCT p9.role) AS target_roles
+
+            // Flatten all roles across all targets
+            WITH role_priority, target_roles
+            UNWIND target_roles AS found_role
+
+            // Filter valid roles and map to priorities
+            WITH role_priority, found_role
+            WHERE found_role IS NOT NULL AND found_role <> ''
+
+            WITH role_priority, found_role, role_priority[toString(found_role)] AS priority
+            WHERE priority IS NOT NULL
+
+            // Get highest priority role
+            WITH found_role, priority
+            ORDER BY priority DESC
+            LIMIT 1
+
+            RETURN found_role AS permission_role
+        }}
+        """
+
+    def _get_record_group_permission_role_cypher(
+        self,
+        node_var: str,
+        user_var: str,
+        role_priority_map: str,
+    ) -> str:
+        """
+        Generate CALL subquery for RecordGroup/KB permission role.
+
+        Used for both RecordGroup and KB (KB is a RecordGroup at root level).
+        Checks permissions on the node itself AND all ancestor RecordGroups
+        via INHERIT_PERMISSIONS chain. For KB, no ancestors will be found (as expected).
+
+        Permission paths checked (applied to node and ancestors):
+        1. user-[PERMISSION]->node (direct)
+        2. user-[PERMISSION]->ancestorRG (via INHERIT_PERMISSIONS chain)
+        3. user-[PERMISSION]->group-[PERMISSION]->node/ancestorRG
+        4. user-[PERMISSION]->role-[PERMISSION]->node/ancestorRG
+        5. user-[PERMISSION]->team-[PERMISSION]->node/ancestorRG
+        6. user-[BELONGS_TO]->org-[PERMISSION]->node/ancestorRG
+
+        Returns highest priority role across all paths.
+        """
+        return f"""
+        CALL {{
+            WITH {node_var}, {user_var}
+
+            // Role priority map
+            WITH {node_var}, {user_var}, {role_priority_map} AS role_priority
+
+            // Step 1: Get all permission targets (this RG + ancestor RGs via INHERIT_PERMISSIONS)
+            OPTIONAL MATCH ({node_var})-[:INHERIT_PERMISSIONS*1..20]->(ancestor_rg:RecordGroup)
+
+            WITH {node_var}, {user_var}, role_priority,
+                 [{node_var}] + collect(DISTINCT ancestor_rg) AS permission_targets_raw
+
+            // Filter out nulls
+            WITH {node_var}, {user_var}, role_priority,
+                 [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
+
+            // Step 2: Check all permission paths across all targets
+            UNWIND permission_targets AS target
+
+            // Path 1: Direct user permission on target
+            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            WHERE p1.role IS NOT NULL AND p1.role <> ''
+
+            // Path 2: User -> Group -> target
+            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            WHERE p3.role IS NOT NULL AND p3.role <> ''
+
+            // Path 3: User -> Role -> target
+            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            WHERE p5.role IS NOT NULL AND p5.role <> ''
+
+            // Path 4: User -> Team -> target
+            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Team)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            WHERE p7.role IS NOT NULL AND p7.role <> ''
+
+            // Path 5: User -> Org -> target
+            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            WHERE p9.role IS NOT NULL AND p9.role <> ''
+
+            // Collect all found permissions for this target
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
+                 collect(DISTINCT p7.role) + collect(DISTINCT p9.role) AS target_roles
+
+            // Flatten all roles across all targets
+            WITH role_priority, target_roles
+            UNWIND target_roles AS found_role
+
+            // Filter valid roles and map to priorities
+            WITH role_priority, found_role
+            WHERE found_role IS NOT NULL AND found_role <> ''
+
+            WITH role_priority, found_role, role_priority[toString(found_role)] AS priority
+            WHERE priority IS NOT NULL
+
+            // Get highest priority role
+            WITH found_role, priority
+            ORDER BY priority DESC
+            LIMIT 1
+
+            RETURN found_role AS permission_role
+        }}
+        """
+
+    def _get_app_permission_role_cypher(
+        self,
+        node_var: str,
+        user_var: str,
+        role_priority_map: str,
+    ) -> str:
+        """
+        Generate CALL subquery for App permission role.
+        
+        - Checks USER_APP_RELATION edge
+        - If USER_APP_RELATION exists:
+        - Admin users:
+            - Team apps: EDITOR role
+            - Personal apps: OWNER role
+        - Team app creator: OWNER role (createdBy matches userId - MongoDB ID)
+        - Otherwise: READER role
+        - If USER_APP_RELATION doesn't exist: returns null (no access)
+        
+        Note: createdBy stores MongoDB userId, so we compare with user.userId, not user.id
+        """
+        return f"""
+        CALL {{
+            WITH {node_var}, {user_var}
+            
+            // Check if user has USER_APP_RELATION to app
+            OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
+            
+            // Check if user is admin
+            WITH {node_var}, {user_var}, user_app_rel,
+                (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
+            
+            // Get app scope and check if user is creator
+            // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
+            WITH {node_var}, {user_var}, user_app_rel, is_admin,
+                coalesce({node_var}.scope, 'personal') AS app_scope,
+                ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
+            
+            // Determine role based on conditions
+            RETURN CASE 
+                // If no USER_APP_RELATION, no access
+                WHEN user_app_rel IS NULL THEN null
+                
+                // Admin users: EDITOR for team apps, OWNER for personal apps
+                WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
+                WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
+                
+                // Team app creator gets OWNER role
+                WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
+                
+                // Default: READER for regular users with USER_APP_RELATION
+                ELSE 'READER'
+            END AS permission_role
+        }}
+        """
+
     async def is_knowledge_hub_folder(
         self,
         record_id: str,
@@ -10913,14 +11219,14 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect all permission objects with priorities
                 WITH role_priority,
                      [
-                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[direct_perm.role]} ELSE null END,
-                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[user_team_perm.role]} ELSE null END,
-                         CASE WHEN user_group_perm IS NOT NULL THEN {role: user_group_perm.role, priority: role_priority[user_group_perm.role]} ELSE null END,
-                         CASE WHEN org_perm IS NOT NULL THEN {role: org_perm.role, priority: role_priority[org_perm.role]} ELSE null END,
-                         CASE WHEN anyone_perm IS NOT NULL THEN {role: anyone_perm.role, priority: role_priority[anyone_perm.role]} ELSE null END,
-                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[root_kb_direct.role]} ELSE null END,
-                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[user_team_kb.role]} ELSE null END,
-                         CASE WHEN user_group_kb IS NOT NULL THEN {role: user_group_kb.role, priority: role_priority[user_group_kb.role]} ELSE null END
+                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[toString(direct_perm.role)]} ELSE null END,
+                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[toString(user_team_perm.role)]} ELSE null END,
+                         CASE WHEN user_group_perm IS NOT NULL THEN {role: user_group_perm.role, priority: role_priority[toString(user_group_perm.role)]} ELSE null END,
+                         CASE WHEN org_perm IS NOT NULL THEN {role: org_perm.role, priority: role_priority[toString(org_perm.role)]} ELSE null END,
+                         CASE WHEN anyone_perm IS NOT NULL THEN {role: anyone_perm.role, priority: role_priority[toString(anyone_perm.role)]} ELSE null END,
+                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[toString(root_kb_direct.role)]} ELSE null END,
+                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[toString(user_team_kb.role)]} ELSE null END,
+                         CASE WHEN user_group_kb IS NOT NULL THEN {role: user_group_kb.role, priority: role_priority[toString(user_group_kb.role)]} ELSE null END
                      ] AS all_perms_raw
 
                 // Filter nulls and find highest priority
@@ -11169,9 +11475,9 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect Priority 1-3 permissions
                 WITH u, rg, role_priority, is_kb, is_nested_under_kb, direct_perm, user_team_perm, grp_perm,
                      [
-                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[direct_perm.role]} ELSE null END,
-                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[user_team_perm.role]} ELSE null END,
-                         CASE WHEN grp_perm IS NOT NULL THEN {role: grp_perm.role, priority: role_priority[grp_perm.role]} ELSE null END
+                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[toString(direct_perm.role)]} ELSE null END,
+                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[toString(user_team_perm.role)]} ELSE null END,
+                         CASE WHEN grp_perm IS NOT NULL THEN {role: grp_perm.role, priority: role_priority[toString(grp_perm.role)]} ELSE null END
                      ] AS direct_perms
 
                 // Priority 4: For nested KB record groups, find root KB and check permissions
@@ -11198,9 +11504,9 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect root KB permissions
                 WITH rg, role_priority, direct_perms, is_nested_under_kb,
                      [
-                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[root_kb_direct.role]} ELSE null END,
-                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[user_team_kb.role]} ELSE null END,
-                         CASE WHEN kb_grp_perm IS NOT NULL THEN {role: kb_grp_perm.role, priority: role_priority[kb_grp_perm.role]} ELSE null END
+                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[toString(root_kb_direct.role)]} ELSE null END,
+                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[toString(user_team_kb.role)]} ELSE null END,
+                         CASE WHEN kb_grp_perm IS NOT NULL THEN {role: kb_grp_perm.role, priority: role_priority[toString(kb_grp_perm.role)]} ELSE null END
                      ] AS root_kb_perms
 
                 // Combine all permissions
@@ -11278,9 +11584,9 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect Priority 1-3 permissions
                 WITH u, record, role_priority, record_connector, is_direct_kb, is_kb_record,
                      [
-                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[direct_perm.role]} ELSE null END,
-                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[user_team_perm.role]} ELSE null END,
-                         CASE WHEN grp_perm IS NOT NULL THEN {role: grp_perm.role, priority: role_priority[grp_perm.role]} ELSE null END
+                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[toString(direct_perm.role)]} ELSE null END,
+                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[toString(user_team_perm.role)]} ELSE null END,
+                         CASE WHEN grp_perm IS NOT NULL THEN {role: grp_perm.role, priority: role_priority[toString(grp_perm.role)]} ELSE null END
                      ] AS direct_perms
 
                 // Priority 4: For KB records, find root KB and check permissions
@@ -11309,9 +11615,9 @@ class Neo4jProvider(IGraphDBProvider):
                 // Collect root KB permissions
                 WITH record, role_priority, direct_perms, is_kb_record,
                      [
-                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[root_kb_direct.role]} ELSE null END,
-                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[user_team_kb.role]} ELSE null END,
-                         CASE WHEN kb_grp_perm IS NOT NULL THEN {role: kb_grp_perm.role, priority: role_priority[kb_grp_perm.role]} ELSE null END
+                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[toString(root_kb_direct.role)]} ELSE null END,
+                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[toString(user_team_kb.role)]} ELSE null END,
+                         CASE WHEN kb_grp_perm IS NOT NULL THEN {role: kb_grp_perm.role, priority: role_priority[toString(kb_grp_perm.role)]} ELSE null END
                      ] AS root_kb_perms
 
                 // Combine all permissions
@@ -12062,6 +12368,17 @@ class Neo4jProvider(IGraphDBProvider):
         """
         Search recursively within a parent node and all its descendants.
         Uses graph traversal to find all nested children.
+        
+        For RecordGroup/KB parents:
+        - Gets all nested RecordGroups via BELONGS_TO edges
+        - For each RecordGroup, gets direct records via BELONGS_TO edges
+        - Checks permissions using _get_permission_role_cypher for both RecordGroups and Records
+        - Filters out nodes where user has no permission (permission_role is null)
+        - Applies all filters, sorting, and pagination
+        
+        For Record/Folder parents:
+        - Traverses via RECORD_RELATION edges to find nested records
+        - Applies filters, sorting, and pagination
         """
         try:
             # Build filter conditions
@@ -12148,77 +12465,115 @@ class Neo4jProvider(IGraphDBProvider):
             if search_query:
                 filter_conditions.insert(0, "toLower(node.name) CONTAINS $search_query")
 
+            self.logger.info(f"filter_conditions: {filter_conditions}")
+
             filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
+
+            self.logger.info(f"filter_clause: {filter_clause}")
 
             # Determine traversal based on parent type
             if parent_type in ("kb", "recordGroup"):
-                source_value = "KB" if parent_type == "kb" else "CONNECTOR"
+                # Generate permission cypher calls for RecordGroups and Records
+                permission_call_rg = self._get_permission_role_cypher("recordGroup", "rg", "u")
+                permission_call_record = self._get_permission_role_cypher("record", "record", "u")
+                # Fix double braces in permission calls (they're escaped for f-strings but need single braces for Cypher)
+                permission_call_rg = permission_call_rg.replace("{{", "{").replace("}}", "}")
+                permission_call_record = permission_call_record.replace("{{", "{").replace("}}", "}")
+                
                 query = f"""
                 MATCH (parent:RecordGroup {{id: $parent_id}})
                 MATCH (u:User {{id: $user_key}})
 
-                WITH parent, u, (parent.connectorName = 'KB') AS is_kb_parent
+                // ==================== GET ALL NESTED RECORD GROUPS ====================
+                OPTIONAL MATCH (nested_rg:RecordGroup)-[:BELONGS_TO*1..10]->(parent)
 
-                // ==================== GET ALL RECORDS ====================
-                // Use separate CALL blocks to avoid dependent OPTIONAL MATCH issue
-                CALL {{
-                    WITH parent, u, is_kb_parent
-                    // Direct children records
-                    OPTIONAL MATCH (direct_record:Record)-[:BELONGS_TO]->(parent)
-                    WHERE NOT coalesce(direct_record.isDeleted, false)
-                          AND direct_record.orgId = $org_id
-                          AND direct_record.externalParentId IS NULL
-                    RETURN collect(DISTINCT direct_record) AS direct_records
-                }}
+                WITH parent, u, collect(DISTINCT nested_rg) AS nested_rgs
+                WITH parent, u, [parent] + nested_rgs AS all_rgs
 
-                CALL {{
-                    WITH parent, u, is_kb_parent
-                    // Get direct records first, then traverse nested
-                    MATCH (dr:Record)-[:BELONGS_TO]->(parent)
-                    WHERE NOT coalesce(dr.isDeleted, false)
-                          AND dr.orgId = $org_id
-                          AND dr.externalParentId IS NULL
-                    OPTIONAL MATCH (dr)-[:RECORD_RELATION*1..10]->(nested:Record)
-                    WHERE NOT coalesce(nested.isDeleted, false) AND nested.orgId = $org_id
-                    RETURN collect(DISTINCT nested) AS nested_records
-                }}
+                // ==================== PROCESS RECORD GROUPS ====================
+                UNWIND all_rgs AS rg
+                WITH rg, u, parent
 
-                WITH parent, u, is_kb_parent, direct_records + nested_records AS all_records_raw
-                WITH parent, u, is_kb_parent, [r IN all_records_raw WHERE r IS NOT NULL] AS all_records
+                // Check permission for record group
+                """ + permission_call_rg + """
 
-                // ==================== GET NESTED RECORD GROUPS ====================
-                OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(parent)
-                WHERE NOT coalesce(child_rg.isDeleted, false)
+                // Filter out record groups with no permission
+                WITH rg, permission_role, u, parent
+                WHERE rg IS NOT NULL AND permission_role IS NOT NULL
 
-                WITH parent, u, is_kb_parent, all_records, collect(DISTINCT child_rg) AS nested_rgs
+                // Get child counts for record group
+                OPTIONAL MATCH (sub_rg:RecordGroup)-[:BELONGS_TO]->(rg)
+                OPTIONAL MATCH (sub_record:Record)-[:BELONGS_TO]->(rg)
+
+                // Calculate children counts BEFORE collect
+                WITH rg, permission_role, u, parent,
+                     count(DISTINCT sub_rg) AS sub_rg_count,
+                     count(DISTINCT sub_record) AS sub_record_count
+
+                // Build record group node
+                WITH parent, u, collect(DISTINCT {{
+                    id: rg.id,
+                    name: rg.groupName,
+                    nodeType: 'recordGroup',
+                    parentId: $parent_id,
+                    source: CASE WHEN rg.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                    connector: rg.connectorName,
+                    connectorId: CASE WHEN rg.connectorName = 'KB' THEN null ELSE rg.connectorId END,
+                    kbId: CASE WHEN rg.connectorName = 'KB' THEN rg.id ELSE null END,
+                    recordType: null,
+                    recordGroupType: rg.groupType,
+                    indexingStatus: null,
+                    createdAt: rg.createdAtTimestamp,
+                    updatedAt: rg.updatedAtTimestamp,
+                    sizeInBytes: null,
+                    mimeType: null,
+                    extension: null,
+                    webUrl: rg.webUrl,
+                    hasChildren: sub_rg_count > 0 OR sub_record_count > 0,
+                    permission_role: permission_role
+                }}) AS rg_nodes
 
                 // ==================== PROCESS RECORDS ====================
-                UNWIND CASE WHEN size(all_records) = 0 THEN [null] ELSE all_records END AS record
-                WITH parent, u, nested_rgs, record
-                WHERE record IS NOT NULL
+                // Get all record groups again for record processing
+                WITH rg_nodes, parent, u
+                // Re-get nested record groups
+                OPTIONAL MATCH (nested_rg2:RecordGroup)-[:BELONGS_TO]->(parent)
+                WITH rg_nodes, parent, u, collect(DISTINCT nested_rg2) AS nested_rgs2
+                WITH rg_nodes, parent, u, [parent] + nested_rgs2 AS all_rgs
+                UNWIND all_rgs AS rg
+                WITH rg_nodes, rg, u
+
+                // Get direct records for this record group
+                OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
+                WHERE record.orgId = $org_id
+                      AND record.externalParentId IS NULL
+
+                // Check permission for each record
+                """ + permission_call_record + """
+
+                // Filter out records with no permission
+                WITH rg_nodes, record, permission_role
+                WHERE record IS NOT NULL AND permission_role IS NOT NULL
 
                 OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(f:File)
                 OPTIONAL MATCH (record)-[:RECORD_RELATION]->(child:Record)
-                WHERE NOT coalesce(child.isDeleted, false)
 
                 // Calculate child count BEFORE collect
-                WITH parent, nested_rgs, record, f,
+                WITH rg_nodes, record, permission_role, f,
                      CASE WHEN f IS NOT NULL AND f.isFile = false THEN 'folder' ELSE 'record' END AS nodeType,
                      count(DISTINCT child) AS child_count
 
                 OPTIONAL MATCH (record_connector:RecordGroup {{id: record.connectorId}})
-                WITH parent, nested_rgs,
+                WITH rg_nodes,
                      collect(DISTINCT {{
                          id: record.id,
                          name: record.recordName,
                          nodeType: nodeType,
                          parentId: record.externalParentId,
-                         source: CASE WHEN record_connector IS NOT NULL AND record_connector.connectorName = 'KB'
-                                      THEN 'KB' ELSE 'CONNECTOR' END,
+                         source: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
                          connector: record.connectorName,
                          connectorId: record.connectorId,
-                         kbId: CASE WHEN record_connector IS NOT NULL AND record_connector.connectorName = 'KB'
-                                    THEN record.connectorId ELSE null END,
+                         kbId: CASE WHEN record.connectorName = 'KB' THEN record.connectorId ELSE null END,
                          recordType: record.recordType,
                          recordGroupType: null,
                          indexingStatus: record.indexingStatus,
@@ -12229,48 +12584,12 @@ class Neo4jProvider(IGraphDBProvider):
                          extension: f.extension,
                          webUrl: record.webUrl,
                          hasChildren: child_count > 0,
-                         previewRenderable: coalesce(record.previewRenderable, true)
+                         previewRenderable: coalesce(record.previewRenderable, true),
+                         permission_role: permission_role
                      }}) AS record_nodes
 
-                // ==================== PROCESS NESTED RECORD GROUPS ====================
-                UNWIND CASE WHEN size(nested_rgs) = 0 THEN [null] ELSE nested_rgs END AS rg
-                WITH record_nodes, rg
-                WHERE rg IS NOT NULL
-
-                OPTIONAL MATCH (sub_rg:RecordGroup)-[:BELONGS_TO]->(rg)
-                WHERE NOT coalesce(sub_rg.isDeleted, false)
-                OPTIONAL MATCH (sub_record:Record)-[:BELONGS_TO]->(rg)
-                WHERE NOT coalesce(sub_record.isDeleted, false)
-
-                // Calculate children counts BEFORE collect
-                WITH record_nodes, rg,
-                     count(DISTINCT sub_rg) AS sub_rg_count,
-                     count(DISTINCT sub_record) AS sub_record_count
-
-                WITH record_nodes,
-                     collect(DISTINCT {{
-                         id: rg.id,
-                         name: rg.groupName,
-                         nodeType: 'recordGroup',
-                         parentId: $parent_id,
-                         source: '{source_value}',
-                         connector: rg.connectorName,
-                         connectorId: CASE WHEN '{source_value}' = 'CONNECTOR' THEN rg.connectorId ELSE null END,
-                         kbId: CASE WHEN '{source_value}' = 'KB' THEN $parent_id ELSE null END,
-                         recordType: null,
-                         recordGroupType: rg.groupType,
-                         indexingStatus: null,
-                         createdAt: rg.createdAtTimestamp,
-                         updatedAt: rg.updatedAtTimestamp,
-                         sizeInBytes: null,
-                         mimeType: null,
-                         extension: null,
-                         webUrl: rg.webUrl,
-                         hasChildren: sub_rg_count > 0 OR sub_record_count > 0
-                     }}) AS rg_nodes
-
                 // ==================== COMBINE AND FILTER ====================
-                WITH record_nodes + rg_nodes AS all_nodes_raw
+                WITH rg_nodes + record_nodes AS all_nodes_raw
                 WITH [n IN all_nodes_raw WHERE n.id IS NOT NULL] AS all_nodes
 
                 // Deduplicate
@@ -12312,6 +12631,10 @@ class Neo4jProvider(IGraphDBProvider):
                     total: size(sorted_nodes)
                 }} AS result
                 """
+                # Fix any remaining double braces in the query (from f-string escaping)
+                # But first, format the filter_clause since concatenation broke f-string context
+                query = query.replace("{filter_clause}", filter_clause)
+                query = query.replace("{{", "{").replace("}}", "}")
             elif parent_type in ("folder", "record"):
                 query = f"""
                 MATCH (parent:Record {{id: $parent_id}})
