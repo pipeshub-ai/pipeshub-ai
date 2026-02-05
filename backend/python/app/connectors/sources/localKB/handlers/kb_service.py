@@ -425,13 +425,12 @@ class KnowledgeBaseService:
                 kb_id=kb_id
            )
 
-            if result and result.get("success"):
+            if result:
                 self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by {user_name}")
                 return {
                     "success": True,
                     "reason": "Knowledge base and all contents deleted successfully",
-                    "code": 200,
-                    "eventData": result.get("eventData")
+                    "code": 200
                 }
             else:
                 self.logger.warning(f"⚠️ Failed to delete knowledge base {kb_id}")
