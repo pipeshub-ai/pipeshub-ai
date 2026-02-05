@@ -1126,6 +1126,49 @@ class BaseArangoService:
             )
             raise
 
+    async def _get_record_paths_batch(self, record_ids: List[str]) -> Dict[str, str]:
+        """
+        Resolve full hierarchical path for multiple records by traversing PARENT_CHILD edges.
+        Used when fileRecord.path is not stored (e.g. Nextcloud). Returns record_id -> path.
+        """
+        if not record_ids:
+            return {}
+        try:
+            query = """
+            FOR record_id IN @record_ids
+                LET start_record = DOCUMENT(@records_collection, record_id)
+                FILTER start_record != null
+                LET ancestors = (
+                    FOR v, e, p IN 1..100 INBOUND start_record
+                        GRAPH @graph_name
+                        FILTER e.relationshipType == 'PARENT_CHILD'
+                        FILTER v.externalRecordId == p.vertices[LENGTH(p.vertices)-2].externalParentId
+                        RETURN v.recordName
+                )
+                LET path_order = REVERSE(ancestors)
+                LET full_path_list = APPEND(path_order, start_record.recordName)
+                LET clean_path = (
+                    FOR name IN full_path_list
+                    FILTER name != null AND name != ""
+                    RETURN name
+                )
+                LET path = CONCAT_SEPARATOR('/', clean_path)
+                RETURN { record_id, path }
+            """
+            cursor = self.db.aql.execute(
+                query,
+                bind_vars={
+                    "record_ids": record_ids,
+                    "records_collection": CollectionNames.RECORDS.value,
+                    "graph_name": GraphNames.KNOWLEDGE_GRAPH.value,
+                },
+            )
+            result = list(cursor)
+            return {item["record_id"]: item["path"] for item in result if item.get("path")}
+        except Exception as e:
+            self.logger.warning(f"Failed to resolve record paths in batch: {str(e)}")
+            return {}
+
     async def get_records(
         self,
         user_id: str,
@@ -1612,7 +1655,8 @@ class BaseArangoService:
                                 mimeType: file.mimeType,
                                 sizeInBytes: file.sizeInBytes,
                                 isFile: file.isFile,
-                                webUrl: file.webUrl
+                                webUrl: file.webUrl,
+                                path: file.path
                             }}
                     ) : []
                 )
@@ -2348,6 +2392,17 @@ class BaseArangoService:
             records = list(db.aql.execute(main_query, bind_vars=main_bind_vars))
             count = list(db.aql.execute(count_query, bind_vars=count_bind_vars))[0]
             available_filters = list(db.aql.execute(filters_query, bind_vars=filters_bind_vars))[0]
+
+            # Resolve path at runtime for records where fileRecord.path is None (e.g. Nextcloud)
+            record_ids_needing_path = [
+                r["id"] for r in records
+                if r.get("fileRecord") and r["fileRecord"].get("path") is None
+            ]
+            if record_ids_needing_path:
+                paths_map = await self._get_record_paths_batch(record_ids_needing_path)
+                for r in records:
+                    if r.get("fileRecord") and r["id"] in paths_map:
+                        r["fileRecord"]["path"] = paths_map[r["id"]]
 
             # Ensure filter structure
             if not available_filters:
@@ -12991,6 +13046,17 @@ class BaseArangoService:
             records = list(db.aql.execute(main_query, bind_vars=main_bind_vars))
             count = list(db.aql.execute(count_query, bind_vars=count_bind_vars))[0]
             available_filters = list(db.aql.execute(filters_query, bind_vars=filters_bind_vars))[0]
+
+            # Resolve path at runtime for records where fileRecord.path is None (e.g. Nextcloud)
+            record_ids_needing_path = [
+                r["id"] for r in records
+                if r.get("fileRecord") and r["fileRecord"].get("path") is None
+            ]
+            if record_ids_needing_path:
+                paths_map = await self._get_record_paths_batch(record_ids_needing_path)
+                for r in records:
+                    if r.get("fileRecord") and r["id"] in paths_map:
+                        r["fileRecord"]["path"] = paths_map[r["id"]]
 
             # Ensure filter structure
             if not available_filters:

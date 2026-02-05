@@ -763,7 +763,7 @@ class NextcloudConnector(BaseConnector):
                 is_file=is_file,
                 preview_renderable=is_file,
                 extension=get_file_extension(display_name) if is_file else "",
-                path=path,
+                path=None,  # Path derived at runtime via parent-child graph (get_record_path)
                 mime_type=get_mimetype_enum_for_nextcloud(content_type, is_collection),
                 etag=etag,
                 ctag="",
@@ -1509,9 +1509,12 @@ class NextcloudConnector(BaseConnector):
                                                             await self._handle_record_updates(parent_update)
                                                             self.logger.debug(f"✅ [Incremental Sync] Updated parent folder: {parent_path}")
 
-                                                        # Cache the parent
-                                                        if parent_update.record.path:
-                                                            clean_path = parent_update.record.path.rstrip('/')
+                                                        # Cache the parent (path may be dynamic from get_record_path)
+                                                        parent_path_str = parent_update.record.path
+                                                        if parent_path_str is None:
+                                                            parent_path_str = await tx_store.get_record_path(parent_update.record.id)
+                                                        if parent_path_str:
+                                                            clean_path = parent_path_str.rstrip('/')
                                                             path_to_external_id[clean_path] = parent_update.record.external_record_id
                                                             self.logger.debug(f"📌 [Incremental Sync] Cached parent: {clean_path} -> {parent_update.record.external_record_id}")
 
@@ -1592,11 +1595,21 @@ class NextcloudConnector(BaseConnector):
                 detail="Data source not initialized"
             )
 
-        # Get file record to get path
+        # Get file record and path (path may be stored or derived from parent-child graph)
         async with self.data_store_provider.transaction() as tx_store:
             file_record = await tx_store.get_file_record_by_id(record.id)
+            path = None
+            if file_record:
+                path = await tx_store.get_record_path(record.id)
+        # Fallback: root-level or when graph path unavailable, use record name (WebDAV path = single segment)
+        if file_record and (path is None or path.strip() == ""):
+            path = record.record_name or file_record.record_name
 
-        if not file_record or not file_record.path:
+        if not file_record or not path:
+            self.logger.debug(
+                "stream_record path resolution failed: record_id=%s file_record=%s path=%s",
+                record.id, file_record is not None, path,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.NOT_FOUND.value,
                 detail="File not found or access denied"
@@ -1609,11 +1622,10 @@ class NextcloudConnector(BaseConnector):
                 detail="Cannot download folders"
             )
 
-        # Extract relative path from full WebDAV path
-        path = file_record.path
+        # Extract relative path from full WebDAV path (path is already relative to user root)
         relative_path = path
-        if '/files/' in path:
-            parts = path.split('/files/')
+        if relative_path and '/files/' in relative_path:
+            parts = relative_path.split('/files/')
             if len(parts) > 1:
                 user_and_path = parts[1]
                 path_parts = user_and_path.split('/', 1)
@@ -1621,8 +1633,8 @@ class NextcloudConnector(BaseConnector):
                     relative_path = path_parts[1]
                 else:
                     relative_path = ''
-        else:
-            relative_path = path.lstrip('/')
+        elif relative_path:
+            relative_path = relative_path.lstrip('/')
 
         # Download file using authenticated WebDAV client
         try:
@@ -1866,21 +1878,24 @@ class NextcloudConnector(BaseConnector):
         for record in record_results:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(
-                        f"{CollectionNames.RECORDS.value}/{record.id}"
-                    )
-
+                    user_with_permission = await tx_store.get_first_user_with_permission_to_node(record.id, CollectionNames.RECORDS.value)
                     file_record = await tx_store.get_file_record_by_id(record.id)
+                    path = None
+                    if file_record:
+                        path = await tx_store.get_record_path(record.id)
 
-                if not user_with_permission or not file_record or not file_record.path:
+                if file_record and (path is None or path.strip() == ""):
+                    path = record.record_name or file_record.record_name
+
+                if not user_with_permission or not file_record or not path:
                     failed_count += 1
                     continue
 
                 async with self.rate_limiter:
                     response = await self.data_source.list_directory(
                         user_id=user_with_permission.source_user_id,
-                        path=file_record.path,
-                        depth="0"
+                        path=path,
+                        depth=0,
                     )
 
                 if not is_response_successful(response):

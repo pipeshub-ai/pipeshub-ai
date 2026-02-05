@@ -54,6 +54,13 @@ class ArangoTransactionStore(TransactionStore):
     async def get_record_by_path(self, connector_id: str, path: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_path(connector_id, path, transaction=self.txn)
 
+    async def get_record_path(self, record_id: str) -> Optional[str]:
+        """
+        Get full hierarchical path for a record by traversing parent-child edges.
+        BaseArgoService is deprecated this is just a placeholder for now.
+        """
+        return ""
+
     async def get_record_by_key(self, key: str) -> Optional[Record]:
         return await self.arango_service.get_record_by_id(key, transaction=self.txn)
 
@@ -121,8 +128,12 @@ class ArangoTransactionStore(TransactionStore):
     async def delete_record_by_external_id(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.arango_service.delete_record_by_external_id(connector_id, external_id, user_id)
 
+    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        return await self.arango_service.delete_parent_child_edge_to_record(record_id, transaction=self.txn)
+
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.arango_service.remove_user_access_to_record(connector_id, external_id, user_id)
+
 
     async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         return await self.arango_service.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)

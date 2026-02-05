@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     EntityRelations,
     MimeTypes,
     OriginTypes,
@@ -233,6 +234,14 @@ class DataSourceEntitiesProcessor:
                     relation_type = RecordRelations.ATTACHMENT.value
                 else:
                     relation_type = RecordRelations.PARENT_CHILD.value
+                # Nextcloud only: ensure single parent (path is derived from parent chain). Other connectors may have multiple PARENT_CHILD.
+                if relation_type == RecordRelations.PARENT_CHILD.value and getattr(record, "connector_name", None) == Connectors.NEXTCLOUD:
+                    deleted = await tx_store.delete_parent_child_edge_to_record(record.id)
+                    if deleted:
+                        self.logger.debug(
+                            "Removed %d existing PARENT_CHILD edge(s) to %s before linking new parent (Nextcloud)",
+                            deleted, record.id,
+                        )
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
     async def _handle_related_external_records(
