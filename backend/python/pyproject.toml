@@ -90,7 +90,7 @@ dependencies = [
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "pdf2image==1.17.0",
-    "protobuf==3.20.3",
+    "protobuf==5.29.6",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
     "PyMuPDF==1.24.14",
