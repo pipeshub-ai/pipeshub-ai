@@ -50,13 +50,15 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
 
-        if virtual_record_id not in virtual_record_id_to_result:
+        if virtual_record_id and virtual_record_id not in virtual_record_id_to_result:
             records_to_fetch.add(virtual_record_id)
 
     await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map) for virtual_record_id in records_to_fetch])
 
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
+        if not virtual_record_id:
+            continue
         meta = result.get("metadata")
 
         if virtual_record_id not in adjacent_chunks:
