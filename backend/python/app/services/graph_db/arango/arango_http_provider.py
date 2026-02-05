@@ -7,6 +7,7 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 All operations are non-blocking and use aiohttp for async I/O.
 """
 import asyncio
+from collections import defaultdict
 import unicodedata
 import uuid
 from logging import Logger
@@ -2478,6 +2479,367 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
+            return []
+
+    async def get_records_by_record_group(
+        self,
+        record_group_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all records belonging to a record group up to a specified depth.
+        Includes:
+        - Records directly in the group
+        - Records in nested record groups up to depth levels
+
+        Args:
+            record_group_id: Record group ID
+            connector_id: Connector ID (all records in group are from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children and nested record groups (-1 = unlimited,
+                   0 = only direct records, 1 = direct + 1 level nested, etc.)
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving records for record group {record_group_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            # For depth=0, we set max_depth=0 so nested groups traversal returns nothing
+            max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
+
+            # Handle limit/offset for pagination
+            # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored. "
+                    "Provide a limit value to use pagination."
+                )
+
+            collection_to_types = defaultdict(list)
+            for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
+                collection_to_types[collection].append(record_type)
+
+            # Build dynamic typeDoc conditions
+            type_doc_conditions = []
+            bind_vars = {
+                "record_group_id": record_group_id,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "max_depth": max_depth,
+            }
+
+            folder_filter = '''
+                LET targetDoc = FIRST(
+                    FOR v IN 1..1 OUTBOUND record._id @@is_of_type
+                        LIMIT 1
+                        RETURN v
+                )
+
+                // If the record connects to a file collection, verify isFile == true
+                // For any other type (webpage, ticket, etc.), automatically accept
+                LET isValidRecord = (
+                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
+                        ? targetDoc.isFile == true
+                        : true  // Not a file (webpage, ticket, etc.) - accept it
+                )
+
+                FILTER isValidRecord
+            '''
+
+            # Build dynamic typeDoc conditions
+            for collection, record_types in collection_to_types.items():
+                if len(record_types) == 1:
+                    type_check = f"record.recordType == @type_{record_types[0].lower()}"
+                    bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
+                else:
+                    type_checks = []
+                    for rt in record_types:
+                        type_checks.append(f"record.recordType == @type_{rt.lower()}")
+                        bind_vars[f"type_{rt.lower()}"] = rt
+                    type_check = " || ".join(type_checks)
+
+                condition = f"""({type_check}) ? (
+                        FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                            FILTER edge._from == record._id
+                            LET doc = DOCUMENT(edge._to)
+                            FILTER doc != null
+                            RETURN doc
+                    )[0]"""
+                type_doc_conditions.append(condition)
+
+            type_doc_expr = " :\n                    ".join(type_doc_conditions)
+            if type_doc_expr:
+                type_doc_expr += " :\n                    null"
+            else:
+                type_doc_expr = "null"
+
+            # Main query: Unified traversal approach
+            # Collect all record groups (starting + nested) then get records from all groups
+            query = f"""
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+
+            // Collect all record groups: starting group + nested groups up to max_depth
+            // When max_depth is 0, only include the starting record group
+            // When max_depth > 0, traverse nested groups (1..@max_depth)
+            LET allRecordGroups = @max_depth > 0 ? UNION_DISTINCT(
+                [recordGroup],
+                FOR nestedRg, rgEdge, path IN 1..@max_depth INBOUND recordGroup._id @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", nestedRg)
+                    FILTER nestedRg.orgId == @org_id OR nestedRg.orgId == null
+                    RETURN nestedRg
+            ) : [recordGroup]
+
+            // Get all records from all record groups in a single unified traversal
+            // Using OPTIONS for better performance with uniqueVertices
+            // Note: A record could be connected to multiple record groups, so we need deduplication
+            LET allRecordsRaw = (
+                FOR rg IN allRecordGroups
+                    FOR record, edge IN 1..1 INBOUND rg._id @@inherit_permissions
+                        OPTIONS {{bfs: true, uniqueVertices: "global"}}
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        FILTER record.connectorId == @connector_id
+                        FILTER record.isDeleted != true
+                        FILTER record.orgId == @org_id OR record.orgId == null
+                        FILTER record.origin == "CONNECTOR"
+                        {folder_filter}
+                        RETURN record
+            )
+
+            // Deduplicate records by _id (equivalent to UNION_DISTINCT in original)
+            LET allRecords = (
+                FOR record IN allRecordsRaw
+                    COLLECT recordId = record._id INTO groups
+                    RETURN groups[0].record
+            )
+
+            // Sort and paginate
+            FOR record IN allRecords
+                SORT record._key
+                {limit_clause}
+
+                LET typeDoc = (
+                    {type_doc_expr}
+                )
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
+            """
+
+            bind_vars.update({
+                "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            })
+
+            if limit is not None:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Convert to typed records
+            typed_records = []
+            for result in results:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for record group {record_group_id}, connector {connector_id}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by record group {record_group_id}, connector {connector_id}: {str(e)}",
+                exc_info=True
+            )
+            return []
+
+    async def get_records_by_parent_record(
+        self,
+        parent_record_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        include_parent: bool = True,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all child records of a parent record (folder) up to a specified depth.
+        Uses graph traversal on recordRelations edge collection.
+
+        Args:
+            parent_record_id: Record ID of the parent (folder)
+            connector_id: Connector ID (all records should be from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
+                   1 = direct children, 2 = children + grandchildren, etc.)
+            include_parent: Whether to include the parent record itself
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving child records for parent {parent_record_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"include_parent: {include_parent}, limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Early return if depth=0 and include_parent=false (nothing to return)
+            if depth == 0 and not include_parent:
+                return []
+
+            # Handle limit/offset for pagination
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored."
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            # For depth=0, we set max_depth=0 so the child traversal returns nothing
+            max_depth = 100 if depth == -1 else depth
+
+            bind_vars = {
+                "record_id": f"{CollectionNames.RECORDS.value}/{parent_record_id}",
+                "max_depth": max_depth,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "include_parent": include_parent,
+            }
+
+            if limit is not None:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            # Single unified query that handles all depth cases
+            # When max_depth=0, the child traversal (1..@max_depth) returns empty
+            # When include_parent=false, parentResult is empty
+            query = f"""
+            LET startRecord = DOCUMENT(@record_id)
+            FILTER startRecord != null
+
+            // Get parent record with its typed record if include_parent is true
+            LET parentResult = @include_parent ? (
+                LET parentTypedRecord = FIRST(
+                    FOR rec IN 1..1 OUTBOUND startRecord {CollectionNames.IS_OF_TYPE.value}
+                        LIMIT 1
+                        RETURN rec
+                )
+                // Only return parent if it matches filters and has typed record
+                FILTER parentTypedRecord != null
+                FILTER startRecord.connectorId == @connector_id
+                FILTER startRecord.orgId == @org_id OR startRecord.orgId == null
+                FILTER startRecord.isDeleted != true
+                RETURN {{
+                    record: startRecord,
+                    typedRecord: parentTypedRecord,
+                    depth: 0
+                }}
+            ) : []
+
+            // Get all children using graph traversal
+            // When max_depth=0, this returns empty (1..0 is invalid range)
+            LET childResults = @max_depth > 0 ? (
+                FOR v, e, p IN 1..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
+                    OPTIONS {{bfs: true, uniqueVertices: "global"}}
+
+                    FILTER v.connectorId == @connector_id
+                    FILTER v.orgId == @org_id OR v.orgId == null
+                    FILTER v.isDeleted != true
+
+                    LET typedRecord = FIRST(
+                        FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
+                            LIMIT 1
+                            RETURN rec
+                    )
+
+                    FILTER typedRecord != null
+
+                    RETURN {{
+                        record: v,
+                        typedRecord: typedRecord,
+                        depth: LENGTH(p.vertices) - 1
+                    }}
+            ) : []
+
+            // Combine parent and children
+            LET allResults = APPEND(parentResult, childResults)
+
+            // Sort by depth then by key, and apply pagination
+            FOR result IN allResults
+                SORT result.depth, result.record._key
+                {limit_clause}
+                RETURN result
+            """
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Convert to typed records
+            typed_records = []
+            for result in results:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typedRecord")
+                )
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for parent record {parent_record_id} with depth {depth}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by parent record {parent_record_id}: {str(e)}",
+                exc_info=True
+            )
             return []
 
     async def get_documents_by_status(
@@ -15223,6 +15585,111 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
             return []
+
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[dict]: The next queued record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding next QUEUED duplicate record for record {record_id}"
+            )
+
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                record_query,
+                bind_vars={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            ref_record = None
+            if results:
+                try:
+                    ref_record = results[0]
+                except (IndexError, StopIteration):
+                    pass
+
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
+                return None
+
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
+
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                return None
+
+            # Find the first queued duplicate record directly from RECORDS collection
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
+                LIMIT 1
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            queued_record = None
+            if results:
+                try:
+                    queued_record = results[0]
+                except (IndexError, StopIteration):
+                    pass
+
+            if queued_record:
+                self.logger.info(
+                    f"✅ Found QUEUED duplicate record: {queued_record.get('_key')}"
+                )
+                return dict(queued_record)
+
+            self.logger.info("✅ No QUEUED duplicate record found")
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to find next queued duplicate: {str(e)}"
+            )
+            return None
 
     async def copy_document_relationships(
         self,
