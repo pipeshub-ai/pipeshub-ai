@@ -1369,23 +1369,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Dict:
         """
         Reindex a single record with permission checks and event publishing.
-        If the record is a folder and depth > 0, also reindex children up to specified depth.
+        Always reindexes with depth 100 (including all children) via batch reindex.
 
         Args:
             record_id: Record ID to reindex
             user_id: External user ID
             org_id: Organization ID
             request: Optional request (unused in provider; for signature compatibility)
-            depth: Depth for children (0 = only this record, -1 = unlimited/max 100)
+            depth: Depth for children (always 100 from router, normalized to MAX_REINDEX_DEPTH if needed)
 
         Returns:
             Dict: success, recordId, recordName, connector, eventPublished, userRole; or error code/reason
         """
         try:
-            if depth == -1:
+            # Depth is always 100 from router, so we always use batch reindex
+            # Normalize depth to MAX_REINDEX_DEPTH if it's -1 or exceeds limit
+            if depth == -1 or depth > MAX_REINDEX_DEPTH:
                 depth = MAX_REINDEX_DEPTH
-            elif depth < 0:
-                depth = 0
+            
             record = await self.get_document(record_id, CollectionNames.RECORDS.value)
             if not record:
                 return {"success": False, "code": 404, "reason": f"Record not found: {record_id}"}
@@ -1440,39 +1441,27 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # Get file record for event payload
             file_record = await self.get_document(record_id, CollectionNames.FILES.value) if rec.get("recordType") == "FILE" else await self.get_document(record_id, CollectionNames.MAILS.value)
 
-            # Determine if we should use batch reindex (depth > 0)
-            use_batch_reindex = depth != 0
-
             # Reset indexing status to QUEUED before reindexing
             await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
+            # Since depth is always 100, we always use batch reindex (connector reindex event)
             try:
-                if use_batch_reindex:
-                    # Batch reindex - connector reindex event
-                    connector_normalized = connector_name.replace(" ", "").lower()
-                    event_type = f"{connector_normalized}.reindex"
+                connector_normalized = connector_name.replace(" ", "").lower()
+                event_type = f"{connector_normalized}.reindex"
 
-                    payload = {
-                        "orgId": org_id,
-                        "recordId": record_id,
-                        "depth": depth,
-                        "connectorId": connector_id
-                    }
+                payload = {
+                    "orgId": org_id,
+                    "recordId": record_id,
+                    "depth": depth,
+                    "connectorId": connector_id
+                }
 
-                    event_data = {
-                        "eventType": event_type,
-                        "topic": "sync-events",
-                        "payload": payload
-                    }
-                else:
-                    # Single record reindex - use existing newRecord event
-                    payload = await self._create_reindex_event_payload(record, file_record, user_id, request, record_id)
-                    event_data = {
-                        "eventType": "newRecord",
-                        "topic": "record-events",
-                        "payload": payload
-                    }
+                event_data = {
+                    "eventType": event_type,
+                    "topic": "sync-events",
+                    "payload": payload
+                }
 
                 return {
                     "success": True,
@@ -1481,7 +1470,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
                     "userRole": user_role,
                     "eventData": event_data,
-                    "useBatchReindex": use_batch_reindex
+                    "useBatchReindex": True
                 }
 
             except Exception as event_error:
@@ -4058,12 +4047,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: Optional[str] = None,
     ) -> int:
         """
-        Find all QUEUED duplicate records with the same file md5 hash and update their status.
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
             new_indexing_status (str): The new indexing status to set
-            virtual_record_id (Optional[str]): Optional virtual record ID to set
+            virtual_record_id (Optional[str]): The virtual record ID to set on duplicates
             transaction (Optional[str]): Optional transaction ID
 
         Returns:
@@ -4074,61 +4064,64 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file._key == @record_id
-                RETURN file
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
             """
 
             results = await self.http_client.execute_aql(
-                file_query,
+                record_query,
                 bind_vars={"record_id": record_id},
                 txn_id=transaction
             )
 
-            file_doc = None
+            ref_record = None
             if results:
                 try:
-                    file_doc = results[0]
+                    ref_record = results[0]
                 except (IndexError, StopIteration):
                     pass
 
-            if not file_doc:
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records
+            # Find all queued duplicate records directly from RECORDS collection
             query = f"""
-            FOR file IN {CollectionNames.FILES.value}
-                FILTER file.md5Checksum == @md5_checksum
-                AND file.sizeInBytes == @size_in_bytes
-                AND file._key != @record_id
-                LET record = (
-                    FOR r IN {CollectionNames.RECORDS.value}
-                        FILTER r._key == file._key
-                        AND r.indexingStatus == @queued_status
-                        RETURN r
-                )[0]
-                FILTER record != null
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
                 RETURN record
             """
 
             results = await self.http_client.execute_aql(
                 query,
-                bind_vars={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                },
+                bind_vars=bind_vars,
                 txn_id=transaction
             )
 
@@ -8639,24 +8632,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def _create_deleted_record_event_payload(
         self,
         record: Dict,
-        file_record: Optional[Dict],
-    ) -> Optional[Dict]:
-        """Create event payload for deleted record."""
+        file_record: Optional[Dict] = None
+    ) -> Dict:
+        """Create deleted record event payload matching Node.js format"""
         try:
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
             return {
-                "recordId": record.get("_key"),
-                "recordName": record.get("recordName"),
-                "connectorId": record.get("connectorId"),
                 "orgId": record.get("orgId"),
-                "createdBy": record.get("createdBy"),
-                "mimeType": record.get("mimeType"),
-                "path": file_record.get("path") if file_record else None,
-                "webUrl": record.get("webUrl"),
-                "sizeInBytes": file_record.get("sizeInBytes") if file_record else 0,
+                "recordId": record.get("_key"),
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "summaryDocumentId": record.get("summaryDocumentId"),
+                "virtualRecordId": record.get("virtualRecordId"),
             }
         except Exception as e:
-            self.logger.error(f"Error creating delete event payload: {e}")
-            return None
+            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            return {}
 
     async def _publish_kb_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
         """Publish KB-specific deletion event"""
@@ -14771,7 +14769,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.info(f"🚀 Checking record access for user {user_id}, record {record_id}")
 
-            from app.config.constants.arangodb import RecordTypes
+            # Get user document to verify user exists
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            # Get user's accessible apps and extract connector IDs (_key)
+            # Note: _get_user_app_ids accepts external userId and converts to user_key internally
+            user_apps_ids = await self._get_user_app_ids(user_id)
+
+            # Build app record filter for connector records
+            app_record_filter = 'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
 
             # First check access and get permission paths
             access_query = f"""
@@ -14786,8 +14795,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN k
             )
             LET directAccessPermissionEdge = (
-                FOR records, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
-                FILTER records._key == @recordId
+                FOR record, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
                 RETURN {{
                     type: 'DIRECT',
                     source: userDoc,
@@ -14797,8 +14807,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET groupAccessPermissionEdge = (
                 FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
                 FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                FOR records, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
-                FILTER records._key == @recordId
+                FOR record, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
                 RETURN {{
                     type: 'GROUP',
                     source: group,
@@ -14817,6 +14828,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 // Hop 3: RecordGroup -> Record
                 FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                 FILTER record._key == @recordId
+                {app_record_filter}
 
                 RETURN {{
                     type: 'RECORD_GROUP',
@@ -14839,6 +14851,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 // Hop 4: Child RecordGroup -> Record (belongs_to)
                 FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                     FILTER record._key == @recordId
+                    {app_record_filter}
 
                     RETURN {{
                         type: 'NESTED_RECORD_GROUP',
@@ -14856,6 +14869,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         // Only process if final vertex is the target record
                         FILTER record._key == @recordId
                         FILTER IS_SAME_COLLECTION("records", record)
+                        {app_record_filter}
 
                         LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
 
@@ -14868,8 +14882,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             LET orgAccessPermissionEdge = (
                 FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
-                FOR records, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
-                FILTER records._key == @recordId
+                FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
                 RETURN {{
                     type: 'ORGANIZATION',
                     source: org,
@@ -14887,6 +14902,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER record._key == @recordId
                             FILTER IS_SAME_COLLECTION("records", record)
+                            {app_record_filter}
 
                             LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
 
@@ -14987,6 +15003,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "userId": user_id,
                 "orgId": org_id,
                 "recordId": record_id,
+                "user_apps_ids": user_apps_ids,
                 "@users": CollectionNames.USERS.value,
                 "records": CollectionNames.RECORDS.value,
                 "files": CollectionNames.FILES.value,
@@ -15765,24 +15782,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return False
 
-    async def _get_user_app_ids(self, user_id: str) -> List[str]:
-        """Gets a list of accessible app connector IDs for a user."""
-        try:
-            query = f"""
-            FOR app IN OUTBOUND
-                '{CollectionNames.USERS.value}/{user_id}'
-                {CollectionNames.USER_APP_RELATION.value}
-            RETURN app
-            """
-            user_app_docs = await self.execute_query(query)
-            # Filter out None values and apps without _key before accessing _key
-            user_apps = [app['_key'] for app in (user_app_docs or []) if app and app.get('_key')]
-            self.logger.debug(f"User has access to {len(user_apps)} apps: {user_apps}")
-            return user_apps
-        except Exception as e:
-            self.logger.error(f"Failed to get user app ids: {str(e)}")
-            raise
-
     async def get_accessible_records(
         self,
         user_id: str,
@@ -15813,8 +15812,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return []
 
             user_key = user.get('_key')
-            # Get user's accessible app connector ids
-            user_apps_ids = await self._get_user_app_ids(user_key)
+            # Get user's accessible app connector ids (function expects external userId, not user_key)
+            user_apps_ids = await self._get_user_app_ids(user_id)
 
             # Extract filters
             filters = filters or {}
@@ -16239,3 +16238,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
             raise
 
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: Optional[List[str]] = None,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get all record keys that have the given virtualRecordId.
+        Optionally filter by a list of record IDs.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to look up
+            accessible_record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of record keys that match the criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Base query
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.virtualRecordId == @virtual_record_id
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+                AND record._key IN @accessible_record_ids
+                """
+
+            query += """
+                RETURN record._key
+            """
+
+            bind_vars = {"virtual_record_id": virtual_record_id}
+            if accessible_record_ids:
+                bind_vars["accessible_record_ids"] = accessible_record_ids
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Extract record keys from results
+            record_keys = [result for result in results if result]
+
+            self.logger.info(
+                "✅ Found %d records with virtualRecordId %s",
+                len(record_keys),
+                virtual_record_id
+            )
+            return record_keys
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error finding records with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return []
