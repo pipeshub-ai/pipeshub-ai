@@ -4,7 +4,6 @@ from arango import ArangoClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
-from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
@@ -28,12 +27,6 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
-<<<<<<< HEAD
-from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
-=======
-from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
->>>>>>> 03978ed0 (Remove Unused redis code)
 from app.services.vector_db.const.const import (
     VECTOR_DB_COLLECTION_NAME,
     VECTOR_DB_SERVICE_NAME,
