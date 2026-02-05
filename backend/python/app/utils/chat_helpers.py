@@ -1,3 +1,4 @@
+import asyncio
 from collections import defaultdict
 from typing import Any, Dict, List, Tuple, Union
 from uuid import uuid4
@@ -44,13 +45,19 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
     sorted_new_type_results = sorted(new_type_results, key=lambda x: not x.get("metadata", {}).get("isBlockGroup", False))
     rows_to_be_included = defaultdict(list)
+
+    records_to_fetch = set()
+    for result in sorted_new_type_results:
+        virtual_record_id = result["metadata"].get("virtualRecordId")
+
+        if virtual_record_id not in virtual_record_id_to_result:
+            records_to_fetch.add(virtual_record_id)
+
+    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map) for virtual_record_id in records_to_fetch])
+
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
-
-        if virtual_record_id not in virtual_record_id_to_result:
-            await get_record(meta,virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map)
-
 
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
@@ -449,7 +456,7 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(meta: Dict[str, Any],virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
