@@ -4,7 +4,6 @@ from arango import ArangoClient  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import ExtensionTypes
-from app.config.constants.service import config_node_constants
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.events.events import EventProcessor
 from app.events.processor import Processor
@@ -28,7 +27,6 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
-from app.services.scheduler.redis_scheduler.redis_scheduler import RedisScheduler
 from app.services.vector_db.const.const import (
     VECTOR_DB_COLLECTION_NAME,
     VECTOR_DB_SERVICE_NAME,
@@ -36,7 +34,6 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.vector_db_factory import VectorDBFactory
 from app.utils.logger import create_logger
-from app.utils.redis_util import build_redis_url
 
 
 # Note - Cannot make this a singleton as it is used in the container and DI does not work with static methods
@@ -178,26 +175,6 @@ class ContainerUtils:
         )
         # Add any necessary async initialization
         return event_processor
-
-    async def create_redis_scheduler(
-        self,
-        logger: Logger,
-        config_service: ConfigurationService,
-    ) -> RedisScheduler:
-        """Async factory for RedisScheduler"""
-        redis_config = await config_service.get_config(
-            config_node_constants.REDIS.value
-        )
-        if redis_config and isinstance(redis_config, dict):
-            # Build Redis URL with password if provided
-            redis_url = build_redis_url(redis_config)
-        redis_scheduler = RedisScheduler(
-            redis_url=redis_url,
-            logger=logger,
-            config_service=config_service,
-            delay_hours=1
-        )
-        return redis_scheduler
 
     async def create_retrieval_service(
         self,
