@@ -6555,41 +6555,6 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
             raise
 
-    async def delete_knowledge_base(
-        self,
-        kb_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """Delete a knowledge base and all its contents"""
-        try:
-            self.logger.info(f"🚀 Deleting knowledge base {kb_id}")
-
-            # Delete all records, folders, and relationships
-            query = """
-            MATCH (kb:RecordGroup {id: $kb_id})
-            OPTIONAL MATCH (kb)<-[:BELONGS_TO]-(record:Record)
-            OPTIONAL MATCH (record)-[*]-(related)
-            DETACH DELETE kb, record, related
-            RETURN count(kb) AS deleted
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"kb_id": kb_id},
-                txn_id=transaction
-            )
-
-            deleted_count = results[0]["deleted"] if results else 0
-
-            if deleted_count > 0:
-                self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully")
-                return {"success": True, "deleted": deleted_count}
-
-            return None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete knowledge base: {str(e)}")
-            raise
 
     async def get_and_validate_folder_in_kb(
         self,
@@ -6911,36 +6876,195 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         kb_id: str,
         folder_id: str,
-        transaction: Optional[str] = None
-    ) -> Optional[Dict]:
-        """Delete a folder and all its contents"""
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Delete a folder with ALL nested content."""
         try:
-            self.logger.info(f"🚀 Deleting folder {folder_id} from KB {kb_id}")
-
-            query = """
-            MATCH (folder:Record {id: $folder_id})-[:BELONGS_TO]->(kb:RecordGroup {id: $kb_id})
-            OPTIONAL MATCH (folder)-[*]-(related)
-            DETACH DELETE folder, related
-            RETURN count(folder) AS deleted
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"folder_id": folder_id, "kb_id": kb_id},
-                txn_id=transaction
-            )
-
-            deleted_count = results[0]["deleted"] if results else 0
-
-            if deleted_count > 0:
-                self.logger.info(f"✅ Folder {folder_id} deleted successfully")
-                return {"success": True, "deleted": deleted_count}
-
-            return None
-
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.FILES.value,
+                        CollectionNames.RECORDS.value,
+                        CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.IS_OF_TYPE.value,
+                    ],
+                )
+            try:
+                # Step 1: Collect inventory - target folder + all nested content
+                inventory_query = """
+                MATCH (target_folder:Record {id: $folder_id})
+                MATCH (target_folder)-[:IS_OF_TYPE]->(target_file:File {isFile: false})
+                
+                // Get all subfolders via RECORD_RELATION traversal (up to 20 levels deep)
+                OPTIONAL MATCH path = (target_folder)-[:RECORD_RELATION*1..20]->(subfolder:Record)
+                WHERE all(rel IN relationships(path) WHERE rel.relationshipType = 'PARENT_CHILD')
+                OPTIONAL MATCH (subfolder)-[:IS_OF_TYPE]->(subfolder_file:File {isFile: false})
+                WHERE subfolder_file IS NOT NULL
+                
+                WITH target_folder, target_file,
+                     collect(DISTINCT subfolder.id) AS all_subfolders
+                
+                WITH target_folder, target_file,
+                     [target_folder.id] + all_subfolders AS all_folders
+                
+                // Get all file records (non-folders) nested in these folders
+                OPTIONAL MATCH path2 = (target_folder)-[:RECORD_RELATION*1..20]->(file_record:Record)
+                WHERE all(rel IN relationships(path2) WHERE rel.relationshipType = 'PARENT_CHILD')
+                OPTIONAL MATCH (file_record)-[:IS_OF_TYPE]->(file_rec_file:File {isFile: true})
+                WHERE file_rec_file IS NOT NULL
+                
+                WITH target_folder, all_folders,
+                     collect(DISTINCT {
+                         record: file_record,
+                         file_record: file_rec_file
+                     }) AS records_with_details,
+                     collect(DISTINCT file_rec_file.id) AS file_record_ids
+                
+                RETURN {
+                    folder_exists: target_folder IS NOT NULL,
+                    target_folder: target_folder.id,
+                    all_folders: all_folders,
+                    subfolders: all_folders[1..],
+                    records_with_details: records_with_details,
+                    file_records: file_record_ids,
+                    total_folders: size(all_folders),
+                    total_subfolders: size(all_folders) - 1,
+                    total_records: size(records_with_details),
+                    total_file_records: size(file_record_ids)
+                } AS inventory
+                """
+                
+                inv_results = await self.client.execute_query(
+                    inventory_query,
+                    parameters={"folder_id": folder_id},
+                    txn_id=txn_id
+                )
+                
+                inventory = inv_results[0]["inventory"] if inv_results else {}
+                
+                if not inventory.get("folder_exists"):
+                    if transaction is None and txn_id:
+                        await self.rollback_transaction(txn_id)
+                    return False
+                
+                records_with_details = inventory.get("records_with_details", [])
+                all_record_keys = [rd["record"]["id"] for rd in records_with_details if rd.get("record")]
+                all_folders = inventory.get("all_folders", [])
+                file_records = inventory.get("file_records", [])
+                
+                # Step 2: Delete edges
+                if all_record_keys or all_folders:
+                    edges_cleanup = """
+                    // Delete RECORD_RELATION edges
+                    MATCH (r1:Record)-[rr:RECORD_RELATION]-(r2:Record)
+                    WHERE r1.id IN $all_ids OR r2.id IN $all_ids
+                    DELETE rr
+                    
+                    // Delete IS_OF_TYPE edges
+                    WITH $all_ids AS all_ids
+                    MATCH (record:Record)-[iot:IS_OF_TYPE]->(:File)
+                    WHERE record.id IN all_ids
+                    DELETE iot
+                    
+                    // Delete BELONGS_TO edges
+                    WITH $all_ids AS all_ids
+                    MATCH (record:Record)-[bt:BELONGS_TO]->(:RecordGroup)
+                    WHERE record.id IN all_ids
+                    DELETE bt
+                    """
+                    
+                    all_ids = all_record_keys + all_folders
+                    await self.client.execute_query(
+                        edges_cleanup,
+                        parameters={"all_ids": all_ids},
+                        txn_id=txn_id
+                    )
+                
+                # Step 3: Delete FILE nodes
+                if file_records:
+                    delete_files = """
+                    MATCH (file:File)
+                    WHERE file.id IN $file_ids
+                    DELETE file
+                    """
+                    await self.client.execute_query(
+                        delete_files,
+                        parameters={"file_ids": file_records},
+                        txn_id=txn_id
+                    )
+                
+                # Step 4: Delete RECORD nodes (files)
+                if all_record_keys:
+                    delete_records = """
+                    MATCH (record:Record)
+                    WHERE record.id IN $record_ids
+                    DELETE record
+                    """
+                    await self.client.execute_query(
+                        delete_records,
+                        parameters={"record_ids": all_record_keys},
+                        txn_id=txn_id
+                    )
+                
+                # Step 5: Delete folder FILE nodes and RECORD nodes (in reverse order)
+                if all_folders:
+                    # Get folder file IDs
+                    ff_query = """
+                    MATCH (folder:Record)-[:IS_OF_TYPE]->(folder_file:File {isFile: false})
+                    WHERE folder.id IN $folder_ids
+                    RETURN collect(folder_file.id) AS folder_file_ids
+                    """
+                    
+                    ff_res = await self.client.execute_query(
+                        ff_query,
+                        parameters={"folder_ids": all_folders},
+                        txn_id=txn_id
+                    )
+                    
+                    folder_file_ids = ff_res[0]["folder_file_ids"] if ff_res else []
+                    
+                    if folder_file_ids:
+                        delete_folder_files = """
+                        MATCH (file:File)
+                        WHERE file.id IN $file_ids
+                        DELETE file
+                        """
+                        await self.client.execute_query(
+                            delete_folder_files,
+                            parameters={"file_ids": folder_file_ids},
+                            txn_id=txn_id
+                        )
+                    
+                    # Delete folder records in reverse order (deepest first)
+                    reversed_folders = list(reversed(all_folders))
+                    delete_folder_records = """
+                    MATCH (folder:Record)
+                    WHERE folder.id IN $folder_ids
+                    DELETE folder
+                    """
+                    await self.client.execute_query(
+                        delete_folder_records,
+                        parameters={"folder_ids": reversed_folders},
+                        txn_id=txn_id
+                    )
+                
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+                
+                self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
+                return True
+                
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+                
         except Exception as e:
             self.logger.error(f"❌ Failed to delete folder: {str(e)}")
-            raise
+            return False
 
     async def find_folder_by_name_in_parent(
         self,
@@ -7801,36 +7925,476 @@ class Neo4jProvider(IGraphDBProvider):
         record_ids: List[str],
         kb_id: str,
         folder_id: Optional[str] = None,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
     ) -> Dict:
-        """Delete multiple records from a knowledge base"""
+        """Delete multiple records."""
         try:
-            self.logger.info(f"🚀 Deleting {len(record_ids)} records from KB {kb_id}")
-
-            query = """
-            MATCH (record:Record)
-            WHERE record.id IN $record_ids
-              AND record.connectorId = $kb_id
-            OPTIONAL MATCH (record)-[*]-(related)
-            DETACH DELETE record, related
-            RETURN count(record) AS deleted
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={"record_ids": record_ids, "kb_id": kb_id},
-                txn_id=transaction
-            )
-
-            deleted_count = results[0]["deleted"] if results else 0
-
+            if not record_ids:
+                return {
+                    "success": True,
+                    "deleted_records": [],
+                    "failed_records": [],
+                    "total_requested": 0,
+                    "successfully_deleted": 0,
+                    "failed_count": 0,
+                }
+            
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.RECORDS.value,
+                        CollectionNames.FILES.value,
+                        CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.IS_OF_TYPE.value,
+                        CollectionNames.BELONGS_TO.value,
+                    ],
+                )
+            
+            try:
+                # Step 1: Validate records
+                validation_query = """
+                UNWIND $record_ids AS rid
+                
+                OPTIONAL MATCH (record:Record {id: rid})
+                
+                WITH rid, record,
+                     record IS NOT NULL AS record_exists,
+                     CASE WHEN record IS NOT NULL THEN coalesce(record.isDeleted, false) <> true ELSE false END AS record_not_deleted
+                
+                // Check KB relationship
+                OPTIONAL MATCH (record)-[kb_rel:BELONGS_TO]->(kb:RecordGroup {id: $kb_id})
+                WHERE record IS NOT NULL
+                
+                // Check folder relationship (if folder_id provided)
+                OPTIONAL MATCH (parent:Record {id: $folder_id})-[folder_rel:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(record)
+                WHERE record IS NOT NULL AND $folder_id IS NOT NULL
+                
+                // Get file record
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+                WHERE record IS NOT NULL
+                
+                WITH rid, record, file,
+                     record_exists AND record_not_deleted AND kb_rel IS NOT NULL AND 
+                     (CASE WHEN $folder_id IS NOT NULL THEN folder_rel IS NOT NULL ELSE true END) AS is_valid
+                
+                RETURN {
+                    record_id: rid,
+                    record: record,
+                    file_record: file,
+                    is_valid: is_valid
+                } AS record_data
+                """
+                
+                val_results = await self.client.execute_query(
+                    validation_query,
+                    parameters={
+                        "record_ids": record_ids,
+                        "kb_id": kb_id,
+                        "folder_id": folder_id
+                    },
+                    txn_id=txn_id
+                )
+                
+                # Separate valid and invalid records
+                valid_records = []
+                invalid_records = []
+                
+                for result in val_results:
+                    record_data = result["record_data"]
+                    if record_data["is_valid"]:
+                        valid_records.append(record_data)
+                    else:
+                        invalid_records.append(record_data)
+                
+                failed_records = [{"record_id": r["record_id"], "reason": "Validation failed"} for r in invalid_records]
+                
+                if not valid_records:
+                    if transaction is None and txn_id:
+                        await self.commit_transaction(txn_id)
+                    return {
+                        "success": True,
+                        "deleted_records": [],
+                        "failed_records": failed_records,
+                        "total_requested": len(record_ids),
+                        "successfully_deleted": 0,
+                        "failed_count": len(failed_records),
+                    }
+                
+                valid_record_ids = [r["record_id"] for r in valid_records]
+                file_record_ids = [r["file_record"]["id"] for r in valid_records if r.get("file_record")]
+                
+                # Step 2: Delete edges
+                edges_cleanup = """
+                UNWIND $record_ids AS record_id
+                
+                // Delete RECORD_RELATION edges
+                OPTIONAL MATCH (r1:Record {id: record_id})-[rr:RECORD_RELATION]-()
+                DELETE rr
+                
+                WITH record_id
+                OPTIONAL MATCH ()-[rr2:RECORD_RELATION]->(r2:Record {id: record_id})
+                DELETE rr2
+                
+                WITH record_id
+                // Delete IS_OF_TYPE edges
+                OPTIONAL MATCH (record:Record {id: record_id})-[iot:IS_OF_TYPE]->()
+                DELETE iot
+                
+                WITH record_id
+                // Delete BELONGS_TO edges
+                OPTIONAL MATCH (record:Record {id: record_id})-[bt:BELONGS_TO]->()
+                DELETE bt
+                """
+                
+                await self.client.execute_query(
+                    edges_cleanup,
+                    parameters={"record_ids": valid_record_ids},
+                    txn_id=txn_id
+                )
+                
+                # Step 3: Delete FILE nodes
+                if file_record_ids:
+                    delete_files = """
+                    MATCH (file:File)
+                    WHERE file.id IN $file_ids
+                    DELETE file
+                    """
+                    await self.client.execute_query(
+                        delete_files,
+                        parameters={"file_ids": file_record_ids},
+                        txn_id=txn_id
+                    )
+                
+                # Step 4: Delete RECORD nodes
+                delete_records_query = """
+                MATCH (record:Record)
+                WHERE record.id IN $record_ids
+                DELETE record
+                """
+                await self.client.execute_query(
+                    delete_records_query,
+                    parameters={"record_ids": valid_record_ids},
+                    txn_id=txn_id
+                )
+                
+                deleted_records = [
+                    {
+                        "record_id": r["record_id"],
+                        "name": r.get("record", {}).get("recordName", "Unknown")
+                    } for r in valid_records
+                ]
+                
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+                
+                return {
+                    "success": True,
+                    "deleted_records": deleted_records,
+                    "failed_records": failed_records,
+                    "total_requested": len(record_ids),
+                    "successfully_deleted": len(deleted_records),
+                    "failed_count": len(failed_records),
+                }
+                
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+                
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete records: {str(e)}")
             return {
-                "success": True,
-                "deleted": deleted_count
+                "success": False,
+                "deleted_records": [],
+                "failed_records": [{"record_id": rid, "reason": str(e)} for rid in record_ids],
+                "total_requested": len(record_ids),
+                "successfully_deleted": 0,
+                "failed_count": len(record_ids),
             }
 
+    async def _create_deleted_record_event_payload(
+        self,
+        record: Dict,
+        file_record: Optional[Dict] = None
+    ) -> Dict:
+        """Create deleted record event payload matching Node.js format"""
+        try:
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record.get("_key"),
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "summaryDocumentId": record.get("summaryDocumentId"),
+                "virtualRecordId": record.get("virtualRecordId"),
+            }
         except Exception as e:
-            self.logger.error(f"❌ Delete records failed: {str(e)}")
+            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            return {}
+
+    async def delete_knowledge_base(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """
+        Delete a knowledge base with ALL nested content
+        - All folders (recursive, any depth)
+        - All records in all folders
+        - All file records
+        - All edges (belongs_to, record_relations, is_of_type, permissions)
+        - The KB document itself
+        """
+        try:
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                try:
+                    transaction = await self.begin_transaction(
+                        read=[],
+                        write=[
+                            CollectionNames.RECORD_GROUPS.value,
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.BELONGS_TO.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                            CollectionNames.PERMISSION.value,
+                        ],
+                    )
+                    self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
+                except Exception as tx_error:
+                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    return {"success": False}
+
+            try:
+                # Step 1: Get complete inventory of what we're deleting using graph traversal
+                # This collects ALL records/folders at any depth via BELONGS_TO edges BEFORE deletion
+                inventory_query = """
+                MATCH (kb:RecordGroup {id: $kb_id})
+                
+                // Get all records/folders that belong to this KB
+                OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(kb)
+                
+                // Get file details for each record
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+                
+                WITH kb, 
+                     collect(DISTINCT record) AS all_records,
+                     collect(DISTINCT {
+                         file_id: file.id,
+                         is_folder: file.isFile = false,
+                         record_id: record.id,
+                         record: record,
+                         file_doc: file
+                     }) AS all_files_with_details
+                
+                // Separate folders and file records
+                WITH kb,
+                     all_records,
+                     [item IN all_files_with_details WHERE item.is_folder = true | item.record_id] AS folder_keys,
+                     [item IN all_files_with_details WHERE item.is_folder = false | {
+                         record: item.record,
+                         file_record: item.file_doc
+                     }] AS file_records,
+                     [item IN all_files_with_details | item.file_id] AS file_keys
+                
+                RETURN {
+                    kb_exists: kb IS NOT NULL,
+                    record_ids: [r IN all_records | r.id],
+                    file_ids: file_keys,
+                    folder_keys: folder_keys,
+                    records_with_details: file_records,
+                    total_folders: size(folder_keys),
+                    total_records: size(all_records)
+                } AS inventory
+                """
+
+                inv_results = await self.client.execute_query(
+                    inventory_query,
+                    parameters={"kb_id": kb_id},
+                    txn_id=transaction
+                )
+
+                inventory = inv_results[0]["inventory"] if inv_results else {}
+
+                self.logger.info(f"inventory: {inventory}")
+                # return False
+
+                if not inventory.get("kb_exists"):
+                    self.logger.warning(f"⚠️ KB {kb_id} not found, deletion considered successful.")
+                    if should_commit:
+                        await self.commit_transaction(transaction)
+                    return {"success": True, "eventData": None}
+
+                records_with_details = inventory.get("records_with_details", [])
+                all_record_ids = inventory.get("record_ids", [])
+                all_file_ids = inventory.get("file_ids", [])
+
+                self.logger.info(f"folder_keys: {inventory.get('folder_keys', [])}")
+                self.logger.info(f"total_folders: {inventory.get('total_folders', 0)}")
+                self.logger.info(f"total_records: {inventory.get('total_records', 0)}")
+
+                # Step 2: Delete ALL relationships first (prevents orphaned edges)
+                self.logger.info("🗑️ Step 2: Deleting all relationships...")
+                
+                if all_record_ids:
+                    edges_cleanup_query = """
+                    MATCH (kb:RecordGroup {id: $kb_id})
+                    
+                    // Delete BELONGS_TO edges (records -> KB)
+                    OPTIONAL MATCH (record:Record)-[bt:BELONGS_TO]->(kb)
+                    WHERE record.id IN $record_ids
+                    
+                    // Delete BELONGS_TO edge (KB -> App)
+                    OPTIONAL MATCH (kb)-[bt_app:BELONGS_TO]->(:App)
+                    
+                    // Delete IS_OF_TYPE edges
+                    OPTIONAL MATCH (record:Record)-[iot:IS_OF_TYPE]->(:File)
+                    WHERE record.id IN $record_ids
+                    
+                    // Delete PERMISSION edges to KB
+                    OPTIONAL MATCH ()-[perm:PERMISSION]->(kb)
+                    
+                    // Delete PERMISSION edges to records
+                    OPTIONAL MATCH ()-[perm_rec:PERMISSION]->(record:Record)
+                    WHERE record.id IN $record_ids
+                    
+                    // Delete RECORD_RELATION edges between records
+                    OPTIONAL MATCH (r1:Record)-[rr:RECORD_RELATION]-(r2:Record)
+                    WHERE r1.id IN $record_ids OR r2.id IN $record_ids
+                    
+                    WITH collect(DISTINCT bt) + collect(DISTINCT bt_app) + 
+                         collect(DISTINCT iot) + collect(DISTINCT perm) + 
+                         collect(DISTINCT perm_rec) + collect(DISTINCT rr) AS all_edges
+                    
+                    UNWIND all_edges AS edge
+                    WITH edge WHERE edge IS NOT NULL
+                    DELETE edge
+                    
+                    RETURN count(edge) AS edges_deleted
+                    """
+                    
+                    edge_results = await self.client.execute_query(
+                        edges_cleanup_query,
+                        parameters={
+                            "kb_id": kb_id,
+                            "record_ids": all_record_ids
+                        },
+                        txn_id=transaction
+                    )
+                    
+                    edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
+                    self.logger.info(f"✅ Deleted {edges_deleted} edges for KB {kb_id}")
+
+                # Step 3: Delete all FILE nodes
+                if all_file_ids:
+                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_file_ids)} FILE nodes...")
+                    delete_files_query = """
+                    MATCH (file:File)
+                    WHERE file.id IN $file_ids
+                    DELETE file
+                    RETURN count(file) AS deleted
+                    """
+                    
+                    file_results = await self.client.execute_query(
+                        delete_files_query,
+                        parameters={"file_ids": all_file_ids},
+                        txn_id=transaction
+                    )
+                    
+                    files_deleted = file_results[0]["deleted"] if file_results else 0
+                    self.logger.info(f"✅ Deleted {files_deleted} FILE nodes")
+
+                # Step 4: Delete all RECORD nodes
+                if all_record_ids:
+                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_ids)} RECORD nodes...")
+                    delete_records_query = """
+                    MATCH (record:Record)
+                    WHERE record.id IN $record_ids
+                    DELETE record
+                    RETURN count(record) AS deleted
+                    """
+                    
+                    record_results = await self.client.execute_query(
+                        delete_records_query,
+                        parameters={"record_ids": all_record_ids},
+                        txn_id=transaction
+                    )
+                    
+                    records_deleted = record_results[0]["deleted"] if record_results else 0
+                    self.logger.info(f"✅ Deleted {records_deleted} RECORD nodes")
+
+                # Step 5: Delete the KB RecordGroup itself
+                self.logger.info(f"🗑️ Step 5: Deleting KB RecordGroup {kb_id}...")
+                delete_kb_query = """
+                MATCH (kb:RecordGroup {id: $kb_id})
+                DELETE kb
+                RETURN count(kb) AS deleted
+                """
+                
+                kb_results = await self.client.execute_query(
+                    delete_kb_query,
+                    parameters={"kb_id": kb_id},
+                    txn_id=transaction
+                )
+                
+                kb_deleted = kb_results[0]["deleted"] if kb_results else 0
+                self.logger.info(f"✅ Deleted KB RecordGroup: {kb_deleted}")
+
+                # Step 6: Commit transaction
+                if should_commit:
+                    self.logger.info("💾 Committing complete deletion transaction...")
+                    await self.commit_transaction(transaction)
+                    self.logger.info("✅ Transaction committed successfully!")
+
+                # Step 7: Prepare event data for all deleted records (router will publish)
+                event_payloads = []
+                try:
+                    for record_data in records_with_details:
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data.get("file_record")
+                        )
+                        if delete_payload:
+                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
+
+                self.logger.info(f"🎉 KB {kb_id} and ALL contents deleted successfully.")
+                return {
+                    "success": True,
+                    "eventData": event_data
+                }
+
+            except Exception as db_error:
+                self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
+                if should_commit and transaction:
+                    await self.rollback_transaction(transaction)
+                    self.logger.info("🔄 Transaction aborted due to error")
+                raise db_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete KB {kb_id}: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
             return {"success": False, "reason": str(e)}
 
     async def create_kb_permissions(
