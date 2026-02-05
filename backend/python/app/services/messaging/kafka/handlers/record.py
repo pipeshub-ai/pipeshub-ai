@@ -291,6 +291,7 @@ class RecordEventHandler(BaseEventService):
             # Signed URL handling
             if payload and payload.get("signedUrlRoute"):
                 try:
+                    self.logger.info(f"🚀 Signed URL Route: {payload['signedUrlRoute']}")
                     jwt_payload  = {
                         "orgId": payload["orgId"],
                         "scopes": ["storage:token"],
@@ -312,6 +313,7 @@ class RecordEventHandler(BaseEventService):
 
                     if response.get("is_json"):
                         signed_url = response["data"]["signedUrl"]
+                        self.logger.info(f"🚀 Signed URL: {signed_url}")
                         buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc, from_route=True)
                         if not buffer:
                             raise Exception("Failed to download file from signed URL")

@@ -1779,6 +1779,28 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def update_queued_duplicates_status(
+        self,
+        record_id: str,
+        new_indexing_status: str,
+        virtual_record_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> int:
+        """
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            new_indexing_status (str): The new indexing status to set
+            virtual_record_id (Optional[str]): Optional virtual record ID to set
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            int: Number of records updated
+        """
+        pass
+
+    @abstractmethod
     async def copy_document_relationships(
         self,
         source_key: str,

@@ -391,6 +391,15 @@ export function createKnowledgeBaseRouter(
     getKBContent(appConfig),
   );
 
+  // Get KB children (folders and records) - alias for records endpoint
+  router.get(
+    '/:kbId/children',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getAllKBRecordsSchema),
+    getKBContent(appConfig),
+  );
+
   // upload folder in the kb along with the direct record creation in the kb
   router.post(
     '/:kbId/upload',
@@ -460,6 +469,15 @@ export function createKnowledgeBaseRouter(
   // Get folder contents
   router.get(
     '/:kbId/folder/:folderId',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(getFolderSchema),
+    getFolderContents(appConfig),
+  );
+
+  // Get folder children - alias for folder contents
+  router.get(
+    '/:kbId/folder/:folderId/children',
     authMiddleware.authenticate,
     metricsMiddleware(container),
     ValidationMiddleware.validate(getFolderSchema),
