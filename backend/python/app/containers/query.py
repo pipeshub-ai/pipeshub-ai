@@ -19,12 +19,9 @@ class QueryAppContainer(BaseAppContainer):
     # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
-    # Override arango_client and redis_client to use the service-specific config_service
+    # Override arango_client to use the service-specific config_service
     arango_client = providers.Resource(
         BaseAppContainer._create_arango_client, config_service=config_service
-    )
-    redis_client = providers.Resource(
-        BaseAppContainer._create_redis_client, config_service=config_service
     )
     kafka_service = providers.Singleton(lambda: None)  # Not used in query service
     arango_service = providers.Resource(

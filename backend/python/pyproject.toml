@@ -24,7 +24,6 @@ dependencies = [
     "aiohttp==3.13.3",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
-    "aioredis==2.0.1",
     "azure-ai-formrecognizer==3.3.3",
     "azure-storage-blob==12.28.0",
     "azure-storage-file-share==12.19.0",
