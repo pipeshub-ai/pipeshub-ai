@@ -1430,14 +1430,8 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body
-        depth = 0  # Default: only this record
-        try:
-            request_body = await request.json()
-            depth = request_body.get("depth", 0)
-        except json.JSONDecodeError:
-            # No body or invalid JSON - use default depth
-            pass
+        # Always use depth 100 for full reindex (including all children)
+        depth = 100
 
         logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
