@@ -48,6 +48,7 @@ from app.models.entities import (
     TicketRecord,
     User,
     WebpageRecord,
+    IndexingStatus
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
@@ -2269,6 +2270,99 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
             return []
 
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[dict]: The next queued record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding next QUEUED duplicate record for record {record_id}"
+            )
+
+            # First get the record info for the reference record
+            record_query = """
+            MATCH (record:Record {id: $record_id})
+            RETURN record
+            """
+
+            results = await self.client.execute_query(
+                record_query,
+                parameters={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            if not results or not results[0].get("record"):
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
+                return None
+
+            ref_record = dict(results[0]["record"])
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
+
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                return None
+
+            # Find the first queued duplicate record
+            query = """
+            MATCH (record:Record)
+            WHERE record.md5Checksum = $md5_checksum
+            AND record.id <> $record_id
+            AND record.indexingStatus = $queued_status
+            """
+
+            params = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes = $size_in_bytes
+                """
+                params["size_in_bytes"] = size_in_bytes
+
+            query += """
+            RETURN record
+            LIMIT 1
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters=params,
+                txn_id=transaction
+            )
+
+            if results and results[0].get("record"):
+                queued_record = dict(results[0]["record"])
+                queued_record_dict = self._neo4j_to_arango_node(queued_record, CollectionNames.RECORDS.value)
+                self.logger.info(
+                    f"✅ Found QUEUED duplicate record: {queued_record_dict.get('_key')}"
+                )
+                return queued_record_dict
+
+            self.logger.info("✅ No QUEUED duplicate record found")
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to find next queued duplicate: {str(e)}"
+            )
+            return None
+
     async def update_queued_duplicates_status(
         self,
         record_id: str,
@@ -2277,7 +2371,8 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: Optional[str] = None,
     ) -> int:
         """
-        Find all QUEUED duplicate records with the same file md5 hash and update their status.
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+        Works with all record types by querying the RECORDS collection directly.
 
         Args:
             record_id (str): The record ID to use as reference for finding duplicates
@@ -2293,56 +2388,64 @@ class Neo4jProvider(IGraphDBProvider):
                 f"🔍 Finding QUEUED duplicate records for record {record_id}"
             )
 
-            # First get the file info for the reference record
-            file_query = """
-            MATCH (f:File {id: $record_id})
-            RETURN f
+            # First get the record info for the reference record
+            record_query = """
+            MATCH (record:Record {id: $record_id})
+            RETURN record
             """
 
             results = await self.client.execute_query(
-                file_query,
+                record_query,
                 parameters={"record_id": record_id},
                 txn_id=transaction
             )
 
-            if not results or not results[0].get("f"):
-                self.logger.info(f"No file found for record {record_id}, skipping queued duplicate update")
+            if not results or not results[0].get("record"):
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
                 return 0
 
-            file_doc = dict(results[0]["f"])
-            md5_checksum = file_doc.get("md5Checksum")
-            size_in_bytes = file_doc.get("sizeInBytes")
+            ref_record = dict(results[0]["record"])
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
 
-            if not md5_checksum or size_in_bytes is None:
-                self.logger.warning(f"File {record_id} missing md5Checksum or sizeInBytes")
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
                 return 0
 
-            # Find all queued duplicate records
+            # Find all queued duplicate records directly from RECORDS collection
             query = """
-            MATCH (f:File)
-            WHERE f.md5Checksum = $md5_checksum
-            AND f.sizeInBytes = $size_in_bytes
-            AND f.id <> $record_id
-            MATCH (r:Record {id: f.id})
-            WHERE r.indexingStatus = $queued_status
-            RETURN r
+            MATCH (record:Record)
+            WHERE record.md5Checksum = $md5_checksum
+            AND record.id <> $record_id
+            AND record.indexingStatus = $queued_status
+            """
+
+            params = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes = $size_in_bytes
+                """
+                params["size_in_bytes"] = size_in_bytes
+
+            query += """
+            RETURN record
             """
 
             results = await self.client.execute_query(
                 query,
-                parameters={
-                    "md5_checksum": md5_checksum,
-                    "size_in_bytes": size_in_bytes,
-                    "record_id": record_id,
-                    "queued_status": "QUEUED"
-                },
+                parameters=params,
                 txn_id=transaction
             )
 
             queued_records = []
             for record in results:
-                if record.get("r"):
-                    record_dict = dict(record["r"])
+                if record.get("record"):
+                    record_dict = dict(record["record"])
                     queued_records.append(self._neo4j_to_arango_node(record_dict, CollectionNames.RECORDS.value))
 
             if not queued_records:
@@ -5056,6 +5159,22 @@ class Neo4jProvider(IGraphDBProvider):
                 # For now, we'll allow the operation and return basic info
                 user_role = "READER"  # Default role for validation
 
+                # Check if connector is enabled before allowing reindex
+                if connector_id:
+                    connector_instance = await self.get_document(connector_id, CollectionNames.APPS.value)
+                    if not connector_instance:
+                        return {
+                            "success": False,
+                            "code": 404,
+                            "reason": f"Connector not found: {connector_id}"
+                        }
+                    if not connector_instance.get("isActive", False):
+                        return {
+                            "success": False,
+                            "code": 400,
+                            "reason": f"Cannot reindex: connector '{connector_instance.get('name', connector_name)}' is currently disabled. Please enable the connector first."
+                        }
+
                 connector_type = connector_name
             else:
                 return {
@@ -5064,18 +5183,56 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Unsupported record origin: {origin}"
                 }
 
-            # Note: Graph providers don't implement event publishing
-            # This is a simplified version that validates the record and returns info
-            # The actual event publishing would be handled by the connector service layer
+            # Reset indexing status to QUEUED before reindexing
+            await self._reset_indexing_status_to_queued(record_id)
 
+            # Get file record for event payload
+            file_record = None
+            if record.get("recordType") == "FILE":
+                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+            elif record.get("recordType") == "MAIL":
+                file_record = await self.get_document(record_id, CollectionNames.MAILS.value)
+
+            self.logger.info(f"📋 File record: {file_record}")
+
+            # Determine if we should use batch reindex (depth > 0)
+            use_batch_reindex = depth != 0
+
+            # Create event data based on reindex type
+            event_data = None
+
+            if use_batch_reindex:
+                # Batch reindex event
+                connector_normalized = connector_name.replace(" ", "").lower()
+                event_data = {
+                    "eventType": f"{connector_normalized}.reindex",
+                    "topic": "sync-events",
+                    "payload": {
+                        "orgId": org_id,
+                        "recordId": record_id,
+                        "depth": depth,
+                        "connectorId": connector_id
+                    }
+                }
+            else:
+                # Single record reindex event
+                event_payload = await self._create_reindex_event_payload(record, file_record, user_id, request)
+                event_data = {
+                    "eventType": "newRecord",
+                    "topic": "record-events",
+                    "payload": event_payload
+                }
+
+            # Return success with connector information and event data (caller will publish event)
             self.logger.info(f"✅ Record {record_id} validated for reindexing")
             return {
                 "success": True,
                 "recordId": record_id,
                 "recordName": record.get("recordName"),
                 "connector": connector_type,
-                "eventPublished": False,  # Graph providers don't publish events
-                "userRole": user_role
+                "userRole": user_role,
+                "depth": depth,
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -5086,27 +5243,127 @@ class Neo4jProvider(IGraphDBProvider):
                 "reason": f"Internal error: {str(e)}"
             }
 
+    async def _check_record_group_permissions(
+        self,
+        record_group_id: str,
+        user_key: str,
+        org_id: str
+    ) -> Dict:
+        """
+        Check if user has permission to access a record group
+
+        Returns:
+            Dict with 'allowed' (bool), 'role' (str), and 'reason' (str) keys
+        """
+        try:
+            # Query to check if user has permission to the record group
+            # Check multiple paths: direct, via groups, via org
+            query = """
+            MATCH (userDoc:User {id: $user_key})
+            MATCH (recordGroup:RecordGroup {id: $record_group_id})
+            WHERE recordGroup.orgId = $org_id
+
+            // Direct user -> record group permission
+            OPTIONAL MATCH (userDoc)-[directPerm:PERMISSION {type: 'USER'}]->(recordGroup)
+
+            // User -> group -> record group permission
+            OPTIONAL MATCH (userDoc)-[:PERMISSION {type: 'USER'}]->(grp)
+            WHERE grp:Group OR grp:Role
+            OPTIONAL MATCH (grp)-[grpPerm:PERMISSION]->(recordGroup)
+            WHERE grpPerm.type IN ['GROUP', 'ROLE']
+
+            // User -> org -> record group permission
+            OPTIONAL MATCH (userDoc)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+            OPTIONAL MATCH (org)-[orgPerm:PERMISSION {type: 'ORG'}]->(recordGroup)
+
+            WITH directPerm, grpPerm, orgPerm,
+                 collect(DISTINCT directPerm.role) + collect(DISTINCT grpPerm.role) + collect(DISTINCT orgPerm.role) AS allRoles
+
+            WITH [role IN allRoles WHERE role IS NOT NULL] AS validRoles
+
+            WITH size(validRoles) > 0 AS hasPermission,
+                 CASE
+                     WHEN 'OWNER' IN validRoles THEN 'OWNER'
+                     WHEN 'WRITER' IN validRoles THEN 'WRITER'
+                     WHEN 'READER' IN validRoles THEN 'READER'
+                     WHEN 'COMMENTER' IN validRoles THEN 'COMMENTER'
+                     ELSE null
+                 END AS userRole
+
+            RETURN {
+                allowed: hasPermission,
+                role: userRole
+            } AS result
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "user_key": user_key,
+                    "record_group_id": record_group_id,
+                    "org_id": org_id
+                }
+            )
+
+            if results and results[0].get("result"):
+                result = results[0]["result"]
+                if result.get("allowed"):
+                    return {
+                        "allowed": True,
+                        "role": result.get("role"),
+                        "reason": "User has permission to access record group"
+                    }
+                else:
+                    return {
+                        "allowed": False,
+                        "role": None,
+                        "reason": "User does not have permission to access this record group"
+                    }
+            else:
+                return {
+                    "allowed": False,
+                    "role": None,
+                    "reason": "Permission check failed"
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check record group permissions: {str(e)}")
+            return {
+                "allowed": False,
+                "role": None,
+                "reason": f"Error checking permissions: {str(e)}"
+            }
+
     async def reindex_record_group_records(
         self,
         record_group_id: str,
+        depth: int,
         user_id: str,
-        depth: int = 1,
-        transaction: Optional[str] = None
+        org_id: str
     ) -> Dict:
         """
-        Reindex all records in a record group.
+        Get record group data and validate permissions for reindexing.
+        Does NOT publish events - that should be done by the caller (router).
 
         Args:
-            record_group_id (str): Record group ID
-            user_id (str): User ID performing the reindex
-            depth (int): Depth of children to reindex
-            transaction (Optional[str]): Optional transaction ID
+            record_group_id: Record group ID
+            depth: Depth for traversing children (0 = only direct records)
+            user_id: External user ID doing the reindex
+            org_id: Organization ID
 
         Returns:
-            Dict: Result with success status
+            Dict: Result with success status and connector information
         """
         try:
-            self.logger.info(f"🚀 Reindexing record group {record_group_id} with depth {depth}")
+            self.logger.info(f"🔄 Validating record group reindex for {record_group_id} with depth {depth} by user {user_id}")
+
+            # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
+            if depth == -1:
+                depth = MAX_REINDEX_DEPTH
+                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
+            elif depth < 0:
+                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (direct records only)")
+                depth = 0
 
             # Get record group
             record_group = await self.get_document(record_group_id, CollectionNames.RECORD_GROUPS.value)
@@ -5119,7 +5376,6 @@ class Neo4jProvider(IGraphDBProvider):
 
             connector_id = record_group.get("connectorId", "")
             connector_name = record_group.get("connectorName", "")
-
             if not connector_id or not connector_name:
                 return {
                     "success": False,
@@ -5127,23 +5383,44 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": "Record group does not have a connector id or name"
                 }
 
-            # For now, return success - actual reindexing logic would be handled by event service
-            # This method is mainly for validation and returning connector info
-            self.logger.info(f"✅ Record group {record_group_id} validated for reindexing")
+            # Get user
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}"
+                }
+
+            user_key = user.get('_key')
+
+            # Check if user has permission to access the record group
+            permission_check = await self._check_record_group_permissions(
+                record_group_id, user_key, org_id
+            )
+
+            if not permission_check["allowed"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": permission_check["reason"]
+                }
+
+            # Return success with connector information (caller will publish event)
             return {
                 "success": True,
-                "code": 200,
-                "record_group_id": record_group_id,
-                "connector_id": connector_id,
-                "connector_name": connector_name
+                "connectorId": connector_id,
+                "connectorName": connector_name,
+                "depth": depth,
+                "recordGroupId": record_group_id
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to reindex record group: {str(e)}")
+            self.logger.error(f"❌ Failed to validate record group reindex: {str(e)}")
             return {
                 "success": False,
                 "code": 500,
-                "reason": str(e)
+                "reason": f"Internal error: {str(e)}"
             }
 
     async def organization_exists(
@@ -7199,6 +7476,131 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
+
+    async def _publish_sync_event(self, event_type: str, payload: Dict) -> None:
+        """Publish sync event to Kafka"""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+
+            event = {
+                "eventType": event_type,
+                "timestamp": timestamp,
+                "payload": payload
+            }
+
+            if self.kafka_service:
+                await self.kafka_service.publish_event("sync-events", event)
+                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
+            else:
+                self.logger.debug("Skipping Kafka publish for sync-events: kafka_service is not configured")
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
+
+    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
+        """
+        Reset indexing status to QUEUED before sending update/reindex events.
+        Only resets if status is not already QUEUED or EMPTY.
+        """
+        try:
+            # Get the record
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not record:
+                self.logger.warning(f"Record {record_id} not found for status reset")
+                return
+
+            current_status = record.get("indexingStatus")
+
+            # Only reset if not already QUEUED or EMPTY
+            if current_status in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
+                self.logger.debug(f"Record {record_id} already has status {current_status}, skipping reset")
+                return
+
+            # Update indexing status to QUEUED
+            doc = {
+                "id": record_id,
+                "indexingStatus": IndexingStatus.QUEUED.value,
+            }
+
+            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            self.logger.debug(f"✅ Reset record {record_id} status from {current_status} to QUEUED")
+        except Exception as e:
+            # Log but don't fail the main operation if status update fails
+            self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
+
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None) -> Dict:
+        """Create reindex event payload"""
+        try:
+            from app.config.constants.service import DefaultEndpoints, config_node_constants
+            
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            # Fallback: check if mimeType is in the record itself (for WebpageRecord, CommentRecord, etc.)
+            if not mime_type:
+                mime_type = record.get("mimeType", "")
+
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            signed_url_route = ""
+            file_content = ""
+            
+            if record.get("origin") == OriginTypes.UPLOAD.value:
+                storage_url = endpoints.get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+            else:
+                connector_url = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                record_key = record.get('_key', record.get('id'))
+                signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record_key}/signedUrl"
+
+                if record.get("recordType") == "MAIL":
+                    mime_type = "text/gmail_content"
+                    try:
+                        # Return early for MAIL records with special payload
+                        return {
+                            "orgId": record.get("orgId"),
+                            "recordId": record_key,
+                            "recordName": record.get("recordName", ""),
+                            "recordType": record.get("recordType", ""),
+                            "version": record.get("version", 1),
+                            "origin": record.get("origin", ""),
+                            "extension": extension,
+                            "mimeType": mime_type,
+                            "body": file_content,
+                            "connectorId": record.get("connectorId", ""),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
+                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                        }
+                    except Exception as decode_error:
+                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+
+            # Standard payload for non-MAIL records
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record.get("_key", record.get("id")),
+                "recordName": record.get("recordName", ""),
+                "recordType": record.get("recordType", ""),
+                "version": record.get("version", 1),
+                "signedUrlRoute": signed_url_route,
+                "origin": record.get("origin", ""),
+                "extension": extension,
+                "mimeType": mime_type,
+                "body": file_content,
+                "connectorId": record.get("connectorId", ""),
+                "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
+                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+            raise
 
     async def delete_records(
         self,

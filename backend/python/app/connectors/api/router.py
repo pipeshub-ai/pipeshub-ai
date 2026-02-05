@@ -1434,6 +1434,22 @@ async def reindex_single_record(
         )
 
         if result["success"]:
+            # Publish event in router
+            event_data = result.get("eventData")
+            if event_data:
+                try:
+                    kafka_service = container.kafka_service()
+                    timestamp = get_epoch_timestamp_in_ms()
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": event_data["payload"]
+                    }
+                    await kafka_service.publish_event(event_data["topic"], event)
+                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish event: {str(e)}")
+            
             logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
@@ -1441,7 +1457,7 @@ async def reindex_single_record(
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
-                "eventPublished": result.get("eventPublished"),
+                "eventPublished": event_data is not None,
                 "userRole": result.get("userRole"),
                 "depth": depth
             }
