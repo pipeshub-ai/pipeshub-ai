@@ -14,8 +14,6 @@ from datetime import datetime
 from logging import Logger
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from fastapi import Request
-
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
@@ -53,6 +51,7 @@ from app.models.entities import (
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from fastapi import Request
 
 # Constants
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
@@ -10842,7 +10841,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if indexing_status:
                 params["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus IS NULL OR node.indexingStatus IN $indexing_status)")
+                filter_conditions.append("(node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
 
             if created_at:
                 if created_at.get("gte"):
@@ -11349,7 +11348,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if indexing_status:
                 params["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus IS NULL OR node.indexingStatus IN $indexing_status)")
+                filter_conditions.append("(node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
 
             if created_at:
                 if created_at.get("gte"):
@@ -11888,7 +11887,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             if indexing_status:
                 params["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus IS NULL OR node.indexingStatus IN $indexing_status)")
+                filter_conditions.append("(node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
 
             if created_at:
                 if created_at.get("gte"):
