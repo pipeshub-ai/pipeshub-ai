@@ -6897,32 +6897,32 @@ class Neo4jProvider(IGraphDBProvider):
                 inventory_query = """
                 MATCH (target_folder:Record {id: $folder_id})
                 MATCH (target_folder)-[:IS_OF_TYPE]->(target_file:File {isFile: false})
-                
+
                 // Get all subfolders via RECORD_RELATION traversal (up to 20 levels deep)
                 OPTIONAL MATCH path = (target_folder)-[:RECORD_RELATION*1..20]->(subfolder:Record)
                 WHERE all(rel IN relationships(path) WHERE rel.relationshipType = 'PARENT_CHILD')
                 OPTIONAL MATCH (subfolder)-[:IS_OF_TYPE]->(subfolder_file:File {isFile: false})
                 WHERE subfolder_file IS NOT NULL
-                
+
                 WITH target_folder, target_file,
                      collect(DISTINCT subfolder.id) AS all_subfolders
-                
+
                 WITH target_folder, target_file,
                      [target_folder.id] + all_subfolders AS all_folders
-                
+
                 // Get all file records (non-folders) nested in these folders
                 OPTIONAL MATCH path2 = (target_folder)-[:RECORD_RELATION*1..20]->(file_record:Record)
                 WHERE all(rel IN relationships(path2) WHERE rel.relationshipType = 'PARENT_CHILD')
                 OPTIONAL MATCH (file_record)-[:IS_OF_TYPE]->(file_rec_file:File {isFile: true})
                 WHERE file_rec_file IS NOT NULL
-                
+
                 WITH target_folder, all_folders,
                      collect(DISTINCT {
                          record: file_record,
                          file_record: file_rec_file
                      }) AS records_with_details,
                      collect(DISTINCT file_rec_file.id) AS file_record_ids
-                
+
                 RETURN {
                     folder_exists: target_folder IS NOT NULL,
                     target_folder: target_folder.id,
@@ -6936,25 +6936,25 @@ class Neo4jProvider(IGraphDBProvider):
                     total_file_records: size(file_record_ids)
                 } AS inventory
                 """
-                
+
                 inv_results = await self.client.execute_query(
                     inventory_query,
                     parameters={"folder_id": folder_id},
                     txn_id=txn_id
                 )
-                
+
                 inventory = inv_results[0]["inventory"] if inv_results else {}
-                
+
                 if not inventory.get("folder_exists"):
                     if transaction is None and txn_id:
                         await self.rollback_transaction(txn_id)
                     return False
-                
+
                 records_with_details = inventory.get("records_with_details", [])
                 all_record_keys = [rd["record"]["id"] for rd in records_with_details if rd.get("record")]
                 all_folders = inventory.get("all_folders", [])
                 file_records = inventory.get("file_records", [])
-                
+
                 # Step 2: Delete edges
                 if all_record_keys or all_folders:
                     edges_cleanup = """
@@ -6962,27 +6962,27 @@ class Neo4jProvider(IGraphDBProvider):
                     MATCH (r1:Record)-[rr:RECORD_RELATION]-(r2:Record)
                     WHERE r1.id IN $all_ids OR r2.id IN $all_ids
                     DELETE rr
-                    
+
                     // Delete IS_OF_TYPE edges
                     WITH $all_ids AS all_ids
                     MATCH (record:Record)-[iot:IS_OF_TYPE]->(:File)
                     WHERE record.id IN all_ids
                     DELETE iot
-                    
+
                     // Delete BELONGS_TO edges
                     WITH $all_ids AS all_ids
                     MATCH (record:Record)-[bt:BELONGS_TO]->(:RecordGroup)
                     WHERE record.id IN all_ids
                     DELETE bt
                     """
-                    
+
                     all_ids = all_record_keys + all_folders
                     await self.client.execute_query(
                         edges_cleanup,
                         parameters={"all_ids": all_ids},
                         txn_id=txn_id
                     )
-                
+
                 # Step 3: Delete FILE nodes
                 if file_records:
                     delete_files = """
@@ -6995,7 +6995,7 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"file_ids": file_records},
                         txn_id=txn_id
                     )
-                
+
                 # Step 4: Delete RECORD nodes (files)
                 if all_record_keys:
                     delete_records = """
@@ -7008,7 +7008,7 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"record_ids": all_record_keys},
                         txn_id=txn_id
                     )
-                
+
                 # Step 5: Delete folder FILE nodes and RECORD nodes (in reverse order)
                 if all_folders:
                     # Get folder file IDs
@@ -7017,15 +7017,15 @@ class Neo4jProvider(IGraphDBProvider):
                     WHERE folder.id IN $folder_ids
                     RETURN collect(folder_file.id) AS folder_file_ids
                     """
-                    
+
                     ff_res = await self.client.execute_query(
                         ff_query,
                         parameters={"folder_ids": all_folders},
                         txn_id=txn_id
                     )
-                    
+
                     folder_file_ids = ff_res[0]["folder_file_ids"] if ff_res else []
-                    
+
                     if folder_file_ids:
                         delete_folder_files = """
                         MATCH (file:File)
@@ -7037,7 +7037,7 @@ class Neo4jProvider(IGraphDBProvider):
                             parameters={"file_ids": folder_file_ids},
                             txn_id=txn_id
                         )
-                    
+
                     # Delete folder records in reverse order (deepest first)
                     reversed_folders = list(reversed(all_folders))
                     delete_folder_records = """
@@ -7050,18 +7050,18 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"folder_ids": reversed_folders},
                         txn_id=txn_id
                     )
-                
+
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
-                
+
                 self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
                 return True
-                
+
             except Exception as db_error:
                 if transaction is None and txn_id:
                     await self.rollback_transaction(txn_id)
                 raise db_error
-                
+
         except Exception as e:
             self.logger.error(f"❌ Failed to delete folder: {str(e)}")
             return False
@@ -7938,7 +7938,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "successfully_deleted": 0,
                     "failed_count": 0,
                 }
-            
+
             txn_id = transaction
             if transaction is None:
                 txn_id = await self.begin_transaction(
@@ -7951,34 +7951,34 @@ class Neo4jProvider(IGraphDBProvider):
                         CollectionNames.BELONGS_TO.value,
                     ],
                 )
-            
+
             try:
                 # Step 1: Validate records
                 validation_query = """
                 UNWIND $record_ids AS rid
-                
+
                 OPTIONAL MATCH (record:Record {id: rid})
-                
+
                 WITH rid, record,
                      record IS NOT NULL AS record_exists,
                      CASE WHEN record IS NOT NULL THEN coalesce(record.isDeleted, false) <> true ELSE false END AS record_not_deleted
-                
+
                 // Check KB relationship
                 OPTIONAL MATCH (record)-[kb_rel:BELONGS_TO]->(kb:RecordGroup {id: $kb_id})
                 WHERE record IS NOT NULL
-                
+
                 // Check folder relationship (if folder_id provided)
                 OPTIONAL MATCH (parent:Record {id: $folder_id})-[folder_rel:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(record)
                 WHERE record IS NOT NULL AND $folder_id IS NOT NULL
-                
+
                 // Get file record
                 OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
                 WHERE record IS NOT NULL
-                
+
                 WITH rid, record, file,
-                     record_exists AND record_not_deleted AND kb_rel IS NOT NULL AND 
+                     record_exists AND record_not_deleted AND kb_rel IS NOT NULL AND
                      (CASE WHEN $folder_id IS NOT NULL THEN folder_rel IS NOT NULL ELSE true END) AS is_valid
-                
+
                 RETURN {
                     record_id: rid,
                     record: record,
@@ -7986,7 +7986,7 @@ class Neo4jProvider(IGraphDBProvider):
                     is_valid: is_valid
                 } AS record_data
                 """
-                
+
                 val_results = await self.client.execute_query(
                     validation_query,
                     parameters={
@@ -7996,20 +7996,20 @@ class Neo4jProvider(IGraphDBProvider):
                     },
                     txn_id=txn_id
                 )
-                
+
                 # Separate valid and invalid records
                 valid_records = []
                 invalid_records = []
-                
+
                 for result in val_results:
                     record_data = result["record_data"]
                     if record_data["is_valid"]:
                         valid_records.append(record_data)
                     else:
                         invalid_records.append(record_data)
-                
+
                 failed_records = [{"record_id": r["record_id"], "reason": "Validation failed"} for r in invalid_records]
-                
+
                 if not valid_records:
                     if transaction is None and txn_id:
                         await self.commit_transaction(txn_id)
@@ -8021,39 +8021,39 @@ class Neo4jProvider(IGraphDBProvider):
                         "successfully_deleted": 0,
                         "failed_count": len(failed_records),
                     }
-                
+
                 valid_record_ids = [r["record_id"] for r in valid_records]
                 file_record_ids = [r["file_record"]["id"] for r in valid_records if r.get("file_record")]
-                
+
                 # Step 2: Delete edges
                 edges_cleanup = """
                 UNWIND $record_ids AS record_id
-                
+
                 // Delete RECORD_RELATION edges
                 OPTIONAL MATCH (r1:Record {id: record_id})-[rr:RECORD_RELATION]-()
                 DELETE rr
-                
+
                 WITH record_id
                 OPTIONAL MATCH ()-[rr2:RECORD_RELATION]->(r2:Record {id: record_id})
                 DELETE rr2
-                
+
                 WITH record_id
                 // Delete IS_OF_TYPE edges
                 OPTIONAL MATCH (record:Record {id: record_id})-[iot:IS_OF_TYPE]->()
                 DELETE iot
-                
+
                 WITH record_id
                 // Delete BELONGS_TO edges
                 OPTIONAL MATCH (record:Record {id: record_id})-[bt:BELONGS_TO]->()
                 DELETE bt
                 """
-                
+
                 await self.client.execute_query(
                     edges_cleanup,
                     parameters={"record_ids": valid_record_ids},
                     txn_id=txn_id
                 )
-                
+
                 # Step 3: Delete FILE nodes
                 if file_record_ids:
                     delete_files = """
@@ -8066,7 +8066,7 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"file_ids": file_record_ids},
                         txn_id=txn_id
                     )
-                
+
                 # Step 4: Delete RECORD nodes
                 delete_records_query = """
                 MATCH (record:Record)
@@ -8078,17 +8078,17 @@ class Neo4jProvider(IGraphDBProvider):
                     parameters={"record_ids": valid_record_ids},
                     txn_id=txn_id
                 )
-                
+
                 deleted_records = [
                     {
                         "record_id": r["record_id"],
                         "name": r.get("record", {}).get("recordName", "Unknown")
                     } for r in valid_records
                 ]
-                
+
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
-                
+
                 return {
                     "success": True,
                     "deleted_records": deleted_records,
@@ -8097,12 +8097,12 @@ class Neo4jProvider(IGraphDBProvider):
                     "successfully_deleted": len(deleted_records),
                     "failed_count": len(failed_records),
                 }
-                
+
             except Exception as db_error:
                 if transaction is None and txn_id:
                     await self.rollback_transaction(txn_id)
                 raise db_error
-                
+
         except Exception as e:
             self.logger.error(f"❌ Failed to delete records: {str(e)}")
             return {
@@ -8182,14 +8182,14 @@ class Neo4jProvider(IGraphDBProvider):
                 # This collects ALL records/folders at any depth via BELONGS_TO edges BEFORE deletion
                 inventory_query = """
                 MATCH (kb:RecordGroup {id: $kb_id})
-                
+
                 // Get all records/folders that belong to this KB
                 OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(kb)
-                
+
                 // Get file details for each record
                 OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
-                
-                WITH kb, 
+
+                WITH kb,
                      collect(DISTINCT record) AS all_records,
                      collect(DISTINCT {
                          file_id: file.id,
@@ -8198,7 +8198,7 @@ class Neo4jProvider(IGraphDBProvider):
                          record: record,
                          file_doc: file
                      }) AS all_files_with_details
-                
+
                 // Separate folders and file records
                 WITH kb,
                      all_records,
@@ -8208,7 +8208,7 @@ class Neo4jProvider(IGraphDBProvider):
                          file_record: item.file_doc
                      }] AS file_records,
                      [item IN all_files_with_details | item.file_id] AS file_keys
-                
+
                 RETURN {
                     kb_exists: kb IS NOT NULL,
                     record_ids: [r IN all_records | r.id],
@@ -8247,44 +8247,44 @@ class Neo4jProvider(IGraphDBProvider):
 
                 # Step 2: Delete ALL relationships first (prevents orphaned edges)
                 self.logger.info("🗑️ Step 2: Deleting all relationships...")
-                
+
                 if all_record_ids:
                     edges_cleanup_query = """
                     MATCH (kb:RecordGroup {id: $kb_id})
-                    
+
                     // Delete BELONGS_TO edges (records -> KB)
                     OPTIONAL MATCH (record:Record)-[bt:BELONGS_TO]->(kb)
                     WHERE record.id IN $record_ids
-                    
+
                     // Delete BELONGS_TO edge (KB -> App)
                     OPTIONAL MATCH (kb)-[bt_app:BELONGS_TO]->(:App)
-                    
+
                     // Delete IS_OF_TYPE edges
                     OPTIONAL MATCH (record:Record)-[iot:IS_OF_TYPE]->(:File)
                     WHERE record.id IN $record_ids
-                    
+
                     // Delete PERMISSION edges to KB
                     OPTIONAL MATCH ()-[perm:PERMISSION]->(kb)
-                    
+
                     // Delete PERMISSION edges to records
                     OPTIONAL MATCH ()-[perm_rec:PERMISSION]->(record:Record)
                     WHERE record.id IN $record_ids
-                    
+
                     // Delete RECORD_RELATION edges between records
                     OPTIONAL MATCH (r1:Record)-[rr:RECORD_RELATION]-(r2:Record)
                     WHERE r1.id IN $record_ids OR r2.id IN $record_ids
-                    
-                    WITH collect(DISTINCT bt) + collect(DISTINCT bt_app) + 
-                         collect(DISTINCT iot) + collect(DISTINCT perm) + 
+
+                    WITH collect(DISTINCT bt) + collect(DISTINCT bt_app) +
+                         collect(DISTINCT iot) + collect(DISTINCT perm) +
                          collect(DISTINCT perm_rec) + collect(DISTINCT rr) AS all_edges
-                    
+
                     UNWIND all_edges AS edge
                     WITH edge WHERE edge IS NOT NULL
                     DELETE edge
-                    
+
                     RETURN count(edge) AS edges_deleted
                     """
-                    
+
                     edge_results = await self.client.execute_query(
                         edges_cleanup_query,
                         parameters={
@@ -8293,7 +8293,7 @@ class Neo4jProvider(IGraphDBProvider):
                         },
                         txn_id=transaction
                     )
-                    
+
                     edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
                     self.logger.info(f"✅ Deleted {edges_deleted} edges for KB {kb_id}")
 
@@ -8306,13 +8306,13 @@ class Neo4jProvider(IGraphDBProvider):
                     DELETE file
                     RETURN count(file) AS deleted
                     """
-                    
+
                     file_results = await self.client.execute_query(
                         delete_files_query,
                         parameters={"file_ids": all_file_ids},
                         txn_id=transaction
                     )
-                    
+
                     files_deleted = file_results[0]["deleted"] if file_results else 0
                     self.logger.info(f"✅ Deleted {files_deleted} FILE nodes")
 
@@ -8325,13 +8325,13 @@ class Neo4jProvider(IGraphDBProvider):
                     DELETE record
                     RETURN count(record) AS deleted
                     """
-                    
+
                     record_results = await self.client.execute_query(
                         delete_records_query,
                         parameters={"record_ids": all_record_ids},
                         txn_id=transaction
                     )
-                    
+
                     records_deleted = record_results[0]["deleted"] if record_results else 0
                     self.logger.info(f"✅ Deleted {records_deleted} RECORD nodes")
 
@@ -8342,13 +8342,13 @@ class Neo4jProvider(IGraphDBProvider):
                 DELETE kb
                 RETURN count(kb) AS deleted
                 """
-                
+
                 kb_results = await self.client.execute_query(
                     delete_kb_query,
                     parameters={"kb_id": kb_id},
                     txn_id=transaction
                 )
-                
+
                 kb_deleted = kb_results[0]["deleted"] if kb_results else 0
                 self.logger.info(f"✅ Deleted KB RecordGroup: {kb_deleted}")
 
@@ -10509,7 +10509,7 @@ class Neo4jProvider(IGraphDBProvider):
             '''
         """
         # Role priority map used for determining highest role
-        role_priority_map = "{{OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1}}"
+        role_priority_map = "{OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1}"
 
         if node_type == "record":
             return self._get_record_permission_role_cypher(node_var, user_var, role_priority_map)
@@ -10710,7 +10710,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> str:
         """
         Generate CALL subquery for App permission role.
-        
+
         - Checks USER_APP_RELATION edge
         - If USER_APP_RELATION exists:
         - Admin users:
@@ -10719,38 +10719,38 @@ class Neo4jProvider(IGraphDBProvider):
         - Team app creator: OWNER role (createdBy matches userId - MongoDB ID)
         - Otherwise: READER role
         - If USER_APP_RELATION doesn't exist: returns null (no access)
-        
+
         Note: createdBy stores MongoDB userId, so we compare with user.userId, not user.id
         """
         return f"""
         CALL {{
             WITH {node_var}, {user_var}
-            
+
             // Check if user has USER_APP_RELATION to app
             OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
-            
+
             // Check if user is admin
             WITH {node_var}, {user_var}, user_app_rel,
                 (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
-            
+
             // Get app scope and check if user is creator
             // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
             WITH {node_var}, {user_var}, user_app_rel, is_admin,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
-            
+
             // Determine role based on conditions
-            RETURN CASE 
+            RETURN CASE
                 // If no USER_APP_RELATION, no access
                 WHEN user_app_rel IS NULL THEN null
-                
+
                 // Admin users: EDITOR for team apps, OWNER for personal apps
                 WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
                 WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
-                
+
                 // Team app creator gets OWNER role
                 WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
-                
+
                 // Default: READER for regular users with USER_APP_RELATION
                 ELSE 'READER'
             END AS permission_role
@@ -11090,9 +11090,13 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> Dict[str, Any]:
         """
         Get user's context-level permissions.
-        Supports direct user, team, group, org, and ANYONE permissions.
-        For KB-related nodes, falls back to root KB permissions.
-        If multiple permissions exist, returns the highest role.
+
+        Uses the generic _get_permission_role_cypher method which provides:
+        - Complete permission checking (all 10 paths including role-based)
+        - INHERIT_PERMISSIONS chain traversal (up to 20 levels)
+        - Organization permissions
+
+        Returns permissions with context-specific flags (canUpload, canCreateFolders, etc.)
         """
         try:
             if not parent_id:
@@ -11115,138 +11119,79 @@ class Neo4jProvider(IGraphDBProvider):
                     txn_id=transaction
                 )
             else:
-                # Node level - comprehensive permission check
-                query = """
-                // Role priority map
-                WITH {OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1} AS role_priority
+                # Node level - use generic permission checker
+                # Generate permission calls for all node types
+                record_permission_call = self._get_permission_role_cypher(
+                    node_type="record",
+                    node_var="record",
+                    user_var="u"
+                )
+                rg_permission_call = self._get_permission_role_cypher(
+                    node_type="kb",  # Works for both KB and RecordGroup
+                    node_var="rg",
+                    user_var="u"
+                )
+                app_permission_call = self._get_permission_role_cypher(
+                    node_type="app",
+                    node_var="app",
+                    user_var="u"
+                )
+
+                query = f"""
+                MATCH (u:User {{id: $user_key}})
 
                 // Find the node (could be Record, App, or RecordGroup)
-                OPTIONAL MATCH (record:Record {id: $parent_id})
-                OPTIONAL MATCH (app:App {id: $parent_id})
-                OPTIONAL MATCH (rg:RecordGroup {id: $parent_id})
+                OPTIONAL MATCH (record:Record {{id: $parent_id}})
+                OPTIONAL MATCH (app:App {{id: $parent_id}})
+                OPTIONAL MATCH (rg:RecordGroup {{id: $parent_id}})
 
-                WITH role_priority, record, app, rg,
+                WITH u, record, app, rg,
                      coalesce(record, app, rg) AS node,
                      record IS NOT NULL AS is_record,
+                     app IS NOT NULL AS is_app,
                      rg IS NOT NULL AS is_rg
 
-                // Step 1: For records, check inheritPermissions to find permission target
-                OPTIONAL MATCH (record)-[:INHERIT_PERMISSIONS]->(inherited_target:RecordGroup)
-                WHERE record IS NOT NULL
+                WHERE node IS NOT NULL
 
-                WITH role_priority, node, record, rg, is_record, is_rg,
-                     CASE WHEN inherited_target IS NOT NULL THEN inherited_target ELSE node END AS permission_target
+                // Get permission for Records
+                CALL {{
+                    WITH u, record, is_record
+                    WITH u, record
+                    WHERE is_record
+                    {record_permission_call}
+                    RETURN permission_role AS record_perm
+                }}
 
-                // Step 2: Determine if this is KB-related (for root KB fallback)
-                // Check record's connector
-                OPTIONAL MATCH (record_connector:RecordGroup {id: record.connectorId})
-                WHERE record IS NOT NULL
+                // Get permission for RecordGroups
+                CALL {{
+                    WITH u, rg, is_rg
+                    WITH u, rg
+                    WHERE is_rg
+                    {rg_permission_call}
+                    RETURN permission_role AS rg_perm
+                }}
 
-                WITH role_priority, node, record, rg, is_record, is_rg, permission_target, record_connector,
-                     record IS NOT NULL AND (
-                         record.connectorName = 'KB' OR
-                         (record_connector IS NOT NULL AND record_connector.connectorName = 'KB')
-                     ) AS is_kb_record,
-                     rg IS NOT NULL AND rg.connectorName = 'KB' AS is_kb_rg
+                // Get permission for Apps
+                CALL {{
+                    WITH u, app, is_app
+                    WITH u, app
+                    WHERE is_app
+                    {app_permission_call}
+                    RETURN permission_role AS app_perm
+                }}
 
-                // For nested RGs under KB, traverse up to check
-                OPTIONAL MATCH (rg)-[:BELONGS_TO*1..10]->(ancestor_kb:RecordGroup)
-                WHERE rg IS NOT NULL AND NOT is_kb_rg AND ancestor_kb.connectorName = 'KB'
+                WITH coalesce(record_perm, rg_perm, app_perm, 'READER') AS final_role
 
-                WITH role_priority, node, record, rg, is_record, is_rg, permission_target,
-                     record_connector, is_kb_record, is_kb_rg,
-                     ancestor_kb IS NOT NULL AS is_nested_rg_under_kb,
-                     is_kb_record OR (ancestor_kb IS NOT NULL) AS needs_kb_fallback
-
-                // Find root KB for fallback
-                OPTIONAL MATCH (start_connector:RecordGroup {id: record.connectorId})
-                WHERE is_kb_record AND record IS NOT NULL
-
-                // For records under KB connector
-                OPTIONAL MATCH (start_connector)-[:BELONGS_TO*0..10]->(root_kb:RecordGroup)
-                WHERE is_kb_record AND root_kb.connectorName = 'KB'
-
-                // For nested RGs
-                OPTIONAL MATCH (rg)-[:BELONGS_TO*0..10]->(root_kb_from_rg:RecordGroup)
-                WHERE is_nested_rg_under_kb AND root_kb_from_rg.connectorName = 'KB'
-
-                WITH role_priority, node, permission_target, needs_kb_fallback,
-                     CASE
-                         WHEN is_kb_record AND start_connector IS NOT NULL AND start_connector.connectorName = 'KB'
-                              THEN start_connector
-                         WHEN is_kb_record AND root_kb IS NOT NULL THEN root_kb
-                         WHEN is_nested_rg_under_kb AND root_kb_from_rg IS NOT NULL THEN root_kb_from_rg
-                         WHEN is_kb_rg THEN rg
-                         ELSE null
-                     END AS root_kb
-
-                // Now get user and collect all permissions
-                MATCH (u:User {id: $user_key})
-
-                // Step 3: Direct user permission on permission_target
-                OPTIONAL MATCH (u)-[direct_perm:PERMISSION {type: 'USER'}]->(permission_target)
-                WHERE direct_perm.role IS NOT NULL AND direct_perm.role <> ''
-
-                // Step 4: Team permissions (user's role IN the team, not team's role on node)
-                OPTIONAL MATCH (u)-[user_team_perm:PERMISSION {type: 'USER'}]->(team:Team)-[team_node_perm:PERMISSION {type: 'TEAM'}]->(permission_target)
-                WHERE user_team_perm.role IS NOT NULL AND user_team_perm.role <> ''
-
-                // Step 5: Group permissions (user's role in group)
-                OPTIONAL MATCH (u)-[user_group_perm:PERMISSION {type: 'USER'}]->(grp:Group)-[group_node_perm:PERMISSION {type: 'GROUP'}]->(permission_target)
-                WHERE user_group_perm.role IS NOT NULL AND user_group_perm.role <> ''
-
-                // Step 6: Org permissions
-                OPTIONAL MATCH (org:Organization {id: $org_id})-[org_perm:PERMISSION {type: 'ORG'}]->(permission_target)
-                WHERE org_perm.role IS NOT NULL AND org_perm.role <> ''
-
-                // Step 7: ANYONE permissions
-                OPTIONAL MATCH ()-[anyone_perm:PERMISSION {type: 'ANYONE'}]->(permission_target)
-                WHERE anyone_perm.role IS NOT NULL AND anyone_perm.role <> ''
-
-                // Step 8: Root KB fallback permissions (if needed)
-                OPTIONAL MATCH (u)-[root_kb_direct:PERMISSION {type: 'USER'}]->(root_kb)
-                WHERE needs_kb_fallback AND root_kb IS NOT NULL
-                      AND root_kb_direct.role IS NOT NULL AND root_kb_direct.role <> ''
-
-                OPTIONAL MATCH (u)-[user_team_kb:PERMISSION {type: 'USER'}]->(team_kb:Team)-[:PERMISSION {type: 'TEAM'}]->(root_kb)
-                WHERE needs_kb_fallback AND root_kb IS NOT NULL
-                      AND user_team_kb.role IS NOT NULL AND user_team_kb.role <> ''
-
-                OPTIONAL MATCH (u)-[user_group_kb:PERMISSION {type: 'USER'}]->(grp_kb:Group)-[:PERMISSION {type: 'GROUP'}]->(root_kb)
-                WHERE needs_kb_fallback AND root_kb IS NOT NULL
-                      AND user_group_kb.role IS NOT NULL AND user_group_kb.role <> ''
-
-                // Collect all permission objects with priorities
-                WITH role_priority,
-                     [
-                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[toString(direct_perm.role)]} ELSE null END,
-                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[toString(user_team_perm.role)]} ELSE null END,
-                         CASE WHEN user_group_perm IS NOT NULL THEN {role: user_group_perm.role, priority: role_priority[toString(user_group_perm.role)]} ELSE null END,
-                         CASE WHEN org_perm IS NOT NULL THEN {role: org_perm.role, priority: role_priority[toString(org_perm.role)]} ELSE null END,
-                         CASE WHEN anyone_perm IS NOT NULL THEN {role: anyone_perm.role, priority: role_priority[toString(anyone_perm.role)]} ELSE null END,
-                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[toString(root_kb_direct.role)]} ELSE null END,
-                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[toString(user_team_kb.role)]} ELSE null END,
-                         CASE WHEN user_group_kb IS NOT NULL THEN {role: user_group_kb.role, priority: role_priority[toString(user_group_kb.role)]} ELSE null END
-                     ] AS all_perms_raw
-
-                // Filter nulls and find highest priority
-                WITH [p IN all_perms_raw WHERE p IS NOT NULL AND p.priority IS NOT NULL] AS all_perms
-
-                // Get highest priority role - unwind, sort, and pick first
-                // (Cannot use ORDER BY inside list comprehensions in Cypher)
-                UNWIND CASE WHEN size(all_perms) = 0 THEN [{role: 'READER', priority: 0}] ELSE all_perms END AS perm
-                WITH perm ORDER BY perm.priority DESC LIMIT 1
-                WITH perm.role AS final_role
-
-                RETURN {
+                RETURN {{
                     role: final_role,
                     canUpload: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canCreateFolders: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canDelete: final_role IN ['OWNER', 'ADMIN'],
                     canManagePermissions: final_role IN ['OWNER', 'ADMIN']
-                } AS result
+                }} AS result
                 """
+
                 results = await self.client.execute_query(
                     query,
                     parameters={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
@@ -11426,7 +11371,17 @@ class Neo4jProvider(IGraphDBProvider):
         node_types: List[str],
         transaction: Optional[str] = None
     ) -> Dict[str, Dict[str, Any]]:
-        """Get user permissions for multiple nodes in batch."""
+        """
+        Get user permissions for multiple nodes in batch.
+
+        Uses the generic _get_permission_role_cypher method which provides:
+        - Complete permission checking (all 10 paths for records)
+        - INHERIT_PERMISSIONS chain traversal (up to 20 levels)
+        - Organization and role-based permissions
+
+        No special KB handling needed since INHERIT_PERMISSIONS edges always exist,
+        allowing the generic method to traverse the full chain to root KB.
+        """
         if not node_ids:
             return {}
 
@@ -11438,99 +11393,33 @@ class Neo4jProvider(IGraphDBProvider):
 
             permissions = {}
 
-            # Query record group permissions
+            # Query record group permissions using generic permission method
             if record_group_ids:
-                query = """
-                MATCH (u:User {id: $user_key})
-                WITH u, {OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1} AS role_priority
+                permission_call = self._get_permission_role_cypher(
+                    node_type="kb",  # Works for both KB and RecordGroup
+                    node_var="rg",
+                    user_var="u"
+                )
+
+                query = f"""
+                MATCH (u:User {{id: $user_key}})
 
                 UNWIND $record_group_ids AS rg_id
-                MATCH (rg:RecordGroup {id: rg_id})
-
-                // Check if this is a KB or nested under KB
-                WITH u, rg, role_priority,
-                     (rg.connectorName = 'KB') AS is_kb
-
-                // Check if nested under KB by traversing up BELONGS_TO
-                OPTIONAL MATCH (rg)-[:BELONGS_TO*1..10]->(ancestor_kb:RecordGroup)
-                WHERE NOT is_kb AND ancestor_kb.connectorName = 'KB'
-
-                WITH u, rg, role_priority, is_kb,
-                     ancestor_kb IS NOT NULL AS is_nested_under_kb
-
-                // Priority 1: Direct user permission on record group
-                OPTIONAL MATCH (u)-[direct_perm:PERMISSION {type: 'USER'}]->(rg)
+                MATCH (rg:RecordGroup {{id: rg_id}})
                 WHERE NOT coalesce(rg.isDeleted, false)
-                      AND direct_perm.role IS NOT NULL AND direct_perm.role <> ''
 
-                // Priority 2: Team permissions (return user's role IN the team, not team's role on node)
-                OPTIONAL MATCH (u)-[user_team_perm:PERMISSION {type: 'USER'}]->(team:Team)-[:PERMISSION {type: 'TEAM'}]->(rg)
-                WHERE user_team_perm.role IS NOT NULL AND user_team_perm.role <> ''
+                // Use generic permission checker (checks INHERIT_PERMISSIONS chain + all 10 paths)
+                {permission_call}
 
-                // Priority 3: Group/Role permissions (return group's role on target)
-                OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)-[grp_perm:PERMISSION]->(rg)
-                WHERE (grp:Group OR grp:Role) AND grp_perm.type IN ['GROUP', 'ROLE']
-                      AND grp_perm.role IS NOT NULL AND grp_perm.role <> ''
+                WITH rg, coalesce(permission_role, 'READER') AS final_role
 
-                // Collect Priority 1-3 permissions
-                WITH u, rg, role_priority, is_kb, is_nested_under_kb, direct_perm, user_team_perm, grp_perm,
-                     [
-                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[toString(direct_perm.role)]} ELSE null END,
-                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[toString(user_team_perm.role)]} ELSE null END,
-                         CASE WHEN grp_perm IS NOT NULL THEN {role: grp_perm.role, priority: role_priority[toString(grp_perm.role)]} ELSE null END
-                     ] AS direct_perms
-
-                // Priority 4: For nested KB record groups, find root KB and check permissions
-                // Find root KB by traversing up
-                OPTIONAL MATCH (rg)-[:BELONGS_TO*0..10]->(root_kb:RecordGroup)
-                WHERE is_nested_under_kb AND root_kb.connectorName = 'KB'
-
-                // Check direct user permission on root KB
-                OPTIONAL MATCH (u)-[root_kb_direct:PERMISSION {type: 'USER'}]->(root_kb)
-                WHERE is_nested_under_kb AND root_kb IS NOT NULL
-                      AND root_kb_direct.role IS NOT NULL AND root_kb_direct.role <> ''
-
-                // Check team permission on root KB (user's role in team)
-                OPTIONAL MATCH (u)-[user_team_kb:PERMISSION {type: 'USER'}]->(team_kb:Team)-[:PERMISSION {type: 'TEAM'}]->(root_kb)
-                WHERE is_nested_under_kb AND root_kb IS NOT NULL
-                      AND user_team_kb.role IS NOT NULL AND user_team_kb.role <> ''
-
-                // Check group permission on root KB (group's role on KB)
-                OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp_kb)-[kb_grp_perm:PERMISSION]->(root_kb)
-                WHERE is_nested_under_kb AND root_kb IS NOT NULL
-                      AND (grp_kb:Group OR grp_kb:Role) AND kb_grp_perm.type IN ['GROUP', 'ROLE']
-                      AND kb_grp_perm.role IS NOT NULL AND kb_grp_perm.role <> ''
-
-                // Collect root KB permissions
-                WITH rg, role_priority, direct_perms, is_nested_under_kb,
-                     [
-                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[toString(root_kb_direct.role)]} ELSE null END,
-                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[toString(user_team_kb.role)]} ELSE null END,
-                         CASE WHEN kb_grp_perm IS NOT NULL THEN {role: kb_grp_perm.role, priority: role_priority[toString(kb_grp_perm.role)]} ELSE null END
-                     ] AS root_kb_perms
-
-                // Combine all permissions
-                WITH rg,
-                     [p IN direct_perms + CASE WHEN is_nested_under_kb THEN root_kb_perms ELSE [] END
-                      WHERE p IS NOT NULL AND p.priority IS NOT NULL] AS all_perms
-
-                // Get highest priority role using subquery (ORDER BY not supported in list comprehension)
-                CALL {
-                    WITH all_perms
-                    UNWIND CASE WHEN size(all_perms) = 0 THEN [{role: 'READER', priority: 0}] ELSE all_perms END AS perm
-                    WITH perm
-                    ORDER BY perm.priority DESC
-                    LIMIT 1
-                    RETURN perm.role AS final_role
-                }
-                WITH rg, final_role
-
-                RETURN rg.id AS node_id, {
+                RETURN rg.id AS node_id, {{
                     role: final_role,
                     canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canDelete: final_role IN ['OWNER', 'ADMIN']
-                } AS perm
+                }} AS perm
                 """
+
                 results = await self.client.execute_query(
                     query,
                     parameters={"user_key": user_key, "record_group_ids": record_group_ids},
@@ -11540,108 +11429,67 @@ class Neo4jProvider(IGraphDBProvider):
                     if r.get("node_id") and r.get("perm"):
                         permissions[r["node_id"]] = r["perm"]
 
-            # Apps - generally read-only (matching ArangoDB behavior)
-            for app_id in app_ids:
-                permissions[app_id] = {
-                    "role": "READER",
-                    "canEdit": False,
-                    "canDelete": False
-                }
+            # Query app permissions using generic permission method
+            if app_ids:
+                permission_call = self._get_permission_role_cypher(
+                    node_type="app",
+                    node_var="app",
+                    user_var="u"
+                )
 
-            # Query record permissions
-            if record_ids:
-                query = """
-                MATCH (u:User {id: $user_key})
-                WITH u, {OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1} AS role_priority
+                query = f"""
+                MATCH (u:User {{id: $user_key}})
 
-                UNWIND $record_ids AS rec_id
-                MATCH (record:Record {id: rec_id})
+                UNWIND $app_ids AS app_id
+                MATCH (app:App {{id: app_id}})
 
-                // Determine if record belongs to KB
-                OPTIONAL MATCH (record_connector:RecordGroup {id: record.connectorId})
-                WITH u, record, role_priority, record_connector,
-                     record_connector IS NOT NULL AND record_connector.connectorName = 'KB' AS is_direct_kb
+                // Use generic app permission checker
+                {permission_call}
 
-                // Check if nested under KB by traversing connector's hierarchy
-                OPTIONAL MATCH (record_connector)-[:BELONGS_TO*1..10]->(ancestor_kb:RecordGroup)
-                WHERE NOT is_direct_kb AND record_connector IS NOT NULL AND ancestor_kb.connectorName = 'KB'
+                WITH app, coalesce(permission_role, 'READER') AS final_role
 
-                WITH u, record, role_priority, record_connector, is_direct_kb,
-                     is_direct_kb OR (ancestor_kb IS NOT NULL) AS is_kb_record
-
-                // Priority 1: Direct user permission on record
-                OPTIONAL MATCH (u)-[direct_perm:PERMISSION {type: 'USER'}]->(record)
-                WHERE direct_perm.role IS NOT NULL AND direct_perm.role <> ''
-
-                // Priority 2: Team permissions (return user's role IN the team)
-                OPTIONAL MATCH (u)-[user_team_perm:PERMISSION {type: 'USER'}]->(team:Team)-[:PERMISSION {type: 'TEAM'}]->(record)
-                WHERE user_team_perm.role IS NOT NULL AND user_team_perm.role <> ''
-
-                // Priority 3: Group permissions (return group's role on record)
-                OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)-[grp_perm:PERMISSION {type: 'GROUP'}]->(record)
-                WHERE grp:Group AND grp_perm.role IS NOT NULL AND grp_perm.role <> ''
-
-                // Collect Priority 1-3 permissions
-                WITH u, record, role_priority, record_connector, is_direct_kb, is_kb_record,
-                     [
-                         CASE WHEN direct_perm IS NOT NULL THEN {role: direct_perm.role, priority: role_priority[toString(direct_perm.role)]} ELSE null END,
-                         CASE WHEN user_team_perm IS NOT NULL THEN {role: user_team_perm.role, priority: role_priority[toString(user_team_perm.role)]} ELSE null END,
-                         CASE WHEN grp_perm IS NOT NULL THEN {role: grp_perm.role, priority: role_priority[toString(grp_perm.role)]} ELSE null END
-                     ] AS direct_perms
-
-                // Priority 4: For KB records, find root KB and check permissions
-                // If connector is root KB, use it; otherwise traverse up
-                OPTIONAL MATCH (record_connector)-[:BELONGS_TO*0..10]->(root_kb:RecordGroup)
-                WHERE is_kb_record AND root_kb.connectorName = 'KB'
-
-                WITH u, record, role_priority, is_kb_record, direct_perms,
-                     CASE WHEN is_direct_kb THEN record_connector ELSE root_kb END AS final_root_kb
-
-                // Check direct user permission on root KB
-                OPTIONAL MATCH (u)-[root_kb_direct:PERMISSION {type: 'USER'}]->(final_root_kb)
-                WHERE is_kb_record AND final_root_kb IS NOT NULL
-                      AND root_kb_direct.role IS NOT NULL AND root_kb_direct.role <> ''
-
-                // Check team permission on root KB (user's role in team)
-                OPTIONAL MATCH (u)-[user_team_kb:PERMISSION {type: 'USER'}]->(team_kb:Team)-[:PERMISSION {type: 'TEAM'}]->(final_root_kb)
-                WHERE is_kb_record AND final_root_kb IS NOT NULL
-                      AND user_team_kb.role IS NOT NULL AND user_team_kb.role <> ''
-
-                // Check group permission on root KB (group's role on KB)
-                OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp_kb:Group)-[kb_grp_perm:PERMISSION {type: 'GROUP'}]->(final_root_kb)
-                WHERE is_kb_record AND final_root_kb IS NOT NULL
-                      AND kb_grp_perm.role IS NOT NULL AND kb_grp_perm.role <> ''
-
-                // Collect root KB permissions
-                WITH record, role_priority, direct_perms, is_kb_record,
-                     [
-                         CASE WHEN root_kb_direct IS NOT NULL THEN {role: root_kb_direct.role, priority: role_priority[toString(root_kb_direct.role)]} ELSE null END,
-                         CASE WHEN user_team_kb IS NOT NULL THEN {role: user_team_kb.role, priority: role_priority[toString(user_team_kb.role)]} ELSE null END,
-                         CASE WHEN kb_grp_perm IS NOT NULL THEN {role: kb_grp_perm.role, priority: role_priority[toString(kb_grp_perm.role)]} ELSE null END
-                     ] AS root_kb_perms
-
-                // Combine all permissions
-                WITH record,
-                     [p IN direct_perms + CASE WHEN is_kb_record THEN root_kb_perms ELSE [] END
-                      WHERE p IS NOT NULL AND p.priority IS NOT NULL] AS all_perms
-
-                // Get highest priority role using subquery (ORDER BY not supported in list comprehension)
-                CALL {
-                    WITH all_perms
-                    UNWIND CASE WHEN size(all_perms) = 0 THEN [{role: 'READER', priority: 0}] ELSE all_perms END AS perm
-                    WITH perm
-                    ORDER BY perm.priority DESC
-                    LIMIT 1
-                    RETURN perm.role AS final_role
-                }
-                WITH record, final_role
-
-                RETURN record.id AS node_id, {
+                RETURN app.id AS node_id, {{
                     role: final_role,
                     canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
                     canDelete: final_role IN ['OWNER', 'ADMIN']
-                } AS perm
+                }} AS perm
                 """
+
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"user_key": user_key, "app_ids": app_ids},
+                    txn_id=transaction
+                )
+                for r in results or []:
+                    if r.get("node_id") and r.get("perm"):
+                        permissions[r["node_id"]] = r["perm"]
+
+            # Query record permissions using generic permission method
+            if record_ids:
+                permission_call = self._get_permission_role_cypher(
+                    node_type="record",
+                    node_var="record",
+                    user_var="u"
+                )
+
+                query = f"""
+                MATCH (u:User {{id: $user_key}})
+
+                UNWIND $record_ids AS rec_id
+                MATCH (record:Record {{id: rec_id}})
+
+                // Use generic permission checker (checks INHERIT_PERMISSIONS chain + all 10 paths)
+                {permission_call}
+
+                WITH record, coalesce(permission_role, 'READER') AS final_role
+
+                RETURN record.id AS node_id, {{
+                    role: final_role,
+                    canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
+                    canDelete: final_role IN ['OWNER', 'ADMIN']
+                }} AS perm
+                """
+
                 results = await self.client.execute_query(
                     query,
                     parameters={"user_key": user_key, "record_ids": record_ids},
@@ -12342,6 +12190,106 @@ class Neo4jProvider(IGraphDBProvider):
         RETURN raw_children
         """
 
+    def _build_knowledge_hub_filter_conditions(
+        self,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+    ) -> tuple[List[str], Dict[str, Any]]:
+        """
+        Build filter conditions and parameters for knowledge hub search queries.
+
+        Returns:
+            Tuple of (filter_conditions, filter_params)
+        """
+        filter_conditions = []
+        filter_params = {}
+
+        # Search query filter - will be combined with other conditions
+        if search_query:
+            filter_params["search_query"] = search_query.lower()
+
+        # Node type filter
+        if node_types:
+            type_conditions = []
+            for nt in node_types:
+                if nt == "folder":
+                    type_conditions.append("node.nodeType = 'folder'")
+                elif nt == "record":
+                    type_conditions.append("node.nodeType = 'record'")
+                elif nt == "recordGroup":
+                    type_conditions.append("node.nodeType = 'recordGroup'")
+                elif nt == "app":
+                    type_conditions.append("node.nodeType = 'app'")
+                elif nt == "kb":
+                    type_conditions.append("node.nodeType = 'kb'")
+            if type_conditions:
+                filter_conditions.append(f"({' OR '.join(type_conditions)})")
+
+        # Record-specific filters - only apply to record/folder nodes
+        if record_types:
+            filter_params["record_types"] = record_types
+            filter_conditions.append("(node.nodeType IN ['record', 'folder'] AND node.recordType IS NOT NULL AND node.recordType IN $record_types)")
+
+        if indexing_status:
+            filter_params["indexing_status"] = indexing_status
+            filter_conditions.append("(node.nodeType IN ['record', 'folder'] AND node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
+
+        if created_at:
+            if created_at.get("gte"):
+                filter_params["created_at_gte"] = created_at["gte"]
+                filter_conditions.append("node.createdAt >= $created_at_gte")
+            if created_at.get("lte"):
+                filter_params["created_at_lte"] = created_at["lte"]
+                filter_conditions.append("node.createdAt <= $created_at_lte")
+
+        if updated_at:
+            if updated_at.get("gte"):
+                filter_params["updated_at_gte"] = updated_at["gte"]
+                filter_conditions.append("node.updatedAt >= $updated_at_gte")
+            if updated_at.get("lte"):
+                filter_params["updated_at_lte"] = updated_at["lte"]
+                filter_conditions.append("node.updatedAt <= $updated_at_lte")
+
+        if size:
+            if size.get("gte"):
+                filter_params["size_gte"] = size["gte"]
+                filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes >= $size_gte)")
+            if size.get("lte"):
+                filter_params["size_lte"] = size["lte"]
+                filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes <= $size_lte)")
+
+        if origins:
+            filter_params["origins"] = origins
+            filter_conditions.append("node.source IN $origins")
+
+        if connector_ids and kb_ids:
+            filter_params["connector_ids"] = connector_ids
+            filter_params["kb_ids"] = kb_ids
+            filter_conditions.append(
+                "((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids) OR "
+                "(node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.recordGroupId IN $kb_ids))"
+            )
+        elif connector_ids:
+            filter_params["connector_ids"] = connector_ids
+            filter_conditions.append("((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids))")
+        elif kb_ids:
+            filter_params["kb_ids"] = kb_ids
+            filter_conditions.append("((node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.recordGroupId IN $kb_ids))")
+
+        # Add search condition to filter conditions if present
+        if search_query:
+            filter_conditions.insert(0, "toLower(node.name) CONTAINS $search_query")
+
+        return filter_conditions, filter_params
+
     async def get_knowledge_hub_recursive_search(
         self,
         parent_id: str,
@@ -12368,21 +12316,33 @@ class Neo4jProvider(IGraphDBProvider):
         """
         Search recursively within a parent node and all its descendants.
         Uses graph traversal to find all nested children.
-        
+
         For RecordGroup/KB parents:
         - Gets all nested RecordGroups via BELONGS_TO edges
         - For each RecordGroup, gets direct records via BELONGS_TO edges
         - Checks permissions using _get_permission_role_cypher for both RecordGroups and Records
         - Filters out nodes where user has no permission (permission_role is null)
         - Applies all filters, sorting, and pagination
-        
+
         For Record/Folder parents:
         - Traverses via RECORD_RELATION edges to find nested records
         - Applies filters, sorting, and pagination
         """
         try:
-            # Build filter conditions
-            filter_conditions = []
+            # Build filter conditions using helper function
+            filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
+                search_query=search_query,
+                node_types=node_types,
+                record_types=record_types,
+                indexing_status=indexing_status,
+                created_at=created_at,
+                updated_at=updated_at,
+                size=size,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids
+            )
+
             params = {
                 "parent_id": parent_id,
                 "org_id": org_id,
@@ -12393,83 +12353,10 @@ class Neo4jProvider(IGraphDBProvider):
                 "sort_dir": sort_dir.upper(),
                 "only_containers": only_containers,
             }
-
-            # Search query filter - will be combined with other conditions
-            if search_query:
-                params["search_query"] = search_query.lower()
-
-            # Node type filter
-            if node_types:
-                type_conditions = []
-                for nt in node_types:
-                    if nt == "folder":
-                        type_conditions.append("node.nodeType = 'folder'")
-                    elif nt == "record":
-                        type_conditions.append("node.nodeType = 'record'")
-                    elif nt == "recordGroup":
-                        type_conditions.append("node.nodeType = 'recordGroup'")
-                if type_conditions:
-                    filter_conditions.append(f"({' OR '.join(type_conditions)})")
-
-            if record_types:
-                params["record_types"] = record_types
-                filter_conditions.append("(node.recordType IS NOT NULL AND node.recordType IN $record_types)")
-
-            if indexing_status:
-                params["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
-
-            if created_at:
-                if created_at.get("gte"):
-                    params["created_at_gte"] = created_at["gte"]
-                    filter_conditions.append("node.createdAt >= $created_at_gte")
-                if created_at.get("lte"):
-                    params["created_at_lte"] = created_at["lte"]
-                    filter_conditions.append("node.createdAt <= $created_at_lte")
-
-            if updated_at:
-                if updated_at.get("gte"):
-                    params["updated_at_gte"] = updated_at["gte"]
-                    filter_conditions.append("node.updatedAt >= $updated_at_gte")
-                if updated_at.get("lte"):
-                    params["updated_at_lte"] = updated_at["lte"]
-                    filter_conditions.append("node.updatedAt <= $updated_at_lte")
-
-            if size:
-                if size.get("gte"):
-                    params["size_gte"] = size["gte"]
-                    filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes >= $size_gte)")
-                if size.get("lte"):
-                    params["size_lte"] = size["lte"]
-                    filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes <= $size_lte)")
-
-            if origins:
-                params["origins"] = origins
-                filter_conditions.append("node.source IN $origins")
-
-            if connector_ids and kb_ids:
-                params["connector_ids"] = connector_ids
-                params["kb_ids"] = kb_ids
-                filter_conditions.append(
-                    "((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids) OR "
-                    "(node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids))"
-                )
-            elif connector_ids:
-                params["connector_ids"] = connector_ids
-                filter_conditions.append("(node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids)")
-            elif kb_ids:
-                params["kb_ids"] = kb_ids
-                filter_conditions.append("(node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids)")
-
-            # Add search condition to filter conditions if present
-            if search_query:
-                filter_conditions.insert(0, "toLower(node.name) CONTAINS $search_query")
-
-            self.logger.info(f"filter_conditions: {filter_conditions}")
+            # Merge filter params into params dict
+            params.update(filter_params)
 
             filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
-
-            self.logger.info(f"filter_clause: {filter_clause}")
 
             # Determine traversal based on parent type
             if parent_type in ("kb", "recordGroup"):
@@ -12479,10 +12366,10 @@ class Neo4jProvider(IGraphDBProvider):
                 # Fix double braces in permission calls (they're escaped for f-strings but need single braces for Cypher)
                 permission_call_rg = permission_call_rg.replace("{{", "{").replace("}}", "}")
                 permission_call_record = permission_call_record.replace("{{", "{").replace("}}", "}")
-                
-                query = f"""
-                MATCH (parent:RecordGroup {{id: $parent_id}})
-                MATCH (u:User {{id: $user_key}})
+
+                query = """
+                MATCH (parent:RecordGroup {id: $parent_id})
+                MATCH (u:User {id: $user_key})
 
                 // ==================== GET ALL NESTED RECORD GROUPS ====================
                 OPTIONAL MATCH (nested_rg:RecordGroup)-[:BELONGS_TO*1..10]->(parent)
@@ -12520,6 +12407,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: rg.connectorName,
                     connectorId: CASE WHEN rg.connectorName = 'KB' THEN null ELSE rg.connectorId END,
                     kbId: CASE WHEN rg.connectorName = 'KB' THEN rg.id ELSE null END,
+                    recordGroupId: rg.parentExternalGroupId,
                     recordType: null,
                     recordGroupType: rg.groupType,
                     indexingStatus: null,
@@ -12574,6 +12462,7 @@ class Neo4jProvider(IGraphDBProvider):
                          connector: record.connectorName,
                          connectorId: record.connectorId,
                          kbId: CASE WHEN record.connectorName = 'KB' THEN record.connectorId ELSE null END,
+                         recordGroupId: record.recordGroupId,
                          recordType: record.recordType,
                          recordGroupType: null,
                          indexingStatus: record.indexingStatus,
@@ -12671,6 +12560,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connectorId: v.connectorId,
                     kbId: CASE WHEN record_connector IS NOT NULL AND record_connector.connectorName = 'KB'
                                THEN v.connectorId ELSE null END,
+                    recordGroupId: v.recordGroupId,
                     recordType: v.recordType,
                     recordGroupType: null,
                     indexingStatus: v.indexingStatus,
@@ -12780,6 +12670,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: rg.connectorName,
                     connectorId: rg.connectorId,
                     kbId: null,
+                    recordGroupId: rg.parentExternalGroupId,
                     recordType: null,
                     recordGroupType: rg.groupType,
                     indexingStatus: null,
@@ -12815,6 +12706,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: record.connectorName,
                     connectorId: record.connectorId,
                     kbId: null,
+                    recordGroupId: record.recordGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
@@ -12912,8 +12804,44 @@ class Neo4jProvider(IGraphDBProvider):
         Combines results from multiple sources with permission filtering.
         """
         try:
-            # Build filter conditions
-            filter_conditions = []
+            # Build filter conditions using helper function
+            filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
+                search_query=search_query,
+                node_types=node_types,
+                record_types=record_types,
+                indexing_status=indexing_status,
+                created_at=created_at,
+                updated_at=updated_at,
+                size=size,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids
+            )
+
+            # Node type filter - handle include/exclude logic
+            # Record-specific filters (recordTypes, indexingStatus) always mean only records
+            if record_types or indexing_status:
+                include_kbs = False
+                include_apps = False
+                include_record_groups = False
+                include_records = True
+            elif node_types:
+                include_kbs = "kb" in node_types
+                include_apps = "app" in node_types
+                include_record_groups = "recordGroup" in node_types
+                include_records = "folder" in node_types or "record" in node_types or "file" in node_types
+            else:
+                # Default: include all node types
+                include_kbs = True
+                include_apps = True
+                include_record_groups = True
+                include_records = True
+
+            # Origin filter affects include flags
+            if origins:
+                include_kbs = include_kbs and ("KB" in origins)
+                include_apps = include_apps and ("CONNECTOR" in origins)
+
             params = {
                 "user_key": user_key,
                 "org_id": org_id,
@@ -12924,102 +12852,8 @@ class Neo4jProvider(IGraphDBProvider):
                 "sort_dir": sort_dir.upper(),
                 "only_containers": only_containers,
             }
-
-            # Search query filter - will be combined with other conditions
-            if search_query:
-                params["search_query"] = search_query.lower()
-
-            # Node type filter - handle include/exclude logic
-            include_kbs = True
-            include_apps = True
-            include_record_groups = True
-            include_records = True
-
-            if node_types:
-                include_kbs = "kb" in node_types
-                include_apps = "app" in node_types
-                include_record_groups = "recordGroup" in node_types
-                include_records = "folder" in node_types or "record" in node_types or "file" in node_types
-
-                type_conditions = []
-                for nt in node_types:
-                    if nt == "folder":
-                        type_conditions.append("node.nodeType = 'folder'")
-                    elif nt == "record":
-                        type_conditions.append("node.nodeType = 'record'")
-                    elif nt == "recordGroup":
-                        type_conditions.append("node.nodeType = 'recordGroup'")
-                    elif nt == "app":
-                        type_conditions.append("node.nodeType = 'app'")
-                    elif nt == "kb":
-                        type_conditions.append("node.nodeType = 'kb'")
-                if type_conditions:
-                    filter_conditions.append(f"({' OR '.join(type_conditions)})")
-
-            if record_types:
-                params["record_types"] = record_types
-                filter_conditions.append("(node.recordType IS NULL OR node.recordType IN $record_types)")
-
-            if indexing_status:
-                params["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
-
-            if created_at:
-                if created_at.get("gte"):
-                    params["created_at_gte"] = created_at["gte"]
-                    filter_conditions.append("node.createdAt >= $created_at_gte")
-                if created_at.get("lte"):
-                    params["created_at_lte"] = created_at["lte"]
-                    filter_conditions.append("node.createdAt <= $created_at_lte")
-
-            if updated_at:
-                if updated_at.get("gte"):
-                    params["updated_at_gte"] = updated_at["gte"]
-                    filter_conditions.append("node.updatedAt >= $updated_at_gte")
-                if updated_at.get("lte"):
-                    params["updated_at_lte"] = updated_at["lte"]
-                    filter_conditions.append("node.updatedAt <= $updated_at_lte")
-
-            if size:
-                if size.get("gte"):
-                    params["size_gte"] = size["gte"]
-                    filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes >= $size_gte)")
-                if size.get("lte"):
-                    params["size_lte"] = size["lte"]
-                    filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes <= $size_lte)")
-
-            # Origin filter (KB vs CONNECTOR)
-            if origins:
-                params["origins"] = origins
-                filter_conditions.append("node.source IN $origins")
-                include_kbs = include_kbs and ("KB" in origins)
-                include_apps = include_apps and ("CONNECTOR" in origins)
-
-            # Connector/KB ID filters
-            if connector_ids and kb_ids:
-                params["connector_ids"] = connector_ids
-                params["kb_ids"] = kb_ids
-                filter_conditions.append(
-                    "((node.nodeType = 'app' AND node.id IN $connector_ids) OR "
-                    "(node.nodeType IN ['recordGroup', 'folder', 'record'] AND node.connectorId IN $connector_ids) OR "
-                    "(node.nodeType = 'kb' AND node.id IN $kb_ids) OR "
-                    "(node.kbId IN $kb_ids))"
-                )
-            elif connector_ids:
-                params["connector_ids"] = connector_ids
-                filter_conditions.append(
-                    "((node.nodeType = 'app' AND node.id IN $connector_ids) OR "
-                    "(node.nodeType IN ['recordGroup', 'folder', 'record'] AND node.connectorId IN $connector_ids))"
-                )
-            elif kb_ids:
-                params["kb_ids"] = kb_ids
-                filter_conditions.append(
-                    "((node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids))"
-                )
-
-            # Add search condition to filter conditions if present
-            if search_query:
-                filter_conditions.insert(0, "toLower(node.name) CONTAINS $search_query")
+            # Merge filter params into params dict
+            params.update(filter_params)
 
             filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
 
@@ -13067,6 +12901,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: 'KB',
                     connectorId: null,
                     kbId: kb.id,
+                    recordGroupId: kb.parentExternalGroupId,
                     recordType: null,
                     recordGroupType: 'KB',
                     indexingStatus: null,
@@ -13103,6 +12938,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: app.type,
                     connectorId: app.id,
                     kbId: null,
+                    recordGroupId: null,
                     recordType: null,
                     recordGroupType: null,
                     indexingStatus: null,
@@ -13167,6 +13003,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: rg.connectorName,
                     connectorId: CASE WHEN NOT is_kb_rg THEN rg.connectorId ELSE null END,
                     kbId: CASE WHEN is_kb_rg THEN rg.kbId ELSE null END,
+                    recordGroupId: rg.parentExternalGroupId,
                     recordType: null,
                     recordGroupType: rg.groupType,
                     indexingStatus: null,
@@ -13234,6 +13071,7 @@ class Neo4jProvider(IGraphDBProvider):
                     connector: record.connectorName,
                     connectorId: CASE WHEN source = 'CONNECTOR' THEN record.connectorId ELSE null END,
                     kbId: CASE WHEN source = 'KB' THEN record.connectorId ELSE null END,
+                    recordGroupId: record.recordGroupId,
                     recordType: record.recordType,
                     recordGroupType: null,
                     indexingStatus: record.indexingStatus,
