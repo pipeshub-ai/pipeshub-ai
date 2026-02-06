@@ -1757,12 +1757,23 @@ export default function RecordDetails() {
             </Grid>
           </Grid>
         </Container>
+        {/* Edit Record Dialog */}
+        {recordData && recordData.record && recordData.knowledgeBase && (
+          <EditRecordDialog
+            open={isEditDialogOpen}
+            onClose={() => setIsEditDialogOpen(false)}
+            onRecordUpdated={refreshRecordData}
+            storageDocumentId={record.externalRecordId}
+            recordId={record.id}
+            record={record}
+          />
+        )}
         {recordData && recordData.record && (
           <DeleteRecordDialog
             open={isDeleteDialogOpen}
             onClose={() => setIsDeleteDialogOpen(false)}
             onRecordDeleted={handleDeleteRecord}
-            recordId={record._key}
+            recordId={record.id}
             recordName={record.recordName}
           />
         )}
@@ -2147,16 +2158,16 @@ export default function RecordDetails() {
           {/* Chat Interface */}
           <Box sx={{ flexGrow: 1 }}>
             <RecordSalesAgent
-              key={record._id} // Force new instance when record changes
+              key={record.id} // Force new instance when record changes
               initialContext={{
-                recordId: record._id,
+                recordId: record.id,
                 recordName: record.recordName,
                 recordType: record.recordType,
                 departments: record.departments?.map((d) => d.name),
                 modules: record.modules?.map((m) => m.name),
                 categories: record.appSpecificRecordType?.map((t) => t.name),
               }}
-              recordId={record._id}
+              recordId={record.id}
               containerStyle={{ height: '100%' }}
             />
           </Box>

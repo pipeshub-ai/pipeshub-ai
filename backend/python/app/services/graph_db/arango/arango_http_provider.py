@@ -1443,23 +1443,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
             await self._reset_indexing_status_to_queued(record_id)
 
             # Create event data for router to publish
-            # Since depth is always 100, we always use batch reindex (connector reindex event)
             try:
-                connector_normalized = connector_name.replace(" ", "").lower()
-                event_type = f"{connector_normalized}.reindex"
+                # KB records should always use record-events, not sync-events
+                # They don't need connector-based batch reindexing
+                if origin == OriginTypes.UPLOAD.value:
+                    # Get file record for KB reindex event payload
+                    # KB uploads are always FILE records
+                    file_record = None
+                    if rec.get("recordType") == "FILE":
+                        file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+                    
+                    # Create reindex event payload for KB records
+                    payload = await self._create_reindex_event_payload(rec, file_record, user_id, request, record_id=record_id)
+                    event_data = {
+                        "eventType": "newRecord",  # Use newRecord for KB reindex (same as single record reindex)
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    # For connector records, use sync-events with connector reindex event
+                    connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
+                    event_type = f"{connector_for_event}.reindex"
 
-                payload = {
-                    "orgId": org_id,
-                    "recordId": record_id,
-                    "depth": depth,
-                    "connectorId": connector_id
-                }
+                    payload = {
+                        "orgId": org_id,
+                        "recordId": record_id,
+                        "depth": depth,
+                        "connectorId": connector_id,
+                        "connector": connector_for_event  # Add connector field for consumer fallback
+                    }
 
-                event_data = {
-                    "eventType": event_type,
-                    "topic": "sync-events",
-                    "payload": payload
-                }
+                    event_data = {
+                        "eventType": event_type,
+                        "topic": "sync-events",
+                        "payload": payload
+                    }
 
                 return {
                     "success": True,
@@ -1468,7 +1486,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
                     "userRole": user_role,
                     "eventData": event_data,
-                    "useBatchReindex": True
+                    "useBatchReindex": origin != OriginTypes.UPLOAD.value  # KB records don't use batch reindex
                 }
 
             except Exception as event_error:
@@ -9574,29 +9592,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> bool:
         """
         Validate folder exists in specific KB.
-        Uses direct KB ID check instead of edge traversal.
+        Uses edge traversal to check BELONGS_TO relationship.
         """
         try:
             query = """
-            FOR folder IN @@files_collection
-                FILTER folder._key == @folder_id
-                FILTER folder.recordGroupId == @kb_id
-                FILTER folder.isFile == false
-                RETURN true
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+            LET folder_valid = folder_record != null AND folder_file != null
+            LET relationship = folder_valid ? FIRST(
+                FOR edge IN @@belongs_to_collection
+                    FILTER edge._from == @folder_from
+                    FILTER edge._to == @kb_to
+                    FILTER edge.entityType == @entity_type
+                    RETURN 1
+            ) : null
+            RETURN folder_valid AND relationship != null
             """
-
             results = await self.execute_query(
                 query,
                 bind_vars={
                     "folder_id": folder_id,
-                    "kb_id": kb_id,
-                    "@files_collection": CollectionNames.FILES.value,
+                    "folder_from": f"records/{folder_id}",
+                    "kb_to": f"recordGroups/{kb_id}",
+                    "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                    "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 },
                 transaction=transaction,
             )
-
             return bool(results and results[0])
-
         except Exception as e:
             self.logger.error(f"❌ Failed to validate folder exists in KB: {str(e)}")
             return False
@@ -9729,7 +9761,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if not inventory.get("folder_exists"):
                     if transaction is None and txn_id:
                         await self.rollback_transaction(txn_id)
-                    return False
+                    return {"success": False, "eventData": None}
                 records_with_details = inventory.get("records_with_details", [])
                 all_record_keys = [rd["record"]["_key"] for rd in records_with_details]
                 all_folders = inventory.get("all_folders", [])
@@ -9779,14 +9811,38 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
                 self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
-                return True
+                
+                # Step: Prepare event data for all deleted file records (router will publish)
+                event_payloads = []
+                try:
+                    for record_data in records_with_details:  # Already contains only file records
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data["file_record"]
+                        )
+                        if delete_payload:
+                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
+
+                return {
+                    "success": True,
+                    "eventData": event_data
+                }
             except Exception as db_error:
                 if transaction is None and txn_id:
                     await self.rollback_transaction(txn_id)
                 raise db_error
         except Exception as e:
             self.logger.error(f"❌ Failed to delete folder: {str(e)}")
-            return False
+            return {"success": False, "eventData": None}
 
     async def update_record(
         self,

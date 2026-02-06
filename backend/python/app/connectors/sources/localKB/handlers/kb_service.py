@@ -730,10 +730,10 @@ class KnowledgeBaseService:
             # Check user permissions
             user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
             if user_role != "OWNER":
-                self.logger.warning(f"⚠️ User {user_key} lacks permission to add records in KB {kb_id}")
+                self.logger.warning(f"⚠️ User {user_key} lacks permission to delete folder in KB {kb_id}")
                 return {
                     "success": False,
-                    "reason": "User lacks permission to add records",
+                    "reason": "User lacks permission to delete folder",
                     "code": "403"
                 }
             # Validate that folder exists and belongs to the KB
@@ -752,12 +752,13 @@ class KnowledgeBaseService:
                 folder_id=folder_id
             )
 
-            if result:
+            if result and result.get("success"):
                 self.logger.info(f"🎉 Folder {folder_id} and ALL contents deleted successfully by {user_id}")
                 return {
                     "success": True,
                     "reason": "Folder and all contents deleted successfully",
                     "code": 200,
+                    "eventData": result.get("eventData")  # Pass eventData to router
                 }
             else:
                 self.logger.warning("⚠️ Failed to delete folder")

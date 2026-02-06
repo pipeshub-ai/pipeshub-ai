@@ -62,9 +62,9 @@ export interface Metadata {
 }
 
 export interface Record {
-  _key: string;
-  _id: string;
-  _rev: string;
+  _key?: string;
+  _id?: string;
+  _rev?: string;
   id: string;
   orgId: string;
   recordName: string;
@@ -99,9 +99,10 @@ export interface Record {
 }
 
 export interface FileRecord {
-  _key: string;
-  _id: string;
-  _rev: string;
+  _key?: string;
+  _id?: string;
+  _rev?: string;
+  id: string;
   orgId: string;
   name: string;
   isFile: boolean;
@@ -113,9 +114,10 @@ export interface FileRecord {
 }
 
 export interface MailRecord {
-  _key: string;
-  _id: string;
-  _rev: string;
+  _key?: string;
+  _id?: string;
+  _rev?: string;
+  id: string;
   threadId: string;
   isParent: boolean;
   internalDate: string;
@@ -132,9 +134,10 @@ export interface MailRecord {
 }
 
 export interface TicketRecord {
-  _key: string;
-  _id: string;
-  _rev: string;
+  _key?: string;
+  _id?: string;
+  _rev?: string;
+  id: string;
   orgId: string;
   name: string;
   status: string;
