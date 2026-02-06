@@ -1389,7 +1389,7 @@ class IGraphDBProvider(ABC):
         kb_id: str,
         folder_id: str,
         transaction: Optional[str] = None,
-    ) -> bool:
+    ) -> Dict[str, Any]:
         """Delete a folder and all nested content."""
         pass
 
