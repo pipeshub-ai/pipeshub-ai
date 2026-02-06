@@ -748,8 +748,11 @@ async def delete_folder(
     folder_id: str,
     request: Request,
     kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> SuccessResponse:
     try:
+        container = request.app.container
+        logger = container.logger()
         user_id = request.state.user.get("userId")
         result = await kb_service.delete_folder(kb_id=kb_id, folder_id=folder_id, user_id=user_id)
         if not result or result.get("success") is False:
@@ -759,6 +762,28 @@ async def delete_folder(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        # Publish batch deletion events
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events for folder {folder_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish folder deletion events: {str(e)}")
+
         return SuccessResponse(message="Folder deleted successfully")
 
     except HTTPException as he:
@@ -1232,7 +1257,85 @@ async def update_record(
             except Exception as e:
                 logger.error(f"❌ Failed to publish update event: {str(e)}")
 
-        return result
+        # Enrich response with required fields for UpdateRecordResponse
+        graph_provider = request.app.state.graph_provider
+        try:
+            # Get KB context for the record
+            kb_context = await graph_provider._get_kb_context_for_record(record_id)
+            if not kb_context:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Knowledge base not found for record"
+                )
+            
+            kb_id = kb_context.get("kb_id")
+            if not kb_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Knowledge base ID not found for record"
+                )
+            
+            # Get user permission
+            user_key = user_id
+            user = await graph_provider.get_user_by_user_id(user_id)
+            if user:
+                user_key = user.get("_key") or user.get("id") or user_id
+            
+            user_permission = await graph_provider.get_user_kb_permission(kb_id, user_key)
+            if not user_permission:
+                user_permission = "NONE"
+            
+            # Get KB information
+            kb_info = await graph_provider.get_knowledge_base(kb_id, user_key)
+            if not kb_info:
+                # Fallback to basic KB info from context
+                kb_info = {
+                    "id": kb_id,
+                    "name": kb_context.get("kb_name", ""),
+                    "createdAtTimestamp": None,
+                    "updatedAtTimestamp": None,
+                    "createdBy": None,
+                    "userRole": user_permission,
+                    "folders": []
+                }
+            
+            # Determine location (folder or kb_root)
+            folder_mime_types = ["application/vnd.google-apps.folder", "application/x-directory"]
+            parent_info = await graph_provider.get_knowledge_hub_parent_node(
+                record_id,
+                folder_mime_types=folder_mime_types
+            )
+            
+            location = "kb_root"
+            if parent_info and parent_info.get("nodeType") == "folder":
+                location = "folder"
+            
+            # Determine if file was updated
+            file_updated = body.get("fileMetadata") is not None
+            
+            # Build enriched response with only required fields
+            enriched_result = {
+                **result,
+                "fileUpdated": file_updated,
+                "location": location,
+                "kb": kb_info,
+                "userPermission": user_permission,
+            }
+            
+            return enriched_result
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to enrich update record response: {str(e)}")
+            # Return with required fields even if enrichment fails
+            return {
+                **result,
+                "fileUpdated": body.get("fileMetadata") is not None,
+                "location": "kb_root",
+                "kb": {},
+                "userPermission": "NONE",
+            }
 
     except HTTPException as he:
         raise he
