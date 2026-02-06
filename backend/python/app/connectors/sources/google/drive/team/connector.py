@@ -847,8 +847,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                 perm.email == user_email for perm in permissions
             )
 
-            self.logger.info(f"\n\n\nUser already has permission: {user_already_has_permission}")
-
             if not user_already_has_permission:
                 fallback_permission = Permission(
                     email=user_email,

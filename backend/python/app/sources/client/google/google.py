@@ -10,9 +10,6 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminServiceError,
     GoogleAuthError,
 )
-from app.connectors.sources.google.common.google_token_handler import (
-    CredentialKeys,
-)
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
     GOOGLE_SERVICE_SCOPES,
@@ -146,11 +143,11 @@ class GoogleClient(IClient):
                 optimized_scopes = GoogleClient._get_optimized_scopes(service_name, scopes)
 
                 google_credentials = Credentials(
-                    token=saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value),
-                    refresh_token=saved_credentials.get(CredentialKeys.REFRESH_TOKEN.value),
+                    token=saved_credentials.get("access_token"),
+                    refresh_token=saved_credentials.get("refresh_token"),
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=saved_credentials.get(CredentialKeys.CLIENT_ID.value),
-                    client_secret=saved_credentials.get(CredentialKeys.CLIENT_SECRET.value),
+                    client_id=saved_credentials.get("clientId"),
+                    client_secret=saved_credentials.get("clientSecret"),
                     scopes=optimized_scopes,
                 )
 
