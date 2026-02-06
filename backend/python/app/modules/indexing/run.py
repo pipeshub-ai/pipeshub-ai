@@ -740,7 +740,7 @@ class IndexingPipeline:
 
             # Delete from virtualRecordToDocIdMapping collection in batch
             try:
-                await self.arango_service.delete_nodes(
+                await self.graph_provider.delete_nodes(
                     keys=virtual_record_ids,
                     collection=CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
                 )

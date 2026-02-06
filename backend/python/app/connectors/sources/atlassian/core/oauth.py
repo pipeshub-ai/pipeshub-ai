@@ -264,12 +264,6 @@ class AtlassianOAuthProvider(OAuthProvider):
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
         token = await super().handle_callback(code, state)
-        # identity = await self.get_identity(token)
-        # email = identity.get('email')
-        # if not email:
-        #     raise Exception("User email not found in Atlassian identity response")
-        # user = await self.base_arango_service.get_user_by_email(email)
-
 
         return token
 

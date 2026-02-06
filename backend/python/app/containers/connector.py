@@ -9,7 +9,6 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.localKB.handlers.migration_service import run_kb_migration
-from app.connectors.utils.rate_limiter import GoogleAPIRateLimiter
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.core.celery_app import CeleryApp
@@ -53,7 +52,6 @@ class ConnectorAppContainer(BaseAppContainer):
     )
 
     # Core Services
-    rate_limiter = providers.Singleton(GoogleAPIRateLimiter)
     kafka_service = providers.Singleton(
         KafkaService, logger=logger, config_service=config_service
     )

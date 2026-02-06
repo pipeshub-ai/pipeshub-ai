@@ -10,9 +10,6 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     AdminServiceError,
     GoogleAuthError,
 )
-from app.connectors.sources.google.common.google_token_handler import (
-    CredentialKeys,
-)
 from app.connectors.sources.google.common.scopes import (
     GOOGLE_PARSER_SCOPES,
     GOOGLE_SERVICE_SCOPES,
@@ -20,6 +17,9 @@ from app.connectors.sources.google.common.scopes import (
 )
 from app.sources.client.iclient import IClient
 from app.sources.client.utils.utils import merge_scopes
+from app.connectors.sources.google.common.google_token_handler import (
+    CredentialKeys,
+)
 
 try:
     from google.oauth2 import service_account  # type: ignore

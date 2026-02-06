@@ -39,7 +39,6 @@ async def get_initialized_container() -> ConnectorAppContainer:
         container.wire(
             modules=[
                 "app.core.celery_app",
-                "app.connectors.sources.google.common.sync_tasks",
                 "app.connectors.api.router",
                 "app.connectors.sources.localKB.api.kb_router",
                 "app.connectors.sources.localKB.api.knowledge_hub_router",
@@ -305,6 +304,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
 
+    # Also resolve arango_service for ArangoDB-specific operations (like migrations)
+    # This is only needed when DATA_STORE=arangodb
+    import os
+    data_store_type = os.getenv("DATA_STORE", "neo4j").lower()
+    if data_store_type == "arangodb":
+        app.state.arango_service = await app_container.arango_service()
+        logger.info("✅ ArangoDB service resolved for migrations")
+    else:
+        app.state.arango_service = None
+
     # Start token refresh service at app startup (database-agnostic)
     try:
         await startup_service.initialize(app_container.key_value_store(), graph_provider)
@@ -329,9 +338,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Run OAuth credentials migration (AFTER connector and OAuth registries are initialized)
     # This migration needs OAuth registry to be populated to get OAuth infrastructure fields
     # Skip if Neo4j is configured (migration is ArangoDB-specific)
-    import os
-    data_store_type = os.getenv("DATA_STORE", "neo4j").lower()
-
     if data_store_type != "arangodb":
         logger.info(f"⏭️ Skipping OAuth credentials migration (DATA_STORE={data_store_type}, migration is ArangoDB-specific)")
     else:
@@ -343,7 +349,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
             migration_result = await run_oauth_credentials_migration(
                 config_service=app_container.config_service(),
-                graph_provider=app.state.graph_provider,
+                arango_service=app.state.arango_service,
                 logger=logger,
                 dry_run=False
             )
