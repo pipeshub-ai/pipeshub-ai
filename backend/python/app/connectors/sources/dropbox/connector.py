@@ -3111,18 +3111,6 @@ class DropboxConnector(BaseConnector):
         """Dropbox connector does not support dynamic filter options."""
         raise NotImplementedError("Dropbox connector does not support dynamic filter options")
 
-    # @classmethod
-    # async def create_connector(
-    #     cls, logger, arango_service: BaseArangoService, config_service: ConfigurationService
-    # ) -> "BaseConnector":
-    #     data_entities_processor = DataSourceEntitiesProcessor(
-    #         logger, arango_service, config_service
-    #     )
-    #     await data_entities_processor.initialize()
-    #     return DropboxConnector(
-    #         logger, data_entities_processor, arango_service, config_service
-    #     )
-
     @classmethod
     async def create_connector(
         cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str

@@ -1774,14 +1774,14 @@ class BoxConnector(BaseConnector):
 
         # self.logger.info(f"🗑️ Processing batch deletion for {len(file_ids)} Box files...")
         self.logger.info(f"ℹ️ [TODO] Skipped deletion for {len(file_ids)} files (Backend support pending). IDs: {file_ids}")
-        # arango_service = self.data_store_provider.arango_service
+        # graph_provider = self.data_store_provider.graph_provider
 
         # deleted_count = 0
 
         # for external_id in file_ids:
         #     try:
         #         # 1. Use the service to find the record
-        #         existing_record = await arango_service.get_record_by_external_id(
+        #         existing_record = await graph_provider.get_record_by_external_id(
         #             connector_id=self.connector_id,
         #             external_id=external_id
         #         )

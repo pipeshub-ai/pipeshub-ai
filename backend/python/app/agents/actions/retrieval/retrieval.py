@@ -129,11 +129,11 @@ class Retrieval:
 
             # Get services from state
             retrieval_service = self.state.get("retrieval_service")
-            arango_service = self.state.get("arango_service")
+            graph_provider = self.state.get("graph_provider")
             reranker_service = self.state.get("reranker_service")
             config_service = self.state.get("config_service")
 
-            if not retrieval_service or not arango_service:
+            if not retrieval_service or not graph_provider:
                 return json.dumps({
                     "status": "error",
                     "message": "Retrieval services not available"
@@ -157,7 +157,7 @@ class Retrieval:
                 user_id=user_id,
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
             ))
 
             # Handle errors
@@ -195,7 +195,7 @@ class Retrieval:
             blob_store = BlobStorage(
                 logger=logger_instance,
                 config_service=config_service,
-                arango_service=arango_service
+                graph_provider=graph_provider
             )
 
             # Determine if LLM is multimodal
