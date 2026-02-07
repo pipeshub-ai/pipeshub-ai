@@ -2326,7 +2326,7 @@ class SharePointConnector(BaseConnector):
 
             site_url = site_metadata.site_url
 
-            self.logger.info(f"\n\n\n\n\n\n🔍 Getting site permissions for site ({site_url})")
+            self.logger.info(f"🔍 Getting site permissions for site ({site_url})")
 
             # 2. Get SharePoint REST Token
             access_token = await self._get_sharepoint_access_token()
@@ -2511,7 +2511,6 @@ class SharePointConnector(BaseConnector):
             for group in custom_groups:
                 group_id = group.get('id')
                 group_title = group.get('title', '')
-                group.get('login_name', '')
                 permission_level = group.get('permission_level', PermissionType.READ)
 
                 # Create a unique key for the group (use group_id as identifier)
@@ -2591,6 +2590,8 @@ class SharePointConnector(BaseConnector):
             "Accept": "application/json;odata=verbose"
         }
 
+        SHAREPOINT_GROUP_TYPE = 8
+
         try:
             self.logger.debug("📡 Fetching custom SharePoint groups via role assignments")
 
@@ -2606,7 +2607,7 @@ class SharePointConnector(BaseConnector):
                             principal_type = member.get('PrincipalType')
 
                             # PrincipalType 8 = SharePoint Group
-                            if principal_type == 8:
+                            if principal_type == SHAREPOINT_GROUP_TYPE:
                                 login_name = member.get('LoginName', '')
                                 title = member.get('Title', '')
                                 group_id = member.get('Id')
