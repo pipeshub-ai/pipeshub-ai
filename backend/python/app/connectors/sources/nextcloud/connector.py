@@ -4,7 +4,7 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, AsyncIterator, Dict, List, NoReturn, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
 from urllib.parse import unquote
 from xml.etree import ElementTree as ET
 
@@ -369,7 +369,7 @@ def get_response_error(response) -> str:
     .in_group("Cloud Storage")\
     .with_description("Sync files and folders from your personal Nextcloud account")\
     .with_categories(["Storage", "Collaboration"])\
-    .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_scopes([ConnectorScope.PERSONAL])\
     .with_auth([
         AuthBuilder.type(AuthType.BASIC_AUTH).fields([
             # 1. Base URL is always required
@@ -651,7 +651,6 @@ class NextcloudConnector(BaseConnector):
             is_updated = False
             metadata_changed = False
             content_changed = False
-            permissions_changed = False
 
             # Store old parent and path for comparison (before resolution)
             old_parent_id = existing_record.parent_external_record_id if existing_record else None
@@ -744,13 +743,13 @@ class NextcloudConnector(BaseConnector):
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
                 record_name=display_name,
                 record_type=record_type,
-                record_group_type=RecordGroupType.DRIVE.value,
+                record_group_type=RecordGroupType.DRIVE,
                 external_record_group_id=record_group_id,
                 external_record_id=file_id,
                 external_revision_id=etag,
                 version=0 if is_new else existing_record.version + 1,
-                origin=OriginTypes.CONNECTOR.value,
-                connector_name=self.connector_name.value,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 created_at=timestamp_ms,
                 updated_at=timestamp_ms,
@@ -775,41 +774,11 @@ class NextcloudConnector(BaseConnector):
 
             if file_id:
                 path_to_external_id[clean_path] = file_id
-
-            # Fetch permissions
-            new_permissions = []
-            try:
-                shares = await self._get_file_shares(path, user_id)
-
-                for share in shares:
-                    share_type = share.get('share_type')
-                    share_with = share.get('share_with')
-                    permission_int = share.get('permissions', 1)
-
-                    if share_type == 0:  # User share
-                        new_permissions.append(
-                            Permission(
-                                external_id=share_with,
-                                email=None,
-                                type=nextcloud_permissions_to_permission_type(permission_int),
+            owner_permission = [Permission(
+                                email=user_email,
+                                type=PermissionType.OWNER,
                                 entity_type=EntityType.USER
-                            )
-                        )
-                    elif share_type == 1:  # Group share
-                        new_permissions.append(
-                            Permission(
-                                external_id=share_with,
-                                email=None,
-                                type=nextcloud_permissions_to_permission_type(permission_int),
-                                entity_type=EntityType.GROUP
-                            )
-                        )
-
-            except Exception as perm_ex:
-                self.logger.debug(f"Could not fetch permissions for {path}: {perm_ex}")
-
-            permissions_changed = False
-
+            )]
             return RecordUpdate(
                 record=file_record,
                 is_new=is_new,
@@ -817,9 +786,9 @@ class NextcloudConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=permissions_changed,
+                permissions_changed=True,
                 old_permissions=[],
-                new_permissions=new_permissions,
+                new_permissions=owner_permission,
                 external_record_id=file_id
             )
 
@@ -936,6 +905,7 @@ class NextcloudConnector(BaseConnector):
     ) -> None:
         """
         Synchronize all files for a specific user using WebDAV PROPFIND.
+        Hardcoded depth to 100
         """
         try:
             self.logger.info(f"Syncing files for user: {user_email}")
@@ -944,7 +914,7 @@ class NextcloudConnector(BaseConnector):
                 response = await self.data_source.list_directory(
                     user_id=user_id,
                     path="",
-                    depth="infinity"
+                    depth=100
                 )
 
             if not is_response_successful(response):
@@ -1123,7 +1093,7 @@ class NextcloudConnector(BaseConnector):
                 org_id=self.data_entities_processor.org_id,
                 description="Personal Nextcloud Folder",
                 external_group_id=self.current_user_id,
-                connector_name=self.connector_name.value,
+                connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
             )
@@ -1231,12 +1201,7 @@ class NextcloudConnector(BaseConnector):
 
             # Check response status
             # HTTP 304 Not Modified means no new activities
-            if hasattr(response, 'status_code'):
-                status_code = response.status_code
-            elif hasattr(response, 'status'):
-                status_code = response.status
-            else:
-                status_code = None
+            status_code = response.status
 
             if status_code == HTTP_NOT_MODIFIED:
                 self.logger.info("✅ [Incremental Sync] HTTP 304 - No new activities. Database is up to date.")
@@ -1456,7 +1421,7 @@ class NextcloudConnector(BaseConnector):
                                 parent_response = await self.data_source.list_directory(
                                     user_id=user_id,
                                     path=parent_path,
-                                    depth="0"
+                                    depth=0
                                 )
 
                             if is_response_successful(parent_response):
@@ -1527,7 +1492,7 @@ class NextcloudConnector(BaseConnector):
                         response = await self.data_source.list_directory(
                             user_id=user_id,
                             path=path,
-                            depth="0"  # Only fetch this item, not children
+                            depth=0  # Only fetch this item, not children
                         )
 
                     if not is_response_successful(response):
@@ -1658,7 +1623,7 @@ class NextcloudConnector(BaseConnector):
                 )
 
             # Create async generator for streaming
-            async def generate() -> AsyncIterator[bytes]:
+            async def generate() -> AsyncGenerator[bytes]:
                 yield file_content
 
             return create_stream_record_response(
@@ -1893,7 +1858,7 @@ class NextcloudConnector(BaseConnector):
 
                 async with self.rate_limiter:
                     response = await self.data_source.list_directory(
-                        user_id=user_with_permission.source_user_id,
+                        user_id=self.current_user_id,
                         path=path,
                         depth=0,
                     )
