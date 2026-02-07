@@ -1452,7 +1452,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     file_record = None
                     if rec.get("recordType") == "FILE":
                         file_record = await self.get_document(record_id, CollectionNames.FILES.value)
-                    
+
                     # Create reindex event payload for KB records
                     payload = await self._create_reindex_event_payload(rec, file_record, user_id, request, record_id=record_id)
                     event_data = {
@@ -9811,7 +9811,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
                 self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
-                
+
                 # Step: Prepare event data for all deleted file records (router will publish)
                 event_payloads = []
                 try:

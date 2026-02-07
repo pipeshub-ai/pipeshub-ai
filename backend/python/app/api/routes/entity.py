@@ -1050,7 +1050,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         RETURN OLD
         """
 
-        permissions = await graph_provider.execute_query(
+        await graph_provider.execute_query(
             delete_query,
             bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"}
         )

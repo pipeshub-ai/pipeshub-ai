@@ -6,17 +6,14 @@ import mimetypes
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import google.oauth2.credentials
+from pathlib import Path
 import jwt
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -25,7 +22,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import Response, StreamingResponse
-from google.oauth2 import service_account
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -40,7 +36,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
