@@ -5663,6 +5663,54 @@ class ArangoHTTPProvider(IGraphDBProvider):
             only_containers: If True, only return nodes that can have children.
             transaction: Optional transaction ID.
         """
+        # SECURITY FIX: Check parent folder permissions for connector records using 6-path permission check
+        # Verify user has permission to access the parent folder before fetching its children
+        if parent_type in ("folder", "record"):
+            # Use comprehensive 6-path permission check instead of simple direct permission check
+            permission_check_aql = self._generate_record_permission_check_aql("record", "user_from")
+            
+            parent_permission_query = f"""
+            LET record = DOCUMENT(@record_id)
+            FILTER record != null
+            LET user_from = CONCAT("users/", @user_key)
+            
+            // Check if user has permission via any of the 6 paths
+            LET has_permission = {permission_check_aql}
+            
+            RETURN has_permission
+            """
+            
+            try:
+                result = await self.http_client.execute_aql(
+                    parent_permission_query,
+                    bind_vars={
+                        "record_id": f"records/{parent_id}",
+                        "user_key": user_key
+                    },
+                    txn_id=transaction
+                )
+                
+                has_permission = result[0] if result and len(result) > 0 else False
+                
+                if not has_permission:
+                    self.logger.error(f"🚨 SECURITY: User {user_key} attempted to access folder {parent_id} children without permission (6-path check)")
+                    # Return a special error marker that the service layer will convert to HTTP 403
+                    return {
+                        "nodes": [],
+                        "total": 0,
+                        "error": "PERMISSION_DENIED",
+                        "error_message": "You don't have permission to access this folder"
+                    }
+                self.logger.info(f"✅ Parent folder access authorized: User {user_key} has permission to {parent_id} (6-path check)")
+            except Exception as e:
+                self.logger.error(f"Failed to check parent folder permission: {e}")
+                return {
+                    "nodes": [],
+                    "total": 0,
+                    "error": "PERMISSION_CHECK_FAILED",
+                    "error_message": "Failed to verify folder permissions"
+                }
+
         # Generate the sub-query based on parent type
         if parent_type == "app":
             sub_query, parent_bind_vars = self._get_app_children_subquery(parent_id, org_id, user_key)

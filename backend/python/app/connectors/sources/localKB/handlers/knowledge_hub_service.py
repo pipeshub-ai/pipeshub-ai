@@ -430,6 +430,14 @@ class KnowledgeHubService:
             only_containers=only_containers,
         )
 
+        # Check for permission denied error from the provider
+        if result.get('error') == 'PERMISSION_DENIED':
+            from fastapi import HTTPException, status
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=result.get('error_message', 'You don\'t have permission to access this folder')
+            )
+
         nodes_data = result.get('nodes', [])
         total_count = result.get('total', 0)
 

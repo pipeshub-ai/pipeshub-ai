@@ -237,6 +237,7 @@ async def get_knowledge_hub_root_nodes(
     response_model=KnowledgeHubNodesResponse,
     responses={
         400: {"model": KnowledgeHubErrorResponse},
+        403: {"model": KnowledgeHubErrorResponse},
         500: {"model": KnowledgeHubErrorResponse},
     },
 )

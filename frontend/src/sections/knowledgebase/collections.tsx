@@ -193,7 +193,17 @@ export default function Collections() {
 
         isViewInitiallyLoading.current = false;
       } catch (err: any) {
-        setError(err.message || 'Failed to fetch contents');
+        // Check for permission denied error (403)
+        if (err.response?.status === 403 || err.status === 403) {
+          setError('⛔ Access Denied: You don\'t have permission to access this folder');
+          // Navigate back to dashboard
+          setTimeout(() => {
+            navigate({ view: 'dashboard' });
+          }, 2000);
+        } else {
+          setError(err.message || 'Failed to fetch contents');
+        }
+        
         if (resetItems) {
           setItems([]);
           setTotalCount(0);
@@ -203,7 +213,7 @@ export default function Collections() {
         loadingRef.current = false;
       }
     },
-    [page, searchQuery, rowsPerPage]
+    [page, searchQuery, rowsPerPage, navigate]
   );
 
   useEffect(() => {
@@ -477,7 +487,12 @@ export default function Collections() {
               await loadKBContents(stableRoute.kbId!, stableRoute.folderId);
             }, 50);
           } catch (err: any) {
-            setError('Folder not found');
+            // Check for permission denied error
+            if (err.response?.status === 403 || err.status === 403) {
+              setError('⛔ Access Denied: You don\'t have permission to access this folder');
+            } else {
+              setError('Folder not found');
+            }
             navigate({ view: 'dashboard' });
           }
         }
