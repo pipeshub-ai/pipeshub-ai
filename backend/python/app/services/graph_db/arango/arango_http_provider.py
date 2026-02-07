@@ -5668,18 +5668,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if parent_type in ("folder", "record"):
             # Use comprehensive 6-path permission check instead of simple direct permission check
             permission_check_aql = self._generate_record_permission_check_aql("record", "user_from")
-            
+
             parent_permission_query = f"""
             LET record = DOCUMENT(@record_id)
             FILTER record != null
             LET user_from = CONCAT("users/", @user_key)
-            
+
             // Check if user has permission via any of the 6 paths
             LET has_permission = {permission_check_aql}
-            
+
             RETURN has_permission
             """
-            
+
             try:
                 result = await self.http_client.execute_aql(
                     parent_permission_query,
@@ -5689,9 +5689,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     },
                     txn_id=transaction
                 )
-                
+
                 has_permission = result[0] if result and len(result) > 0 else False
-                
+
                 if not has_permission:
                     self.logger.error(f"🚨 SECURITY: User {user_key} attempted to access folder {parent_id} children without permission (6-path check)")
                     # Return a special error marker that the service layer will convert to HTTP 403
