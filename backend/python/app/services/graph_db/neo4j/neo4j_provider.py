@@ -43,13 +43,17 @@ from app.models.entities import (
     CommentRecord,
     FileRecord,
     IndexingStatus,
+    LinkRecord,
     MailRecord,
+    ProjectRecord,
     Record,
     RecordGroup,
     TicketRecord,
     User,
     WebpageRecord,
 )
+from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
+from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -86,6 +90,7 @@ class Neo4jProvider(IGraphDBProvider):
         self.config_service = config_service
         self.kafka_service = kafka_service
         self.client: Optional[Neo4jClient] = None
+        self.validator = NodeSchemaValidator()
 
     # ==================== Connection Management ====================
 
@@ -98,30 +103,6 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             self.logger.info("🚀 Connecting to Neo4j...")
-
-            # Get Neo4j configuration from etcd, fallback to environment variables
-            # try:
-            #     neo4j_config = await self.config_service.get_config(
-            #         config_node_constants.NEO4J.value
-            #     )
-            # except Exception:
-            #     neo4j_config = None
-
-            # # If config not found in etcd, read from environment variables
-            # if not neo4j_config or not isinstance(neo4j_config, dict):
-            #     self.logger.info("📝 Neo4j configuration not found in etcd, reading from environment variables...")
-            #     neo4j_config = {
-            #         "uri": os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-            #         "username": os.getenv("NEO4J_USERNAME", "neo4j"),
-            #         "password": os.getenv("NEO4J_PASSWORD", "neo4j"),
-            #         "database": os.getenv("NEO4J_DATABASE", "neo4j"),
-            #     }
-            #     # Store in etcd for future use
-            #     await self.config_service.set_config(
-            #         config_node_constants.NEO4J.value,
-            #         neo4j_config
-            #     )
-            #     self.logger.info("✅ Neo4j configuration loaded from environment variables and stored in etcd")
 
             uri = str(os.getenv("NEO4J_URI", "bolt://localhost:7687"))
             username = str(os.getenv("NEO4J_USERNAME", "neo4j"))
@@ -144,14 +125,7 @@ class Neo4jProvider(IGraphDBProvider):
             if not await self.client.connect():
                 raise Exception("Failed to connect to Neo4j")
 
-            # Initialize schema (constraints and indexes)
-            # await self._initialize_schema()
-
             self.logger.info("✅ Neo4j provider connected successfully")
-
-            # Populate tools collections on first startup
-            # await self._populate_tools_collections()
-
             return True
 
         except Exception as e:
@@ -380,6 +354,263 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Helper Methods ====================
 
+    def _generate_unique_id_constraints(self) -> List[str]:
+        """
+        Generate Neo4j unique constraints on 'id' property for all collections.
+
+        Automatically generates unique constraints for all collections in the schema registry,
+        ensuring every node type has a unique identifier constraint.
+
+        Returns:
+            List of Cypher CREATE CONSTRAINT queries for unique id fields
+        """
+        constraints = []
+
+        # Iterate through ALL collections (even those without schemas need unique id)
+        for collection in NODE_SCHEMA_REGISTRY.keys():
+            # Get the Neo4j label for this collection
+            label = collection_to_label(collection)
+
+            # Create a safe constraint name
+            constraint_name = f"{label.lower()}_id_unique".replace(".", "_")
+
+            # Create unique constraint on id property
+            constraint_query = (
+                f"CREATE CONSTRAINT {constraint_name} IF NOT EXISTS "
+                f"FOR (n:{label}) REQUIRE n.id IS UNIQUE"
+            )
+
+            constraints.append(constraint_query)
+
+        return constraints
+
+    def _generate_performance_indexes(self) -> List[str]:
+        """
+        Generate strategic performance indexes based on query pattern analysis.
+
+        Only creates composite indexes where fields are ALWAYS queried together.
+        Single-field indexes are preferred when fields are queried independently.
+
+        Composite indexes created (3 total):
+        - Record: externalRecordId + connectorId (always queried together in MATCH)
+        - RecordGroup: externalGroupId + connectorId (always queried together in MATCH)
+        - Mail: threadId + conversationIndex (always queried together)
+
+        Returns:
+            List of Cypher CREATE INDEX queries
+        """
+        indexes = []
+
+        # ==================== RECORD INDEXES (Highest Priority) ====================
+        # Records are the most queried entity, especially in permission checks
+
+        # COMPOSITE: externalRecordId + connectorId (ALWAYS queried together)
+        # Pattern: MATCH (r:Record {externalRecordId: $id, connectorId: $cid})
+        # Frequency: 3+ queries use this exact pattern
+        indexes.append(
+            "CREATE INDEX record_external_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.externalRecordId, n.connectorId)"
+        )
+
+        # SINGLE: orgId (queried independently and with other fields)
+        indexes.append(
+            "CREATE INDEX record_org_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.orgId)"
+        )
+
+        # SINGLE: connectorId (queried independently in many patterns)
+        indexes.append(
+            "CREATE INDEX record_connector_id IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId)"
+        )
+
+        # SINGLE: indexingStatus (pipeline queries)
+        indexes.append(
+            "CREATE INDEX record_indexing_status IF NOT EXISTS "
+            "FOR (n:Record) ON (n.indexingStatus)"
+        )
+
+        # SINGLE: origin (heavily used in permission WHERE clauses)
+        indexes.append(
+            "CREATE INDEX record_origin IF NOT EXISTS "
+            "FOR (n:Record) ON (n.origin)"
+        )
+
+        # SINGLE: md5Checksum (duplicate detection)
+        indexes.append(
+            "CREATE INDEX record_md5_checksum IF NOT EXISTS "
+            "FOR (n:Record) ON (n.md5Checksum)"
+        )
+
+        # ==================== USER INDEXES (High Priority) ====================
+
+        # SINGLE: email (authentication, lookups)
+        indexes.append(
+            "CREATE INDEX user_email IF NOT EXISTS "
+            "FOR (n:User) ON (n.email)"
+        )
+
+        # SINGLE: userId (user identification)
+        indexes.append(
+            "CREATE INDEX user_user_id IF NOT EXISTS "
+            "FOR (n:User) ON (n.userId)"
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        indexes.append(
+            "CREATE INDEX user_org_id IF NOT EXISTS "
+            "FOR (n:User) ON (n.orgId)"
+        )
+
+        # ==================== RECORDGROUP INDEXES (High Priority) ====================
+
+        # COMPOSITE: externalGroupId + connectorId (ALWAYS queried together)
+        # Pattern: MATCH (rg:RecordGroup {externalGroupId: $id, connectorId: $cid})
+        # Frequency: 2+ queries use this exact pattern
+        indexes.append(
+            "CREATE INDEX record_group_external_id IF NOT EXISTS "
+            "FOR (n:RecordGroup) ON (n.externalGroupId, n.connectorId)"
+        )
+
+        # SINGLE: orgId (org-scoped queries)
+        indexes.append(
+            "CREATE INDEX record_group_org_id IF NOT EXISTS "
+            "FOR (n:RecordGroup) ON (n.orgId)"
+        )
+
+        # SINGLE: connectorId (cleanup operations, queried independently)
+        indexes.append(
+            "CREATE INDEX record_group_connector_id IF NOT EXISTS "
+            "FOR (n:RecordGroup) ON (n.connectorId)"
+        )
+
+        # SINGLE: groupType (KB filtering)
+        indexes.append(
+            "CREATE INDEX record_group_type IF NOT EXISTS "
+            "FOR (n:RecordGroup) ON (n.groupType)"
+        )
+
+        # ==================== APP INDEXES (Medium Priority) ====================
+
+        # SINGLE: orgId (org-scoped queries)
+        indexes.append(
+            "CREATE INDEX app_org_id IF NOT EXISTS "
+            "FOR (n:App) ON (n.orgId)"
+        )
+
+        # ==================== MAIL INDEXES (Medium Priority) ====================
+
+        # COMPOSITE: threadId + conversationIndex (ALWAYS queried together)
+        # Pattern: MATCH (m:Mail {threadId: $tid, conversationIndex: $ci})
+        indexes.append(
+            "CREATE INDEX mail_thread IF NOT EXISTS "
+            "FOR (n:Mail) ON (n.threadId, n.conversationIndex)"
+        )
+
+        return indexes
+
+    def _generate_required_field_constraints(self) -> List[str]:
+        """
+        Generate Neo4j property existence constraints for required fields from schemas.
+
+        Returns:
+            List of Cypher CREATE CONSTRAINT queries for required fields
+        """
+        constraints = []
+
+        # Iterate through all collections that have schemas
+        for collection, schema in NODE_SCHEMA_REGISTRY.items():
+            if schema is None:
+                continue
+
+            # Get the Neo4j label for this collection
+            label = collection_to_label(collection)
+
+            # Get required fields from the schema
+            required_fields = get_required_fields(collection)
+
+            if not required_fields:
+                continue
+
+            # Generate a constraint for each required field
+            for field in required_fields:
+                # Skip 'id' field as it already has a unique constraint
+                if field == "id":
+                    continue
+
+                # Create a safe constraint name (Neo4j constraint names can't have special chars)
+                constraint_name = f"{label.lower()}_{field}_exists".replace(".", "_")
+
+                # Neo4j 4.4+ syntax for property existence constraints
+                # Note: Property existence constraints require Neo4j Enterprise Edition
+                constraint_query = (
+                    f"CREATE CONSTRAINT {constraint_name} IF NOT EXISTS "
+                    f"FOR (n:{label}) REQUIRE n.{field} IS NOT NULL"
+                )
+
+                constraints.append(constraint_query)
+
+        return constraints
+
+    async def ensure_schema(self) -> bool:
+        """Ensure Neo4j schema (constraints, indexes, and departments seed)."""
+        try:
+            self.logger.info("🔧 Ensuring Neo4j schema...")
+
+            # Create unique constraints on 'id' property for all collections
+            # Auto-generated from schema registry to ensure complete coverage
+            self.logger.info("🔧 Creating unique id constraints...")
+            unique_constraints = self._generate_unique_id_constraints()
+
+            for constraint_query in unique_constraints:
+                try:
+                    await self.client.execute_query(constraint_query)
+                except Exception as e:
+                    self.logger.debug(f"Unique constraint creation (may already exist): {str(e)}")
+
+            self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
+
+            # Create property existence constraints for required fields from schemas
+            self.logger.info("🔧 Creating property existence constraints for required fields...")
+            property_constraints = self._generate_required_field_constraints()
+
+            for constraint_query in property_constraints:
+                try:
+                    await self.client.execute_query(constraint_query)
+                except Exception as e:
+                    # Some Neo4j versions/editions may not support property existence constraints
+                    self.logger.debug(f"Property constraint creation (may already exist or not supported): {str(e)}")
+
+            self.logger.info(f"✅ Created {len(property_constraints)} property existence constraints")
+
+            # Create indexes for common queries
+            # Indexes are strategically placed based on query pattern analysis
+            self.logger.info("🔧 Creating performance indexes...")
+            indexes = self._generate_performance_indexes()
+
+            for index_query in indexes:
+                try:
+                    await self.client.execute_query(index_query)
+                except Exception as e:
+                    self.logger.debug(f"Index creation (may already exist): {str(e)}")
+
+            self.logger.info(f"✅ Created {len(indexes)} performance indexes")
+            self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
+
+            # Seed departments collection with predefined department types
+            try:
+                await self._initialize_departments()
+            except Exception as e:
+                self.logger.error(f"❌ Error initializing departments: {str(e)}")
+                import traceback
+                self.logger.error(f"Traceback: {traceback.format_exc()}")
+
+            self.logger.info("✅ Neo4j schema ensured")
+            return True
+        except Exception as e:
+            self.logger.error(f"❌ Ensure schema failed: {str(e)}")
+            return False
+
     def _arango_to_neo4j_node(self, arango_node: Dict, collection: str) -> Dict:
         """
         Convert ArangoDB node format to Neo4j format.
@@ -577,6 +808,8 @@ class Neo4jProvider(IGraphDBProvider):
                         neo4j_node["id"] = neo4j_node.pop("_key")
                     else:
                         neo4j_node["id"] = str(uuid.uuid4())
+                # Validate nodes before writing
+                self.validator.validate_node_update(collection, neo4j_node)
                 neo4j_nodes.append(neo4j_node)
 
             # Use UNWIND for batch upsert
@@ -666,6 +899,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Convert updates to Neo4j format
             updates = self._arango_to_neo4j_node(node_updates, collection)
+            # Validate updates before writing
+            self.validator.validate_node_update(collection, updates)
 
             query = f"""
             MATCH (n:{label} {{id: $key}})
@@ -1556,15 +1791,29 @@ class Neo4jProvider(IGraphDBProvider):
             return []
 
     def _create_typed_record_from_neo4j(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
-        """Create typed Record instance from Neo4j data"""
+        """
+        Factory method to create properly typed Record instances from Neo4j data.
+        Uses centralized RECORD_TYPE_COLLECTION_MAPPING to determine which types have type collections.
+
+        Args:
+            record_dict: Dictionary from records collection
+            type_doc: Dictionary from type-specific collection (files, mails, etc.) or None
+
+        Returns:
+            Properly typed Record instance (FileRecord, MailRecord, etc.)
+        """
         record_type = record_dict.get("recordType")
 
+        # Check if this record type has a type collection
         if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            # No type collection or no type doc - use base Record
             return Record.from_arango_base_record(record_dict)
 
         try:
+            # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
 
+            # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:
                 return FileRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.MAILS.value:
@@ -1573,9 +1822,14 @@ class Neo4jProvider(IGraphDBProvider):
                 return WebpageRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.TICKETS.value:
                 return TicketRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.PROJECTS.value:
+                return ProjectRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.COMMENTS.value:
                 return CommentRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.LINKS.value:
+                return LinkRecord.from_arango_record(type_doc, record_dict)
             else:
+                # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
         except Exception as e:
             self.logger.warning(f"Failed to create typed record for {record_type}, falling back to base Record: {str(e)}")
@@ -1627,6 +1881,319 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get records by parent failed: {str(e)}")
+            return []
+
+    async def get_records_by_record_group(
+        self,
+        record_group_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all records belonging to a record group up to a specified depth.
+        Includes:
+        - Records directly in the group
+        - Records in nested record groups up to depth levels
+
+        Args:
+            record_group_id: Record group ID
+            connector_id: Connector ID (all records in group are from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children and nested record groups (-1 = unlimited,
+                   0 = only direct records, 1 = direct + 1 level nested, etc.)
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving records for record group {record_group_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
+
+            # Build the query
+            # First get the record group and validate it
+            # Then get all nested record groups up to max_depth
+            # Finally get all records from all these groups
+
+            if max_depth == 0:
+                # Only get records directly in the starting record group
+                query = """
+                MATCH (rg:RecordGroup {id: $record_group_id, orgId: $org_id})
+                MATCH (record:Record)-[:INHERIT_PERMISSIONS]->(rg)
+                WHERE record.connectorId = $connector_id
+                AND record.isDeleted <> true
+                AND (record.orgId = $org_id OR record.orgId IS NULL)
+                AND record.origin = 'CONNECTOR'
+
+                // Get the typed record (File, Webpage, Ticket, etc.)
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+                WHERE typeDoc.isFile = true OR NOT typeDoc:File
+
+                WITH record, typeDoc
+                ORDER BY record.id
+                """
+            else:
+                # Get records from starting group and nested groups
+                query = f"""
+                MATCH (rg:RecordGroup {{id: $record_group_id, orgId: $org_id}})
+
+                // Get all nested record groups up to max_depth
+                OPTIONAL MATCH path = (nestedRg:RecordGroup)-[:INHERIT_PERMISSIONS*0..{max_depth}]->(rg)
+                WHERE nestedRg.orgId = $org_id OR nestedRg.orgId IS NULL
+
+                WITH COLLECT(DISTINCT nestedRg) + [rg] AS allRecordGroups
+                UNWIND allRecordGroups AS recordGroup
+
+                // Get all records from all these groups
+                MATCH (record:Record)-[:INHERIT_PERMISSIONS]->(recordGroup)
+                WHERE record.connectorId = $connector_id
+                AND record.isDeleted <> true
+                AND (record.orgId = $org_id OR record.orgId IS NULL)
+                AND record.origin = 'CONNECTOR'
+
+                // Get the typed record (File, Webpage, Ticket, etc.)
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+                WHERE typeDoc.isFile = true OR NOT typeDoc:File
+
+                WITH DISTINCT record, typeDoc
+                ORDER BY record.id
+                """
+
+            # Add pagination
+            if limit is not None:
+                query += "\nSKIP $offset LIMIT $limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored. "
+                    "Provide a limit value to use pagination."
+                )
+
+            query += "\nRETURN record, typeDoc"
+
+            parameters = {
+                "record_group_id": record_group_id,
+                "connector_id": connector_id,
+                "org_id": org_id,
+            }
+
+            if limit is not None:
+                parameters["limit"] = limit
+                parameters["offset"] = offset
+
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction
+            )
+
+            # Convert to typed records
+            typed_records = []
+            for result in results:
+                record_data = self._neo4j_to_arango_node(
+                    dict(result["record"]),
+                    CollectionNames.RECORDS.value
+                )
+                type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
+                if type_doc:
+                    type_doc = self._neo4j_to_arango_node(type_doc, "")
+
+                record = self._create_typed_record_from_neo4j(record_data, type_doc)
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for record group {record_group_id}, connector {connector_id}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by record group {record_group_id}: {str(e)}",
+                exc_info=True
+            )
+            return []
+
+    async def get_records_by_parent_record(
+        self,
+        parent_record_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        include_parent: bool = True,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all child records of a parent record (folder) up to a specified depth.
+        Uses graph traversal on RECORD_RELATIONS relationship.
+
+        Args:
+            parent_record_id: Record ID of the parent (folder)
+            connector_id: Connector ID (all records should be from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
+                   1 = direct children, 2 = children + grandchildren, etc.)
+            include_parent: Whether to include the parent record itself
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving child records for parent {parent_record_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"include_parent: {include_parent}, limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Early return if depth=0 and include_parent=false (nothing to return)
+            if depth == 0 and not include_parent:
+                return []
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            max_depth = 100 if depth == -1 else depth
+
+            # Build query parts
+            parent_query = ""
+            if include_parent:
+                parent_query = """
+                // Get parent record with its typed record
+                OPTIONAL MATCH (startRecord)-[:IS_OF_TYPE]->(parentTypeDoc)
+                WHERE startRecord.connectorId = $connector_id
+                AND (startRecord.orgId = $org_id OR startRecord.orgId IS NULL)
+                AND startRecord.isDeleted <> true
+                AND parentTypeDoc IS NOT NULL
+
+                WITH startRecord, parentTypeDoc, 0 AS depth
+                """
+
+            children_query = ""
+            if max_depth > 0:
+                children_query = f"""
+                // Get all children using graph traversal
+                MATCH path = (startRecord)-[:RECORD_RELATIONS*1..{max_depth}]->(child:Record)
+                WHERE child.connectorId = $connector_id
+                AND (child.orgId = $org_id OR child.orgId IS NULL)
+                AND child.isDeleted <> true
+
+                OPTIONAL MATCH (child)-[:IS_OF_TYPE]->(childTypeDoc)
+                WHERE childTypeDoc IS NOT NULL
+
+                WITH child AS record, childTypeDoc AS typeDoc, length(path) AS depth
+                """
+
+            # Combine queries
+            if include_parent and max_depth > 0:
+                query = f"""
+                MATCH (startRecord:Record {{id: $parent_record_id}})
+                WHERE startRecord IS NOT NULL
+
+                {parent_query}
+                RETURN startRecord AS record, parentTypeDoc AS typeDoc, depth
+
+                UNION ALL
+
+                MATCH (startRecord:Record {{id: $parent_record_id}})
+                WHERE startRecord IS NOT NULL
+
+                {children_query}
+                RETURN record, typeDoc, depth
+                ORDER BY depth, record.id
+                """
+            elif include_parent:
+                query = f"""
+                MATCH (startRecord:Record {{id: $parent_record_id}})
+                WHERE startRecord IS NOT NULL
+
+                {parent_query}
+                RETURN startRecord AS record, parentTypeDoc AS typeDoc, depth
+                ORDER BY depth, record.id
+                """
+            else:
+                query = f"""
+                MATCH (startRecord:Record {{id: $parent_record_id}})
+                WHERE startRecord IS NOT NULL
+
+                {children_query}
+                RETURN record, typeDoc, depth
+                ORDER BY depth, record.id
+                """
+
+            # Add pagination
+            if limit is not None:
+                query += "\nSKIP $offset LIMIT $limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored."
+                )
+
+            parameters = {
+                "parent_record_id": parent_record_id,
+                "connector_id": connector_id,
+                "org_id": org_id,
+            }
+
+            if limit is not None:
+                parameters["limit"] = limit
+                parameters["offset"] = offset
+
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction
+            )
+
+            # Convert to typed records
+            typed_records = []
+            for result in results:
+                record_data = self._neo4j_to_arango_node(
+                    dict(result["record"]),
+                    CollectionNames.RECORDS.value
+                )
+                type_doc = dict(result["typeDoc"]) if result.get("typeDoc") else None
+                if type_doc:
+                    type_doc = self._neo4j_to_arango_node(type_doc, "")
+                record = self._create_typed_record_from_neo4j(record_data, type_doc)
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for parent record {parent_record_id} with depth {depth}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by parent record {parent_record_id}: {str(e)}",
+                exc_info=True
+            )
             return []
 
     async def get_record_by_issue_key(
@@ -6877,7 +7444,7 @@ class Neo4jProvider(IGraphDBProvider):
         kb_id: str,
         folder_id: str,
         transaction: Optional[str] = None,
-    ) -> bool:
+    ) -> Dict:
         """Delete a folder with ALL nested content."""
         try:
             txn_id = transaction
@@ -6911,17 +7478,30 @@ class Neo4jProvider(IGraphDBProvider):
                      [target_folder.id] + all_subfolders AS all_folders
 
                 // Get all file records (non-folders) nested in these folders
+                // Only match records that have IS_OF_TYPE -> File {isFile: true}
                 OPTIONAL MATCH path2 = (target_folder)-[:RECORD_RELATION*1..20]->(file_record:Record)
                 WHERE all(rel IN relationships(path2) WHERE rel.relationshipType = 'PARENT_CHILD')
-                OPTIONAL MATCH (file_record)-[:IS_OF_TYPE]->(file_rec_file:File {isFile: true})
-                WHERE file_rec_file IS NOT NULL
+                OPTIONAL MATCH (file_record)-[:IS_OF_TYPE]->(file_rec_file:File)
+                WHERE file_rec_file IS NOT NULL AND file_rec_file.isFile = true
 
                 WITH target_folder, all_folders,
-                     collect(DISTINCT {
-                         record: file_record,
-                         file_record: file_rec_file
-                     }) AS records_with_details,
+                     collect(DISTINCT CASE
+                         WHEN file_record IS NOT NULL AND file_rec_file IS NOT NULL
+                         THEN {record: file_record, file_record: file_rec_file}
+                         ELSE null
+                     END) AS records_with_details_raw,
                      collect(DISTINCT file_rec_file.id) AS file_record_ids
+
+                // Filter out null entries from records_with_details
+                WITH target_folder, all_folders, file_record_ids,
+                     [item IN records_with_details_raw WHERE item IS NOT NULL] AS records_with_details
+
+                // Get File node IDs for all folders (BEFORE deleting edges)
+                UNWIND all_folders AS folder_id
+                OPTIONAL MATCH (f:Record {id: folder_id})-[:IS_OF_TYPE]->(folder_file:File {isFile: false})
+
+                WITH target_folder, all_folders, file_record_ids, records_with_details,
+                     collect(DISTINCT folder_file.id) AS folder_file_node_ids
 
                 RETURN {
                     folder_exists: target_folder IS NOT NULL,
@@ -6930,6 +7510,7 @@ class Neo4jProvider(IGraphDBProvider):
                     subfolders: all_folders[1..],
                     records_with_details: records_with_details,
                     file_records: file_record_ids,
+                    folder_file_nodes: folder_file_node_ids,
                     total_folders: size(all_folders),
                     total_subfolders: size(all_folders) - 1,
                     total_records: size(records_with_details),
@@ -6945,15 +7526,18 @@ class Neo4jProvider(IGraphDBProvider):
 
                 inventory = inv_results[0]["inventory"] if inv_results else {}
 
+                self.logger.info(f"inventory: {inventory}")
+
                 if not inventory.get("folder_exists"):
                     if transaction is None and txn_id:
                         await self.rollback_transaction(txn_id)
-                    return False
+                    return {"success": False, "eventData": None}
 
                 records_with_details = inventory.get("records_with_details", [])
                 all_record_keys = [rd["record"]["id"] for rd in records_with_details if rd.get("record")]
                 all_folders = inventory.get("all_folders", [])
                 file_records = inventory.get("file_records", [])
+                folder_file_nodes = inventory.get("folder_file_nodes", [])
 
                 # Step 2: Delete edges
                 if all_record_keys or all_folders:
@@ -6983,62 +7567,43 @@ class Neo4jProvider(IGraphDBProvider):
                         txn_id=txn_id
                     )
 
-                # Step 3: Delete FILE nodes
-                if file_records:
-                    delete_files = """
+                # Step 3: Delete ALL File nodes (both files and folders)
+                # Combine File node IDs from both files and folders (collected in inventory)
+                all_file_node_ids = file_records + folder_file_nodes
+
+                if all_file_node_ids:
+                    self.logger.info(f"🗑️ Step 3: Deleting {len(all_file_node_ids)} File nodes ({len(file_records)} files + {len(folder_file_nodes)} folders)...")
+                    delete_all_file_nodes = """
                     MATCH (file:File)
-                    WHERE file.id IN $file_ids
+                    WHERE file.id IN $file_node_ids
                     DELETE file
                     """
                     await self.client.execute_query(
-                        delete_files,
-                        parameters={"file_ids": file_records},
+                        delete_all_file_nodes,
+                        parameters={"file_node_ids": all_file_node_ids},
                         txn_id=txn_id
                     )
+                    self.logger.info(f"✅ Deleted {len(all_file_node_ids)} File nodes")
 
-                # Step 4: Delete RECORD nodes (files)
+                # Step 4: Delete RECORD nodes for files
                 if all_record_keys:
-                    delete_records = """
+                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_keys)} file Record nodes...")
+                    delete_file_records = """
                     MATCH (record:Record)
                     WHERE record.id IN $record_ids
                     DELETE record
                     """
                     await self.client.execute_query(
-                        delete_records,
+                        delete_file_records,
                         parameters={"record_ids": all_record_keys},
                         txn_id=txn_id
                     )
+                    self.logger.info(f"✅ Deleted {len(all_record_keys)} file Record nodes")
 
-                # Step 5: Delete folder FILE nodes and RECORD nodes (in reverse order)
+                # Step 5: Delete RECORD nodes for folders (in reverse order - deepest first)
                 if all_folders:
-                    # Get folder file IDs
-                    ff_query = """
-                    MATCH (folder:Record)-[:IS_OF_TYPE]->(folder_file:File {isFile: false})
-                    WHERE folder.id IN $folder_ids
-                    RETURN collect(folder_file.id) AS folder_file_ids
-                    """
-
-                    ff_res = await self.client.execute_query(
-                        ff_query,
-                        parameters={"folder_ids": all_folders},
-                        txn_id=txn_id
-                    )
-
-                    folder_file_ids = ff_res[0]["folder_file_ids"] if ff_res else []
-
-                    if folder_file_ids:
-                        delete_folder_files = """
-                        MATCH (file:File)
-                        WHERE file.id IN $file_ids
-                        DELETE file
-                        """
-                        await self.client.execute_query(
-                            delete_folder_files,
-                            parameters={"file_ids": folder_file_ids},
-                            txn_id=txn_id
-                        )
-
-                    # Delete folder records in reverse order (deepest first)
+                    self.logger.info(f"🗑️ Step 5: Deleting {len(all_folders)} folder Record nodes...")
+                    # Reverse to delete deepest folders first
                     reversed_folders = list(reversed(all_folders))
                     delete_folder_records = """
                     MATCH (folder:Record)
@@ -7050,12 +7615,37 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"folder_ids": reversed_folders},
                         txn_id=txn_id
                     )
+                    self.logger.info(f"✅ Deleted {len(all_folders)} folder Record nodes")
 
                 if transaction is None and txn_id:
                     await self.commit_transaction(txn_id)
 
                 self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
-                return True
+
+                # Step: Prepare event data for all deleted file records (router will publish)
+                event_payloads = []
+                try:
+                    for record_data in records_with_details:  # Already contains only file records
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data.get("file_record")
+                        )
+                        if delete_payload:
+                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
+
+                return {
+                    "success": True,
+                    "eventData": event_data
+                }
 
             except Exception as db_error:
                 if transaction is None and txn_id:
@@ -7064,7 +7654,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete folder: {str(e)}")
-            return False
+            return {"success": False, "eventData": None}
 
     async def find_folder_by_name_in_parent(
         self,
@@ -8130,7 +8720,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             return {
                 "orgId": record.get("orgId"),
-                "recordId": record.get("_key"),
+                "recordId": record.get("id"),
                 "version": record.get("version", 1),
                 "extension": extension,
                 "mimeType": mime_type,
@@ -8335,11 +8925,12 @@ class Neo4jProvider(IGraphDBProvider):
                     records_deleted = record_results[0]["deleted"] if record_results else 0
                     self.logger.info(f"✅ Deleted {records_deleted} RECORD nodes")
 
-                # Step 5: Delete the KB RecordGroup itself
-                self.logger.info(f"🗑️ Step 5: Deleting KB RecordGroup {kb_id}...")
+                # Step 5: Delete any remaining relationships on the KB node, then delete the KB RecordGroup itself
+                self.logger.info(f"🗑️ Step 5: Deleting remaining KB relationships and KB RecordGroup {kb_id}...")
                 delete_kb_query = """
                 MATCH (kb:RecordGroup {id: $kb_id})
-                DELETE kb
+                OPTIONAL MATCH (kb)-[r]-()
+                DELETE r, kb
                 RETURN count(kb) AS deleted
                 """
 
@@ -9959,66 +10550,6 @@ class Neo4jProvider(IGraphDBProvider):
             return results[0].get("deleted", False) if results else False
         except Exception as e:
             self.logger.error(f"❌ Delete parent-child edge failed: {str(e)}")
-            return False
-
-    async def ensure_schema(self) -> bool:
-        """Ensure Neo4j schema (constraints, indexes, and departments seed)."""
-        try:
-            self.logger.info("🔧 Ensuring Neo4j schema...")
-
-            # Create unique constraints on 'id' property for each label
-            constraints = [
-                "CREATE CONSTRAINT record_id_unique IF NOT EXISTS FOR (n:Record) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT user_id_unique IF NOT EXISTS FOR (n:User) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT group_id_unique IF NOT EXISTS FOR (n:Group) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT org_id_unique IF NOT EXISTS FOR (n:Organization) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT app_id_unique IF NOT EXISTS FOR (n:App) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT tool_id_unique IF NOT EXISTS FOR (n:Tool) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT tool_ctag_id_unique IF NOT EXISTS FOR (n:ToolCtag) REQUIRE n.id IS UNIQUE",
-                "CREATE CONSTRAINT department_id_unique IF NOT EXISTS FOR (n:Departments) REQUIRE n.id IS UNIQUE",
-            ]
-
-            for constraint_query in constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    self.logger.debug(f"Constraint creation (may already exist): {str(e)}")
-
-            # Create indexes for common queries
-            indexes = [
-                "CREATE INDEX record_external_id IF NOT EXISTS FOR (n:Record) ON (n.externalRecordId, n.connectorId)",
-                "CREATE INDEX user_email IF NOT EXISTS FOR (n:User) ON (n.email)",
-                "CREATE INDEX user_user_id IF NOT EXISTS FOR (n:User) ON (n.userId)",
-                "CREATE INDEX file_path IF NOT EXISTS FOR (n:File) ON (n.path)",
-                "CREATE INDEX tool_app_name_tool_name IF NOT EXISTS FOR (n:Tool) ON (n.app_name, n.tool_name)",
-                "CREATE INDEX tool_ctag_connector_name IF NOT EXISTS FOR (n:ToolCtag) ON (n.connector_name)",
-                "CREATE INDEX record_org_id IF NOT EXISTS FOR (n:Record) ON (n.orgId)",
-                "CREATE INDEX record_connector_id IF NOT EXISTS FOR (n:Record) ON (n.connectorId)",
-                "CREATE INDEX record_external_record_id IF NOT EXISTS FOR (n:Record) ON (n.externalRecordId)",
-                "CREATE INDEX record_group_org_id IF NOT EXISTS FOR (n:RecordGroup) ON (n.orgId)",
-                "CREATE INDEX app_org_id IF NOT EXISTS FOR (n:App) ON (n.orgId)",
-            ]
-
-            for index_query in indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.debug(f"Index creation (may already exist): {str(e)}")
-
-            self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
-
-            # Seed departments collection with predefined department types
-            try:
-                await self._initialize_departments()
-            except Exception as e:
-                self.logger.error(f"❌ Error initializing departments: {str(e)}")
-                import traceback
-                self.logger.error(f"Traceback: {traceback.format_exc()}")
-
-            self.logger.info("✅ Neo4j schema ensured")
-            return True
-        except Exception as e:
-            self.logger.error(f"❌ Ensure schema failed: {str(e)}")
             return False
 
     async def get_filtered_connector_instances(

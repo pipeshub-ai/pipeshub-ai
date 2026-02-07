@@ -765,6 +765,7 @@ async def delete_folder(
 
         # Publish batch deletion events
         event_data = result.get("eventData")
+        logger.info(f"🗑️ Event data: {event_data}")
         if event_data and event_data.get("payloads"):
             try:
                 timestamp = get_epoch_timestamp_in_ms()

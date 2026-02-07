@@ -365,14 +365,14 @@ class FileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId", None),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes", None),
-            extension=arango_base_file_record["extension"],
+            extension=arango_base_file_record.get("extension"),
             path=arango_base_file_record.get("path"),
-            etag=arango_base_file_record["etag"],
-            ctag=arango_base_file_record["ctag"],
-            quick_xor_hash=arango_base_file_record["quickXorHash"],
-            crc32_hash=arango_base_file_record["crc32Hash"],
-            sha1_hash=arango_base_file_record["sha1Hash"],
-            sha256_hash=arango_base_file_record["sha256Hash"],
+            etag=arango_base_file_record.get("etag"),
+            ctag=arango_base_file_record.get("ctag"),
+            quick_xor_hash=arango_base_file_record.get("quickXorHash"),
+            crc32_hash=arango_base_file_record.get("crc32Hash"),
+            sha1_hash=arango_base_file_record.get("sha1Hash"),
+            sha256_hash=arango_base_file_record.get("sha256Hash"),
         )
 
     def to_kafka_record(self) -> Dict:

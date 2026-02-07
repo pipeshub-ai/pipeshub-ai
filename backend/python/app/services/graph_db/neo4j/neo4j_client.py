@@ -45,6 +45,7 @@ class Neo4jClient:
         self.database = database
         self.driver: Optional[Any] = None
         self._active_sessions: Dict[str, Any] = {}  # Track active transaction sessions
+        self._session_locks: Dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None  # Track event loop
 
         # Log connection details
@@ -120,6 +121,7 @@ class Neo4jClient:
                 except Exception as e:
                     self.logger.warning(f"Error closing session {txn_id}: {str(e)}")
             self._active_sessions.clear()
+            self._session_locks.clear()
 
             if self.driver:
                 await self.driver.close()
@@ -151,6 +153,7 @@ class Neo4jClient:
         session = self.driver.session(database=self.database)
         txn_id = str(uuid.uuid4())
         self._active_sessions[txn_id] = session
+        self._session_locks[txn_id] = asyncio.Lock()  # Create lock for this transaction
 
         self.logger.debug(f"🔵 Started Neo4j transaction: {txn_id}")
         return txn_id
@@ -171,6 +174,8 @@ class Neo4jClient:
             self.logger.debug(f"✅ Committed Neo4j transaction: {txn_id}")
         finally:
             del self._active_sessions[txn_id]
+            if txn_id in self._session_locks:
+                del self._session_locks[txn_id]
 
     async def abort_transaction(self, txn_id: str) -> None:
         """
@@ -188,6 +193,8 @@ class Neo4jClient:
             self.logger.debug(f"🔄 Aborted Neo4j transaction: {txn_id}")
         finally:
             del self._active_sessions[txn_id]
+            if txn_id in self._session_locks:
+                del self._session_locks[txn_id]
 
     async def execute_query(
         self,
@@ -215,14 +222,24 @@ class Neo4jClient:
         parameters = parameters or {}
 
         if txn_id:
-            # Use existing transaction session
+            # Use existing transaction session with lock to prevent concurrent access
             if txn_id not in self._active_sessions:
                 raise ValueError(f"Transaction {txn_id} not found")
 
             session = self._active_sessions[txn_id]
-            result = await session.run(query, parameters)
-            records = await result.data()
-            return records
+            lock = self._session_locks.get(txn_id)
+
+            if lock:
+                # Serialize access to the session to prevent concurrent operations
+                async with lock:
+                    result = await session.run(query, parameters)
+                    records = await result.data()
+                    return records
+            else:
+                # Fallback if lock doesn't exist (shouldn't happen)
+                result = await session.run(query, parameters)
+                records = await result.data()
+                return records
         else:
             # Auto-commit transaction
             async with self.driver.session(database=self.database) as session:

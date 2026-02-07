@@ -9674,7 +9674,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         kb_id: str,
         folder_id: str,
         transaction: Optional[str] = None,
-    ) -> bool:
+    ) -> Dict:
         """Delete a folder with ALL nested content."""
         try:
             txn_id = transaction

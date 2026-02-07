@@ -255,6 +255,33 @@ export function createKnowledgeBaseProxyRouter(container: Container): Router {
     },
   );
 
+  // Reindex a record group
+  router.post(
+    '/reindex/record-group/:recordGroupId',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(req, res, `/api/v1/reindex/record-group/${req.params.recordGroupId}`);
+    },
+  );
+
+  // Reindex all failed records per connector
+  router.post(
+    '/reindex-failed/connector',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(req, res, '/api/v1/reindex-failed/connector');
+    },
+  );
+
+  // Resync connector records
+  router.post(
+    '/resync/connector',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(req, res, '/api/v1/resync/connector');
+    },
+  );
+
   // Move a record (requires kbId in the path)
   router.put(
     '/:kbId/record/:recordId/move',
@@ -409,12 +436,41 @@ export function createKnowledgeBaseProxyRouter(container: Container): Router {
     },
   );
 
+  router.put(
+    '/:kbId/permissions',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(req, res, `/api/v1/kb/${req.params.kbId}/permissions`);
+    },
+  );
+
+  router.delete(
+    '/:kbId/permissions',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(req, res, `/api/v1/kb/${req.params.kbId}/permissions`);
+    },
+  );
+
   // Folder operations
   router.post(
     '/:kbId/folder',
     authMiddleware.authenticate,
     async (req: Request, res: Response) => {
       await proxyRequest(req, res, `/api/v1/kb/${req.params.kbId}/folder`);
+    },
+  );
+
+  // Get folder contents
+  router.get(
+    '/:kbId/folder/:folderId',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(
+        req,
+        res,
+        `/api/v1/kb/${req.params.kbId}/folder/${req.params.folderId}`,
+      );
     },
   );
 
@@ -450,6 +506,32 @@ export function createKnowledgeBaseProxyRouter(container: Container): Router {
         req,
         res,
         `/api/v1/kb/${req.params.kbId}/folder/${req.params.folderId}/records`,
+      );
+    },
+  );
+
+  // Update folder
+  router.put(
+    '/:kbId/folder/:folderId',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(
+        req,
+        res,
+        `/api/v1/kb/${req.params.kbId}/folder/${req.params.folderId}`,
+      );
+    },
+  );
+
+  // Delete folder
+  router.delete(
+    '/:kbId/folder/:folderId',
+    authMiddleware.authenticate,
+    async (req: Request, res: Response) => {
+      await proxyRequest(
+        req,
+        res,
+        `/api/v1/kb/${req.params.kbId}/folder/${req.params.folderId}`,
       );
     },
   );

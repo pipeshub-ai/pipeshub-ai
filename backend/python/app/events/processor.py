@@ -1353,8 +1353,6 @@ class Processor:
             record = await self.graph_provider.get_document(
                 recordId, CollectionNames.RECORDS.value
             )
-            blocks_containers = await parser.parse(excel_binary, llm)
-
             if record is None:
                 self.logger.error(f"❌ Record {recordId} not found in database")
                 # Must yield indexing_complete to release indexing semaphore properly
