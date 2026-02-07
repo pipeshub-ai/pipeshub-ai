@@ -60,13 +60,3 @@ class AuthenticationType(Enum):
     SERVICE_ACCOUNT = "service_account"
     SAML = "saml"
     LDAP = "ldap"
-
-
-class SyncStatus(Enum):
-    """Enumeration of sync statuses"""
-    NOT_STARTED = "not_started"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    PAUSED = "paused"
-    PARTIAL = "partial"

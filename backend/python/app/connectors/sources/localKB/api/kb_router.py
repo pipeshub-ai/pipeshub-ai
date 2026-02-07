@@ -1267,24 +1267,24 @@ async def update_record(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Knowledge base not found for record"
                 )
-            
+
             kb_id = kb_context.get("kb_id")
             if not kb_id:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Knowledge base ID not found for record"
                 )
-            
+
             # Get user permission
             user_key = user_id
             user = await graph_provider.get_user_by_user_id(user_id)
             if user:
                 user_key = user.get("_key") or user.get("id") or user_id
-            
+
             user_permission = await graph_provider.get_user_kb_permission(kb_id, user_key)
             if not user_permission:
                 user_permission = "NONE"
-            
+
             # Get KB information
             kb_info = await graph_provider.get_knowledge_base(kb_id, user_key)
             if not kb_info:
@@ -1298,21 +1298,21 @@ async def update_record(
                     "userRole": user_permission,
                     "folders": []
                 }
-            
+
             # Determine location (folder or kb_root)
             folder_mime_types = ["application/vnd.google-apps.folder", "application/x-directory"]
             parent_info = await graph_provider.get_knowledge_hub_parent_node(
                 record_id,
                 folder_mime_types=folder_mime_types
             )
-            
+
             location = "kb_root"
             if parent_info and parent_info.get("nodeType") == "folder":
                 location = "folder"
-            
+
             # Determine if file was updated
             file_updated = body.get("fileMetadata") is not None
-            
+
             # Build enriched response with only required fields
             enriched_result = {
                 **result,
@@ -1321,9 +1321,9 @@ async def update_record(
                 "kb": kb_info,
                 "userPermission": user_permission,
             }
-            
+
             return enriched_result
-            
+
         except HTTPException:
             raise
         except Exception as e:
