@@ -2317,7 +2317,6 @@ class SharePointConnector(BaseConnector):
     async def _get_site_permissions(self, site_id: str) -> List[Permission]:
         permissions_dict = {} # Key: Email, Value: Permission Object
 
-
         try:
             # 1. Get Site URL from your existing cache
             site_metadata = self.site_cache.get(site_id)
@@ -2326,6 +2325,8 @@ class SharePointConnector(BaseConnector):
                 return []
 
             site_url = site_metadata.site_url
+
+            self.logger.info(f"🔍 Getting site permissions for site ({site_url})")
 
             # 2. Get SharePoint REST Token
             access_token = await self._get_sharepoint_access_token()
@@ -2358,7 +2359,6 @@ class SharePointConnector(BaseConnector):
             # ==================================================================
             for group_type in ['associatedownergroup', 'associatedmembergroup']:
                 sp_users = await self._get_sharepoint_group_users(site_url, group_type, access_token)
-
                 for sp_user in sp_users:
                     login_name = sp_user.get('LoginName', '')
 
@@ -2368,12 +2368,19 @@ class SharePointConnector(BaseConnector):
                         match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
                         if match:
                             group_id = match.group(1)
-                            # Call Graph API (Owners or Members based on SP group type)
-                            is_owner_group = 'owner' in group_type
-                            graph_users = await self._fetch_graph_group_members(group_id, is_owner=is_owner_group)
+                            group_title = sp_user.get('Title', 'M365 Group')
 
-                            for g_user in graph_users:
-                                add_or_update_permission(g_user['email'], g_user['id'], PermissionType.WRITE)
+                            # Create edge with the M365 group itself instead of expanding members
+                            group_key = f"M365_GROUP_{group_id}"
+
+                            self.logger.info(f"      🔵 Found M365 Group: {group_title} (ID: {group_id})")
+
+                            permissions_dict[group_key] = Permission(
+                                external_id=group_id,
+                                email=None,
+                                type=PermissionType.WRITE,
+                                entity_type=EntityType.GROUP
+                            )
 
                     # CASE B: It's the "Everyone" Claim (Public Site)
                     elif 'spo-grid-all-users' in login_name:
@@ -2389,7 +2396,8 @@ class SharePointConnector(BaseConnector):
                     elif sp_user.get('PrincipalType') == SECURITY_GROUP_TYPE:
                         # Security Group LoginNames often look like: "c:0t.c|tenant|32537252-0676-4c47-a372-2d93563456"
                         # We need to extract that GUID at the end.
-                        self.logger.info(f"🔒 Found Security Group: {login_name}")
+                        group_title = sp_user.get('Title', 'Security Group')
+                        self.logger.info(f"🔒 Found Security Group: {group_title} ({login_name})")
 
                         # Regex to capture the GUID after 'tenant|'
                         match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
@@ -2404,12 +2412,15 @@ class SharePointConnector(BaseConnector):
 
                             self.logger.info(f"   -> Extracted Group ID: {group_id}")
 
-                            # Use your existing Graph expander (reuse logic!)
-                            # Note: Security groups can have nested groups, so transitive_members (which you use) is PERFECT.
-                            graph_users = await self._fetch_graph_group_members(group_id, is_owner=False)
+                            # Create edge with the Security group itself instead of expanding members
+                            group_key = f"SECURITY_GROUP_{group_id}"
 
-                            for g_user in graph_users:
-                                add_or_update_permission(g_user['email'], g_user['id'], PermissionType.WRITE) # Or READ based on context
+                            permissions_dict[group_key] = Permission(
+                                external_id=group_id,
+                                email=None,
+                                type=PermissionType.WRITE,
+                                entity_type=EntityType.GROUP
+                            )
                         else:
                             self.logger.warning(f"   -> ⚠️ Could not extract GUID from Security Group LoginName: {login_name}")
 
@@ -2436,7 +2447,23 @@ class SharePointConnector(BaseConnector):
                     email = v.get('Email') or v.get('UserPrincipalName')
                     add_or_update_permission(email, v.get('Id'), PermissionType.READ)
 
-                # CASE B: "Everyone" Claims (Modern)
+                # CASE B: M365 Group in visitors
+                elif 'federateddirectoryclaimprovider' in login_name:
+                    match = re.search(r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})', login_name)
+                    if match:
+                        group_id = match.group(1)
+                        group_key = f"M365_GROUP_{group_id}"
+
+                        self.logger.info(f"      🔵 Found M365 Group in visitors: {title} (ID: {group_id})")
+
+                        permissions_dict[group_key] = Permission(
+                            external_id=group_id,
+                            email=None,
+                            type=PermissionType.READ,
+                            entity_type=EntityType.GROUP
+                        )
+
+                # CASE C: "Everyone" Claims (Modern)
                 elif 'spo-grid-all-users' in login_name or 'c:0(.s|true' in login_name:
                     self.logger.info(f"🌍 Site {site_id} is Public (Everyone claim found)")
                     permissions_dict['ORGANIZATION_ACCESS'] = Permission(
@@ -2445,9 +2472,9 @@ class SharePointConnector(BaseConnector):
                         external_id=self.data_entities_processor.org_id
                     )
 
-                # CASE C: "Everyone" Security Group (Type 4)
+                # CASE D: Security Groups (Type 4)
                 elif principal_type == SECURITY_GROUP_TYPE:
-                    # Check GUID or Title
+                    # Check GUID or Title for "Everyone except external users"
                     if EVERYONE_EXCEPT_EXTERNAL_ID in login_name or 'Everyone except external users' in title:
                         self.logger.info(f"🌍 Site {site_id} is Public ('Everyone' Group found)")
                         permissions_dict['ORGANIZATION_ACCESS'] = Permission(
@@ -2455,7 +2482,57 @@ class SharePointConnector(BaseConnector):
                             entity_type=EntityType.ORG,
                             external_id=self.data_entities_processor.org_id
                         )
+                    else:
+                        # Handle other security groups in visitors
+                        self.logger.info(f"      🔒 Found Security Group in visitors: {title} ({login_name})")
+                        match = re.search(r'\|tenant\|([0-9a-fA-F-]{36})', login_name)
+                        if match:
+                            group_id = match.group(1)
+                            group_key = f"SECURITY_GROUP_{group_id}"
 
+                            self.logger.info(f"         -> Extracted Group ID: {group_id}")
+
+                            permissions_dict[group_key] = Permission(
+                                external_id=group_id,
+                                email=None,
+                                type=PermissionType.READ,
+                                entity_type=EntityType.GROUP
+                            )
+                        else:
+                            self.logger.warning(f"         -> ⚠️ Could not extract GUID from Security Group LoginName: {login_name}")
+
+            # ==================================================================
+            # STEP 4: Process Custom SharePoint Groups -> GROUP entity type
+            # ==================================================================
+            self.logger.info("📋 Fetching custom SharePoint groups")
+            custom_groups = await self._get_custom_sharepoint_groups(site_url, access_token)
+            self.logger.info(f"   Found {len(custom_groups)} custom groups")
+
+            for group in custom_groups:
+                group_id = group.get('id')
+                group_title = group.get('title', '')
+                permission_level = group.get('permission_level', PermissionType.READ)
+
+                # Create a unique key for the group (use group_id as identifier)
+                group_key = f"GROUP_{group_id}"
+
+                # Skip if already processed (avoid duplicating default groups)
+                if group_key in permissions_dict:
+                    self.logger.debug(f"      Skipping already processed group: {group_title}")
+                    continue
+
+                self.logger.info(f"    👥 Found custom group: {group_title} (ID: {group_id}, Permission: {permission_level.value})")
+
+                # Add group permission with entity type GROUP
+                # Use site_id-group_id format to match the format used elsewhere (line 2924)
+                unique_group_id = f"{site_id}-{group_id}"
+
+                permissions_dict[group_key] = Permission(
+                    external_id=unique_group_id,
+                    email=None,  # Groups don't have emails in SharePoint
+                    type=permission_level,
+                    entity_type=EntityType.GROUP
+                )
 
             self.logger.info(f"Found {len(permissions_dict)} unique permissions for site {site_id}")
             return list(permissions_dict.values())
@@ -2497,6 +2574,71 @@ class SharePointConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error in _get_sharepoint_group_users: {e}")
+            return []
+
+    async def _get_custom_sharepoint_groups(self, site_url: str, access_token: str) -> List[dict]:
+        """
+        Fetches custom SharePoint groups via role assignments API.
+        This includes groups that are not part of the default associated groups.
+        Returns list of dicts with group info: {'id', 'title', 'login_name', 'permission_level'}
+        """
+        # Construct the endpoint to get role assignments
+        endpoint = f"{site_url}/_api/web/roleassignments?$expand=RoleDefinitionBindings,Member"
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json;odata=verbose"
+        }
+
+        SHAREPOINT_GROUP_TYPE = 8
+
+        try:
+            self.logger.debug("📡 Fetching custom SharePoint groups via role assignments")
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(endpoint, headers=headers) as response:
+                    if response.status == HTTPStatus.OK:
+                        data = await response.json()
+                        results = data.get('d', {}).get('results', [])
+
+                        custom_groups = []
+                        for assignment in results:
+                            member = assignment.get('Member', {})
+                            principal_type = member.get('PrincipalType')
+
+                            # PrincipalType 8 = SharePoint Group
+                            if principal_type == SHAREPOINT_GROUP_TYPE:
+                                login_name = member.get('LoginName', '')
+                                title = member.get('Title', '')
+                                group_id = member.get('Id')
+
+                                # Get permission level (highest level if multiple)
+                                role_bindings = assignment.get('RoleDefinitionBindings', {}).get('results', [])
+                                permission_levels = [r.get('Name', '') for r in role_bindings]
+
+                                # Determine permission type based on role name
+                                perm_type = PermissionType.READ
+                                if any(level in ['Full Control', 'Design'] for level in permission_levels):
+                                    perm_type = PermissionType.OWNER
+                                elif any(level in ['Edit', 'Contribute'] for level in permission_levels):
+                                    perm_type = PermissionType.WRITE
+
+                                custom_groups.append({
+                                    'id': group_id,
+                                    'title': title,
+                                    'login_name': login_name,
+                                    'permission_level': perm_type
+                                })
+
+                        self.logger.debug(f"✅ Found {len(custom_groups)} custom SharePoint groups")
+                        return custom_groups
+                    else:
+                        error_text = await response.text()
+                        self.logger.warning(f"⚠️ Failed to fetch role assignments: {response.status} - {error_text}")
+                        return []
+
+        except Exception as e:
+            self.logger.error(f"❌ Error in _get_custom_sharepoint_groups: {e}")
             return []
 
     async def _fetch_graph_group_members(self, group_id: str, is_owner: bool = False) -> List[dict]:
@@ -3422,6 +3564,17 @@ class SharePointConnector(BaseConnector):
     async def run_sync(self) -> None:
         """Main entry point for the SharePoint connector."""
         start_time = datetime.now()
+
+        # Reset statistics for this sync run
+        self.stats = {
+            'sites_processed': 0,
+            'sites_failed': 0,
+            'drives_processed': 0,
+            'lists_processed': 0,
+            'pages_processed': 0,
+            'items_processed': 0,
+            'errors_encountered': 0
+        }
 
         try:
             self.logger.info("🚀 Starting SharePoint connector sync")
