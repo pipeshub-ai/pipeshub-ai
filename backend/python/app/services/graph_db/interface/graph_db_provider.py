@@ -1011,6 +1011,71 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_records_by_record_group(
+        self,
+        record_group_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List['Record']:
+        """
+        Get all records belonging to a record group up to a specified depth.
+        Includes:
+        - Records directly in the group
+        - Records in nested record groups up to depth levels
+
+        Args:
+            record_group_id (str): Record group ID
+            connector_id (str): Connector ID (all records in group are from same connector)
+            org_id (str): Organization ID (for security filtering)
+            depth (int): Depth for traversing children and nested record groups
+                        (-1 = unlimited, 0 = only direct records, 1 = direct + 1 level nested, etc.)
+            limit (Optional[int]): Maximum number of records to return (for pagination)
+            offset (int): Number of records to skip (for pagination)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_parent_record(
+        self,
+        parent_record_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        include_parent: bool = True,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List['Record']:
+        """
+        Get all child records of a parent record (folder) up to a specified depth.
+        Uses graph traversal on record relations.
+
+        Args:
+            parent_record_id (str): Record ID of the parent (folder)
+            connector_id (str): Connector ID (all records should be from same connector)
+            org_id (str): Organization ID (for security filtering)
+            depth (int): Depth for traversing children
+                        (-1 = unlimited, 0 = only parent, 1 = direct children,
+                         2 = children + grandchildren, etc.)
+            include_parent (bool): Whether to include the parent record itself
+            limit (Optional[int]): Maximum number of records to return (for pagination)
+            offset (int): Number of records to skip (for pagination)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        pass
+
     # ==================== Record Group Operations ====================
 
     @abstractmethod
