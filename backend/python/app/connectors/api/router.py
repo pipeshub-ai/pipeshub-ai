@@ -6,17 +6,13 @@ import mimetypes
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import google.oauth2.credentials
 import jwt
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -25,7 +21,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import Response, StreamingResponse
-from google.oauth2 import service_account
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -40,7 +35,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -749,60 +743,6 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
             await file.close()
 
     raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid conversion request")
-
-async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
-    """Helper function to convert file to PDF"""
-    pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
-
-    try:
-        conversion_cmd = [
-            "soffice",
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            temp_dir,
-            file_path,
-        ]
-        process = await asyncio.create_subprocess_exec(
-            *conversion_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        # Add timeout to communicate
-        try:
-            conversion_output, conversion_error = await asyncio.wait_for(
-                process.communicate(), timeout=30.0
-            )
-        except asyncio.TimeoutError:
-            # Make sure to terminate the process if it times out
-            process.terminate()
-            try:
-                await asyncio.wait_for(process.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                process.kill()  # Force kill if termination takes too long
-            logger.error("LibreOffice conversion timed out after 30 seconds")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
-
-        if process.returncode != 0:
-            error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
-            logger.error(error_msg)
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF")
-
-        if os.path.exists(pdf_path):
-            return pdf_path
-        else:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion failed - output file not found"
-            )
-    except asyncio.TimeoutError:
-        # This catch is for any other timeout that might occur
-        logger.error("Timeout during PDF conversion")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
-    except Exception as conv_error:
-        logger.error(f"Error during conversion: {str(conv_error)}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
 
 @router.get("/api/v1/records")
 @inject

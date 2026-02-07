@@ -1,12 +1,10 @@
 import threading
-from datetime import timedelta
 
 from celery import Celery
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import (
     CeleryConfig,
-    WebhookConfig,
     config_node_constants,
 )
 from app.utils.redis_util import build_redis_url
