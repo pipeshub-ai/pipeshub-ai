@@ -81,17 +81,18 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
         # Set queued records to MANUAL_SYNC so they are not auto-processed
         if queued_records:
             logger.info(f"📋 Found {len(queued_records)} queued record(s), setting status to MANUAL_SYNC")
-            for record in queued_records:
-                record_id = record.get("_key")
-                try:
-                    await arango_service.update_node(
-                        record_id,
-                        {"indexingStatus": ProgressStatus.MANUAL_SYNC.value},
-                        CollectionNames.RECORDS.value,
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ Failed to set record {record_id} to MANUAL_SYNC: {e}")
-            logger.info(f"✅ Set {len(queued_records)} queued record(s) to MANUAL_SYNC")
+            try:
+                update_docs = [
+                    {"_key": record.get("_key"), "indexingStatus": ProgressStatus.MANUAL_SYNC.value}
+                    for record in queued_records
+                ]
+                await arango_service.batch_upsert_nodes(
+                    update_docs,
+                    CollectionNames.RECORDS.value,
+                )
+                logger.info(f"✅ Set {len(queued_records)} queued record(s) to MANUAL_SYNC")
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to bulk set records to MANUAL_SYNC: {e}")
 
         # Recover only in-progress records
         all_records_to_recover = in_progress_records
