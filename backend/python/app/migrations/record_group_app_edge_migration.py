@@ -5,6 +5,9 @@ Backfills BELONGS_TO edges from record groups to their connector app when missin
 Record groups have connectorId pointing to the app; this migration ensures the
 graph has the corresponding RECORD_GROUPS -> APPS edge in the BELONGS_TO collection.
 
+Only top-level record groups are considered: parent record group must be none
+(parentExternalGroupId is null and no BELONGS_TO edge to another record group).
+
 Migration is idempotent: only creates edges that do not already exist.
 Skips record groups whose app document does not exist.
 """
@@ -75,15 +78,27 @@ class RecordGroupAppEdgeMigrationService:
         """
         Find record groups that have connectorId but no BELONGS_TO edge to their app.
 
+        Only includes top-level record groups: parent record group must be none
+        (parentExternalGroupId is null and no BELONGS_TO edge to another record group).
+
         Returns list of record group docs with _key, connectorId, connectorName,
         createdAtTimestamp, updatedAtTimestamp. Only includes groups whose app exists.
         """
         query = f"""
             FOR rg IN {CollectionNames.RECORD_GROUPS.value}
                 FILTER rg.connectorId != null AND rg.connectorId != ""
+                FILTER rg.parentExternalGroupId == null
+                LET from_id = CONCAT("{CollectionNames.RECORD_GROUPS.value}/", rg._key)
+                LET has_parent_record_group = (
+                    FOR e IN {CollectionNames.BELONGS_TO.value}
+                        FILTER e._from == from_id
+                        FILTER STARTS_WITH(e._to, "{CollectionNames.RECORD_GROUPS.value}/")
+                        LIMIT 1
+                        RETURN 1
+                )
+                FILTER LENGTH(has_parent_record_group) == 0
                 LET app_doc = DOCUMENT("{CollectionNames.APPS.value}", rg.connectorId)
                 FILTER app_doc != null
-                LET from_id = CONCAT("{CollectionNames.RECORD_GROUPS.value}/", rg._key)
                 LET to_id = CONCAT("{CollectionNames.APPS.value}/", rg.connectorId)
                 LET edge_exists = (
                     FOR e IN {CollectionNames.BELONGS_TO.value}

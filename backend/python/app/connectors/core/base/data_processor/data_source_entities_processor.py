@@ -959,19 +959,29 @@ class DataSourceEntitiesProcessor:
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
 
-                    if record_group.connector_id:
-                        app_relation = {
-                            "from_id": record_group.id,
-                            "from_collection": CollectionNames.RECORD_GROUPS.value,
-                            "to_id": record_group.connector_id,
-                            "to_collection": CollectionNames.APPS.value,
-                            "createdAtTimestamp": record_group.created_at,
-                            "updatedAtTimestamp": record_group.updated_at,
-                        }
-                        self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to App {record_group.connector_id}")
-                        await tx_store.batch_create_edges(
-                            [app_relation], collection=CollectionNames.BELONGS_TO.value
+                    if record_group.connector_id and record_group.parent_record_group_id is None and record_group.parent_external_group_id is None:
+                        # Only create record group -> app edge when there is no edge to a parent record group
+                        record_group_node_id = f"{CollectionNames.RECORD_GROUPS.value}/{record_group.id}"
+                        belongs_to_edges = await tx_store.get_edges_from_node(
+                            record_group_node_id, CollectionNames.BELONGS_TO.value
                         )
+                        has_parent_record_group_edge = any(
+                            (e.get("_to") or "").startswith(f"{CollectionNames.RECORD_GROUPS.value}/")
+                            for e in belongs_to_edges
+                        )
+                        if not has_parent_record_group_edge:
+                            app_relation = {
+                                "from_id": record_group.id,
+                                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                                "to_id": record_group.connector_id,
+                                "to_collection": CollectionNames.APPS.value,
+                                "createdAtTimestamp": record_group.created_at,
+                                "updatedAtTimestamp": record_group.updated_at,
+                            }
+                            self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to App {record_group.connector_id}")
+                            await tx_store.batch_create_edges(
+                                [app_relation], collection=CollectionNames.BELONGS_TO.value
+                            )
 
                     # 3. Handle User and Group Permissions (from the passed 'permissions' list)
                     if record_group.parent_external_group_id:
