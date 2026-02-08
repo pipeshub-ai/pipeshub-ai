@@ -1163,6 +1163,69 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record by external ID failed: {str(e)}")
             return None
 
+    async def get_record_path(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get full hierarchical path for a record by traversing graph bottom to top.
+
+        Traverses up through RECORD_RELATIONS edges (PARENT_CHILD relationship)
+        to build a path like: "Folder1/Subfolder/File.txt"
+
+        Args:
+            record_id: The record key to get the path for
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[str]: The full path as a string (e.g., "Folder1/Subfolder/File.txt")
+                        or None if record not found
+
+        Hardcoded depth to 100
+        """
+        try:
+            query = """
+            LET start_record = DOCUMENT(@records_collection, @record_id)
+            FILTER start_record != null
+            // Only follow the canonical parent (externalParentId) so duplicate/stale edges don't produce wrong paths
+            LET ancestors = (
+                FOR v, e, p IN 1..100 INBOUND start_record
+                    GRAPH @graph_name
+                    FILTER e.relationshipType == 'PARENT_CHILD'
+                    FILTER v.externalRecordId == p.vertices[LENGTH(p.vertices)-2].externalParentId
+                    RETURN v.recordName
+            )
+            LET path_order = REVERSE(ancestors)
+            LET full_path_list = APPEND(path_order, start_record.recordName)
+            LET clean_path = (
+                FOR name IN full_path_list
+                FILTER name != null AND name != ""
+                RETURN name
+            )
+            RETURN CONCAT_SEPARATOR('/', clean_path)
+            """
+
+            result = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "record_id": record_id,
+                    "records_collection": CollectionNames.RECORDS.value,
+                    "graph_name": GraphNames.KNOWLEDGE_GRAPH.value,
+                },
+                txn_id=transaction
+            )
+
+            if result and len(result) > 0:
+                path = result[0]
+                self.logger.debug(f"✅ Found path for {record_id}: {path}")
+                return path
+            return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get record path for {record_id}: {str(e)}")
+            return None
+
     async def get_record_by_external_revision_id(
         self,
         connector_id: str,
