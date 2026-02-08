@@ -965,8 +965,8 @@ class KnowledgeHubService:
 
     async def _get_permissions(
         self, user_key: str, org_id: str, parent_id: Optional[str]
-    ) -> Optional[PermissionsInfo]:
-        """Get user permissions for the current context. Returns None if user has no permission."""
+    ) -> PermissionsInfo:
+        """Get user permissions for the current context"""
         try:
             perm_data = await self.graph_provider.get_knowledge_hub_context_permissions(
                 user_key=user_key,
@@ -974,13 +974,8 @@ class KnowledgeHubService:
                 parent_id=parent_id,
             )
 
-            # If role is None, user has no permission - return None
-            role = perm_data.get('role')
-            if role is None:
-                return None
-
             return PermissionsInfo(
-                role=role,
+                role=perm_data.get('role', 'READER'),
                 canUpload=perm_data.get('canUpload', False),
                 canCreateFolders=perm_data.get('canCreateFolders', False),
                 canEdit=perm_data.get('canEdit', False),
@@ -991,26 +986,19 @@ class KnowledgeHubService:
         except Exception as e:
             self.logger.error(f"❌ Failed to get permissions: {str(e)}")
             self.logger.error(traceback.format_exc())
-            # Return None on error (no permission granted)
-            return None
+            # Return default safe permissions
+            return PermissionsInfo(
+                role="READER",
+                canUpload=False,
+                canCreateFolders=False,
+                canEdit=False,
+                canDelete=False,
+                canManagePermissions=False,
+            )
 
 
     def _doc_to_node_item(self, doc: Dict[str, Any]) -> NodeItem:
         """Convert a database document to a NodeItem"""
-        # Extract ID - prefer 'id' field, fallback to '_key' or parse from '_id'
-        doc_id = doc.get('id')
-        if not doc_id or (isinstance(doc_id, str) and not doc_id.strip()):
-            if '_key' in doc and doc['_key']:
-                doc_id = doc['_key']
-            elif '_id' in doc and doc['_id']:
-                _id_value = doc['_id']
-                if isinstance(_id_value, str) and '/' in _id_value:
-                    doc_id = _id_value.split('/', 1)[1]
-                else:
-                    doc_id = _id_value
-            else:
-                doc_id = ''
-
         node_type_str = doc.get('nodeType', 'record')
         try:
             node_type = NodeType(node_type_str)
@@ -1023,7 +1011,7 @@ class KnowledgeHubService:
 
         # Build NodeItem
         item = NodeItem(
-            id=doc_id,
+            id=doc.get('id', ''),
             name=doc.get('name', ''),
             nodeType=node_type,
             parentId=doc.get('parentId'),
