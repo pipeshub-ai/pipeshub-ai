@@ -8385,7 +8385,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ) : null
 
             // Use inherited parent for permission check if it exists, otherwise use node itself
-            LET final_permission_target = (node_id_valid AND (inherited_from != null ? inherited_from : permission_target) != null) ? (inherited_from != null ? inherited_from : permission_target) : null
+            LET final_permission_target = node_id_valid ? (inherited_from != null ? inherited_from : permission_target) : null
 
             // Determine if this is a KB-related node (for root KB fallback)
             LET target_doc = (final_permission_target != null) ? DOCUMENT(final_permission_target) : null
