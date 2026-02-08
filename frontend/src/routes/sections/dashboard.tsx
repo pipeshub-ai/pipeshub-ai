@@ -372,19 +372,19 @@ export const dashboardRoutes = [
                     children: [
                       {
                         index: true,
-                        element: <AdminProtectedRoute component={ConnectorSettings} />,
+                        element: <BusinessOnlyRoute component={ConnectorSettings} />,
                       },
                       {
                         path: 'registry',
-                        element: <AdminProtectedRoute component={ConnectorRegistry} />,
+                        element: <BusinessOnlyRoute component={ConnectorRegistry} />,
                       },
                       {
                         path: 'oauth/callback/:connectorId',
-                        element: <AdminProtectedRoute component={ConnectorOAuthCallback} />,
+                        element: <BusinessOnlyRoute component={ConnectorOAuthCallback} />,
                       },
                       {
                         path: ':connectorId',
-                        element: <AdminProtectedRoute component={ConnectorManagementPage} />,
+                        element: <BusinessOnlyRoute component={ConnectorManagementPage} />,
                       },
                     ],
                   },
