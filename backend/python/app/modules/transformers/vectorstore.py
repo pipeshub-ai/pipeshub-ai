@@ -57,6 +57,8 @@ OUTPUT_DIMENSION = 1536
 HTTP_OK = 200
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50
 _DEFAULT_CONCURRENCY_LIMIT = 5
+# Small batch size for local/CPU embedding models to avoid memory/CPU thrashing
+_LOCAL_CPU_DOCUMENT_BATCH_SIZE = 3
 
 class VectorStore(Transformer):
 
@@ -771,12 +773,23 @@ class VectorStore(Transformer):
                 "No image embeddings to upsert; all images were skipped or failed to embed"
             )
 
+    def _is_local_cpu_embedding(self) -> bool:
+        """True when embedding model runs locally on CPU (default or sentence transformers)."""
+        return (
+            self.embedding_provider is None
+            or self.embedding_provider == EmbeddingProvider.DEFAULT.value
+            or self.embedding_provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value
+        )
+
     async def _process_document_chunks(self, langchain_document_chunks: List[Document]) -> None:
         """Process and store document chunks in the vector store."""
         time.perf_counter()
         self.logger.info(f"⏱️ Starting langchain document embeddings insertion for {len(langchain_document_chunks)} documents")
 
-        batch_size = _DEFAULT_DOCUMENT_BATCH_SIZE
+        use_local_sequential = self._is_local_cpu_embedding()
+        batch_size = (
+            _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
+        )
 
         async def process_document_batch(batch_start: int, batch_documents: List[Document]) -> int:
             """Process a single batch of documents."""
@@ -798,23 +811,35 @@ class VectorStore(Transformer):
             batch_documents = langchain_document_chunks[batch_start:batch_end]
             batches.append((batch_start, batch_documents))
 
-        concurrency_limit = _DEFAULT_CONCURRENCY_LIMIT
-        semaphore = asyncio.Semaphore(concurrency_limit)
+        if use_local_sequential:
+            # Process one batch at a time, no concurrent tasks - avoids CPU/memory thrashing
+            for i, (batch_start, batch_documents) in enumerate(batches):
+                try:
+                    await process_document_batch(batch_start, batch_documents)
+                except Exception as e:
+                    self.logger.error(f"Document batch {i} failed: {str(e)}")
+                    raise VectorStoreError(
+                        f"Failed to store document batch {i} in vector store: {str(e)}",
+                        details={"error": str(e), "batch_index": i},
+                    )
+        else:
+            concurrency_limit = _DEFAULT_CONCURRENCY_LIMIT
+            semaphore = asyncio.Semaphore(concurrency_limit)
 
-        async def limited_process_batch(batch_start: int, batch_documents: List[Document]) -> int:
-            async with semaphore:
-                return await process_document_batch(batch_start, batch_documents)
+            async def limited_process_batch(batch_start: int, batch_documents: List[Document]) -> int:
+                async with semaphore:
+                    return await process_document_batch(batch_start, batch_documents)
 
-        tasks = [limited_process_batch(start, docs) for start, docs in batches]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+            tasks = [limited_process_batch(start, docs) for start, docs in batches]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        for i, result in enumerate(results):
-            if isinstance(result, Exception):
-                self.logger.error(f"Document batch {i} failed: {str(result)}")
-                raise VectorStoreError(
-                    f"Failed to store document batch {i} in vector store: {str(result)}",
-                    details={"error": str(result), "batch_index": i},
-                )
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    self.logger.error(f"Document batch {i} failed: {str(result)}")
+                    raise VectorStoreError(
+                        f"Failed to store document batch {i} in vector store: {str(result)}",
+                        details={"error": str(result), "batch_index": i},
+                    )
 
 
 

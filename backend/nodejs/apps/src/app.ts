@@ -540,9 +540,11 @@ export class Application {
       redis: {
         host: configurationManagerConfig.redisConfig.host,
         port: configurationManagerConfig.redisConfig.port,
+        username: configurationManagerConfig.redisConfig.username || undefined,
         password: configurationManagerConfig.redisConfig.password,
         db: configurationManagerConfig.redisConfig.db,
         keyPrefix: configurationManagerConfig.redisConfig.keyPrefix,
+        tls: configurationManagerConfig.redisConfig.tls,
       },
     });
 

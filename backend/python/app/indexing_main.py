@@ -52,12 +52,12 @@ async def get_initialized_container() -> IndexingAppContainer:
 
 async def recover_in_progress_records(app_container: IndexingAppContainer) -> None:
     """
-    Recover and process records that were in progress when the service crashed.
-    This ensures that any incomplete indexing operations are completed before
-    processing new events from Kafka. Records are processed in parallel (5 at a time).
+    Recover only IN_PROGRESS records (re-run indexing for those left mid-way).
+    QUEUED records are set to MANUAL_SYNC so they are not auto-processed on startup.
+    Records to recover are processed in parallel (5 at a time).
     """
     logger = app_container.logger()
-    logger.info("🔄 Checking for in-progress records to recover...")
+    logger.info("🔄 Checking for in-progress records to recover and queued records to set to MANUAL_SYNC...")
 
     # Semaphore to limit concurrent processing to 5 records
     semaphore = asyncio.Semaphore(5)
@@ -68,24 +68,40 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
         # Get the arango service and event processor
         arango_service = await app_container.arango_service()
 
-        # Query for records that are in IN_PROGRESS status
+        # Query for records that are in IN_PROGRESS status (recover only these)
         in_progress_records = await arango_service.get_documents_by_status(
             CollectionNames.RECORDS.value,
             ProgressStatus.IN_PROGRESS.value
         )
         queued_records = await arango_service.get_documents_by_status(
-                CollectionNames.RECORDS.value,
-                ProgressStatus.QUEUED.value
-            )
-        # Create combined list and store length for clarity and efficiency
-        all_records_to_recover = in_progress_records + queued_records
+            CollectionNames.RECORDS.value,
+            ProgressStatus.QUEUED.value
+        )
+
+        # Set queued records to MANUAL_SYNC so they are not auto-processed
+        if queued_records:
+            logger.info(f"📋 Found {len(queued_records)} queued record(s), setting status to MANUAL_SYNC")
+            for record in queued_records:
+                record_id = record.get("_key")
+                try:
+                    await arango_service.update_node(
+                        record_id,
+                        {"indexingStatus": ProgressStatus.MANUAL_SYNC.value},
+                        CollectionNames.RECORDS.value,
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to set record {record_id} to MANUAL_SYNC: {e}")
+            logger.info(f"✅ Set {len(queued_records)} queued record(s) to MANUAL_SYNC")
+
+        # Recover only in-progress records
+        all_records_to_recover = in_progress_records
         total_records = len(all_records_to_recover)
 
         if not total_records:
-            logger.info("✅ No in-progress or queued records found. Starting fresh.")
+            logger.info("✅ No in-progress records to recover. Starting fresh.")
             return
 
-        logger.info(f"📋 Found {total_records} in-progress or queued records to recover")
+        logger.info(f"📋 Found {total_records} in-progress record(s) to recover")
         # Create the message handler that will process these records
         record_message_handler: RecordEventHandler = await KafkaUtils.create_record_message_handler(app_container)
 
@@ -119,12 +135,12 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                                 f"connector instance {connector_id} is inactive."
                             )
                             # Update status to CONNECTOR_DISABLED
-                            await arango_service.update_document(
+                            await arango_service.update_node(
                                 record_id,
-                                CollectionNames.RECORDS.value,
                                 {
                                     "indexingStatus": ProgressStatus.CONNECTOR_DISABLED.value,
-                                }
+                                },
+                                CollectionNames.RECORDS.value,
                             )
                             results["skipped"] += 1
                             return
@@ -207,7 +223,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
         await asyncio.gather(*tasks, return_exceptions=True)
 
         logger.info(
-            f"✅ Recovery complete. Processed {total_records} records: "
+            f"✅ Recovery complete. Processed {total_records} in-progress record(s): "
             f"{results['success']} success, {results['skipped']} skipped, "
             f"{results['partial']} partial, {results['incomplete']} incomplete, "
             f"{results['error']} errors"

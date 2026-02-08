@@ -43,6 +43,7 @@ export class CrawlingSchedulerService {
       connection: {
         host: redisConfig.host,
         port: redisConfig.port,
+        username: redisConfig.username,
         password: redisConfig.password,
         db: redisConfig.db || 0,
       },
