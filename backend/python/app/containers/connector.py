@@ -27,6 +27,9 @@ from app.migrations.permission_edge_migration import (
     run_permissions_edge_migration,
     run_permissions_to_kb_migration,
 )
+from app.migrations.record_group_app_edge_migration import (
+    run_record_group_app_edge_migration,
+)
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -449,6 +452,26 @@ async def initialize_container(container) -> bool:
             else:
                 error_msg = result_folder_hierarchy_migration.get('error') or result_folder_hierarchy_migration.get('message', 'Unknown error')
                 logger.error(f"❌ Folder Hierarchy migration failed: {error_msg}")
+
+        migration_state = await get_migration_state()
+
+        if migration_completed(migration_state, "recordGroupAppEdge"):
+            logger.info("⏭️ Record Group -> App edge migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Record Group -> App edge migration...")
+            result_rg_app_edge = await run_record_group_app_edge_migration(
+                arango_service, config_service, logger
+            )
+            if result_rg_app_edge.get("success"):
+                if result_rg_app_edge.get("skipped"):
+                    logger.info("⏭️ Record Group -> App edge migration already completed (checked by service)")
+                else:
+                    edges_created = result_rg_app_edge.get("edges_created", 0)
+                    logger.info(f"✅ Record Group -> App edge migration: {edges_created} edges created")
+                await mark_migration_completed("recordGroupAppEdge", result_rg_app_edge)
+            else:
+                error_msg = result_rg_app_edge.get("message", "Unknown error")
+                logger.error(f"❌ Record Group -> App edge migration failed: {error_msg}")
 
         return True
 

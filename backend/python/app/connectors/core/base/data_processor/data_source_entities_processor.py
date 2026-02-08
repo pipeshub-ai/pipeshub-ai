@@ -944,7 +944,7 @@ class DataSourceEntitiesProcessor:
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
 
-                    # 2. Create the BELONGS_TO edge for the organization
+                    # 2. Create the BELONGS_TO edge for the organization and connector instance
                     org_relation = {
                         "from_id": record_group.id,
                         "from_collection": CollectionNames.RECORD_GROUPS.value,
@@ -958,6 +958,20 @@ class DataSourceEntitiesProcessor:
                     await tx_store.batch_create_edges(
                         [org_relation], collection=CollectionNames.BELONGS_TO.value
                     )
+
+                    if record_group.connector_id:
+                        app_relation = {
+                            "from_id": record_group.id,
+                            "from_collection": CollectionNames.RECORD_GROUPS.value,
+                            "to_id": record_group.connector_id,
+                            "to_collection": CollectionNames.APPS.value,
+                            "createdAtTimestamp": record_group.created_at,
+                            "updatedAtTimestamp": record_group.updated_at,
+                        }
+                        self.logger.info(f"Creating BELONGS_TO edge for RecordGroup {record_group.id} to App {record_group.connector_id}")
+                        await tx_store.batch_create_edges(
+                            [app_relation], collection=CollectionNames.BELONGS_TO.value
+                        )
 
                     # 3. Handle User and Group Permissions (from the passed 'permissions' list)
                     if record_group.parent_external_group_id:

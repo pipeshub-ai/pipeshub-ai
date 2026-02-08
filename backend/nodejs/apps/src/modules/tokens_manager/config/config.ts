@@ -31,7 +31,9 @@ export interface AppConfig {
   redis: {
     host: string;
     port: number;
+    username?: string;
     password?: string;
+    tls?: boolean;
     db?: number;
   };
   mongo: {

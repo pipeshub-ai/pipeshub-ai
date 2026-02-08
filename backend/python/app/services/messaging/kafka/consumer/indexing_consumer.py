@@ -15,7 +15,7 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 # Concurrency control settings - read from environment variables
 MAX_CONCURRENT_PARSING = int(os.getenv('MAX_CONCURRENT_PARSING', '5'))
 MAX_CONCURRENT_INDEXING = int(os.getenv('MAX_CONCURRENT_INDEXING', '10'))
-SHUTDOWN_TASK_TIMEOUT = float(os.getenv('SHUTDOWN_TASK_TIMEOUT', '180.0'))
+SHUTDOWN_TASK_TIMEOUT = float(os.getenv('SHUTDOWN_TASK_TIMEOUT', '240.0'))
 FUTURE_CLEANUP_INTERVAL = 100  # Cleanup completed futures every N messages
 
 
