@@ -214,7 +214,6 @@ record_schema = {
                     "EMPTY",
                     "ENABLE_MULTIMODAL_MODELS",
                     "QUEUED",
-                    "MANUAL_SYNC",
                     "CONNECTOR_DISABLED"
                 ],
             },

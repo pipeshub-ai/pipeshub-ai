@@ -599,7 +599,6 @@ class BaseArangoService:
                     ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
                     EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
                     QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    MANUAL_SYNC: LENGTH(records[* FILTER CURRENT.indexingStatus == "MANUAL_SYNC"]),
                     PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                     CONNECTOR_DISABLED: LENGTH(records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
                 }
@@ -623,7 +622,6 @@ class BaseArangoService:
                             ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
                             EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
                             QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                            MANUAL_SYNC: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "MANUAL_SYNC"]),
                             PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
                             CONNECTOR_DISABLED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
                         }
@@ -679,7 +677,6 @@ class BaseArangoService:
                                 "ENABLE_MULTIMODAL_MODELS": 0,
                                 "EMPTY": 0,
                                 "QUEUED": 0,
-                                "MANUAL_SYNC": 0,
                                 "PAUSED": 0,
                             }
                         },

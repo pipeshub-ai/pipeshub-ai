@@ -53,11 +53,11 @@ async def get_initialized_container() -> IndexingAppContainer:
 async def recover_in_progress_records(app_container: IndexingAppContainer) -> None:
     """
     Recover only IN_PROGRESS records (re-run indexing for those left mid-way).
-    QUEUED records are set to MANUAL_SYNC so they are not auto-processed on startup.
+    QUEUED records are set to AUTO_INDEX_OFF so they are not auto-processed on startup.
     Records to recover are processed in parallel (5 at a time).
     """
     logger = app_container.logger()
-    logger.info("🔄 Checking for in-progress records to recover and queued records to set to MANUAL_SYNC...")
+    logger.info("🔄 Checking for in-progress records to recover and queued records to set to AUTO_INDEX_OFF...")
 
     # Semaphore to limit concurrent processing to 5 records
     semaphore = asyncio.Semaphore(5)
@@ -78,21 +78,21 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
             ProgressStatus.QUEUED.value
         )
 
-        # Set queued records to MANUAL_SYNC so they are not auto-processed
+        # Set queued records to AUTO_INDEX_OFF so they are not auto-processed
         if queued_records:
-            logger.info(f"📋 Found {len(queued_records)} queued record(s), setting status to MANUAL_SYNC")
+            logger.info(f"📋 Found {len(queued_records)} queued record(s), setting status to AUTO_INDEX_OFF")
             try:
                 update_docs = [
-                    {"_key": record.get("_key"), "indexingStatus": ProgressStatus.MANUAL_SYNC.value}
+                    {"_key": record.get("_key"), "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value}
                     for record in queued_records
                 ]
                 await arango_service.batch_upsert_nodes(
                     update_docs,
                     CollectionNames.RECORDS.value,
                 )
-                logger.info(f"✅ Set {len(queued_records)} queued record(s) to MANUAL_SYNC")
+                logger.info(f"✅ Set {len(queued_records)} queued record(s) to AUTO_INDEX_OFF")
             except Exception as e:
-                logger.warning(f"⚠️ Failed to bulk set records to MANUAL_SYNC: {e}")
+                logger.warning(f"⚠️ Failed to bulk set records to AUTO_INDEX_OFF: {e}")
 
         # Recover only in-progress records
         all_records_to_recover = in_progress_records
