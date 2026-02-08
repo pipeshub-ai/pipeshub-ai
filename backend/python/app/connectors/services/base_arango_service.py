@@ -56,6 +56,7 @@ from app.schema.arango.documents import (
     comment_record_schema,
     department_schema,
     file_record_schema,
+    knowledge_schema,
     link_record_schema,
     mail_record_schema,
     orgs_schema,
@@ -65,10 +66,14 @@ from app.schema.arango.documents import (
     record_schema,
     team_schema,
     ticket_record_schema,
+    tool_schema,
+    toolset_schema,
     user_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
+    agent_has_knowledge_schema,
+    agent_has_toolset_schema,
     basic_edge_schema,
     belongs_to_schema,
     entity_relations_schema,
@@ -76,6 +81,7 @@ from app.schema.arango.edges import (
     is_of_type_schema,
     permissions_schema,
     record_relations_schema,
+    toolset_has_tool_schema,
     user_app_relation_schema,
     user_drive_relation_schema,
 )
@@ -114,6 +120,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
+    (CollectionNames.AGENT_KNOWLEDGE.value, knowledge_schema),
+    (CollectionNames.AGENT_TOOLSETS.value, toolset_schema),
+    (CollectionNames.AGENT_TOOLS.value, tool_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
@@ -139,6 +148,9 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
+    (CollectionNames.AGENT_HAS_KNOWLEDGE.value, agent_has_knowledge_schema),
+    (CollectionNames.AGENT_HAS_TOOLSET.value, agent_has_toolset_schema),
+    (CollectionNames.TOOLSET_HAS_TOOL.value, toolset_has_tool_schema),
 ]
 
 class BaseArangoService:
@@ -10253,6 +10265,7 @@ class BaseArangoService:
                 RETURN {{
                     id: kb._key,
                     name: kb.groupName,
+                    connectorId: kb.connectorId,
                     createdAtTimestamp: kb.createdAtTimestamp,
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
@@ -16341,7 +16354,14 @@ class BaseArangoService:
 
 
     async def get_agent(self, agent_id: str, user_id: str) -> Optional[Dict]:
-        """Get an agent by ID with user permissions - flattened response"""
+        """
+        Get an agent by ID with user permissions and linked graph data.
+
+        Includes:
+        - Agent document with permissions
+        - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
+        - Linked knowledge with filters (via agentHasKnowledge)
+        """
         try:
             query = f"""
             LET user_key = @user_id
@@ -16394,17 +16414,116 @@ class BaseArangoService:
                     }})
             ) : []
 
-            // Return individual access first, then team access
-            LET final_result = LENGTH(individual_access) > 0 ?
+            // Get base agent with permissions
+            LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
                 (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
 
-            RETURN final_result
+            // Get linked toolsets with their tools
+            LET linked_toolsets = base_agent != null ? (
+                FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                    FILTER edge._from == agent_path
+                    LET toolset = DOCUMENT(edge._to)
+                    FILTER toolset != null
+
+                    // Get tools linked to this toolset
+                    LET toolset_tools = (
+                        FOR tool_edge IN {CollectionNames.TOOLSET_HAS_TOOL.value}
+                            FILTER tool_edge._from == edge._to
+                            LET tool = DOCUMENT(tool_edge._to)
+                            FILTER tool != null
+                            RETURN {{
+                                _key: tool._key,
+                                name: tool.toolName,
+                                fullName: tool.fullName,
+                                toolsetName: tool.toolsetName,
+                                description: tool.description
+                            }}
+                    )
+
+                    RETURN {{
+                        _key: toolset._key,
+                        name: toolset.name,
+                        displayName: toolset.displayName,
+                        type: toolset.type,
+                        userId: toolset.userId,
+                        selectedTools: toolset.selectedTools,
+                        tools: toolset_tools
+                    }}
+            ) : []
+
+            // Get linked knowledge with filters and enrich with names
+            LET linked_knowledge = base_agent != null ? (
+                FOR edge IN {CollectionNames.AGENT_HAS_KNOWLEDGE.value}
+                    FILTER edge._from == agent_path
+                    LET knowledge = DOCUMENT(edge._to)
+                    FILTER knowledge != null
+
+                    // Parse filters to check if this is a KB or app
+                    LET filters_parsed = TYPENAME(knowledge.filters) == "string" ?
+                        JSON_PARSE(knowledge.filters) : knowledge.filters
+                    LET record_groups = filters_parsed.recordGroups || []
+                    LET is_kb = LENGTH(record_groups) > 0
+
+                    // For KBs: Get KB name from record group document
+                    // KBs have recordGroups in filters, and we look up the KB document
+                    LET kb_info = is_kb && LENGTH(record_groups) > 0 ? (
+                        LET first_kb_id = record_groups[0]
+                        LET kb_doc = DOCUMENT(CONCAT('{CollectionNames.RECORD_GROUPS.value}/', first_kb_id))
+                        FILTER kb_doc != null
+                        FILTER kb_doc.groupType == @kb_type
+                        RETURN {{
+                            name: kb_doc.groupName,
+                            type: "KB",
+                            displayName: kb_doc.groupName,
+                            // Use KB connector instance ID from KB document, fallback to knowledge.connectorId
+                            connectorId: kb_doc.connectorId || knowledge.connectorId
+                        }}
+                    ) : []
+
+                    // For apps: Get connector instance name from APPS collection
+                    // Apps have empty recordGroups or no recordGroups
+                    LET app_info = !is_kb ? (
+                        LET connector_instance = DOCUMENT(CONCAT('{CollectionNames.APPS.value}/', knowledge.connectorId))
+                        FILTER connector_instance != null
+                        RETURN {{
+                            name: connector_instance.name,
+                            type: connector_instance.type || "APP",
+                            displayName: connector_instance.name
+                        }}
+                    ) : []
+
+                    // Determine the display info
+                    LET display_info = LENGTH(kb_info) > 0 ? FIRST(kb_info) :
+                                      (LENGTH(app_info) > 0 ? FIRST(app_info) : {{
+                                          name: knowledge.connectorId,
+                                          type: "UNKNOWN",
+                                          displayName: knowledge.connectorId
+                                      }})
+
+                    RETURN {{
+                        _key: knowledge._key,
+                        // For KBs, use connectorId from KB document (KB connector instance ID)
+                        // For apps, use the connectorId from knowledge (connector instance ID)
+                        connectorId: LENGTH(kb_info) > 0 ? FIRST(kb_info).connectorId : knowledge.connectorId,
+                        filters: knowledge.filters,
+                        name: display_info.name,
+                        type: display_info.type,
+                        displayName: display_info.displayName || display_info.name
+                    }}
+            ) : []
+
+            // Return agent with linked data
+            RETURN base_agent != null ? MERGE(base_agent, {{
+                toolsets: linked_toolsets,
+                knowledge: linked_knowledge
+            }}) : null
             """
 
             bind_vars = {
                 "agent_id": agent_id,
                 "user_id": user_id,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
             }
 
             cursor = self.db.aql.execute(query, bind_vars=bind_vars)
@@ -16414,12 +16533,71 @@ class BaseArangoService:
                 self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
                 return None
 
-            return result[0]
+            agent = result[0]
+
+            # Parse knowledge filters from JSON strings
+            if agent.get("knowledge"):
+                for knowledge in agent["knowledge"]:
+                    filters_str = knowledge.get("filters", "{}")
+                    if isinstance(filters_str, str):
+                        try:
+                            knowledge["filtersParsed"] = json.loads(filters_str)
+                        except json.JSONDecodeError:
+                            knowledge["filtersParsed"] = {}
+                    else:
+                        knowledge["filtersParsed"] = filters_str
+
+            return agent
 
         except Exception as e:
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
+    async def check_toolset_in_use(self, toolset_name: str, user_id: str) -> List[str]:
+        """
+        Check if a toolset is currently in use by any active agents.
+
+        Args:
+            toolset_name: Normalized toolset name
+            user_id: User ID who owns the toolset
+
+        Returns:
+            List of agent names that are using the toolset. Empty list if not in use.
+        """
+        try:
+            # Find toolset nodes
+            toolset_query = f"""
+            FOR ts IN {CollectionNames.AGENT_TOOLSETS.value}
+                FILTER ts.name == @name AND ts.userId == @user_id
+                RETURN ts._id
+            """
+            toolset_ids = self.db.aql.execute(toolset_query, bind_vars={
+                "name": toolset_name,
+                "user_id": user_id
+            })
+
+            if not toolset_ids:
+                return []
+
+            # Check for active agents using this toolset
+            agent_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                FILTER edge._to IN @toolset_ids
+                LET agent = DOCUMENT(edge._from)
+                FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
+                RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
+            """
+            agents = self.db.aql.execute(agent_query, bind_vars={"toolset_ids": toolset_ids})
+
+            if agents:
+                agent_names = list(set(a.get("agentName", "Unknown") for a in agents))
+                return agent_names
+
+            return []
+
+        except Exception as e:
+            self.logger.error(f"Failed to check toolset usage: {str(e)}")
+            raise
 
     async def get_all_agents(self, user_id: str) -> List[Dict]:
         """Get all agents accessible to a user via individual or team access - flattened response"""
@@ -16494,7 +16672,12 @@ class BaseArangoService:
             return []
 
     async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str) -> Optional[bool]:
-        """Update an agent"""
+        """
+        Update an agent.
+
+        New schema only allows: name, description, startMessage, systemPrompt, models (as keys), tags
+        Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
+        """
         try:
             # Check if user has permission to update the agent using the new method
             agent_with_permission = await self.get_agent(agent_id, user_id)
@@ -16510,14 +16693,29 @@ class BaseArangoService:
             # Prepare update data
             update_data = {
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                "updatedByUserId": user_id
+                "updatedBy": user_id
             }
 
-            # Add only the fields that are provided in agent_updates
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "apps", "kb", "vectorDBs", "tags"]
+            # Add only schema-allowed fields
+            # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
+
+            # Handle models specially - convert model objects to model keys
+            if "models" in agent_updates:
+                raw_models = agent_updates["models"]
+                if isinstance(raw_models, list):
+                    model_keys = []
+                    for model in raw_models:
+                        if isinstance(model, dict):
+                            model_key = model.get("modelKey")
+                            if model_key:
+                                model_keys.append(model_key)
+                        elif isinstance(model, str):
+                            model_keys.append(model)
+                    update_data["models"] = model_keys
 
             # Update the agent using AQL UPDATE statement - Fixed to use proper collection name
             update_query = f"""

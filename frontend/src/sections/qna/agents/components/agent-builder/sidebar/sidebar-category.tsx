@@ -22,6 +22,7 @@ interface SidebarCategoryProps {
   borderColor?: string;
   showConfigureIcon?: boolean;
   onConfigureClick?: () => void;
+  onDragAttempt?: () => void;
   dragData?: Record<string, any>;
   children?: React.ReactNode;
 }
@@ -36,6 +37,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   borderColor,
   showConfigureIcon = false,
   onConfigureClick,
+  onDragAttempt,
   dragData,
   children,
 }) => {
@@ -43,11 +45,22 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
   const effectiveBorderColor = borderColor || theme.palette.primary.main;
 
   const handleDragStart = (event: React.DragEvent) => {
-    if (!dragType) return;
+    if (!dragType) {
+      // If not draggable and has onDragAttempt, show toast
+      if (onDragAttempt) {
+        event.preventDefault();
+        onDragAttempt();
+      }
+      return;
+    }
     event.dataTransfer.setData('application/reactflow', dragType);
     if (dragData) {
       Object.entries(dragData).forEach(([key, value]) => {
-        event.dataTransfer.setData(key, String(value));
+        // Stringify arrays and objects, convert primitives to strings
+        const stringValue = Array.isArray(value) || (typeof value === 'object' && value !== null)
+          ? JSON.stringify(value)
+          : String(value);
+        event.dataTransfer.setData(key, stringValue);
       });
     }
   };
@@ -56,8 +69,8 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
     <>
       <ListItem
         button
-        draggable={!!dragType}
-        onDragStart={dragType ? handleDragStart : undefined}
+        draggable={!!dragType || !!onDragAttempt}
+        onDragStart={handleDragStart}
         onClick={onToggle}
         sx={{
           py: 1,

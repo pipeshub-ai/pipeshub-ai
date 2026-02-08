@@ -202,8 +202,17 @@ export const useAgentBuilderNodeTemplates = (
         description: `All knowledge bases (${availableKnowledgeBases.length} KBs)`,
         icon: databaseIcon,
         defaultConfig: {
-          knowledgeBases: availableKnowledgeBases.map((k) => ({ id: k.id, name: k.name })),
+          knowledgeBases: availableKnowledgeBases.map((k) => ({ 
+            id: k.id, 
+            name: k.name,
+            connectorId: k.connectorId, // KB connector instance ID from KB document
+          })),
           selectedKBs: availableKnowledgeBases.map((kb) => kb.id), // All KBs selected by default
+          // Store connectorId mapping for each KB
+          kbConnectorIds: availableKnowledgeBases.reduce((acc, kb) => {
+            acc[kb.id] = kb.connectorId; // Map KB ID to its connector instance ID
+            return acc;
+          }, {} as Record<string, string>),
         },
         inputs: ['query'],
         outputs: ['context'],
@@ -217,8 +226,9 @@ export const useAgentBuilderNodeTemplates = (
         description: truncateText(`Knowledge base for information retrieval`, 40),
         icon: databaseIcon,
         defaultConfig: {
-          kbId: kb.id,
+          kbId: kb.id, // KB ID (record group ID)
           kbName: kb.name,
+          connectorInstanceId: kb.connectorId, // KB connector instance ID from KB document (e.g., "knowledgeBase_orgId")
         },
         inputs: ['query'],
         outputs: ['context'],

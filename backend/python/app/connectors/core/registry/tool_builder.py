@@ -258,6 +258,7 @@ class ToolsetBuilder:
         self.config_builder = ToolsetConfigBuilder()
         self.tools: List[ToolDefinition] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
+        self.is_internal: bool = False  # Internal toolsets are backend-only, not sent to frontend
 
     def in_group(self, app_group: str) -> 'ToolsetBuilder':
         """Set the app group"""
@@ -340,6 +341,11 @@ class ToolsetBuilder:
     def with_category(self, category: ToolCategory) -> 'ToolsetBuilder':
         """Set the toolset category"""
         self.category = category
+        return self
+
+    def as_internal(self) -> 'ToolsetBuilder':
+        """Mark this toolset as internal (backend-only, not sent to frontend)"""
+        self.is_internal = True
         return self
 
     def configure(
@@ -452,7 +458,8 @@ class ToolsetBuilder:
             description=self.description,
             category=self.category,
             config=config,
-            tools=self.tools
+            tools=self.tools,
+            internal=self.is_internal
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any], auth_type: str = "OAUTH") -> None:
@@ -467,17 +474,19 @@ class ToolsetBuilder:
             for url_key in required_urls:
                 if not oauth_config.get(url_key):
                     missing_items.append(f"{auth_type}.{url_key}")
+            # Scopes are optional - some OAuth providers (like Notion) don't use explicit scopes
             scopes = oauth_config.get("scopes", [])
-            if not isinstance(scopes, list) or not scopes:
-                missing_items.append(f"{auth_type}.scopes")
+            if scopes is not None and not isinstance(scopes, list):
+                missing_items.append(f"{auth_type}.scopes (must be a list)")
         else:
             required_urls = ["authorizeUrl", "tokenUrl"]
             for url_key in required_urls:
                 if not auth_config.get(url_key):
                     missing_items.append(url_key)
+            # Scopes are optional - some OAuth providers (like Notion) don't use explicit scopes
             scopes = auth_config.get("scopes")
-            if not isinstance(scopes, list) or not scopes:
-                missing_items.append("scopes")
+            if scopes is not None and not isinstance(scopes, list):
+                missing_items.append("scopes (must be a list)")
 
         redirect_uri = auth_config.get("redirectUri")
         if not redirect_uri:
@@ -496,6 +505,10 @@ class ToolsetBuilder:
         default_schema = auth_config.get("schema", {})
 
         for auth_type in self.supported_auth_types:
+            # Skip validation for "NONE" auth type (internal toolsets don't need auth fields)
+            if auth_type.upper() == "NONE":
+                continue
+
             if auth_type in schemas:
                 schema_fields = schemas[auth_type].get("fields", [])
             else:
@@ -515,9 +528,15 @@ class ToolsetCommonFields:
     """Reusable field definitions for toolsets"""
 
     @staticmethod
-    def api_token(token_name: str = "API Token", placeholder: str = "") -> AuthField:
-        """Standard API token field"""
-        return CommonFields.api_token(token_name, placeholder)
+    def api_token(token_name: str = "API Token", placeholder: str = "", field_name: Optional[str] = None) -> AuthField:
+        """Standard API token field
+
+        Args:
+            token_name: Display name for the token field
+            placeholder: Placeholder text for the input field
+            field_name: Optional custom field name (defaults to "apiToken")
+        """
+        return CommonFields.api_token(token_name, placeholder, field_name)
 
     @staticmethod
     def bearer_token(token_name: str = "Bearer Token", placeholder: str = "") -> AuthField:

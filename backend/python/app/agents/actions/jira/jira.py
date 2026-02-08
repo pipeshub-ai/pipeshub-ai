@@ -9,6 +9,17 @@ from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.jira.jira import JiraClient
@@ -16,7 +27,111 @@ from app.sources.external.jira.jira import JiraDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_issue",
+        description="Create a new issue in JIRA",
+        parameters=[
+            {"name": "project_key", "type": "string", "description": "Project key", "required": True},
+            {"name": "summary", "type": "string", "description": "Issue summary", "required": True},
+            {"name": "issue_type_name", "type": "string", "description": "Issue type", "required": True},
+            {"name": "description", "type": "string", "description": "Issue description", "required": False}
+        ],
+        tags=["issues", "create"]
+    ),
+    ToolDefinition(
+        name="get_projects",
+        description="Get all JIRA projects",
+        parameters=[],
+        tags=["projects", "list"]
+    ),
+    ToolDefinition(
+        name="get_issues",
+        description="Get issues from a JIRA project",
+        parameters=[
+            {"name": "project_key", "type": "string", "description": "Project key", "required": True},
+            {"name": "days", "type": "integer", "description": "Days to look back", "required": False},
+            {"name": "max_results", "type": "integer", "description": "Max results", "required": False}
+        ],
+        tags=["issues", "list"]
+    ),
+    ToolDefinition(
+        name="get_issue",
+        description="Get a specific JIRA issue",
+        parameters=[
+            {"name": "issue_key", "type": "string", "description": "Issue key", "required": True}
+        ],
+        tags=["issues", "info"]
+    ),
+    ToolDefinition(
+        name="search_issues",
+        description="Search for issues using JQL",
+        parameters=[
+            {"name": "jql", "type": "string", "description": "JQL query", "required": True},
+            {"name": "maxResults", "type": "integer", "description": "Max results", "required": False}
+        ],
+        tags=["issues", "search"]
+    ),
+    ToolDefinition(
+        name="add_comment",
+        description="Add a comment to a JIRA issue",
+        parameters=[
+            {"name": "issue_key", "type": "string", "description": "Issue key", "required": True},
+            {"name": "comment", "type": "string", "description": "Comment text", "required": True}
+        ],
+        tags=["issues", "comments"]
+    ),
+    ToolDefinition(
+        name="search_users",
+        description="Search JIRA users",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True},
+            {"name": "max_results", "type": "integer", "description": "Max results", "required": False}
+        ],
+        tags=["users", "search"]
+    ),
+    ToolDefinition(
+        name="get_current_user",
+        description="Get the current authenticated user's details",
+        parameters=[],
+        tags=["users", "info"]
+    ),
+]
 
+
+# Register JIRA toolset
+@ToolsetBuilder("Jira")\
+    .in_group("Atlassian")\
+    .with_description("JIRA integration for issue tracking, project management, and team collaboration")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="JIRA",
+            authorize_url="https://auth.atlassian.com/authorize",
+            token_url="https://auth.atlassian.com/oauth/token",
+            redirect_uri="toolsets/oauth/callback/jira",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "read:jira-work",
+                    "write:jira-work",
+                    "read:jira-user"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Atlassian Developer Console"),
+                CommonFields.client_secret("Atlassian Developer Console")
+            ],
+            icon_path="/assets/icons/connectors/jira.svg",
+            app_group="Project Management",
+            app_description="JIRA OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg"))\
+    .build_decorator()
 class Jira:
     """JIRA tool exposed to the agents using JiraDataSource"""
 

@@ -160,6 +160,7 @@ class KnowledgeBaseResponse(BaseModel):
     """Response model for knowledge base information"""
     id: str = Field(..., description="Knowledge base ID")
     name: str = Field(..., description="Knowledge base name")
+    connectorId: Optional[str] = Field(None, description="KB connector instance ID (e.g., 'knowledgeBase_orgId')")
     createdAtTimestamp: int = Field(..., description="Creation timestamp")
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
     createdBy: str = Field(..., description="Created by user ID")

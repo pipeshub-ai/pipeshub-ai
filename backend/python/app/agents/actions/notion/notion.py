@@ -2,17 +2,147 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Dict, Optional, Tuple
+from typing import Coroutine, Dict, List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.notion.notion import NotionClient
 from app.sources.external.notion.notion import NotionDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_page",
+        description="Create a new page in Notion",
+        parameters=[
+            {"name": "parent_id", "type": "string", "description": "Parent page ID", "required": True},
+            {"name": "title", "type": "string", "description": "Page title", "required": True}
+        ],
+        tags=["pages", "create"]
+    ),
+    ToolDefinition(
+        name="get_page",
+        description="Get page details",
+        parameters=[
+            {"name": "page_id", "type": "string", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "read"]
+    ),
+    ToolDefinition(
+        name="update_page",
+        description="Update a page",
+        parameters=[
+            {"name": "page_id", "type": "string", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "update"]
+    ),
+    ToolDefinition(
+        name="delete_page",
+        description="Delete a page",
+        parameters=[
+            {"name": "page_id", "type": "string", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "delete"]
+    ),
+    ToolDefinition(
+        name="search",
+        description="Search pages and databases",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["search"]
+    ),
+    ToolDefinition(
+        name="list_users",
+        description="List all users",
+        parameters=[],
+        tags=["users", "list"]
+    ),
+    ToolDefinition(
+        name="retrieve_user",
+        description="Get user details",
+        parameters=[
+            {"name": "user_id", "type": "string", "description": "User ID", "required": True}
+        ],
+        tags=["users", "read"]
+    ),
+    ToolDefinition(
+        name="create_database",
+        description="Create a new database",
+        parameters=[
+            {"name": "parent_id", "type": "string", "description": "Parent page ID", "required": True},
+            {"name": "title", "type": "string", "description": "Database title", "required": True}
+        ],
+        tags=["databases", "create"]
+    ),
+    ToolDefinition(
+        name="query_database",
+        description="Query a database",
+        parameters=[
+            {"name": "database_id", "type": "string", "description": "Database ID", "required": True}
+        ],
+        tags=["databases", "query"]
+    ),
+    ToolDefinition(
+        name="get_database",
+        description="Get database details",
+        parameters=[
+            {"name": "database_id", "type": "string", "description": "Database ID", "required": True}
+        ],
+        tags=["databases", "read"]
+    ),
+]
 
+
+# Register Notion toolset
+@ToolsetBuilder("Notion")\
+    .in_group("Productivity")\
+    .with_description("Notion integration for pages, databases, and workspace management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Notion",
+            authorize_url="https://api.notion.com/v1/oauth/authorize",
+            token_url="https://api.notion.com/v1/oauth/token",
+            redirect_uri="toolsets/oauth/callback/notion",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "read",
+                    "update",
+                    "insert"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Notion Integration Settings"),
+                CommonFields.client_secret("Notion Integration Settings")
+            ],
+            icon_path="/assets/icons/connectors/notion.svg",
+            app_group="Productivity",
+            app_description="Notion OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Notion Integration Token", "secret_your-token-here")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/notion.svg"))\
+    .build_decorator()
 class Notion:
     """Notion tool exposed to the agents using NotionDataSource"""
 

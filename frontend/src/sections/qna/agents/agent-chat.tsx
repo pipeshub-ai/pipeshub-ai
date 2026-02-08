@@ -675,8 +675,52 @@ const AgentChat = () => {
     if (agentKey) {
       AgentApiService.getAgent(agentKey).then((agentItem) => {
         setAgent(agentItem);
-        setAvailableModels(agentItem.models);
-        setAvailableTools(agentItem.tools.map((tool: string) => ({ name: tool })));
+        
+        // Models are now enriched objects with modelName, provider, etc.
+        // Backend enriches model keys into full model objects
+        if (agentItem.models && agentItem.models.length > 0) {
+          const models = agentItem.models.map((m: any) => {
+            // Check if it's an enriched object or just a string key
+            if (typeof m === 'object' && m !== null) {
+              return {
+                provider: m.provider || 'unknown',
+                modelName: m.modelName || m.modelKey || 'Unknown Model',
+              };
+            }
+            // Fallback for string model keys
+            return {
+              provider: 'AI',
+              modelName: m,
+            };
+          });
+          setAvailableModels(models);
+        }
+        
+        // Build tools array from toolsets (new format) or use legacy tools array
+        const toolsList: { name: string }[] = [];
+        if (agentItem.toolsets && agentItem.toolsets.length > 0) {
+          // New format: extract tools from toolsets
+          agentItem.toolsets.forEach((toolset: any) => {
+            if (toolset.tools && toolset.tools.length > 0) {
+              toolset.tools.forEach((tool: any) => {
+                const fullName = tool.fullName || `${toolset.name}.${tool.name}`;
+                toolsList.push({ name: fullName });
+              });
+            } else if (toolset.selectedTools && toolset.selectedTools.length > 0) {
+              // Use selectedTools if tools are not expanded
+              toolset.selectedTools.forEach((toolName: string) => {
+                const fullName = toolName.includes('.') ? toolName : `${toolset.name}.${toolName}`;
+                toolsList.push({ name: fullName });
+              });
+            }
+          });
+        } else if (agentItem.tools && Array.isArray(agentItem.tools)) {
+          // Legacy format: tools is array of strings
+          agentItem.tools.forEach((tool: string) => {
+            toolsList.push({ name: tool });
+          });
+        }
+        setAvailableTools(toolsList);
       });
     }
   }, [agentKey]);
@@ -1144,34 +1188,67 @@ const AgentChat = () => {
         ? `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/stream`
         : `${CONFIG.backendUrl}/api/v1/agents/${agentKey}/conversations/${currentConversationId}/messages/stream`;
 
-      // Build the request body with persistent selections
+      // Build the request body with the new graph-based format
+      // No backward compatibility - only use toolsets and knowledge
+      
+      // Get tools to enable from user selection or use all tools from agent
+      const getEnabledTools = (): string[] => {
+        // If user selected specific tools, use those
+        if (selectedTools && selectedTools.length > 0) {
+          return selectedTools;
+        }
+        // Otherwise, return empty to let backend use all agent tools
+        return [];
+      };
+      
+      // Get apps/knowledge sources to enable from user selection
+      const getEnabledApps = (): string[] => {
+        // If user selected specific apps, use those
+        if (selectedApps && selectedApps.length > 0) {
+          return selectedApps;
+        }
+        // Otherwise, return empty to let backend use all agent knowledge sources
+        return [];
+      };
+      
       const requestBody = {
         query: trimmedInput,
         modelName: modelName || currentModel?.modelName,
         chatMode: chatMode || currentMode?.id,
 
-        // Tools: Use persistent selected tools (app_name.tool_name format)
-        // If no tools selected, use agent defaults, if no agent defaults, use empty array
-        tools: selectedTools && selectedTools.length > 0 ? selectedTools : agent?.tools || [],
+        // Tools: List of tool full names to enable (filters agent's toolsets)
+        // Empty means use all tools from agent's toolsets
+        tools: getEnabledTools(),
 
-        // Enhanced filters structure with persistent selections
+        // Filters structure
         filters: {
-          departments: [],
-          moduleIds: [],
-          appSpecificRecordTypes: [],
+          // Apps: List of connector IDs to enable (filters agent's knowledge)
+          // Empty means use all knowledge sources from agent
+          apps: getEnabledApps(),
 
-          // Apps: Extract connector instance IDs from connectors with category='knowledge'
-          // If no apps selected, use agent defaults from connectors array
-          apps: selectedApps && selectedApps.length > 0
-            ? selectedApps
-            : (agent?.connectors?.filter(ci => ci.category === 'knowledge').map(ci => ci.id) || []),
-
-          // Knowledge bases: Use persistent selected KB IDs
-          // If no KBs selected, use agent defaults, if no agent defaults, use empty array
-          kb: selectedKBs && selectedKBs.length > 0 ? selectedKBs : agent?.kb || [],
+          // Knowledge bases: KB IDs to use (extract from knowledge array if not selected)
+          kb: selectedKBs && selectedKBs.length > 0 ? selectedKBs : (() => {
+            const kbIds: string[] = [];
+            if (agent?.knowledge && Array.isArray(agent.knowledge)) {
+              agent.knowledge.forEach((k: any) => {
+                const filters = k.filtersParsed || k.filters || {};
+                let filtersParsed = filters;
+                if (typeof filters === 'string') {
+                  try {
+                    filtersParsed = JSON.parse(filters);
+                  } catch {
+                    filtersParsed = {};
+                  }
+                }
+                const recordGroups = filtersParsed.recordGroups || [];
+                kbIds.push(...recordGroups);
+              });
+            }
+            return [...new Set(kbIds)]; // Remove duplicates
+          })(),
         },
 
-        // Chat mode specific parameters (persistent throughout conversation)
+        // Chat mode specific parameters
         ...(chatMode === 'quick' && {
           limit: 5,
           quickMode: true,

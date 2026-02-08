@@ -7,12 +7,119 @@ from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="send_message",
+        description="Send an email via Gmail",
+        parameters=[
+            {"name": "to", "type": "string", "description": "Recipient email address", "required": True},
+            {"name": "subject", "type": "string", "description": "Email subject", "required": True},
+            {"name": "message", "type": "string", "description": "Email body", "required": True}
+        ],
+        tags=["email", "send"]
+    ),
+    ToolDefinition(
+        name="get_messages",
+        description="Get messages from Gmail inbox",
+        parameters=[
+            {"name": "max_results", "type": "integer", "description": "Max messages to return", "required": False},
+            {"name": "query", "type": "string", "description": "Search query", "required": False}
+        ],
+        tags=["email", "list"]
+    ),
+    ToolDefinition(
+        name="get_message",
+        description="Get a specific email message",
+        parameters=[
+            {"name": "message_id", "type": "string", "description": "Message ID", "required": True}
+        ],
+        tags=["email", "info"]
+    ),
+    ToolDefinition(
+        name="search_messages",
+        description="Search for email messages",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["email", "search"]
+    ),
+    ToolDefinition(
+        name="delete_message",
+        description="Delete an email message",
+        parameters=[
+            {"name": "message_id", "type": "string", "description": "Message ID", "required": True}
+        ],
+        tags=["email", "delete"]
+    ),
+    ToolDefinition(
+        name="create_draft",
+        description="Create a draft email",
+        parameters=[
+            {"name": "to", "type": "string", "description": "Recipient email address", "required": True},
+            {"name": "subject", "type": "string", "description": "Email subject", "required": True},
+            {"name": "message", "type": "string", "description": "Email body", "required": True}
+        ],
+        tags=["email", "draft"]
+    ),
+]
+
+
+# Register Gmail toolset
+@ToolsetBuilder("Gmail")\
+    .in_group("Google Workspace")\
+    .with_description("Gmail integration for sending, receiving, and managing emails")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Gmail",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/gmail",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/gmail.send",
+                    "https://www.googleapis.com/auth/gmail.readonly",
+                    "https://www.googleapis.com/auth/gmail.modify"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/gmail.svg",
+            app_group="Google Workspace",
+            app_description="Gmail OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/gmail.svg"))\
+    .build_decorator()
 class Gmail:
     """Gmail tool exposed to the agents using GoogleGmailDataSource"""
     def __init__(self, client: GoogleClient) -> None:

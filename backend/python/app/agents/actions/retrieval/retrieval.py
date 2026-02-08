@@ -18,6 +18,8 @@ from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import AuthBuilder
+from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import get_flattened_results
@@ -36,6 +38,33 @@ class RetrievalToolOutput(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="search_internal_knowledge",
+        description="Search and retrieve information from internal knowledge bases, documents, and connectors",
+        parameters=[
+            {"name": "query", "type": "string", "description": "The search query to find relevant information", "required": True},
+            {"name": "limit", "type": "integer", "description": "Maximum number of results to return (default: 50, max: 100)", "required": False},
+            {"name": "filters", "type": "object", "description": "Optional filters to narrow search (apps, kb, etc.)", "required": False}
+        ],
+        tags=["search", "knowledge", "internal"]
+    )
+]
+
+
+# Register Retrieval toolset (internal - always available, no auth required, backend-only)
+@ToolsetBuilder("Retrieval")\
+    .in_group("Internal Tools")\
+    .with_description("Internal knowledge retrieval tool - always available, no authentication required")\
+    .with_category(ToolCategory.UTILITY)\
+    .with_auth([
+        AuthBuilder.type("NONE").fields([])
+    ])\
+    .with_tools(tools)\
+    .as_internal()\
+    .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
+    .build_decorator()
 class Retrieval:
     """Internal knowledge retrieval tool exposed to agents"""
 

@@ -266,7 +266,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             # Ensure directory ends with '/' for proper prefix matching
             prefix = directory if directory.endswith("/") else f"{directory}/"
-            return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
+            return [key.decode("utf-8") for key, _ in client.get_prefix(prefix)]
         except Exception as e:
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 

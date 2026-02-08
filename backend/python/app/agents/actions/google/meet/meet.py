@@ -4,11 +4,22 @@ import logging
 import re
 from datetime import datetime, timedelta
 from datetime import timezone as dt_timezone
-from typing import Optional
+from typing import List, Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
@@ -17,13 +28,128 @@ from app.utils.time_conversion import parse_timestamp, prepare_iso_timestamps
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="start_instant_meeting",
+        description="Start an instant Google Meet meeting",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Meeting title", "required": False},
+            {"name": "description", "type": "string", "description": "Meeting description", "required": False}
+        ],
+        tags=["meetings", "instant"]
+    ),
+    ToolDefinition(
+        name="join_meeting_by_code",
+        description="Join a Google Meet meeting by code",
+        parameters=[
+            {"name": "meeting_code", "type": "string", "description": "Meeting code", "required": True}
+        ],
+        tags=["meetings", "join"]
+    ),
+    ToolDefinition(
+        name="schedule_meeting_with_calendar",
+        description="Schedule a Google Meet meeting via Calendar",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Meeting title", "required": True},
+            {"name": "start_time", "type": "string", "description": "Start time (ISO format)", "required": True},
+            {"name": "end_time", "type": "string", "description": "End time (ISO format)", "required": True},
+            {"name": "attendees", "type": "array", "description": "List of attendee emails", "required": False}
+        ],
+        tags=["meetings", "schedule"]
+    ),
+    ToolDefinition(
+        name="find_available_time",
+        description="Find available time slots for a meeting",
+        parameters=[
+            {"name": "duration_minutes", "type": "integer", "description": "Meeting duration in minutes", "required": True},
+            {"name": "attendees", "type": "array", "description": "List of attendee emails", "required": False}
+        ],
+        tags=["meetings", "scheduling"]
+    ),
+    ToolDefinition(
+        name="update_scheduled_meeting",
+        description="Update a scheduled meeting",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True},
+            {"name": "title", "type": "string", "description": "New title", "required": False},
+            {"name": "start_time", "type": "string", "description": "New start time", "required": False}
+        ],
+        tags=["meetings", "update"]
+    ),
+    ToolDefinition(
+        name="cancel_meeting",
+        description="Cancel a scheduled meeting",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True},
+            {"name": "notify_attendees", "type": "boolean", "description": "Notify attendees", "required": False}
+        ],
+        tags=["meetings", "cancel"]
+    ),
+    ToolDefinition(
+        name="get_meeting_details",
+        description="Get details of a meeting",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True}
+        ],
+        tags=["meetings", "info"]
+    ),
+    ToolDefinition(
+        name="list_upcoming_meetings",
+        description="List upcoming Google Meet meetings",
+        parameters=[
+            {"name": "max_results", "type": "integer", "description": "Max meetings to return", "required": False}
+        ],
+        tags=["meetings", "list"]
+    ),
+]
+
+
+# Register Google Meet toolset
+@ToolsetBuilder("Meet")\
+    .in_group("Google Workspace")\
+    .with_description("Google Meet integration for video conferencing and meeting management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Meet",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/meet",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/meetings.space.created"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/meet.svg",
+            app_group="Google Workspace",
+            app_description="Meet OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/meet.svg"))\
+    .build_decorator()
 class GoogleMeet:
-    """Google Meet tool exposed to the agents using GoogleMeetDataSource"""
+    """Meet tool exposed to the agents using MeetDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Meet tool"""
         """
         Args:
-            client: Google Meet client
+            client: Meet client
         Returns:
             None
         """

@@ -1,19 +1,144 @@
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_files_list",
+        description="Get list of files in Google Drive",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": False},
+            {"name": "page_size", "type": "integer", "description": "Max files per page", "required": False},
+            {"name": "order_by", "type": "string", "description": "Sort order", "required": False}
+        ],
+        tags=["files", "list"]
+    ),
+    ToolDefinition(
+        name="get_file_details",
+        description="Get detailed information about a file",
+        parameters=[
+            {"name": "fileId", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "info"]
+    ),
+    ToolDefinition(
+        name="create_folder",
+        description="Create a new folder in Google Drive",
+        parameters=[
+            {"name": "folderName", "type": "string", "description": "Folder name", "required": True},
+            {"name": "parent_folder_id", "type": "string", "description": "Parent folder ID", "required": False}
+        ],
+        tags=["folders", "create"]
+    ),
+    ToolDefinition(
+        name="upload_file",
+        description="Upload a file to Google Drive",
+        parameters=[
+            {"name": "file_name", "type": "string", "description": "File name", "required": True},
+            {"name": "content", "type": "string", "description": "File content", "required": True},
+            {"name": "mime_type", "type": "string", "description": "MIME type", "required": False}
+        ],
+        tags=["files", "upload"]
+    ),
+    ToolDefinition(
+        name="download_file",
+        description="Download file content from Google Drive",
+        parameters=[
+            {"name": "fileId", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "download"]
+    ),
+    ToolDefinition(
+        name="delete_file",
+        description="Delete a file from Google Drive",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "delete"]
+    ),
+    ToolDefinition(
+        name="search_files",
+        description="Search for files in Google Drive",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True},
+            {"name": "page_size", "type": "integer", "description": "Max results", "required": False}
+        ],
+        tags=["files", "search"]
+    ),
+    ToolDefinition(
+        name="copy_file",
+        description="Copy a file in Google Drive",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID to copy", "required": True},
+            {"name": "new_name", "type": "string", "description": "New file name", "required": False}
+        ],
+        tags=["files", "copy"]
+    ),
+]
+
+
+# Register Google Drive toolset
+@ToolsetBuilder("Drive")\
+    .in_group("Google Workspace")\
+    .with_description("Google Drive integration for file management, search, and collaboration")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Drive",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/drive",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/drive",
+                    "https://www.googleapis.com/auth/drive.file",
+                    "https://www.googleapis.com/auth/drive.metadata.readonly"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/drive.svg",
+            app_group="Google Workspace",
+            app_description="Drive OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/drive.svg"))\
+    .build_decorator()
 class GoogleDrive:
-    """Google Drive tool exposed to the agents using GoogleDriveDataSource"""
+    """Drive tool exposed to the agents using DriveDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Drive tool"""
         """

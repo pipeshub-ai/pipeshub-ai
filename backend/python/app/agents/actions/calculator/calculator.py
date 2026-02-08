@@ -1,12 +1,55 @@
 import logging
+from typing import List
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import AuthBuilder
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 
 logger = logging.getLogger(__name__)
 
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="calculate_single_operand",
+        description="Calculate the result of a mathematical operation with a single operand (square root, cube root)",
+        parameters=[
+            {"name": "a", "type": "number", "description": "The number", "required": True},
+            {"name": "operation", "type": "string", "description": "Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)", "required": True}
+        ],
+        tags=["math", "calculation"]
+    ),
+    ToolDefinition(
+        name="calculate_two_operands",
+        description="Calculate the result of a mathematical operation with two operands (add, subtract, multiply, divide, power)",
+        parameters=[
+            {"name": "a", "type": "number", "description": "The first number", "required": True},
+            {"name": "b", "type": "number", "description": "The second number", "required": True},
+            {"name": "operation", "type": "string", "description": "Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'", "required": True}
+        ],
+        tags=["math", "calculation"]
+    )
+]
+
+
+# Register Calculator toolset (internal - always available, no auth required, backend-only)
+@ToolsetBuilder("Calculator")\
+    .in_group("Internal Tools")\
+    .with_description("Mathematical calculator tool - always available, no authentication required")\
+    .with_category(ToolCategory.UTILITY)\
+    .with_auth([
+        AuthBuilder.type("NONE").fields([])
+    ])\
+    .with_tools(tools)\
+    .as_internal()\
+    .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/calculator.svg"))\
+    .build_decorator()
 class Calculator:
     """Calculator tool exposed to the agents"""
     def __init__(self) -> None:

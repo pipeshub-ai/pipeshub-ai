@@ -1,7 +1,7 @@
 """
 Tool Registry
 
-Manages toolset metadata and database synchronization, similar to ConnectorRegistry.
+Manages toolset metadata and in-memory tool registration.
 A toolset is a collection of related tools (e.g., "jira toolset" with search, create, update tools).
 """
 
@@ -18,7 +18,8 @@ def Toolset(
     description: str = "",
     category: ToolCategory = ToolCategory.APP,
     config: Optional[Dict[str, Any]] = None,
-    tools: Optional[List[ToolDefinition]] = None
+    tools: Optional[List[ToolDefinition]] = None,
+    internal: bool = False  # If True, toolset is internal and not sent to frontend
 ) -> Callable[[Type], Type]:
     """
     Decorator to register a toolset with metadata and configuration schema.
@@ -26,12 +27,11 @@ def Toolset(
     Args:
         name: Name of the toolset (e.g., "Jira", "Slack")
         app_group: Group the toolset belongs to (e.g., "Atlassian")
-        auth_type: Authentication type(s) (e.g., "api_token", ["OAUTH", "API_TOKEN"])
+        supported_auth_types: Authentication type(s) (e.g., "api_token", ["OAUTH", "API_TOKEN"])
         description: Description of the toolset
         category: Category of the toolset
         config: Complete configuration schema for the toolset
         tools: List of tool definitions
-        auth_types: Explicit list of auth types (if not provided, derived from auth_type)
 
     Returns:
         Decorator function that marks a class as a toolset
@@ -40,7 +40,7 @@ def Toolset(
         @Toolset(
             name="Jira",
             app_group="Atlassian",
-            auth_type="API_TOKEN",
+            supported_auth_types=["OAUTH", "API_TOKEN"],
             description="Jira issue management tools",
             category=ToolCategory.APP,
             tools=[...]
@@ -80,7 +80,9 @@ def Toolset(
             "description": description,
             "category": category.value,
             "config": config or {},
-            "tools": tools_dict
+            "tools": tools_dict,
+            "toolsetClass": cls,  # Store reference to the class for tool discovery
+            "isInternal": internal  # Mark as internal if True (not sent to frontend)
         }
 
         # Mark class as a toolset
@@ -92,22 +94,30 @@ def Toolset(
 
 class ToolsetRegistry:
     """
-    Registry for managing toolset metadata and database synchronization.
+    Registry for managing toolset metadata and in-memory tool registration.
 
     This class handles:
     - Registration of toolset classes from code
+    - Automatic registration of tools in the global tool registry
     - Providing toolset information
-    - Creating and updating toolset instances
     - Pagination for large toolset lists
     """
 
     def __init__(self) -> None:
         """Initialize the toolset registry"""
         self._toolsets: Dict[str, Dict[str, Any]] = {}
+        self._tool_registry = None  # Will be set lazily to avoid circular imports
+
+    def _get_tool_registry(self):
+        """Get the global tool registry (lazy import to avoid circular dependency)"""
+        if self._tool_registry is None:
+            from app.agents.tools.registry import _global_tools_registry
+            self._tool_registry = _global_tools_registry
+        return self._tool_registry
 
     def register_toolset(self, toolset_class: Type) -> bool:
         """
-        Register a toolset class with the registry.
+        Register a toolset class with the registry and register its tools in the tool registry.
 
         Args:
             toolset_class: The toolset class to register (must be decorated with @Toolset)
@@ -122,13 +132,136 @@ class ToolsetRegistry:
             metadata = toolset_class._toolset_metadata
             toolset_name = metadata['name']
 
-            # Store in memory
+            # Store toolset in memory
             self._toolsets[toolset_name] = metadata.copy()
+
+            # Register all tools from this toolset in the global tool registry
+            self._register_toolset_tools(toolset_name, toolset_class)
 
             return True
 
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(f"Failed to register toolset {toolset_name}: {e}")
             return False
+
+    def _register_toolset_tools(self, toolset_name: str, toolset_class: Type) -> None:
+        """
+        Register all tools from a toolset class into the global tool registry.
+
+        This discovers tools via two methods:
+        1. Tools defined in metadata (from ToolDefinition list)
+        2. Tools discovered via @tool decorators on class methods
+
+        Args:
+            toolset_name: Name of the toolset
+            toolset_class: The toolset class
+        """
+        from app.agents.tools.config import ToolMetadata
+        from app.agents.tools.models import Tool, ToolParameter
+
+        tool_registry = self._get_tool_registry()
+
+        # Get tools from metadata (ToolDefinition list)
+        metadata = self._toolsets.get(toolset_name, {})
+        tool_definitions = metadata.get('tools', [])
+
+        # Also discover tools from @tool decorated methods on the class
+        discovered_tools = self._discover_tools_from_class(toolset_class)
+
+        # Register metadata-defined tools
+        for tool_def in tool_definitions:
+            tool_name = tool_def['name']
+
+            # Convert parameters to ToolParameter objects
+            parameters = []
+            for param in tool_def.get('parameters', []):
+                param_type = self._map_parameter_type(param.get('type', 'string'))
+                parameters.append(ToolParameter(
+                    name=param['name'],
+                    type=param_type,
+                    description=param.get('description', ''),
+                    required=param.get('required', False),
+                    default=param.get('default')
+                ))
+
+            # Find the actual function from discovered tools or create a placeholder
+            func = discovered_tools.get(tool_name, lambda: "Tool not implemented")
+
+            # Create Tool object
+            tool_obj = Tool(
+                app_name=toolset_name.lower(),
+                tool_name=tool_name,
+                description=tool_def.get('description', ''),
+                function=func,
+                parameters=parameters,
+                returns=tool_def.get('returns'),
+                examples=tool_def.get('examples', []),
+                tags=tool_def.get('tags', [])
+            )
+
+            # Create metadata
+            tool_metadata = ToolMetadata(
+                app_name=toolset_name.lower(),
+                tool_name=tool_name,
+                description=tool_def.get('description', ''),
+                category=self._map_category(metadata.get('category', 'app')),
+                is_essential=False,
+                requires_auth=True,
+                tags=tool_def.get('tags', [])
+            )
+
+            # Register in tool registry
+            tool_registry.register(tool_obj, tool_metadata)
+
+    def _discover_tools_from_class(self, toolset_class: Type) -> Dict[str, Callable]:
+        """
+        Discover tools from @tool decorated methods in a class.
+
+        Args:
+            toolset_class: The toolset class
+
+        Returns:
+            Dictionary mapping tool_name -> function
+        """
+        tools = {}
+        for attr_name in dir(toolset_class):
+            try:
+                attr = getattr(toolset_class, attr_name)
+                if callable(attr) and hasattr(attr, '_tool_metadata'):
+                    tool_metadata = attr._tool_metadata
+                    tools[tool_metadata.tool_name] = attr
+            except Exception:
+                continue
+        return tools
+
+    def _map_parameter_type(self, type_str: str):
+        """Map string type to ParameterType enum"""
+        from app.agents.tools.enums import ParameterType
+        type_map = {
+            'string': ParameterType.STRING,
+            'integer': ParameterType.INTEGER,
+            'number': ParameterType.NUMBER,
+            'boolean': ParameterType.BOOLEAN,
+            'array': ParameterType.ARRAY,
+            'object': ParameterType.OBJECT,
+        }
+        return type_map.get(type_str.lower(), ParameterType.STRING)
+
+    def _map_category(self, category_str: str):
+        """Map toolset category to agent tool category"""
+        from app.agents.tools.config import ToolCategory as AgentToolCategory
+        category_map = {
+            'app': AgentToolCategory.APP,
+            'file': AgentToolCategory.FILE,
+            'web_search': AgentToolCategory.WEB_SEARCH,
+            'research': AgentToolCategory.RESEARCH,
+            'utility': AgentToolCategory.UTILITY,
+            'communication': AgentToolCategory.COMMUNICATION,
+            'productivity': AgentToolCategory.PRODUCTIVITY,
+            'database': AgentToolCategory.DATABASE,
+        }
+        return category_map.get(category_str.lower(), AgentToolCategory.UTILITY)
 
     def discover_toolsets(self, module_paths: List[str]) -> None:
         """
@@ -212,6 +345,10 @@ class ToolsetRegistry:
             return all(tok in combined for tok in tokens)
 
         for toolset_name, metadata in self._toolsets.items():
+            # Filter out internal toolsets (not sent to frontend)
+            if metadata.get('isInternal', False) or metadata.get('internal', False):
+                continue
+
             # Filter by category
             if category and metadata.get('category') != category.value:
                 continue
@@ -285,17 +422,23 @@ class ToolsetRegistry:
         return toolset_info
 
     def get_toolsets_by_category(self, category: ToolCategory) -> List[Dict[str, Any]]:
-        """Get all toolsets in a specific category"""
+        """Get all toolsets in a specific category (excludes internal toolsets)"""
         toolsets = []
         for toolset_name, metadata in self._toolsets.items():
+            # Filter out internal toolsets (not sent to frontend)
+            if metadata.get('isInternal', False) or metadata.get('internal', False):
+                continue
             if metadata.get('category') == category.value:
                 toolsets.append(self._build_toolset_info(toolset_name, metadata))
         return toolsets
 
     def get_toolsets_by_auth_type(self, auth_type: str) -> List[Dict[str, Any]]:
-        """Get all toolsets that support a specific auth type"""
+        """Get all toolsets that support a specific auth type (excludes internal toolsets)"""
         toolsets = []
         for toolset_name, metadata in self._toolsets.items():
+            # Filter out internal toolsets (not sent to frontend)
+            if metadata.get('isInternal', False) or metadata.get('internal', False):
+                continue
             supported_auth_types = metadata.get('supportedAuthTypes', [])
             if auth_type.upper() in [at.upper() for at in supported_auth_types]:
                 toolsets.append(self._build_toolset_info(toolset_name, metadata))
@@ -313,4 +456,3 @@ _global_toolset_registry = ToolsetRegistry()
 def get_toolset_registry() -> ToolsetRegistry:
     """Get the global toolset registry instance"""
     return _global_toolset_registry
-

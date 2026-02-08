@@ -6,6 +6,17 @@ from typing import List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
@@ -13,13 +24,107 @@ from app.utils.time_conversion import prepare_iso_timestamps
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_event",
+        description="Create a new calendar event",
+        parameters=[
+            {"name": "summary", "type": "string", "description": "Event title", "required": True},
+            {"name": "start_time", "type": "string", "description": "Start time (ISO format)", "required": True},
+            {"name": "end_time", "type": "string", "description": "End time (ISO format)", "required": True},
+            {"name": "description", "type": "string", "description": "Event description", "required": False}
+        ],
+        tags=["events", "create"]
+    ),
+    ToolDefinition(
+        name="get_calendar_events",
+        description="Get upcoming calendar events",
+        parameters=[
+            {"name": "max_results", "type": "integer", "description": "Max events to return", "required": False},
+            {"name": "time_min", "type": "string", "description": "Start time filter (ISO format)", "required": False}
+        ],
+        tags=["events", "list"]
+    ),
+    ToolDefinition(
+        name="get_event",
+        description="Get details of a specific event",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True}
+        ],
+        tags=["events", "info"]
+    ),
+    ToolDefinition(
+        name="update_event",
+        description="Update a calendar event",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True},
+            {"name": "summary", "type": "string", "description": "New title", "required": False},
+            {"name": "description", "type": "string", "description": "New description", "required": False}
+        ],
+        tags=["events", "update"]
+    ),
+    ToolDefinition(
+        name="delete_event",
+        description="Delete a calendar event",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True}
+        ],
+        tags=["events", "delete"]
+    ),
+    ToolDefinition(
+        name="list_calendars",
+        description="List all calendars",
+        parameters=[],
+        tags=["calendars", "list"]
+    ),
+]
+
+
+# Register Google Calendar toolset
+@ToolsetBuilder("Calendar")\
+    .in_group("Google Workspace")\
+    .with_description("Google Calendar integration for event management and scheduling")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Calendar",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/calendar",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/calendar.svg",
+            app_group="Google Workspace",
+            app_description="Calendar OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/calendar.svg"))\
+    .build_decorator()
 class GoogleCalendar:
-    """Google Calendar tool exposed to the agents using GoogleCalendarDataSource"""
+    """Calendar tool exposed to the agents using CalendarDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Calendar tool"""
         """
         Args:
-            client: Google Calendar client
+            client: Calendar client
         Returns:
             None
         """

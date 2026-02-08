@@ -3,7 +3,7 @@ Enhanced wrapper to adapt registry tools to LangChain format with proper client 
 """
 
 import json
-from typing import Callable, Dict, List, Union
+from typing import Callable, Dict, List, Optional, Union
 
 from langchain_core.tools import BaseTool
 from pydantic import ConfigDict, Field
@@ -47,18 +47,19 @@ class ToolInstanceCreator:
             raise RuntimeError("ConfigurationService not available")
         return retrieval_service.config_service
 
-    def create_instance(self, action_class: type, app_name: str) -> object:
+    def create_instance(self, action_class: type, app_name: str, tool_full_name: str = None) -> object:
         """Create an instance of an action class with proper client.
         Args:
             action_class: Class to instantiate
             app_name: Name of the application
+            tool_full_name: Full tool name (e.g., "slack.send_message") for toolset lookup
         Returns:
             Instance of action_class
         """
         factory = ClientFactoryRegistry.get_factory(app_name)
 
         if factory:
-            return self._create_with_factory(factory, action_class, app_name)
+            return self._create_with_factory(factory, action_class, app_name, tool_full_name)
         else:
             return self._fallback_creation(action_class)
 
@@ -66,31 +67,86 @@ class ToolInstanceCreator:
         self,
         factory: object,
         action_class: type,
-        app_name: str
+        app_name: str,
+        tool_full_name: str = None
     ) -> object:
-        """Create instance using factory.
+        """Create instance using factory with toolset-based auth.
 
         Args:
             factory: Client factory instance
             action_class: Class to instantiate
             app_name: Application name
+            tool_full_name: Full tool name for toolset lookup
 
         Returns:
             Instance of action_class
         """
         try:
+            # Get toolset configuration
+            toolset_config = self._get_toolset_config(tool_full_name) if tool_full_name else None
+
+            if toolset_config:
+                if self.logger:
+                    self.logger.debug(f"Using toolset auth for {app_name} (ID: {tool_full_name})")
+                client = factory.create_client_sync(
+                    self.config_service,
+                    self.logger,
+                    toolset_config,
+                    self.state
+                )
+                return action_class(client)
+
+            # Fall back to legacy connector-based auth (if no toolset config)
+            if self.logger:
+                self.logger.warning(
+                    f"No toolset config for {app_name} (tool: {tool_full_name}), "
+                    f"falling back to legacy auth"
+                )
+            # Use empty toolset_config for legacy fallback
             client = factory.create_client_sync(
                 self.config_service,
                 self.logger,
-                self.state,
+                {},  # Empty toolset_config for legacy
+                self.state
             )
             return action_class(client)
         except Exception as e:
             if self.logger:
                 self.logger.error(
-                    f"Failed to create client for {app_name}: {e}"
+                    f"Failed to create client for {app_name}: {e}",
+                    exc_info=True
                 )
             return self._fallback_creation(action_class)
+
+    def _get_toolset_config(self, tool_full_name: str) -> Optional[Dict]:
+        """Get toolset config for a tool from state.
+
+        Args:
+            tool_full_name: Full tool name (e.g., "slack.send_message")
+
+        Returns:
+            Toolset config dict or None
+        """
+        tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
+        toolset_id = tool_to_toolset_map.get(tool_full_name)
+
+        if not toolset_id:
+            if self.logger:
+                self.logger.debug(
+                    f"No toolset ID found for tool {tool_full_name} in tool_to_toolset_map"
+                )
+            return None
+
+        toolset_configs = self.state.get("toolset_configs", {})
+        config = toolset_configs.get(toolset_id)
+
+        if not config and self.logger:
+            self.logger.warning(
+                f"Toolset config not found for toolset ID {toolset_id} "
+                f"(tool: {tool_full_name}). Config may not be loaded."
+            )
+
+        return config
 
     def _fallback_creation(self, action_class: type) -> object:
         """Attempt to create instance without client.
@@ -316,9 +372,12 @@ class RegistryToolWrapper(BaseTool):
             action_module = __import__(module_name, fromlist=[class_name])
             action_class = getattr(action_module, class_name)
 
+            # Pass tool full name for toolset auth lookup
+            tool_full_name = self.name  # self.name is "app_name.tool_name"
             instance = self.instance_creator.create_instance(
                 action_class,
-                self.app_name
+                self.app_name,
+                tool_full_name
             )
 
             bound_method = getattr(instance, self.tool_name)

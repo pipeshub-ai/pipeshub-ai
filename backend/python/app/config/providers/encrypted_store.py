@@ -286,7 +286,66 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         return await self.store.watch_key(key, callback, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
-        return await self.store.list_keys_in_directory(directory)
+        """
+        List all keys in a directory, decrypting encrypted keys.
+
+        Args:
+            directory: Directory path to filter keys. If empty or "/", returns all keys.
+                      Otherwise, returns keys starting with this path.
+
+        Returns:
+            List of decrypted keys matching the directory prefix.
+        """
+        try:
+            # Get all keys from etcd (they are stored encrypted)
+            encrypted_keys = await self.store.get_all_keys()
+
+            if not encrypted_keys:
+                return []
+
+            # Normalize directory prefix for matching
+            directory_prefix = directory.rstrip("/") if directory and directory != "/" else ""
+
+            UNENCRYPTED_PREFIXES = [
+                config_node_constants.ENDPOINTS.value,
+                config_node_constants.STORAGE.value,
+                config_node_constants.MIGRATIONS.value,
+            ]
+
+            decrypted_keys = []
+            for encrypted_key in encrypted_keys:
+                try:
+                    # Check if key is unencrypted (excluded from encryption)
+                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_PREFIXES)
+
+                    if is_unencrypted:
+                        decrypted_key = encrypted_key
+                    else:
+                        # Try to decrypt the key
+                        # Encrypted format: "iv:ciphertext:authTag" (3 parts)
+                        if encrypted_key.count(":") == 2:
+                            try:
+                                decrypted_key = self.encryption_service.decrypt(encrypted_key)
+                            except Exception:
+                                # Decryption failed, use as-is (might be unencrypted)
+                                decrypted_key = encrypted_key
+                        else:
+                            # Not in encrypted format, use as-is
+                            decrypted_key = encrypted_key
+
+                    # Filter by directory prefix if provided
+                    if not directory_prefix or decrypted_key.startswith(directory_prefix):
+                        decrypted_keys.append(decrypted_key)
+
+                except Exception as e:
+                    self.logger.debug(f"Skipping key due to error: {e}")
+                    continue
+
+            return decrypted_keys
+
+        except Exception as e:
+            self.logger.error(f"Failed to list keys in directory {directory}: {e}")
+            raise
 
     async def cancel_watch(self, key: str, watch_id: str) -> None:
         return await self.store.cancel_watch(key, watch_id)

@@ -11,6 +11,7 @@ import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
+import toolsIcon from '@iconify-icons/mdi/tools';
 
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
@@ -70,6 +71,11 @@ export default function Sidebar() {
       name: 'Connectors',
       icon: linkVariantIcon,
       path: `${baseUrl}/settings/connector`,
+    },
+    {
+      name: 'Toolsets',
+      icon: toolsIcon,
+      path: `${baseUrl}/settings/toolsets`,
     },
     {
       name: 'AI Models',

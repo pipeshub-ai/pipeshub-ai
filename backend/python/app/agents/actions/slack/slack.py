@@ -1,4 +1,3 @@
-
 import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
@@ -9,11 +8,135 @@ from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools from the Slack action class
+# The actual implementations come from Slack class with @tool decorators
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="send_message",
+        description="Send a message to a Slack channel",
+        parameters=[
+            {"name": "channel", "type": "string", "description": "Channel to send message to", "required": True},
+            {"name": "message", "type": "string", "description": "Message content", "required": True}
+        ],
+        tags=["messaging", "communication"]
+    ),
+    ToolDefinition(
+        name="get_channel_history",
+        description="Get message history from a Slack channel",
+        parameters=[
+            {"name": "channel", "type": "string", "description": "Channel to get history from", "required": True},
+            {"name": "limit", "type": "integer", "description": "Max messages to return", "required": False}
+        ],
+        tags=["messaging", "history"]
+    ),
+    ToolDefinition(
+        name="fetch_channels",
+        description="Fetch all channels in the workspace",
+        parameters=[],
+        tags=["channels", "discovery"]
+    ),
+    ToolDefinition(
+        name="search_all",
+        description="Search messages, files, and channels in Slack",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True},
+            {"name": "limit", "type": "integer", "description": "Max results", "required": False}
+        ],
+        tags=["search", "discovery"]
+    ),
+    ToolDefinition(
+        name="get_user_info",
+        description="Get information about a Slack user",
+        parameters=[
+            {"name": "user", "type": "string", "description": "User email or ID", "required": True}
+        ],
+        tags=["users", "info"]
+    ),
+    ToolDefinition(
+        name="upload_file",
+        description="Upload a file to a Slack channel",
+        parameters=[
+            {"name": "channel", "type": "string", "description": "Channel to upload to", "required": True},
+            {"name": "filename", "type": "string", "description": "File name", "required": True},
+            {"name": "file_content", "type": "string", "description": "File content", "required": False},
+            {"name": "title", "type": "string", "description": "File title", "required": False}
+        ],
+        tags=["files", "upload"]
+    ),
+    ToolDefinition(
+        name="send_direct_message",
+        description="Send a direct message to a user",
+        parameters=[
+            {"name": "user", "type": "string", "description": "User email or ID", "required": True},
+            {"name": "message", "type": "string", "description": "Message content", "required": True}
+        ],
+        tags=["messaging", "dm"]
+    ),
+    ToolDefinition(
+        name="create_channel",
+        description="Create a new Slack channel",
+        parameters=[
+            {"name": "name", "type": "string", "description": "Channel name", "required": True},
+            {"name": "is_private", "type": "boolean", "description": "Make channel private", "required": False}
+        ],
+        tags=["channels", "create"]
+    ),
+]
+
+
+# Register Slack toolset
+@ToolsetBuilder("Slack")\
+    .in_group("Slack")\
+    .with_description("Slack workspace integration for messaging, channels, file management, and collaboration")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Slack",
+            authorize_url="https://slack.com/oauth/v2/authorize",
+            token_url="https://slack.com/api/oauth.v2.access",
+            redirect_uri="toolsets/oauth/callback/slack",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "chat:write",
+                    "channels:read",
+                    "channels:history",
+                    "users:read",
+                    "files:write",
+                    "search:read",
+                    "reactions:read",
+                    "reactions:write"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Slack App Console"),
+                CommonFields.client_secret("Slack App Console")
+            ],
+            icon_path="/assets/icons/connectors/slack.svg",
+            app_group="Communication",
+            app_description="Slack OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slack.svg"))\
+    .build_decorator()
 class Slack:
     """Slack tool exposed to the agents using SlackDataSource"""
 

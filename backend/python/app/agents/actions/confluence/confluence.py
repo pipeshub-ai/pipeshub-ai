@@ -2,11 +2,22 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Dict, Optional, Tuple
+from typing import Coroutine, Dict, List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -14,7 +25,101 @@ from app.sources.external.confluence.confluence import ConfluenceDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_page",
+        description="Create a new page in Confluence",
+        parameters=[
+            {"name": "space_id", "type": "string", "description": "Space ID or key", "required": True},
+            {"name": "page_title", "type": "string", "description": "Page title", "required": True},
+            {"name": "page_content", "type": "string", "description": "Page content", "required": True}
+        ],
+        tags=["pages", "create"]
+    ),
+    ToolDefinition(
+        name="get_page_content",
+        description="Get the content of a Confluence page",
+        parameters=[
+            {"name": "page_id", "type": "string", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "read"]
+    ),
+    ToolDefinition(
+        name="get_pages_in_space",
+        description="Get all pages in a Confluence space",
+        parameters=[
+            {"name": "space_id", "type": "string", "description": "Space ID or key", "required": True}
+        ],
+        tags=["pages", "list"]
+    ),
+    ToolDefinition(
+        name="update_page_title",
+        description="Update the title of a Confluence page",
+        parameters=[
+            {"name": "page_id", "type": "string", "description": "Page ID", "required": True},
+            {"name": "new_title", "type": "string", "description": "New title", "required": True}
+        ],
+        tags=["pages", "update"]
+    ),
+    ToolDefinition(
+        name="search_pages",
+        description="Search for pages by title",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Page title to search", "required": True},
+            {"name": "space_id", "type": "string", "description": "Space ID to limit search", "required": False}
+        ],
+        tags=["pages", "search"]
+    ),
+    ToolDefinition(
+        name="get_spaces",
+        description="Get all spaces in Confluence",
+        parameters=[],
+        tags=["spaces", "list"]
+    ),
+    ToolDefinition(
+        name="get_space",
+        description="Get details of a specific Confluence space",
+        parameters=[
+            {"name": "space_id", "type": "string", "description": "Space ID", "required": True}
+        ],
+        tags=["spaces", "info"]
+    ),
+]
 
+
+# Register Confluence toolset
+@ToolsetBuilder("Confluence")\
+    .in_group("Atlassian")\
+    .with_description("Confluence integration for wiki pages, documentation, and knowledge management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Confluence",
+            authorize_url="https://auth.atlassian.com/authorize",
+            token_url="https://auth.atlassian.com/oauth/token",
+            redirect_uri="toolsets/oauth/callback/confluence",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "read:confluence-content.all",
+                    "write:confluence-content",
+                    "read:confluence-space.summary"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Atlassian Developer Console"),
+                CommonFields.client_secret("Atlassian Developer Console")
+            ],
+            icon_path="/assets/icons/connectors/confluence.svg",
+            app_group="Documentation",
+            app_description="Confluence OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg"))\
+    .build_decorator()
 class Confluence:
     """Confluence tool exposed to the agents using ConfluenceDataSource"""
 

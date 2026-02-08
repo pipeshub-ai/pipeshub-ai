@@ -13,6 +13,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
   activeAgentConnectors,
   configuredConnectors,
   connectorRegistry,
+  toolsets,
   isBusiness,
   nodes,
   edges,
@@ -49,6 +50,7 @@ const AgentBuilderCanvasWrapper: React.FC<AgentBuilderCanvasWrapperProps> = ({
       activeAgentConnectors={activeAgentConnectors}
       configuredConnectors={configuredConnectors}
       connectorRegistry={connectorRegistry}
+      toolsets={toolsets}
       isBusiness={isBusiness}
     />
 

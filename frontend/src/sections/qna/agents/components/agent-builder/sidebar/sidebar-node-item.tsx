@@ -34,19 +34,44 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
     
     // For tools
     if (sectionType === 'tools') {
-      event.dataTransfer.setData('toolAppName', template.defaultConfig?.appName || '');
-      if (connectorStatus) {
-        event.dataTransfer.setData('isConfigured', String(connectorStatus.isConfigured));
-        event.dataTransfer.setData('isAgentActive', String(connectorStatus.isAgentActive));
-      }
-      if (connectorInstance) {
-        event.dataTransfer.setData('connectorId', connectorInstance._key || (connectorInstance as any).id || '');
-        event.dataTransfer.setData('connectorType', connectorInstance.type || '');
-        event.dataTransfer.setData('connectorName', connectorInstance.name || '');
-        event.dataTransfer.setData('scope', connectorInstance.scope || 'personal');
-      }
-      if (connectorIconPath) {
-        event.dataTransfer.setData('connectorIconPath', connectorIconPath);
+      // Check if this is a toolset tool (has toolsetName in defaultConfig)
+      if (template.defaultConfig?.toolsetName) {
+        // This is a tool from a toolset
+        const toolsetName = template.defaultConfig.toolsetName || '';
+        const toolName = template.defaultConfig.toolName || template.label || '';
+        // Construct fullName if it's missing
+        const fullName = template.defaultConfig.fullName || template.type || (toolsetName && toolName ? `${toolsetName}.${toolName}` : '');
+        
+        event.dataTransfer.setData('type', 'tool');
+        event.dataTransfer.setData('toolsetName', toolsetName);
+        event.dataTransfer.setData('displayName', template.defaultConfig.displayName || '');
+        event.dataTransfer.setData('toolName', toolName);
+        event.dataTransfer.setData('fullName', fullName);
+        event.dataTransfer.setData('description', template.defaultConfig.description || template.description || '');
+        event.dataTransfer.setData('iconPath', template.defaultConfig.iconPath || '');
+        event.dataTransfer.setData('isConfigured', String(template.defaultConfig.isConfigured || connectorStatus?.isConfigured || false));
+        event.dataTransfer.setData('isAuthenticated', String(template.defaultConfig.isAuthenticated || connectorStatus?.isAgentActive || false));
+        // Include all tools from toolset so toolset node can show them in add menu
+        if (template.defaultConfig.allTools) {
+          event.dataTransfer.setData('allTools', JSON.stringify(template.defaultConfig.allTools));
+          event.dataTransfer.setData('toolCount', String(template.defaultConfig.allTools.length));
+        }
+      } else {
+        // Regular connector tool
+        event.dataTransfer.setData('toolAppName', template.defaultConfig?.appName || '');
+        if (connectorStatus) {
+          event.dataTransfer.setData('isConfigured', String(connectorStatus.isConfigured));
+          event.dataTransfer.setData('isAgentActive', String(connectorStatus.isAgentActive));
+        }
+        if (connectorInstance) {
+          event.dataTransfer.setData('connectorId', connectorInstance._key || (connectorInstance as any).id || '');
+          event.dataTransfer.setData('connectorType', connectorInstance.type || '');
+          event.dataTransfer.setData('connectorName', connectorInstance.name || '');
+          event.dataTransfer.setData('scope', connectorInstance.scope || 'personal');
+        }
+        if (connectorIconPath) {
+          event.dataTransfer.setData('connectorIconPath', connectorIconPath);
+        }
       }
     }
   };

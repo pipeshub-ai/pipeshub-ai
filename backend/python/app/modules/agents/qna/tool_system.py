@@ -1,102 +1,57 @@
 """
-Tool System
+Tool System - Corrected and Improved
 
-This module provides a clean, maintainable interface for tool loading,
-caching, and execution. Designed for reliability, speed, and ease of understanding.
+Clean, maintainable interface for tool loading and execution.
+Maintains all working logic while improving code quality.
 
-Key Features:
-1. Simple tool loading with automatic caching
-2. Clear error handling and retry logic
-3. Instance caching for performance
-4. Easy-to-understand API
+Key improvements:
+1. Clearer separation: internal tools (always) + user toolsets (configured)
+2. Better caching with proper invalidation
+3. Simplified instance creation logic
+4. Better error handling and logging
+5. SECURITY FIX: Strictly respects filtered tools - no toolset-level matching
 """
 
 import logging
-import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from langchain.tools import BaseTool
 from pydantic import ConfigDict, Field
 
-from app.agents.tools.config import ToolDiscoveryConfig
 from app.agents.tools.registry import _global_tools_registry
 from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
 
-# OpenAI's maximum tool limit
+# Constants
 MAX_TOOLS_LIMIT = 128
 MAX_RESULT_PREVIEW_LENGTH = 150
-
-def sanitize_tool_name(tool_name: str) -> str:
-    """
-    Sanitize tool name to match the pattern: ^[a-zA-Z0-9_-]{1,128}$
-
-    Replaces dots with underscores to comply with the pattern.
-
-    Args:
-        tool_name: Original tool name (e.g., "calendar.get_calendar_events")
-
-    Returns:
-        Sanitized tool name (e.g., "calendar_get_calendar_events")
-    """
-    # Replace dots with underscores
-    sanitized = tool_name.replace(".", "_")
-
-    # Ensure it matches the pattern (only alphanumeric, underscore, hyphen)
-    # Remove any other invalid characters
-    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '_', sanitized)
-    MAX_TOOL_NAME_LENGTH = 128
-
-    # Ensure length is within limit (128 chars)
-    if len(sanitized) > MAX_TOOL_NAME_LENGTH:
-        sanitized = sanitized[:MAX_TOOL_NAME_LENGTH]
-
-    return sanitized
+FAILURE_LOOKBACK_WINDOW = 7
+FAILURE_THRESHOLD = 3
 
 
+# ============================================================================
+# Tool Wrapper - Maintains Working Logic
+# ============================================================================
 
 class ToolWrapper(BaseTool):
-    """
-    Simple, clean wrapper for registry tools.
-
-    Wraps registry tools to work with LangChain's BaseTool interface
-    while maintaining simplicity and clarity.
-    """
+    """Wrapper for registry tools with proper instance caching"""
 
     model_config = ConfigDict(
         arbitrary_types_allowed=True,
         extra='allow',
-        validate_assignment=False  # Don't validate on assignment
+        validate_assignment=False
     )
 
     app_name: str = Field(description="Application name (e.g., 'slack', 'jira')")
     tool_name: str = Field(description="Tool name (e.g., 'send_message')")
-    registry_tool: Any = Field(description="Original registry tool")  # noqa: ANN401
-    # Store state as private attribute to avoid Pydantic validation of TypedDict
+    registry_tool: Any = Field(description="Original registry tool")
     _state: Optional[Dict[str, Any]] = None
 
-    def __init__(self, app_name: str, tool_name: str, registry_tool: Any, state: ChatState, **kwargs) -> None:  # noqa: ANN401
-        """
-        Initialize tool wrapper.
+    def __init__(self, app_name: str, tool_name: str, registry_tool: Any, state: ChatState, **kwargs) -> None:
+        """Initialize tool wrapper"""
+        description = self._build_description(registry_tool, app_name, tool_name)
 
-        Args:
-            app_name: Application name
-            tool_name: Tool function name
-            registry_tool: Original tool from registry
-            state: Chat state for context
-            **kwargs: Additional arguments
-        """
-        # Build description
-        description = getattr(registry_tool, 'description', f"{app_name}.{tool_name}")
-
-        # Add parameters to description if available
-        if hasattr(registry_tool, 'parameters') and registry_tool.parameters:
-            param_docs = self._build_parameter_docs(registry_tool.parameters)
-            if param_docs:
-                description = f"{description}\n\nParameters:\n{param_docs}"
-
-        # Initialize parent WITHOUT state field
         super().__init__(
             name=f"{app_name}.{tool_name}",
             description=description,
@@ -106,47 +61,41 @@ class ToolWrapper(BaseTool):
             **kwargs
         )
 
-        # Store state as private attribute after initialization
         self._state = state
 
-    @property
-    def state(self) -> ChatState:
-        """Get chat state."""
-        return self._state
-
     @staticmethod
-    def _build_parameter_docs(parameters: List[Any]) -> str:  # noqa: ANN401
-        """Build parameter documentation string."""
-        docs = []
+    def _build_description(registry_tool: Any, app_name: str, tool_name: str) -> str:
+        """Build tool description with parameters"""
+        base_desc = getattr(registry_tool, 'description', f"{app_name}.{tool_name}")
+
+        parameters = getattr(registry_tool, 'parameters', None)
+        if not parameters:
+            return base_desc
+
+        param_docs = []
         for param in parameters:
             param_name = getattr(param, 'name', 'unknown')
             param_type = getattr(getattr(param, 'type', None), 'name', 'any')
-            param_required = getattr(param, 'required', False)
-            required_str = " (required)" if param_required else " (optional)"
-            docs.append(f"  - {param_name}: {param_type}{required_str}")
-        return "\n".join(docs)
+            required = " (required)" if getattr(param, 'required', False) else " (optional)"
+            param_docs.append(f"  - {param_name}: {param_type}{required}")
 
-    def _run(self, **kwargs) -> Any:  # noqa: ANN401
-        """
-        Execute the tool.
+        return f"{base_desc}\n\nParameters:\n" + "\n".join(param_docs) if param_docs else base_desc
 
-        Args:
-            **kwargs: Tool arguments
+    @property
+    def state(self) -> ChatState:
+        """Get chat state"""
+        return self._state
 
-        Returns:
-            Tool execution result
-        """
+    def _run(self, **kwargs) -> Any:
+        """Execute the tool"""
         try:
-            # Get tool function - matches original implementation
             tool_function = self.registry_tool.function
 
-            # Execute based on tool type
             if self._is_class_method(tool_function):
                 result = self._execute_class_method(tool_function, kwargs)
             else:
                 result = tool_function(**kwargs)
 
-            # Format result
             return self._format_result(result)
 
         except Exception as e:
@@ -159,218 +108,132 @@ class ToolWrapper(BaseTool):
                 "args": kwargs
             }, indent=2)
 
-    async def _arun(self, **kwargs) -> Any:  # noqa: ANN401
-        """Async execution (calls sync version)."""
+    async def _arun(self, **kwargs) -> Any:
+        """Async execution"""
         return self._run(**kwargs)
 
     @staticmethod
-    def _is_class_method(func: Callable) -> bool:
-        """Check if function is a class method."""
+    def _is_class_method(func) -> bool:
+        """Check if function is a class method"""
         return hasattr(func, '__qualname__') and '.' in func.__qualname__
 
-    @staticmethod
-    def _format_result(result: Any) -> str:  # noqa: ANN401
-        """
-        Format tool result for LLM consumption.
+    def _execute_class_method(self, func, arguments: Dict) -> Any:
+        """Execute class method with instance caching"""
+        class_name = func.__qualname__.split('.')[0]
+        module_name = func.__module__
+        cache_key = f"{module_name}.{class_name}_{self.app_name}"
 
-        Matches original implementation.
-        """
-        _TUPLE_RESULT_LENGTH = 2
-        # Handle tuple results (success, data)
-        if isinstance(result, (tuple, list)) and len(result) == _TUPLE_RESULT_LENGTH:
-            success, result_data = result
-            return str(result_data)
+        instance = self._get_cached_instance(module_name, class_name, cache_key)
+        method = getattr(instance, self.tool_name)
+        return method(**arguments)
 
-        return str(result)
-
-    def _execute_class_method(self, func: Callable, arguments: Dict) -> Any:  # noqa: ANN401
-        """Execute class method with instance caching."""
-        try:
-            # Parse class info
-            class_name = func.__qualname__.split('.')[0]
-            module_name = func.__module__
-
-            # Get or create instance
-            instance = self._get_tool_instance(module_name, class_name, self.app_name)
-
-            # Execute method
-            method = getattr(instance, self.tool_name)
-            return method(**arguments)
-
-        except Exception as e:
-            raise RuntimeError(f"Failed to execute {self.name}: {str(e)}") from e
-
-    def _get_tool_instance(self, module_name: str, class_name: str, app_name: str) -> Any:  # noqa: ANN401
-        """
-        Get or create tool instance with caching.
-
-        Instances are cached in state for performance.
-        """
-        cache_key = f"{module_name}.{class_name}_{app_name}"
-
-        # Check cache
+    def _get_cached_instance(self, module_name: str, class_name: str, cache_key: str) -> Any:
+        """Get or create cached tool instance"""
         instance_cache = self.state.setdefault("_tool_instance_cache", {})
+
         if cache_key in instance_cache:
             logger.debug(f"Using cached instance for {cache_key}")
-            cached_instance = instance_cache[cache_key]
-            # CRITICAL: Ensure cached instance has current state
-            # This is especially important for tools like retrieval that need state
-            if hasattr(cached_instance, 'set_state'):
-                cached_instance.set_state(self.state)
-            elif hasattr(cached_instance, 'state'):
-                # Try to set state attribute directly if it exists
-                try:
-                    cached_instance.state = self.state
-                except (AttributeError, TypeError):
-                    pass
-            return cached_instance
-
-        # Create new instance
-        logger.debug(f"Creating new instance for {cache_key}")
-
-        try:
-            # Import class
-            action_module = __import__(module_name, fromlist=[class_name])
-            action_class = getattr(action_module, class_name)
-
-            # Create instance with factory
-            instance = self._create_instance_with_factory(action_class)
-
-            # Cache it
-            instance_cache[cache_key] = instance
-            logger.info(f"Cached instance for {cache_key} (total cached: {len(instance_cache)})")
-
+            instance = instance_cache[cache_key]
+            self._update_instance_state(instance)
             return instance
 
-        except Exception as e:
-            raise RuntimeError(f"Failed to create instance for {cache_key}: {str(e)}") from e
+        logger.debug(f"Creating new instance for {cache_key}")
+        instance = self._create_instance(module_name, class_name)
+        instance_cache[cache_key] = instance
 
-    def _create_instance_with_factory(self, action_class: type) -> Any:  # noqa: ANN401
-        """
-        Create tool instance using factory pattern, with fallback for tools that don't need factories.
+        logger.info(f"Cached instance for {cache_key} (total: {len(instance_cache)})")
+        return instance
 
-        Some tools (like calculator) don't require a client/factory and can be instantiated directly.
-        """
+    def _update_instance_state(self, instance: Any) -> None:
+        """Update instance with current state"""
+        if hasattr(instance, 'set_state'):
+            instance.set_state(self.state)
+        elif hasattr(instance, 'state'):
+            try:
+                instance.state = self.state
+            except (AttributeError, TypeError):
+                pass
+
+    def _create_instance(self, module_name: str, class_name: str) -> Any:
+        """Create tool instance using factory or fallback"""
+        action_module = __import__(module_name, fromlist=[class_name])
+        action_class = getattr(action_module, class_name)
+
+        # Try factory first
+        instance = self._try_factory_creation(action_class)
+        if instance:
+            return instance
+
+        # Fallback to direct creation
+        return self._try_direct_creation(action_class)
+
+    def _try_factory_creation(self, action_class: type) -> Optional[Any]:
+        """Try to create instance using factory pattern"""
         from app.agents.tools.factories.registry import ClientFactoryRegistry
 
+        factory = ClientFactoryRegistry.get_factory(self.app_name)
+        if not factory:
+            return None
+
         try:
-            # Get factory
-            factory = ClientFactoryRegistry.get_factory(self.app_name)
+            retrieval_service = self.state.get("retrieval_service")
+            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
+                return None
 
-            if factory:
-                # Get retrieval service and config service
-                retrieval_service = self.state.get("retrieval_service")
-                if retrieval_service and hasattr(retrieval_service, 'config_service'):
-                    config_service = retrieval_service.config_service
-                    state_logger = self.state.get("logger")
+            config_service = retrieval_service.config_service
+            state_logger = self.state.get("logger")
 
-                    # Find connector instance ID for this tool/app
-                    connector_instance_id = self._get_connector_instance_id()
+            # Get toolset configuration
+            toolset_id = self._get_toolset_id()
+            toolset_config = self._get_toolset_config(toolset_id)
 
-                    if connector_instance_id and state_logger:
-                        state_logger.info(f"Using connector instance ID {connector_instance_id} for {self.app_name}")
-                    elif state_logger:
-                        state_logger.debug(f"No connector instance ID found for {self.app_name}")
-
-                    # Prepare tool state with connector instance ID
-                    if isinstance(self.state, dict):
-                        tool_state = dict(self.state)
+            if not toolset_config:
+                if state_logger:
+                    if toolset_id:
+                        state_logger.warning(
+                            f"No toolset config found for {self.app_name} "
+                            f"(toolset ID: {toolset_id}). Tool may not be authenticated. "
+                            f"Falling back to direct creation."
+                        )
                     else:
-                        tool_state = self.state
+                        state_logger.debug(
+                            f"No toolset ID found for {self.app_name}. "
+                            f"This may be an internal tool."
+                        )
+                return None
 
-                    # Add connector instance ID to state
-                    if isinstance(tool_state, dict):
-                        tool_state["connector_instance_id"] = connector_instance_id
+            # Validate toolset config has required fields
+            if not toolset_config.get("isAuthenticated", False):
+                if state_logger:
+                    state_logger.warning(
+                        f"Toolset config for {self.app_name} (ID: {toolset_id}) "
+                        f"is not authenticated. Tool may fail."
+                    )
 
-                    # Create client using factory - pass connector_instance_id explicitly
-                    client = factory.create_client_sync(config_service, state_logger, tool_state, connector_instance_id)
-                    return action_class(client)
+            if state_logger:
+                state_logger.info(f"Using toolset config for {self.app_name} (ID: {toolset_id})")
 
-            # No factory found - try fallback creation for tools that don't need clients
-            # (e.g., calculator, simple utility tools)
-            return self._fallback_creation(action_class)
+            tool_state = dict(self.state) if isinstance(self.state, dict) else self.state
+            client = factory.create_client_sync(
+                config_service=config_service,
+                logger=state_logger,
+                toolset_config=toolset_config,
+                state=tool_state
+            )
+
+            return action_class(client)
 
         except Exception as e:
             state_logger = self.state.get("logger")
             if state_logger:
                 state_logger.warning(f"Factory creation failed for {self.app_name}: {e}")
-            # Try fallback even if factory creation failed
-            try:
-                return self._fallback_creation(action_class)
-            except Exception:
-                # If fallback also fails, raise the original error
-                raise ValueError(f"Not able to get the client from factory for {self.app_name}") from e
+            return None
 
-    def _get_connector_instance_id(self) -> Optional[str]:
-        """Get connector instance ID for this tool based on app_name.
-
-        Looks up the connector instance from tool_to_connector_map in state,
-        which maps app names to their connector instance IDs.
-
-        Falls back to searching connector_instances directly if map lookup fails.
-
-        Returns:
-            Connector instance ID if found, None otherwise
-        """
-        state_logger = self.state.get("logger")
-        app_name_normalized = self.app_name.replace(" ", "").lower()
-
-        # First try: Use tool_to_connector_map
-        tool_to_connector_map = self.state.get("tool_to_connector_map")
-
-        if tool_to_connector_map:
-            connector_id = (
-                tool_to_connector_map.get(app_name_normalized) or
-                tool_to_connector_map.get(self.app_name) or
-                tool_to_connector_map.get(self.app_name.upper())
-            )
-            if connector_id:
-                return connector_id
-
-            if state_logger:
-                state_logger.debug(
-                    f"🔍 Map lookup failed for '{self.app_name}' (normalized: '{app_name_normalized}'). "
-                    f"Available keys: {list(tool_to_connector_map.keys())}"
-                )
-
-        # Fallback: Search connector_instances directly
-        connector_instances = self.state.get("connector_instances")
-        if connector_instances:
-            for instance in connector_instances:
-                if isinstance(instance, dict):
-                    connector_type = instance.get("type", "")
-                    connector_type_normalized = connector_type.replace(" ", "").lower()
-
-                    # Match by type (normalized or original)
-                    if connector_type_normalized == app_name_normalized or connector_type.lower() == self.app_name.lower():
-                        connector_id = instance.get("id")
-                        if connector_id:
-                            if state_logger:
-                                state_logger.debug(f"✅ Found connector ID via fallback search: {connector_id} for {self.app_name}")
-                            return connector_id
-
-            if state_logger:
-                available_types = [i.get("type", "?") for i in connector_instances if isinstance(i, dict)]
-                state_logger.debug(f"🔍 Fallback search failed for '{self.app_name}'. Available types: {available_types}")
-        else:
-            if state_logger:
-                state_logger.debug(f"🔍 No connector_instances in state for {self.app_name}")
-
-        return None
-
-    def _fallback_creation(self, action_class: type) -> Any:  # noqa: ANN401
-        """Attempt to create instance without client (for tools that don't need factories).
-
-        Args:
-            action_class: Class to instantiate
-
-        Returns:
-            Instance of action_class
-        """
+    def _try_direct_creation(self, action_class: type) -> Any:
+        """Try direct instance creation for tools that don't need factories"""
         state_logger = self.state.get("logger")
 
-        # First try: Pass state directly (required for tools like Retrieval)
-        # Many tools need state to access services like retrieval_service, arango_service, etc.
+        # Try with state first (most tools need this)
         try:
             instance = action_class(state=self.state)
             if state_logger:
@@ -379,7 +242,7 @@ class ToolWrapper(BaseTool):
         except TypeError:
             pass
 
-        # Second try: no arguments (e.g., Calculator())
+        # Try no arguments
         try:
             instance = action_class()
             if state_logger:
@@ -388,16 +251,16 @@ class ToolWrapper(BaseTool):
         except TypeError:
             pass
 
-        # Third try: dict argument
+        # Try empty dict
         try:
             instance = action_class({})
             if state_logger:
                 state_logger.debug(f"Created {action_class.__name__} with empty dict")
             return instance
-        except (TypeError, Exception):
+        except Exception:
             pass
 
-        # Fourth try: None argument
+        # Try None
         try:
             instance = action_class(None)
             if state_logger:
@@ -406,171 +269,103 @@ class ToolWrapper(BaseTool):
         except Exception:
             pass
 
-        # If all fail, raise informative error
         raise ValueError(
             f"Could not instantiate {action_class.__name__} - "
-            f"tried: (state=...), (), ({{}}), (None). Tool may require a client/factory."
+            f"tried: (state=...), (), ({{}}), (None)"
         )
 
-class ToolLoader:
-    """
-    Simple tool loader with caching.
+    def _get_toolset_id(self) -> Optional[str]:
+        """Get toolset ID for this tool"""
+        tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
+        toolset_id = tool_to_toolset_map.get(self.name)
 
-    Handles loading tools from registry, filtering, and caching
-    for optimal performance.
-    """
+        if toolset_id:
+            state_logger = self.state.get("logger")
+            if state_logger:
+                state_logger.debug(f"Found toolset ID {toolset_id} for {self.name}")
+
+        return toolset_id
+
+    def _get_toolset_config(self, toolset_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """Get toolset configuration from state"""
+        if not toolset_id:
+            return None
+
+        toolset_configs = self.state.get("toolset_configs", {})
+        return toolset_configs.get(toolset_id)
+
+    @staticmethod
+    def _format_result(result: Any) -> str:
+        """Format tool result for LLM"""
+        if isinstance(result, (tuple, list)) and len(result) == 2:
+            success, data = result
+            return str(data)
+        return str(result)
+
+
+# ============================================================================
+# Tool Loading - Corrected Logic
+# ============================================================================
+
+class ToolLoader:
+    """Clean tool loader with smart caching"""
 
     @staticmethod
     def load_tools(state: ChatState) -> List[ToolWrapper]:
         """
-        Load all available tools with caching.
+        Load tools with intelligent caching.
 
-        This is the main entry point for getting tools. It handles:
-        1. Caching for performance
-        2. Tool filtering based on user configuration
-        3. Blocking failed tools to prevent loops
-
-        Args:
-            state: Chat state
-
-        Returns:
-            List of tool wrappers ready to use
+        Logic:
+        1. Check cache validity
+        2. Get internal tools (always included, marked isInternal=True in registry)
+        3. Get agent's configured toolsets from state (agent_toolsets)
+        4. Extract tool names from those toolsets
+        5. Load tools: internal (always) + user toolsets (configured)
+        6. Block recently failed tools
+        7. Apply OpenAI's 128 tool limit
+        8. Cache results
         """
         state_logger = state.get("logger")
 
-        # Check cache and blocked tools
+        # Check cache validity
         cached_tools = state.get("_cached_agent_tools")
-        cached_blocked_tools = state.get("_cached_blocked_tools", {})
+        cached_blocked = state.get("_cached_blocked_tools", {})
+        blocked_tools = _get_blocked_tools(state)
 
-        # Get recently failed tools
-        blocked_tools = _get_recently_failed_tools(state, state_logger)
-
-        # If cache exists and blocked tools haven't changed, return cached
-        # NOTE: We return cached registry tools here, but fetch_full_record_tool
-        # is added dynamically in get_agent_tools() since it depends on state
-        if cached_tools is not None and blocked_tools == cached_blocked_tools:
+        # Return cached tools if valid
+        if cached_tools is not None and blocked_tools == cached_blocked:
             if state_logger:
-                state_logger.debug(f"Using cached tools ({len(cached_tools)} tools)")
+                state_logger.debug(f"⚡ Using cached tools ({len(cached_tools)} tools)")
             return cached_tools
 
-        # Cache miss or blocked tools changed - rebuild
+        # Cache miss or invalidated - rebuild
         if state_logger:
-            if cached_tools is not None:
-                state_logger.warning("Blocked tools changed - rebuilding tool cache")
+            if cached_tools:
+                state_logger.info("🔄 Blocked tools changed - rebuilding cache")
             else:
-                state_logger.info("First tool load - building cache")
+                state_logger.info("📦 First tool load - building cache")
 
-        # Get all registry tools
-        registry_tools = _global_tools_registry.get_all_tools()
-
-        if state_logger:
-            state_logger.info(f"Loading {len(registry_tools)} tools from global registry")
-
-        # Get user configuration
-        user_enabled_tools = state.get("tools", None)
-        use_essential_only = False
-
-        # When tools list is empty, use only essential tools instead of all tools
-        if user_enabled_tools is not None and len(user_enabled_tools) == 0:
-            use_essential_only = True
-            if state_logger:
-                state_logger.info("Empty tools list detected - loading ONLY essential tools (not all tools)")
-
-        # Helper function to check if tool is essential
-        def _is_essential_tool(full_name: str) -> bool:
-            """Check if a tool matches essential tool patterns."""
-            for pattern in ToolDiscoveryConfig.ESSENTIAL_TOOL_PATTERNS:
-                # Handle patterns with and without trailing dot
-                pattern_clean = pattern.rstrip('.')
-                if pattern_clean in full_name or full_name.startswith(pattern_clean + '.'):
-                    return True
-            return False
-
-        # Load and filter tools
-        essential_tools = []
-        other_tools = []
-
-        for full_name, registry_tool in registry_tools.items():
-            try:
-                # Parse name
-                if '.' not in full_name:
-                    app_name = "default"
-                    tool_name = full_name
-                else:
-                    app_name, tool_name = full_name.split('.', 1)
-
-                # Check if should include based on user configuration
-                should_include = _should_include_tool(
-                    full_name,
-                    tool_name,
-                    app_name,
-                    user_enabled_tools if not use_essential_only else None
-                )
-
-                # If using essential only, filter to only essential tools
-                if use_essential_only and should_include:
-                    if not _is_essential_tool(full_name):
-                        should_include = False
-
-                # Block tools that have recently failed
-                if should_include and full_name in blocked_tools:
-                    if state_logger:
-                        state_logger.warning(f"Blocking tool: {full_name} (recently failed {blocked_tools[full_name]} times)")
-                    should_include = False
-
-                if should_include:
-                    wrapper = ToolWrapper(app_name, tool_name, registry_tool, state)
-                    # Categorize as essential or other for prioritization
-                    if _is_essential_tool(full_name):
-                        essential_tools.append(wrapper)
-                    else:
-                        other_tools.append(wrapper)
-
-            except Exception as e:
-                if state_logger:
-                    state_logger.error(f"Failed to add tool {full_name}: {e}")
-                continue
-
-        # Combine tools: essential first, then others (for prioritization when limiting)
-        tools = essential_tools + other_tools
-
-        # Apply OpenAI's tool limit (max 128 tools)
-        if len(tools) > MAX_TOOLS_LIMIT:
-            if state_logger:
-                state_logger.warning(
-                    f"⚠️ Tool limit exceeded: {len(tools)} tools found, limiting to {MAX_TOOLS_LIMIT} "
-                    f"(keeping all {len(essential_tools)} essential tools + {MAX_TOOLS_LIMIT - len(essential_tools)} others)"
-                )
-            # Keep all essential tools, then limit others
-            tools = essential_tools + other_tools[:MAX_TOOLS_LIMIT - len(essential_tools)]
+        # Load all tools
+        all_tools = _load_all_tools(state, blocked_tools)
 
         # Initialize tool state
         _initialize_tool_state(state)
 
-        # Cache tools and blocked list
-        state["_cached_agent_tools"] = tools
+        # Cache results
+        state["_cached_agent_tools"] = all_tools
         state["_cached_blocked_tools"] = blocked_tools.copy()
-        state["available_tools"] = [t.name for t in tools]
+        state["available_tools"] = [t.name for t in all_tools]
 
         if state_logger:
-            state_logger.info(f"Cached {len(tools)} tools for future iterations")
+            state_logger.info(f"✅ Cached {len(all_tools)} tools")
             if blocked_tools:
-                state_logger.warning(f"Blocked {len(blocked_tools)} tools due to recent failures: {list(blocked_tools.keys())}")
+                state_logger.warning(f"⚠️ Blocked {len(blocked_tools)} failed tools: {list(blocked_tools.keys())}")
 
-        return tools
+        return all_tools
 
     @staticmethod
     def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[ToolWrapper]:
-        """
-        Get specific tool by name.
-
-        Args:
-            tool_name: Full tool name (e.g., 'slack.send_message')
-            state: Chat state
-
-        Returns:
-            Tool wrapper or None if not found
-        """
+        """Get specific tool by name"""
         registry_tools = _global_tools_registry.get_all_tools()
 
         # Direct match
@@ -587,253 +382,235 @@ class ToolLoader:
         return None
 
 
-# Helper functions
+# ============================================================================
+# Helper Functions
+# ============================================================================
 
-def _get_recently_failed_tools(state: ChatState, logger) -> dict:
+def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[ToolWrapper]:
     """
-    Identify tools that have recently failed multiple times and should be blocked.
+    Load all tools (internal + user toolsets).
 
-    Args:
-        state: Chat state
-        logger: Logger instance
+    This is the core tool loading logic that:
+    1. Gets agent's configured toolsets from state
+    2. Extracts tool names from those toolsets
+    3. Loads internal tools (always)
+    4. Loads user tools (from agent's toolsets)
+    5. Blocks recently failed tools
+    6. Applies tool limit
 
-    Returns:
-        Dict mapping tool_name to failure count for blocked tools
+    SECURITY: Strictly respects filtered tools - only loads explicitly listed tools,
+    never entire toolsets.
     """
-    LOOKBACK_WINDOW = 7  # Check last N tool calls
-    FAILURE_THRESHOLD = 3  # Block if failed N+ times (increased to give agent more chances to fix errors)
+    state_logger = state.get("logger")
+    registry_tools = _global_tools_registry.get_all_tools()
 
+    # Get agent's configured toolsets
+    agent_toolsets = state.get("agent_toolsets", [])
+
+    # Extract tool names from toolsets - ONLY explicit tool names, no toolset-level matching
+    user_enabled_tools = _extract_tool_names_from_toolsets(agent_toolsets)
+
+    if state_logger:
+        state_logger.info(f"Loading from {len(registry_tools)} registry tools")
+        if agent_toolsets:
+            state_logger.info(f"Agent has {len(agent_toolsets)} configured toolsets")
+            if user_enabled_tools:
+                state_logger.info(f"Extracted {len(user_enabled_tools)} tool names")
+                state_logger.debug(f"Enabled tools: {sorted(user_enabled_tools)}")
+            else:
+                state_logger.warning("No tools extracted from toolsets - this may be a configuration issue")
+        else:
+            state_logger.info("No agent toolsets - loading only internal tools")
+
+    internal_tools = []
+    user_tools = []
+
+    for full_name, registry_tool in registry_tools.items():
+        try:
+            app_name, tool_name = _parse_tool_name(full_name)
+
+            # Skip blocked tools
+            if full_name in blocked_tools:
+                if state_logger:
+                    state_logger.warning(f"Blocking {full_name} (failed {blocked_tools[full_name]} times)")
+                continue
+
+            # Check if internal (always included)
+            is_internal = _is_internal_tool(full_name, registry_tool)
+
+            # Check if user-enabled - ONLY exact matches, no toolset-level matching
+            is_user_enabled = False
+            if user_enabled_tools is not None:
+                # SECURITY: Only exact full name match - no toolset-level matching
+                if full_name in user_enabled_tools:
+                    is_user_enabled = True
+
+            # Load tool if internal OR user-enabled
+            if is_internal:
+                wrapper = ToolWrapper(app_name, tool_name, registry_tool, state)
+                internal_tools.append(wrapper)
+                if state_logger:
+                    state_logger.debug(f"Loaded internal: {full_name}")
+            elif is_user_enabled:
+                wrapper = ToolWrapper(app_name, tool_name, registry_tool, state)
+                user_tools.append(wrapper)
+                if state_logger:
+                    state_logger.debug(f"Loaded user tool: {full_name}")
+
+        except Exception as e:
+            if state_logger:
+                state_logger.error(f"Failed to load {full_name}: {e}")
+
+    # Combine: internal first (priority)
+    tools = internal_tools + user_tools
+
+    # Apply tool limit
+    if len(tools) > MAX_TOOLS_LIMIT:
+        if state_logger:
+            state_logger.warning(
+                f"Tool limit: {len(tools)} → {MAX_TOOLS_LIMIT} "
+                f"({len(internal_tools)} internal + {MAX_TOOLS_LIMIT - len(internal_tools)} user)"
+            )
+        tools = internal_tools + user_tools[:MAX_TOOLS_LIMIT - len(internal_tools)]
+
+    if state_logger:
+        state_logger.info(f"✅ {len(internal_tools)} internal + {len(user_tools)} user = {len(tools)} total")
+
+    return tools
+
+
+def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Set[str]]:
+    """
+    Extract tool names from agent's configured toolsets.
+
+    Returns a set of full tool names ONLY: {"googledrive.get_files_list", "slack.send_message"}
+
+    SECURITY: Does NOT include toolset names to prevent loading all tools in a toolset
+    when only specific tools are enabled. This ensures filtered tools are respected.
+
+    Returns None if no toolsets configured
+    """
+    if not agent_toolsets:
+        return None
+
+    tool_names = set()
+
+    for toolset in agent_toolsets:
+        toolset_name = toolset.get("name", "").lower()
+        if not toolset_name:
+            continue
+
+        # Add individual tools ONLY - no toolset-level matching for security
+        tools = toolset.get("tools", [])
+        for tool in tools:
+            if isinstance(tool, dict):
+                # Try fullName first (already has toolset.tool format)
+                # Then construct from toolName or name field
+                full_name = tool.get("fullName") or f"{toolset_name}.{tool.get('toolName') or tool.get('name', '')}"
+                if full_name and full_name != f"{toolset_name}.":
+                    tool_names.add(full_name)
+            elif isinstance(tool, str):
+                # If tool is just a string, it might be the full name already
+                if "." in tool:
+                    tool_names.add(tool)
+                else:
+                    tool_names.add(f"{toolset_name}.{tool}")
+
+    return tool_names if tool_names else None
+
+
+def _is_internal_tool(full_name: str, registry_tool: Any) -> bool:
+    """
+    Check if tool is internal (always included).
+
+    Internal tools are marked in registry with isInternal=True.
+    """
+    # Check registry metadata
+    if hasattr(registry_tool, 'metadata'):
+        metadata = registry_tool.metadata
+        if hasattr(metadata, 'category'):
+            category = str(metadata.category).lower()
+            if 'internal' in category:
+                return True
+        if hasattr(metadata, 'is_internal') and metadata.is_internal:
+            return True
+
+    # Check app name
+    if hasattr(registry_tool, 'app_name'):
+        app_name = str(registry_tool.app_name).lower()
+        if app_name in ['retrieval', 'calculator', 'datetime', 'utility']:
+            return True
+
+    # Fallback patterns
+    internal_patterns = [
+        "retrieval.",
+        "calculator.",
+        "web_search",
+        "get_current_datetime",
+    ]
+
+    return any(p in full_name.lower() for p in internal_patterns)
+
+
+def _get_blocked_tools(state: ChatState) -> Dict[str, int]:
+    """Get tools that recently failed multiple times"""
     all_results = state.get("all_tool_results", [])
+
     if not all_results or len(all_results) < FAILURE_THRESHOLD:
         return {}
 
-    # Look at recent tool results
-    recent_results = all_results[-LOOKBACK_WINDOW:]
+    recent_results = all_results[-FAILURE_LOOKBACK_WINDOW:]
 
-    # Count failures per tool
     failure_counts = {}
     for result in recent_results:
-        tool_name = result.get("tool_name", "unknown")
-        status = result.get("status", "unknown")
-
-        if status == "error":
+        if result.get("status") == "error":
+            tool_name = result.get("tool_name", "unknown")
             failure_counts[tool_name] = failure_counts.get(tool_name, 0) + 1
 
-    # Block tools that exceeded failure threshold
-    blocked_tools = {
+    return {
         tool: count
         for tool, count in failure_counts.items()
         if count >= FAILURE_THRESHOLD
     }
 
-    if blocked_tools and logger:
-        logger.info(f"Identified {len(blocked_tools)} tools to block based on recent failures")
 
-    return blocked_tools
-
-
-def _should_include_tool(
-    full_tool_name: str,
-    tool_name: str,
-    app_name: str,
-    user_enabled_tools: Optional[List[str]]
-) -> bool:
-    """
-    Determine if a tool should be included.
-
-    Args:
-        full_tool_name: Full tool name
-        tool_name: Tool name
-        app_name: Application name
-        user_enabled_tools: List of user-enabled tools or None
-
-    Returns:
-        True if tool should be included
-    """
-    if user_enabled_tools is None:
-        return True
-
-    if (full_tool_name in user_enabled_tools or
-        tool_name in user_enabled_tools or
-        app_name in user_enabled_tools):
-        return True
-
-    return _is_essential_tool(full_tool_name)
-
-
-def _is_essential_tool(full_tool_name: str) -> bool:
-    """
-    Check if a tool is essential.
-
-    Args:
-        full_tool_name: Full tool name
-
-    Returns:
-        True if tool is essential
-    """
-    essential_patterns = [
-        "calculator.",
-        "web_search",
-        "get_current_datetime",
-        "retrieval.",  # Match all retrieval tools
-        "retrieval.search_internal_knowledge",  # Specific match
-    ]
-    return any(pattern in full_tool_name for pattern in essential_patterns)
+def _parse_tool_name(full_name: str) -> tuple:
+    """Parse tool name into (app_name, tool_name)"""
+    if '.' not in full_name:
+        return "default", full_name
+    return full_name.split('.', 1)
 
 
 def _initialize_tool_state(state: ChatState) -> None:
-    """
-    Initialize tool-related state variables.
-
-    Args:
-        state: Chat state object
-    """
+    """Initialize tool state"""
     state.setdefault("tool_results", [])
     state.setdefault("all_tool_results", [])
 
 
-def get_tool_results_summary(state: ChatState) -> str:
-    """
-    Get a summary of all tool results with enhanced progress tracking.
-    Fully generic - dynamically groups tools by their prefix/category.
-
-    Args:
-        state: Chat state
-
-    Returns:
-        Summary string of all tool executions
-    """
-    all_results = state.get("all_tool_results", [])
-    if not all_results:
-        return "No tools have been executed yet."
-
-    summary = f"Tool Execution Summary (Total: {len(all_results)}):\n"
-    tool_summary = _build_tool_summary(all_results)
-
-    # Dynamic categorization - extract categories from tool names
-    tool_categories = {}
-
-    for tool_name, stats in tool_summary.items():
-        # Extract category from tool name (e.g., "slack.send_message" -> "slack")
-        category = tool_name.split('.')[0] if '.' in tool_name else "utility"
-
-        if category not in tool_categories:
-            tool_categories[category] = []
-
-        tool_categories[category].append((tool_name, stats))
-
-    # Add progress insights
-    for category, tools in sorted(tool_categories.items()):
-        if tools:
-            summary += f"\n## {category.title()} Tools:\n"
-            for tool_name, stats in tools:
-                summary += _format_tool_stats(tool_name, stats)
-
-                # Generic guidance based on tool verb/action
-                if stats["success"] > 0:
-                    tool_action = tool_name.split('.')[-1] if '.' in tool_name else tool_name
-
-                    # Generic guidance based on action type
-                    if any(verb in tool_action.lower() for verb in ["fetch", "get", "list", "retrieve"]):
-                        summary += "  - Data retrieved successfully - can be used for further actions\n"
-                    elif any(verb in tool_action.lower() for verb in ["create", "send", "post", "add"]):
-                        summary += "  - Action completed successfully\n"
-                    elif any(verb in tool_action.lower() for verb in ["update", "modify", "edit"]):
-                        summary += "  - Update completed successfully\n"
-
-    return summary
-
-
-def _build_tool_summary(all_results: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """
-    Build summary statistics for tools.
-
-    Args:
-        all_results: List of all tool results
-
-    Returns:
-        Dictionary of tool statistics
-    """
-    tool_summary: Dict[str, Dict[str, Any]] = {}
-
-    for result in all_results:
-        tool_name = result.get("tool_name", "unknown")
-        status = result.get("status", "unknown")
-
-        if tool_name not in tool_summary:
-            tool_summary[tool_name] = {
-                "success": 0,
-                "error": 0,
-                "results": []
-            }
-
-        if status in tool_summary[tool_name]:
-            tool_summary[tool_name][status] += 1
-        tool_summary[tool_name]["results"].append(result)
-
-    return tool_summary
-
-
-def _format_tool_stats(tool_name: str, stats: Dict[str, Any]) -> str:
-    """
-    Format statistics for a single tool.
-
-    Args:
-        tool_name: Name of the tool
-        stats: Statistics dictionary
-
-    Returns:
-        Formatted statistics string
-    """
-    summary = f"\n{tool_name}:\n"
-    summary += f"  - Successful: {stats['success']}\n"
-    summary += f"  - Failed: {stats['error']}\n"
-
-    results = stats.get("results", [])
-    if results and isinstance(results, list):
-        last_result = results[-1]
-        result_str = str(last_result.get("result", ""))
-        result_preview = result_str[:MAX_RESULT_PREVIEW_LENGTH]  # Preview limit
-
-        if len(result_str) > MAX_RESULT_PREVIEW_LENGTH:
-            result_preview += "..."
-
-        summary += f"  - Last result: {result_preview}\n"
-
-    return summary
-
-
-# Simple API functions for easy use
+# ============================================================================
+# Public API
+# ============================================================================
 
 def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
     """
     Get all agent tools (cached).
 
-    This is the main function to call when you need tools.
-    It's simple, fast, and handles all complexity internally.
-
-    NOTE: Also adds dynamic tools like fetch_full_record_tool that aren't in the registry.
-
-    Args:
-        state: Chat state
-
-    Returns:
-        List of tools ready to use
+    Returns internal tools + user's configured toolset tools.
+    Also adds dynamic tools like fetch_full_record_tool.
     """
-    # Get registry tools
     tools = ToolLoader.load_tools(state)
 
-    # Add dynamic fetch_full_record tool (like chatbot does)
-    # This tool is created dynamically based on virtual_record_id_to_result mapping
-    virtual_record_id_to_result = state.get("virtual_record_id_to_result", {})
-    if virtual_record_id_to_result:
+    # Add dynamic fetch_full_record tool
+    virtual_record_map = state.get("virtual_record_id_to_result", {})
+    if virtual_record_map:
         try:
             from app.utils.fetch_full_record import create_fetch_full_record_tool
-            fetch_tool = create_fetch_full_record_tool(virtual_record_id_to_result)
+            fetch_tool = create_fetch_full_record_tool(virtual_record_map)
             tools.append(fetch_tool)
+
             state_logger = state.get("logger")
             if state_logger:
-                state_logger.debug(f"✅ Added fetch_full_record_tool with {len(virtual_record_id_to_result)} records available")
+                state_logger.debug(f"Added fetch_full_record_tool ({len(virtual_record_map)} records)")
         except Exception as e:
             state_logger = state.get("logger")
             if state_logger:
@@ -843,45 +620,51 @@ def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
 
 
 def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[ToolWrapper]:
-    """
-    Get a specific tool by name.
-
-    Args:
-        tool_name: Tool name (e.g., 'slack.send_message')
-        state: Chat state
-
-    Returns:
-        Tool or None if not found
-    """
+    """Get specific tool by name"""
     return ToolLoader.get_tool_by_name(tool_name, state)
 
 
-def get_recently_failed_tools(state: ChatState, logger_instance=None) -> dict:
-    """
-    Get tools that have recently failed multiple times.
-
-    Public API for external use.
-
-    Args:
-        state: Chat state
-        logger_instance: Optional logger instance
-
-    Returns:
-        Dict mapping tool_name to failure count
-    """
-    return _get_recently_failed_tools(state, logger_instance)
-
-
 def clear_tool_cache(state: ChatState) -> None:
-    """
-    Clear tool cache.
-
-    Call this if you need to reload tools (rare).
-
-    Args:
-        state: Chat state
-    """
+    """Clear tool cache"""
     state.pop("_cached_agent_tools", None)
     state.pop("_tool_instance_cache", None)
+    state.pop("_cached_blocked_tools", None)
     logger.info("Tool cache cleared")
 
+
+def get_tool_results_summary(state: ChatState) -> str:
+    """Get summary of tool execution results"""
+    all_results = state.get("all_tool_results", [])
+    if not all_results:
+        return "No tools executed yet."
+
+    # Group by category
+    categories = {}
+    for result in all_results:
+        tool_name = result.get("tool_name", "unknown")
+        category = tool_name.split('.')[0] if '.' in tool_name else "utility"
+
+        if category not in categories:
+            categories[category] = {"success": 0, "error": 0, "tools": {}}
+
+        status = result.get("status", "unknown")
+        if status in ("success", "error"):
+            categories[category][status] += 1
+
+        if tool_name not in categories[category]["tools"]:
+            categories[category]["tools"][tool_name] = {"success": 0, "error": 0}
+
+        if status in ("success", "error"):
+            categories[category]["tools"][tool_name][status] += 1
+
+    # Build summary
+    lines = [f"Tool Execution Summary (Total: {len(all_results)}):"]
+
+    for category, stats in sorted(categories.items()):
+        lines.append(f"\n## {category.title()} Tools:")
+        lines.append(f"  Success: {stats['success']}, Failed: {stats['error']}")
+
+        for tool_name, tool_stats in stats["tools"].items():
+            lines.append(f"  - {tool_name}: {tool_stats['success']} ✓, {tool_stats['error']} ✗")
+
+    return "\n".join(lines)
