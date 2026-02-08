@@ -8638,3 +8638,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check if record is folder: {e}")
             return False
 
+    async def check_toolset_in_use(self, toolset_name: str, user_id: str, transaction: Optional[str] = None) -> List[str]:
+        """
+        Check if a toolset is currently in use by any active agents.
+
+        Args:
+            toolset_name: Normalized toolset name
+            user_id: User ID who owns the toolset
+
+        Returns:
+            List of agent names that are using the toolset. Empty list if not in use.
+        """
+        try:
+            # Find toolset nodes
+            toolset_query = f"""
+            FOR ts IN {CollectionNames.AGENT_TOOLSETS.value}
+                FILTER ts.name == @name AND ts.userId == @user_id
+                RETURN ts._id
+            """
+            toolset_ids = await self.http_client.execute_aql(toolset_query, bind_vars={
+                "name": toolset_name,
+                "user_id": user_id
+            }, txn_id=transaction)
+
+            if not toolset_ids:
+                return []
+
+            # Check for active agents using this toolset
+            agent_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_TOOLSET.value}
+                FILTER edge._to IN @toolset_ids
+                LET agent = DOCUMENT(edge._from)
+                FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
+                RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
+            """
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={"toolset_ids": toolset_ids}, txn_id=transaction)
+
+            if agents:
+                agent_names = list(set(a.get("agentName", "Unknown") for a in agents if a))
+                return agent_names
+
+            return []
+
+        except Exception as e:
+            self.logger.error(f"Failed to check toolset usage: {str(e)}")
+            raise

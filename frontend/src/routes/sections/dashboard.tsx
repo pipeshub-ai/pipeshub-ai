@@ -404,7 +404,7 @@ export const dashboardRoutes = [
                   // Toolsets Settings
                   {
                     path: 'toolsets',
-                    element: <AdminProtectedRoute component={ToolsetsSettingsPage} />,
+                    element: <BusinessOnlyRoute component={ToolsetsSettingsPage} />,
                   },
 
                   // OAuth Configuration
