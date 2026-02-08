@@ -529,7 +529,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
     };
 
     fetchData();
-  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, refreshCounter]);
+  }, [nodeType, nodeId, page, limit, sortBy, sortOrder, q, filters, refreshCounter, onUpdateUrl]);
 
   // Navigation handlers
   const handleRowClick = (node: HubNode) => {
