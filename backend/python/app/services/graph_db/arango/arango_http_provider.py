@@ -8062,6 +8062,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
 
                 // Get the MAX priority role (highest permission)
+                // Return null if no permissions found
                 LET final_role = LENGTH(all_roles) > 0 ? (
                     FIRST(
                         FOR r IN all_roles
@@ -8069,7 +8070,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             LIMIT 1
                             RETURN r
                     )
-                ) : "READER"
+                ) : null
         """
 
     async def get_knowledge_hub_node_permissions(
@@ -8083,10 +8084,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if not node_ids:
             return {}
 
+        # Filter out invalid IDs (empty, None, whitespace-only, or already full document handles)
+        valid_pairs = [
+            (nid, ntype) for nid, ntype in zip(node_ids, node_types)
+            if nid and isinstance(nid, str) and nid.strip()
+            and not nid.startswith(('records/', 'recordGroups/', 'users/', 'groups/', 'roles/', 'teams/', 'orgs/'))
+        ]
+
+        if not valid_pairs:
+            return {}
+
+        # Rebuild lists with only valid IDs
+        valid_node_ids, valid_node_types = zip(*valid_pairs)
+
         # Separate by type
-        record_group_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype in ['kb', 'recordGroup']]
-        app_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype == 'app']
-        record_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype not in ['kb', 'recordGroup', 'app']]
+        record_group_ids = [nid for nid, ntype in zip(valid_node_ids, valid_node_types) if ntype in ['kb', 'recordGroup']]
+        app_ids = [nid for nid, ntype in zip(valid_node_ids, valid_node_types) if ntype == 'app']
+        record_ids = [nid for nid, ntype in zip(valid_node_ids, valid_node_types) if ntype not in ['kb', 'recordGroup', 'app']]
 
         permissions = {}
 
@@ -8104,16 +8118,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "READER": 1
             }}
             FOR rg_id IN @record_group_ids
+                FILTER rg_id != null AND rg_id != "" AND LENGTH(rg_id) > 0
                 LET target_id = CONCAT('recordGroups/', rg_id)
                 {permission_check_aql}
                 RETURN {{ id: rg_id, role: final_role }}
             """
             results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "record_group_ids": record_group_ids}, txn_id=transaction)
             for r in (results or []):
-                role = r.get('role') or 'READER'  # Ensure role is never None
-                permissions[r['id']] = {"role": role, "canEdit": role in ['OWNER', 'WRITER', 'ADMIN', 'EDITOR'], "canDelete": role in ['OWNER', 'ADMIN']}
+                role = r.get('role')
+                # Only include if user actually has a permission
+                if role:
+                    permissions[r['id']] = {"role": role, "canEdit": role in ['OWNER', 'WRITER', 'ADMIN', 'EDITOR'], "canDelete": role in ['OWNER', 'ADMIN']}
 
         # Apps - generally read-only
+        # NOTE: Apps get default READER access. If this should require explicit permissions,
+        # remove this block and only include apps that have actual permission records.
         for app_id in app_ids:
             permissions[app_id] = {"role": "READER", "canEdit": False, "canDelete": False}
 
@@ -8131,14 +8150,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "READER": 1
             }}
             FOR rec_id IN @record_ids
+                FILTER rec_id != null AND rec_id != "" AND LENGTH(rec_id) > 0
                 LET target_id = CONCAT('records/', rec_id)
                 {permission_check_aql}
                 RETURN {{ id: rec_id, role: final_role }}
             """
             results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key, "record_ids": record_ids}, txn_id=transaction)
             for r in (results or []):
-                role = r.get('role') or 'READER'  # Ensure role is never None
-                permissions[r['id']] = {"role": role, "canEdit": role in ['OWNER', 'WRITER', 'ADMIN', 'EDITOR'], "canDelete": role in ['OWNER', 'ADMIN']}
+                role = r.get('role')
+                # Only include if user actually has a permission
+                if role:
+                    permissions[r['id']] = {"role": role, "canEdit": role in ['OWNER', 'WRITER', 'ADMIN', 'EDITOR'], "canDelete": role in ['OWNER', 'ADMIN']}
 
         return permissions
 
@@ -8299,6 +8321,21 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Supports both direct user permissions and team-based permissions.
         If multiple permissions exist, returns the highest role.
         """
+        # Validate parent_id if provided
+        if parent_id:
+            if not parent_id.strip():
+                parent_id = None
+            elif parent_id.startswith(('records/', 'recordGroups/', 'apps/')) and len(parent_id.split('/')) < ARANGO_ID_PARTS_COUNT:
+                # Malformed document handle - return no access
+                return {
+                    "role": None,
+                    "canUpload": False,
+                    "canCreateFolders": False,
+                    "canEdit": False,
+                    "canDelete": False,
+                    "canManagePermissions": False
+                }
+
         if not parent_id:
             query = """
             LET user = DOCUMENT("users", @user_key)
@@ -8313,13 +8350,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             results = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
         else:
             query = """
-            LET node_id = CONTAINS(@parent_id, "/") ? @parent_id : (
+            // Validate parent_id and construct node_id safely
+            LET node_id_raw = CONTAINS(@parent_id, "/") ? @parent_id : (
                 FIRST(UNION(
-                    (FOR doc IN records FILTER doc._key == @parent_id RETURN doc._id),
-                    (FOR doc IN apps FILTER doc._key == @parent_id RETURN doc._id),
-                    (FOR doc IN recordGroups FILTER doc._key == @parent_id RETURN doc._id)
+                    (FOR doc IN records FILTER doc._key == @parent_id AND doc._key != null AND doc._key != "" RETURN doc._id),
+                    (FOR doc IN apps FILTER doc._key == @parent_id AND doc._key != null AND doc._key != "" RETURN doc._id),
+                    (FOR doc IN recordGroups FILTER doc._key == @parent_id AND doc._key != null AND doc._key != "" RETURN doc._id)
                 ))
             )
+
+            // Validate node_id is not empty or malformed
+            LET node_id_valid = (node_id_raw != null AND node_id_raw != "" AND LENGTH(node_id_raw) > 0)
+            LET node_id = node_id_valid ? node_id_raw : null
 
             // Role priority: OWNER > ADMIN > EDITOR > WRITER > COMMENTER > READER
             LET role_priority = {
@@ -8332,24 +8374,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             // Step 1: Get permission target (node itself or its parent via inheritPermissions)
-            LET permission_target = node_id
+            // Only proceed if node_id is valid
+            LET permission_target = node_id_valid ? node_id : null
 
             // For records, check if they inherit from a parent (KB or record group)
-            LET inherited_from = STARTS_WITH(node_id, "records/") ? FIRST(
+            LET inherited_from = (node_id_valid AND STARTS_WITH(node_id, "records/")) ? FIRST(
                 FOR edge IN inheritPermissions
                     FILTER edge._from == node_id
                     RETURN edge._to
             ) : null
 
             // Use inherited parent for permission check if it exists, otherwise use node itself
-            LET final_permission_target = inherited_from != null ? inherited_from : permission_target
+            LET final_permission_target = node_id_valid ? (inherited_from != null ? inherited_from : permission_target) : null
 
             // Determine if this is a KB-related node (for root KB fallback)
-            LET target_doc = DOCUMENT(final_permission_target)
-            LET is_record = STARTS_WITH(node_id, "records/")
-            LET record_doc = is_record ? DOCUMENT(node_id) : null
+            LET target_doc = (final_permission_target != null) ? DOCUMENT(final_permission_target) : null
+            LET is_record = (node_id_valid AND STARTS_WITH(node_id, "records/"))
+            LET record_doc = (is_record AND node_id != null) ? DOCUMENT(node_id) : null
             LET record_connector_id = record_doc != null ? record_doc.connectorId : null
-            LET record_connector = record_connector_id != null ? (
+            LET record_connector = (record_connector_id != null AND record_connector_id != "" AND LENGTH(record_connector_id) > 0) ? (
                 DOCUMENT(CONCAT("recordGroups/", record_connector_id)) ||
                 DOCUMENT(CONCAT("apps/", record_connector_id))
             ) : null
@@ -8457,11 +8500,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             // Step 7: For KB-related nodes, find root KB and check permission (fallback)
             LET start_connector_id = is_kb_record ? record_connector_id : (
-                is_nested_rg_under_kb ? rg_doc._key : null
+                is_nested_rg_under_kb AND rg_doc != null AND rg_doc._key != null AND rg_doc._key != "" ? rg_doc._key : null
             )
-            LET start_connector = start_connector_id != null ? DOCUMENT(CONCAT("recordGroups/", start_connector_id)) : null
+            LET start_connector = (start_connector_id != null AND start_connector_id != "" AND LENGTH(start_connector_id) > 0) ? DOCUMENT(CONCAT("recordGroups/", start_connector_id)) : null
             LET is_start_kb = start_connector != null AND start_connector.connectorName == "KB"
-            LET root_kb_from_traversal = (start_connector != null AND NOT is_start_kb) ? (
+            LET root_kb_from_traversal = (start_connector != null AND NOT is_start_kb AND start_connector._key != null AND start_connector._key != "") ? (
                 FOR v IN 0..10 INBOUND CONCAT("recordGroups/", start_connector._key) belongsTo
                     FILTER v != null AND v.connectorName == "KB"
                     LIMIT 1
@@ -8470,7 +8513,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET root_kb = is_start_kb ? start_connector : (
                 LENGTH(root_kb_from_traversal) > 0 ? root_kb_from_traversal[0] : null
             )
-            LET root_kb_to = root_kb != null ? CONCAT("recordGroups/", root_kb._key) : null
+            LET root_kb_to = (root_kb != null AND root_kb._key != null AND root_kb._key != "" AND LENGTH(root_kb._key) > 0) ? CONCAT("recordGroups/", root_kb._key) : null
 
             // Check direct user permission on root KB
             LET root_kb_direct = (needs_kb_fallback AND root_kb_to != null) ? FIRST(
@@ -8544,12 +8587,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
             ) : null
 
-            LET final_role = highest_perm != null ? highest_perm.role : "READER"
-            LET can_edit = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
-            LET can_upload = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
-            LET can_create = final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"]
-            LET can_delete = final_role IN ["ADMIN", "OWNER"]
-            LET can_manage = final_role IN ["ADMIN", "OWNER"]
+            // Only return permissions if user actually has access (don't default to READER)
+            LET final_role = (node_id_valid AND highest_perm != null) ? highest_perm.role : null
+            LET can_edit = (final_role != null AND final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"])
+            LET can_upload = (final_role != null AND final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"])
+            LET can_create = (final_role != null AND final_role IN ["ADMIN", "EDITOR", "WRITER", "OWNER"])
+            LET can_delete = (final_role != null AND final_role IN ["ADMIN", "OWNER"])
+            LET can_manage = (final_role != null AND final_role IN ["ADMIN", "OWNER"])
 
             RETURN {
                 role: final_role,
@@ -8560,16 +8604,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 canManagePermissions: can_manage
             }
             """
-            results = await self.http_client.execute_aql(
-                query,
-                bind_vars={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
-                txn_id=transaction
-            )
+            try:
+                results = await self.http_client.execute_aql(
+                    query,
+                    bind_vars={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
+                    txn_id=transaction
+                )
+            except Exception:
+                # Return no access on error (don't grant READER by default)
+                return {
+                    "role": None,
+                    "canUpload": False,
+                    "canCreateFolders": False,
+                    "canEdit": False,
+                    "canDelete": False,
+                    "canManagePermissions": False
+                }
 
         if results and results[0]:
-            return results[0]
+            result = results[0]
+            # If no permission found (role is null), return no access
+            if result.get("role") is None:
+                return {
+                    "role": None,
+                    "canUpload": False,
+                    "canCreateFolders": False,
+                    "canEdit": False,
+                    "canDelete": False,
+                    "canManagePermissions": False
+                }
+            return result
+        # No results means no access
         return {
-            "role": "READER",
+            "role": None,
             "canUpload": False,
             "canCreateFolders": False,
             "canEdit": False,
