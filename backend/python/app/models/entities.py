@@ -39,6 +39,9 @@ class RecordGroupType(str, Enum):
     MAILBOX = "MAILBOX"
     GROUP_MAILBOX = "GROUP_MAILBOX"
     WEB = "WEB"
+    SHELF = "SHELF"
+    BOOK = "BOOK"
+    CHAPTER = "CHAPTER"
 
 class RecordType(str, Enum):
     FILE = "FILE"
