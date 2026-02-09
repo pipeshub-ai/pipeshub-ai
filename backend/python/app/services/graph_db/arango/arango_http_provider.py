@@ -8895,26 +8895,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Event Publishing Methods ====================
 
-    async def _publish_sync_event(self, event_type: str, payload: Dict) -> None:
-        """Publish sync event to Kafka"""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
-
-            event = {
-                "eventType": event_type,
-                "timestamp": timestamp,
-                "payload": payload
-            }
-
-            if self.kafka_service:
-                await self.kafka_service.publish_event("sync-events", event)
-                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
-            else:
-                self.logger.debug("Skipping Kafka publish for sync-events: kafka_service is not configured")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
-
     async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
         """Publish record event to Kafka"""
         try:
@@ -8961,66 +8941,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
             return {}
-
-    async def _publish_kb_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
-        """Publish KB-specific deletion event"""
-        try:
-            payload = await self._create_deleted_record_event_payload(record, file_record)
-            if payload:
-                # Add KB-specific metadata
-                payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
-                payload["origin"] = OriginTypes.UPLOAD.value
-
-                await self._publish_record_event("deleteRecord", payload)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish KB deletion event: {str(e)}")
-
-    async def _publish_drive_deletion_event(self, record: Dict, file_record: Optional[Dict]) -> None:
-        """Publish Drive-specific deletion event"""
-        try:
-            payload = await self._create_deleted_record_event_payload(record, file_record)
-            if payload:
-                # Add Drive-specific metadata
-                payload["connectorName"] = Connectors.GOOGLE_DRIVE.value
-                payload["origin"] = OriginTypes.CONNECTOR.value
-
-                # Add Drive-specific fields if available
-                if file_record:
-                    payload["driveId"] = file_record.get("driveId", "")
-                    payload["parentId"] = file_record.get("parentId", "")
-                    payload["webViewLink"] = file_record.get("webViewLink", "")
-
-                await self._publish_record_event("deleteRecord", payload)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish Drive deletion event: {str(e)}")
-
-    async def _publish_gmail_deletion_event(self, record: Dict, mail_record: Optional[Dict], file_record: Optional[Dict]) -> None:
-        """Publish Gmail-specific deletion event"""
-        try:
-            # Use mail_record or file_record for attachment info
-            data_record = mail_record or file_record
-            payload = await self._create_deleted_record_event_payload(record, data_record)
-
-            if payload:
-                # Add Gmail-specific metadata
-                payload["connectorName"] = Connectors.GOOGLE_MAIL.value
-                payload["origin"] = OriginTypes.CONNECTOR.value
-
-                # Add Gmail-specific fields if available
-                if mail_record:
-                    payload["messageId"] = mail_record.get("messageId", "")
-                    payload["threadId"] = mail_record.get("threadId", "")
-                    payload["subject"] = mail_record.get("subject", "")
-                    payload["from"] = mail_record.get("from", "")
-                    payload["isAttachment"] = False
-                elif file_record:
-                    # This is an email attachment
-                    payload["isAttachment"] = True
-                    payload["attachmentId"] = file_record.get("attachmentId", "")
-
-                await self._publish_record_event("deleteRecord", payload)
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish Gmail deletion event: {str(e)}")
 
     async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Optional[Dict]:
         """
@@ -9092,66 +9012,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
             return None
-
-    async def _publish_upload_events(self, kb_id: str, result: Dict) -> None:
-        """
-        Enhanced event publishing with better error handling
-        """
-        try:
-            self.logger.info(f"This is the result passed to publish record events {result}")
-            # Get the full data of created files directly from the transaction result
-            created_files_data = result.get("created_files_data", [])
-
-            if not created_files_data:
-                self.logger.info("No new records were created, skipping event publishing.")
-                return
-
-            self.logger.info(f"🚀 Publishing creation events for {len(created_files_data)} new records.")
-
-            # Get storage endpoint
-            try:
-                endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
-                )
-                self.logger.info(f"This the the endpoint {endpoints}")
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            except Exception as config_error:
-                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
-                storage_url = "http://localhost:3000"  # Fallback
-
-            # Create events with enhanced error handling
-            successful_events = 0
-            failed_events = 0
-
-            for file_data in created_files_data:
-                try:
-                    record_doc = file_data.get("record")
-                    file_doc = file_data.get("fileRecord")
-
-                    if record_doc and file_doc:
-                        # Create payload with error handling
-                        create_payload = await self._create_new_record_event_payload(
-                            record_doc, file_doc, storage_url
-                        )
-
-                        if create_payload:  # Only publish if payload creation succeeded
-                            await self._publish_record_event("newRecord", create_payload)
-                            successful_events += 1
-                        else:
-                            self.logger.warning(f"⚠️ Skipping event for record {record_doc.get('_key')} - payload creation failed")
-                            failed_events += 1
-                    else:
-                        self.logger.warning(f"⚠️ Incomplete file data found, cannot publish event: {file_data}")
-                        failed_events += 1
-
-                except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish event for file: {str(event_error)}")
-                    failed_events += 1
-
-            self.logger.info(f"✅ Event publishing complete: {successful_events} successful, {failed_events} failed")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish upload events: {str(e)}")
 
     async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional[Any] = None, record_id: Optional[str] = None) -> Dict:
         """Create reindex event payload"""

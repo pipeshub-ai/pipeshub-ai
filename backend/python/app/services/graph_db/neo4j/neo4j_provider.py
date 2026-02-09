@@ -1007,6 +1007,113 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch create edges failed: {str(e)}")
             raise
 
+    async def batch_create_entity_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch create entity relation edges - FULLY ASYNC.
+
+        Uses MERGE to avoid duplicates - matches on from node, to node, and edgeType.
+        This is specialized for entityRelations collection where multiple edges
+        can exist between the same entities with different edgeType values (e.g., ASSIGNED_TO, CREATED_BY, REPORTED_BY).
+
+        Args:
+            edges: List of edge documents with _from, _to, and edgeType (ArangoDB format)
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("🚀 Batch creating entity relation edges")
+
+            relationship_type = edge_collection_to_relationship(CollectionNames.ENTITY_RELATIONS.value)
+
+            # Process edges - handle ArangoDB format (_from, _to) or generic format
+            edge_data = []
+            for edge in edges:
+                # Check for ArangoDB format first (_from, _to)
+                if "_from" in edge and "_to" in edge:
+                    from_collection, from_id = self._parse_arango_id(edge["_from"])
+                    to_collection, to_id = self._parse_arango_id(edge["_to"])
+                # Fallback to generic format
+                elif "from_id" in edge and "to_id" in edge:
+                    from_id = edge["from_id"]
+                    to_id = edge["to_id"]
+                    from_collection = edge.get("from_collection", "")
+                    to_collection = edge.get("to_collection", "")
+                else:
+                    self.logger.warning(f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}")
+                    continue
+
+                if not from_id or not to_id or not from_collection or not to_collection:
+                    self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
+                    continue
+
+                from_label = collection_to_label(from_collection)
+                to_label = collection_to_label(to_collection)
+
+                # Extract edgeType (required for entity relations)
+                edge_type = edge.get("edgeType")
+                if not edge_type:
+                    self.logger.warning(f"Skipping invalid edge (missing edgeType): {edge}")
+                    continue
+
+                # Extract all edge properties (excluding format-specific fields)
+                props = {k: v for k, v in edge.items() if k not in [
+                    "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
+                ]}
+
+                edge_data.append({
+                    "from_id": from_id,
+                    "to_id": to_id,
+                    "from_label": from_label,
+                    "to_label": to_label,
+                    "edge_type": edge_type,
+                    "props": props
+                })
+
+            if not edge_data:
+                return True
+
+            # Group edges by label combination and edgeType for efficient batch processing
+            from collections import defaultdict
+            grouped_edges = defaultdict(list)
+            for edge in edge_data:
+                key = (edge["from_label"], edge["to_label"], edge["edge_type"])
+                grouped_edges[key].append(edge)
+
+            # Process each group separately
+            for (from_label, to_label, edge_type), group_edges in grouped_edges.items():
+                query = f"""
+                UNWIND $edges AS edge
+                MATCH (from:{from_label} {{id: edge.from_id}})
+                MATCH (to:{to_label} {{id: edge.to_id}})
+                MERGE (from)-[r:{relationship_type} {{edgeType: edge.edge_type}}]->(to)
+                SET r = edge.props
+                RETURN count(r) AS created
+                """
+
+                await self.client.execute_query(
+                    query,
+                    parameters={"edges": group_edges},
+                    txn_id=transaction
+                )
+
+            self.logger.info(
+                f"✅ Successfully created {len(edge_data)} entity relation edges."
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
+            raise
+
     async def get_edge(
         self,
         from_id: str,
@@ -1959,7 +2066,9 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH path = (nestedRg:RecordGroup)-[:INHERIT_PERMISSIONS*0..{max_depth}]->(rg)
                 WHERE nestedRg.orgId = $org_id OR nestedRg.orgId IS NULL
 
-                WITH COLLECT(DISTINCT nestedRg) + [rg] AS allRecordGroups
+                // Collect nested groups first, keeping rg in scope
+                WITH rg, COLLECT(DISTINCT nestedRg) AS nestedGroups
+                WITH [rg] + nestedGroups AS allRecordGroups
                 UNWIND allRecordGroups AS recordGroup
 
                 // Get all records from all these groups
@@ -2097,9 +2206,10 @@ class Neo4jProvider(IGraphDBProvider):
             children_query = ""
             if max_depth > 0:
                 children_query = f"""
-                // Get all children using graph traversal
-                MATCH path = (startRecord)-[:RECORD_RELATIONS*1..{max_depth}]->(child:Record)
-                WHERE child.connectorId = $connector_id
+                // Get all children using graph traversal (includes both parent-child and attachment relationships)
+                MATCH path = (startRecord)-[:RECORD_RELATION*1..{max_depth}]->(child:Record)
+                WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+                AND child.connectorId = $connector_id
                 AND (child.orgId = $org_id OR child.orgId IS NULL)
                 AND child.isDeleted <> true
 
@@ -5462,8 +5572,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.info(f"🚀 User apps ids: {user_apps_ids}")
 
             # Get record
-            record = await self.get_record_by_id(record_id, transaction)
-            record = record.to_arango_base_record()
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
             if not record:
                 self.logger.warning(f"⚠️ Record not found: {record_id}")
                 return None
@@ -5486,39 +5595,54 @@ class Neo4jProvider(IGraphDBProvider):
                  [x IN COLLECT({type: "GROUP", source: g, role: groupRecPerm.role}) WHERE x.role IS NOT NULL] AS groupAccess
 
             // Record Group access: User -> Group -> RecordGroup -> Record
-            OPTIONAL MATCH (u)-[userGroupPerm2:PERMISSION {type: "USER"}]->(g2:Group)-[groupRgPerm:PERMISSION]->(rg:RecordGroup)
-            WHERE groupRgPerm.type IN ["GROUP", "ROLE"]
-            OPTIONAL MATCH (rg)<-[:INHERIT_PERMISSIONS]-(rec2:Record {id: $record_id})
-            WHERE rec2.origin <> "CONNECTOR" OR rec2.connectorId IN $user_apps_ids
+            // Combine into single pattern to ensure path exists
+            OPTIONAL MATCH (u)-[userGroupPerm2:PERMISSION {type: "USER"}]->(g2:Group)-[groupRgPerm:PERMISSION]->(rg:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec2:Record {id: $record_id})
+            WHERE groupRgPerm.type IN ["GROUP", "ROLE"] AND (rec2.origin <> "CONNECTOR" OR rec2.connectorId IN $user_apps_ids)
             WITH u, rec, directAccess, groupAccess,
                  [x IN COLLECT({type: "RECORD_GROUP", source: rg, role: groupRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS recordGroupAccess
 
-            // Nested Record Group access: User -> Group -> Parent RG -> Child RG -> Record
-            OPTIONAL MATCH (u)-[userGroupPerm3:PERMISSION {type: "USER"}]->(g3:Group)-[groupParentRgPerm:PERMISSION]->(parentRg:RecordGroup)
-            WHERE groupParentRgPerm.type IN ["GROUP", "ROLE"]
-            OPTIONAL MATCH (parentRg)<-[:INHERIT_PERMISSIONS]-(childRg:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec3:Record {id: $record_id})
-            WHERE rec3.origin <> "CONNECTOR" OR rec3.connectorId IN $user_apps_ids
+            // Nested Record Group access: User -> Group -> RecordGroup -> (nested RGs 2-5 levels) -> Record
+            // Combine into single pattern to ensure path exists with variable-length path
+            // Note: Uses *2..5 (not *1..5) to avoid overlap with RECORD_GROUP which handles direct inheritance (1 hop)
+            OPTIONAL MATCH (u)-[userGroupPerm3:PERMISSION {type: "USER"}]->(g3:Group)-[groupParentRgPerm:PERMISSION]->(parentRg:RecordGroup)<-[:INHERIT_PERMISSIONS*2..5]-(rec3:Record {id: $record_id})
+            WHERE groupParentRgPerm.type IN ["GROUP", "ROLE"] AND (rec3.origin <> "CONNECTOR" OR rec3.connectorId IN $user_apps_ids)
             WITH u, rec, directAccess, groupAccess, recordGroupAccess,
-                 [x IN COLLECT({type: "NESTED_RECORD_GROUP", source: childRg, role: groupParentRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS nestedRgAccess
+                 [x IN COLLECT(DISTINCT {type: "NESTED_RECORD_GROUP", source: parentRg, role: groupParentRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS nestedRgAccess
 
             // Direct User to Record Group access (with nested support)
-            OPTIONAL MATCH (u)-[userRgPerm:PERMISSION {type: "USER"}]->(rg2:RecordGroup)
-            OPTIONAL MATCH path = (rg2)<-[:INHERIT_PERMISSIONS*0..5]-(rec4:Record {id: $record_id})
-            WHERE rec4.origin <> "CONNECTOR" OR rec4.connectorId IN $user_apps_ids
+            // Combine into single pattern to ensure path exists
+            OPTIONAL MATCH path = (u)-[userRgPerm:PERMISSION {type: "USER"}]->(rg2:RecordGroup)<-[:INHERIT_PERMISSIONS*1..5]-(rec4:Record {id: $record_id})
+            WHERE (rec4.origin <> "CONNECTOR" OR rec4.connectorId IN $user_apps_ids)
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess,
                  [x IN COLLECT(DISTINCT {type: "DIRECT_USER_RECORD_GROUP", source: rg2, role: userRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS directUserRgAccess
+
+            // Inherited RecordGroup permission: Record -> RecordGroup hierarchy (OUTBOUND), then User -> RecordGroup
+            // Traverse UP from record to find RecordGroups in hierarchy, then check if user has direct permission
+            OPTIONAL MATCH (rec)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg:RecordGroup)
+            OPTIONAL MATCH (u)-[inheritedRgPerm:PERMISSION {type: "USER"}]->(inheritedRg)
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess,
+                 [x IN COLLECT({type: "INHERITED_RECORD_GROUP", source: inheritedRg, role: inheritedRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS inheritedRgAccess
+
+            // Group Inherited RecordGroup permission: Record -> RecordGroup hierarchy (OUTBOUND), then User -> Group -> RecordGroup
+            // Traverse UP from record to find ancestor RecordGroups (2-5 hops), then check if user's group has permission
+            // Note: Uses *2..5 (not *1..5) to avoid overlap with RECORD_GROUP which handles direct inheritance (1 hop)
+            OPTIONAL MATCH (rec)-[:INHERIT_PERMISSIONS*2..5]->(inheritedRg2:RecordGroup)
+            OPTIONAL MATCH (u)-[userGroupPerm4:PERMISSION {type: "USER"}]->(g4:Group)-[groupInheritedRgPerm:PERMISSION]->(inheritedRg2)
+            WHERE groupInheritedRgPerm.type IN ["GROUP", "ROLE"]
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess,
+                 [x IN COLLECT({type: "GROUP_INHERITED_RECORD_GROUP", source: inheritedRg2, role: groupInheritedRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS groupInheritedRgAccess
 
             // Organization access: User -> Organization -> Record
             OPTIONAL MATCH (u)-[:BELONGS_TO]->(org:Organization {id: $org_id})-[orgRecPerm:PERMISSION]->(rec5:Record {id: $record_id})
             WHERE rec5.origin <> "CONNECTOR" OR rec5.connectorId IN $user_apps_ids
-            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess,
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess,
                  [x IN COLLECT({type: "ORGANIZATION", source: org, role: orgRecPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgAccess
 
             // Organization Record Group access: User -> Organization -> RecordGroup -> Record
-            OPTIONAL MATCH (u)-[belongsTo:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization {id: $org_id})-[orgRgPerm:PERMISSION {type: "ORG"}]->(rg3:RecordGroup)
-            OPTIONAL MATCH path2 = (rg3)<-[:INHERIT_PERMISSIONS*0..2]-(rec6:Record {id: $record_id})
-            WHERE rec6.origin <> "CONNECTOR" OR rec6.connectorId IN $user_apps_ids
-            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess,
+            // Combine into single pattern to ensure path exists
+            OPTIONAL MATCH path2 = (u)-[belongsTo:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization {id: $org_id})-[orgRgPerm:PERMISSION {type: "ORG"}]->(rg3:RecordGroup)<-[:INHERIT_PERMISSIONS*1..2]-(rec6:Record {id: $record_id})
+            WHERE (rec6.origin <> "CONNECTOR" OR rec6.connectorId IN $user_apps_ids)
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess,
                  [x IN COLLECT(DISTINCT {type: "ORG_RECORD_GROUP", source: rg3, role: orgRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgRgAccess
 
             // Knowledge Base access: Check if record belongs to KB and user has permission
@@ -5526,7 +5650,7 @@ class Neo4jProvider(IGraphDBProvider):
                            (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
             OPTIONAL MATCH (rec7)<-[:PARENT_CHILD]-(folder:File)
             WHERE folder.isFile = false
-            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess, orgRgAccess,
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess,
                  [x IN COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: folder}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbDirectAccess
 
             // KB Team access: User -> Team -> KB -> Record
@@ -5535,7 +5659,7 @@ class Neo4jProvider(IGraphDBProvider):
                            (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
             OPTIONAL MATCH (rec8)<-[:PARENT_CHILD]-(folder2:File)
             WHERE folder2.isFile = false
-            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess, orgRgAccess, kbDirectAccess,
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess,
                  [x IN COLLECT({
                      type: "KNOWLEDGE_BASE_TEAM",
                      source: kb2,
@@ -5545,13 +5669,14 @@ class Neo4jProvider(IGraphDBProvider):
 
             // Anyone access
             OPTIONAL MATCH (anyone:Anyone {organization: $org_id, file_key: $record_id})
-            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
+            WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
                  [x IN COLLECT({type: "ANYONE", source: null, role: anyone.role}) WHERE x.role IS NOT NULL] AS anyoneAccess
 
             // Combine all access paths
-            WITH directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess + anyoneAccess AS allAccess
+            WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess,
+                 directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess + anyoneAccess AS allAccess
             WHERE size([a IN allAccess WHERE a.source IS NOT NULL OR a.type = "ANYONE"]) > 0
-            RETURN allAccess
+            RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess
             """
 
             access_results = await self.client.execute_query(
@@ -5840,26 +5965,25 @@ class Neo4jProvider(IGraphDBProvider):
     async def reindex_single_record(self, record_id: str, user_id: str, org_id: str, request: Request, depth: int = 0) -> Dict:
         """
         Reindex a single record with permission checks and event publishing.
-        If the record is a folder and depth > 0, also reindex children up to specified depth.
+        Always reindexes with depth 100 (including all children) via batch reindex.
 
         Args:
             record_id: Record ID to reindex
             user_id: External user ID doing the reindex
             org_id: Organization ID
             request: FastAPI request object
-            depth: Depth of children to reindex (-1 = unlimited/max 100, other negatives = 0,
-                   0 = only this record, 1 = direct children, etc.)
+            depth: Depth for children (always 100 from router, normalized to MAX_REINDEX_DEPTH if needed)
+
+        Returns:
+            Dict: success, recordId, recordName, connector, eventPublished, userRole; or error code/reason
         """
         try:
             self.logger.info(f"🔄 Starting reindex for record {record_id} by user {user_id} with depth {depth}")
 
-            # Handle negative depth: -1 means unlimited (set to MAX_REINDEX_DEPTH), other negatives are invalid (set to 0)
-            if depth == -1:
+            # Depth is always 100 from router, so we always use batch reindex
+            # Normalize depth to MAX_REINDEX_DEPTH if it's -1 or exceeds limit
+            if depth == -1 or depth > MAX_REINDEX_DEPTH:
                 depth = MAX_REINDEX_DEPTH
-                self.logger.info(f"Depth was -1 (unlimited), setting to maximum limit: {depth}")
-            elif depth < 0:
-                self.logger.warning(f"Invalid negative depth {depth}, setting to 0 (single record only)")
-                depth = 0
 
             # Get record to determine connector type
             record = await self.get_document(record_id, CollectionNames.RECORDS.value)
@@ -5892,7 +6016,11 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"User not found: {user_id}"
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get('_key') or user.get('id')
+            if not user_key:
+                return {"success": False, "code": 404, "reason": "User key not found"}
+
+            user_role = None
 
             # Check permissions based on origin type
             if origin == OriginTypes.UPLOAD.value:
@@ -5905,40 +6033,34 @@ class Neo4jProvider(IGraphDBProvider):
                         "reason": f"Knowledge base context not found for record {record_id}"
                     }
 
-                user_role = await self.get_user_kb_permission(kb_context["kb_id"], user_key)
-                if user_role not in ["OWNER", "WRITER", "READER"]:
+                user_role = await self.get_user_kb_permission(kb_context.get("kb_id") or kb_context.get("id"), user_key)
+                if not user_role:
                     return {
                         "success": False,
                         "code": 403,
-                        "reason": f"Insufficient KB permissions. User role: {user_role}. Required: OWNER, WRITER, READER"
+                        "reason": "Insufficient KB permissions. Required: OWNER, WRITER, READER"
                     }
-
-                connector_type = Connectors.KNOWLEDGE_BASE.value
-
 
             elif origin == OriginTypes.CONNECTOR.value:
                 # Connector record - check connector-specific permissions
-                # Note: _check_record_permissions is not implemented in graph providers
-                # For now, we'll allow the operation and return basic info
-                user_role = "READER"  # Default role for validation
+                perm_result = await self._check_record_permissions(record_id, user_key)
+                user_role = perm_result.get("permission")
+                if not user_role:
+                    return {
+                        "success": False,
+                        "code": 403,
+                        "reason": "Insufficient permissions. Required: OWNER, WRITER, READER"
+                    }
 
                 # Check if connector is enabled before allowing reindex
                 if connector_id:
-                    connector_instance = await self.get_document(connector_id, CollectionNames.APPS.value)
-                    if not connector_instance:
-                        return {
-                            "success": False,
-                            "code": 404,
-                            "reason": f"Connector not found: {connector_id}"
-                        }
-                    if not connector_instance.get("isActive", False):
+                    connector_doc = await self.get_document(connector_id, CollectionNames.APPS.value)
+                    if connector_doc and not connector_doc.get("isActive", False):
                         return {
                             "success": False,
                             "code": 400,
-                            "reason": f"Cannot reindex: connector '{connector_instance.get('name', connector_name)}' is currently disabled. Please enable the connector first."
+                            "reason": "Connector is disabled. Please enable the connector first."
                         }
-
-                connector_type = connector_name
             else:
                 return {
                     "success": False,
@@ -5949,62 +6071,69 @@ class Neo4jProvider(IGraphDBProvider):
             # Reset indexing status to QUEUED before reindexing
             await self._reset_indexing_status_to_queued(record_id)
 
-            # Get file record for event payload
-            file_record = None
-            if record.get("recordType") == "FILE":
-                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
-            elif record.get("recordType") == "MAIL":
-                file_record = await self.get_document(record_id, CollectionNames.MAILS.value)
+            # Create event data for router to publish
+            try:
+                # KB records should always use record-events, not sync-events
+                # They don't need connector-based batch reindexing
+                if origin == OriginTypes.UPLOAD.value:
+                    # Get file record for KB reindex event payload
+                    # KB uploads are always FILE records
+                    file_record = None
+                    if record.get("recordType") == "FILE":
+                        file_record = await self.get_document(record_id, CollectionNames.FILES.value)
 
-            self.logger.info(f"📋 File record: {file_record}")
+                    # Create reindex event payload for KB records
+                    payload = await self._create_reindex_event_payload(record, file_record, user_id, request, record_id=record_id)
+                    event_data = {
+                        "eventType": "newRecord",  # Use newRecord for KB reindex (same as single record reindex)
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    # For connector records, use sync-events with connector reindex event
+                    connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
+                    event_type = f"{connector_for_event}.reindex"
 
-            # Determine if we should use batch reindex (depth > 0)
-            use_batch_reindex = depth != 0
-
-            # Create event data based on reindex type
-            event_data = None
-
-            if use_batch_reindex:
-                # Batch reindex event
-                connector_normalized = connector_name.replace(" ", "").lower()
-                event_data = {
-                    "eventType": f"{connector_normalized}.reindex",
-                    "topic": "sync-events",
-                    "payload": {
+                    payload = {
                         "orgId": org_id,
                         "recordId": record_id,
                         "depth": depth,
-                        "connectorId": connector_id
+                        "connectorId": connector_id,
+                        "connector": connector_for_event  # Add connector field for consumer fallback
                     }
-                }
-            else:
-                # Single record reindex event
-                event_payload = await self._create_reindex_event_payload(record, file_record, user_id, request)
-                event_data = {
-                    "eventType": "newRecord",
-                    "topic": "record-events",
-                    "payload": event_payload
+
+                    event_data = {
+                        "eventType": event_type,
+                        "topic": "sync-events",
+                        "payload": payload
+                    }
+
+                return {
+                    "success": True,
+                    "recordId": record_id,
+                    "recordName": record.get("recordName"),
+                    "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
+                    "userRole": user_role,
+                    "eventData": event_data,
+                    "useBatchReindex": origin != OriginTypes.UPLOAD.value  # KB records don't use batch reindex
                 }
 
-            # Return success with connector information and event data (caller will publish event)
-            self.logger.info(f"✅ Record {record_id} validated for reindexing")
-            return {
-                "success": True,
-                "recordId": record_id,
-                "recordName": record.get("recordName"),
-                "connector": connector_type,
-                "userRole": user_role,
-                "depth": depth,
-                "eventData": event_data
-            }
+            except Exception as event_error:
+                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                # Return success but indicate event data creation failed
+                return {
+                    "success": True,
+                    "recordId": record_id,
+                    "recordName": record.get("recordName"),
+                    "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
+                    "userRole": user_role,
+                    "eventData": None,
+                    "eventError": str(event_error)
+                }
 
         except Exception as e:
             self.logger.error(f"❌ Failed to reindex record {record_id}: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": f"Internal error: {str(e)}"
-            }
+            return {"success": False, "code": 500, "reason": str(e)}
 
     async def _check_record_group_permissions(
         self,
@@ -6155,18 +6284,20 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"User not found: {user_id}"
                 }
 
-            user_key = user.get('_key')
+            user_key = user.get('_key') or user.get('id')
+            if not user_key:
+                return {"success": False, "code": 404, "reason": "User key not found"}
 
             # Check if user has permission to access the record group
             permission_check = await self._check_record_group_permissions(
                 record_group_id, user_key, org_id
             )
 
-            if not permission_check["allowed"]:
+            if not permission_check.get("allowed"):
                 return {
                     "success": False,
                     "code": 403,
-                    "reason": permission_check["reason"]
+                    "reason": permission_check.get("reason", "Permission denied")
                 }
 
             # Return success with connector information (caller will publish event)
@@ -6179,12 +6310,180 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to validate record group reindex: {str(e)}")
-            return {
-                "success": False,
-                "code": 500,
-                "reason": f"Internal error: {str(e)}"
+            self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
+            return {"success": False, "code": 500, "reason": str(e)}
+
+    async def _check_record_permissions(
+        self,
+        record_id: str,
+        user_key: str,
+        check_drive_inheritance: bool = True,
+    ) -> Dict:
+        """
+        Generic permission checker for any record type.
+        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+
+        Args:
+            record_id: The record to check permissions for
+            user_key: The user to check permissions for
+            check_drive_inheritance: Whether to check for Drive-level inherited permissions
+
+        Returns:
+            Dict with 'permission' (role) and 'source' (where permission came from)
+        """
+        try:
+            query = """
+            MATCH (user:User {id: $user_key})
+            MATCH (record:Record {id: $record_id})
+
+            // 1. Check direct user permissions on the record
+            OPTIONAL MATCH (user)-[direct_perm:PERMISSION {type: "USER"}]->(record)
+            WITH user, record, direct_perm.role AS direct_permission
+
+            // 2. Check group permissions (user -> group -> record)
+            OPTIONAL MATCH (user)-[:PERMISSION]->(group)
+            WHERE group:Group OR group:Role
+            OPTIONAL MATCH (group)-[group_perm:PERMISSION]->(record)
+            WITH user, record, direct_permission,
+                 head(collect(group_perm.role)) AS group_permission
+
+            // 2.5 Check inherited group->record_group permissions
+            OPTIONAL MATCH (user)-[:PERMISSION]->(group2)
+            WHERE group2:Group OR group2:Role
+            OPTIONAL MATCH (group2)-[g_to_rg:PERMISSION]->(rg:RecordGroup)
+            OPTIONAL MATCH (record)-[:INHERIT_PERMISSIONS]->(rg)
+            WITH user, record, direct_permission, group_permission,
+                 head(collect(g_to_rg.role)) AS record_group_permission
+
+            // 2.6 Check nested record group permissions (0-5 levels)
+            OPTIONAL MATCH (user)-[:PERMISSION]->(group3)
+            WHERE group3:Group OR group3:Role
+            OPTIONAL MATCH (group3)-[nested_perm:PERMISSION]->(rgNested:RecordGroup)
+            OPTIONAL MATCH path = (record)-[:INHERIT_PERMISSIONS*0..5]->(rgNested)
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 head(collect(nested_perm.role)) AS nested_record_group_permission
+
+            // 2.7 Check direct user -> record_group permissions (with nesting)
+            OPTIONAL MATCH (user)-[user_to_rg:PERMISSION]->(rgDirect:RecordGroup)
+            OPTIONAL MATCH path2 = (record)-[:INHERIT_PERMISSIONS*0..5]->(rgDirect)
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission,
+                 head(collect(user_to_rg.role)) AS direct_user_record_group_permission
+
+            // 2.8 Check inherited recordGroup permissions (record -> recordGroup hierarchy backwards)
+            OPTIONAL MATCH path3 = (record)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg:RecordGroup)
+            OPTIONAL MATCH (user)-[inherited_perm:PERMISSION {type: "USER"}]->(inheritedRg)
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 head(collect(inherited_perm.role)) AS inherited_record_group_permission
+
+            // 2.9 Check group -> inherited recordGroup permission
+            OPTIONAL MATCH path4 = (record)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg2:RecordGroup)
+            OPTIONAL MATCH (user)-[u_to_g:PERMISSION {type: "USER"}]->(groupInherited)
+            WHERE groupInherited:Group OR groupInherited:Role
+            OPTIONAL MATCH (groupInherited)-[g_to_inherited:PERMISSION]->(inheritedRg2)
+            WHERE g_to_inherited.type IN ["GROUP", "ROLE"]
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 inherited_record_group_permission,
+                 head(collect(g_to_inherited.role)) AS group_inherited_record_group_permission
+
+            // 3. Check domain/organization permissions
+            OPTIONAL MATCH (user)-[belongs:BELONGS_TO {entityType: "ORGANIZATION"}]->(org:Organization)
+            OPTIONAL MATCH (org)-[domain_perm:PERMISSION]->(record)
+            WHERE domain_perm.type IN ["DOMAIN", "ORG"]
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 head(collect(domain_perm.role)) AS domain_permission,
+                 head(collect(org.id)) AS user_org_id
+
+            // 4. Check 'anyone' permissions (public sharing)
+            OPTIONAL MATCH (anyone:Anyone {file_key: $record_id, organization: user_org_id, active: true})
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 domain_permission, anyone.role AS anyone_permission
+
+            // 4.5 Check org -> recordGroup -> record permissions (with nesting 0-2 levels)
+            OPTIONAL MATCH (user)-[belongs2:BELONGS_TO {entityType: "ORGANIZATION"}]->(org2:Organization)
+            OPTIONAL MATCH (org2)-[org_to_rg:PERMISSION]->(rgOrg:RecordGroup)
+            OPTIONAL MATCH path5 = (record)-[:INHERIT_PERMISSIONS*0..2]->(rgOrg)
+            WITH direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 domain_permission, anyone_permission, record,
+                 head(collect(org_to_rg.role)) AS org_record_group_permission,
+                 $check_drive_inheritance AS check_drive_inheritance,
+                 $user_key AS user_key
+
+            // 5. Check Drive-level access (if enabled)
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
+            WHERE check_drive_inheritance AND file.driveId IS NOT NULL
+            OPTIONAL MATCH (userForDrive:User {id: user_key})-[drive_rel:USER_DRIVE_RELATION]->(drive:Drive)
+            WHERE drive.id = file.driveId OR drive.driveId = file.driveId
+            WITH direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 domain_permission, anyone_permission, org_record_group_permission,
+                 CASE drive_rel.access_level
+                     WHEN "owner" THEN "OWNER"
+                     WHEN "writer" THEN "WRITER"
+                     WHEN "fileOrganizer" THEN "WRITER"
+                     WHEN "commenter" THEN "READER"
+                     WHEN "reader" THEN "READER"
+                     ELSE null
+                 END AS drive_access
+
+            // Return the highest permission level found (in order of precedence)
+            WITH CASE
+                WHEN direct_permission IS NOT NULL THEN direct_permission
+                WHEN inherited_record_group_permission IS NOT NULL THEN inherited_record_group_permission
+                WHEN group_inherited_record_group_permission IS NOT NULL THEN group_inherited_record_group_permission
+                WHEN group_permission IS NOT NULL THEN group_permission
+                WHEN record_group_permission IS NOT NULL THEN record_group_permission
+                WHEN direct_user_record_group_permission IS NOT NULL THEN direct_user_record_group_permission
+                WHEN nested_record_group_permission IS NOT NULL THEN nested_record_group_permission
+                WHEN domain_permission IS NOT NULL THEN domain_permission
+                WHEN anyone_permission IS NOT NULL THEN anyone_permission
+                WHEN org_record_group_permission IS NOT NULL THEN org_record_group_permission
+                WHEN drive_access IS NOT NULL THEN drive_access
+                ELSE null
+            END AS final_permission,
+            CASE
+                WHEN direct_permission IS NOT NULL THEN "DIRECT"
+                WHEN inherited_record_group_permission IS NOT NULL THEN "INHERITED_RECORD_GROUP"
+                WHEN group_inherited_record_group_permission IS NOT NULL THEN "GROUP_INHERITED_RECORD_GROUP"
+                WHEN group_permission IS NOT NULL THEN "GROUP"
+                WHEN record_group_permission IS NOT NULL THEN "RECORD_GROUP"
+                WHEN direct_user_record_group_permission IS NOT NULL THEN "DIRECT_USER_RECORD_GROUP"
+                WHEN nested_record_group_permission IS NOT NULL THEN "NESTED_RECORD_GROUP"
+                WHEN domain_permission IS NOT NULL THEN "DOMAIN"
+                WHEN anyone_permission IS NOT NULL THEN "ANYONE"
+                WHEN org_record_group_permission IS NOT NULL THEN "ORG_RECORD_GROUP"
+                WHEN drive_access IS NOT NULL THEN "DRIVE_ACCESS"
+                ELSE "NONE"
+            END AS source
+
+            RETURN final_permission AS permission, source
+            """
+
+            parameters = {
+                "user_key": user_key,
+                "record_id": record_id,
+                "check_drive_inheritance": check_drive_inheritance
             }
+
+            results = await self.client.execute_query(query, parameters=parameters)
+            result = results[0] if results else None
+
+            if result and result.get("permission"):
+                return {"permission": result["permission"], "source": result.get("source", "NONE")}
+            return {"permission": None, "source": "NONE"}
+
+        except Exception as e:
+            self.logger.error("❌ Failed to check record permissions: %s", str(e))
+            return {"permission": None, "source": "ERROR", "error": str(e)}
 
     async def organization_exists(
         self,
@@ -8438,9 +8737,11 @@ class Neo4jProvider(IGraphDBProvider):
             # Log but don't fail the main operation if status update fails
             self.logger.error(f"❌ Failed to reset record {record_id} to QUEUED: {str(e)}")
 
-    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None) -> Dict:
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None, record_id: Optional[str] = None) -> Dict:
         """Create reindex event payload"""
         try:
+            # Handle both translated (_key -> id) and untranslated document formats
+            record_key = record.get('_key') or record.get('id') or record_id or ''
             # Get extension and mimeType from file record
             extension = ""
             mime_type = ""
@@ -8463,8 +8764,7 @@ class Neo4jProvider(IGraphDBProvider):
                 signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
             else:
                 connector_url = endpoints.get("connectors", {}).get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-                record_key = record.get('_key', record.get('id'))
-                signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record_key}/signedUrl"
+                signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
 
                 if record.get("recordType") == "MAIL":
                     mime_type = "text/gmail_content"
@@ -8491,7 +8791,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Standard payload for non-MAIL records
             return {
                 "orgId": record.get("orgId"),
-                "recordId": record.get("_key", record.get("id")),
+                "recordId": record_key,
                 "recordName": record.get("recordName", ""),
                 "recordType": record.get("recordType", ""),
                 "version": record.get("version", 1),
@@ -8839,53 +9139,48 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.info("🗑️ Step 2: Deleting all relationships...")
 
                 if all_record_ids:
+                    # First, delete all relationships connected to the records (comprehensive approach)
                     edges_cleanup_query = """
-                    MATCH (kb:RecordGroup {id: $kb_id})
-
-                    // Delete BELONGS_TO edges (records -> KB)
-                    OPTIONAL MATCH (record:Record)-[bt:BELONGS_TO]->(kb)
-                    WHERE record.id IN $record_ids
-
-                    // Delete BELONGS_TO edge (KB -> App)
-                    OPTIONAL MATCH (kb)-[bt_app:BELONGS_TO]->(:App)
-
-                    // Delete IS_OF_TYPE edges
-                    OPTIONAL MATCH (record:Record)-[iot:IS_OF_TYPE]->(:File)
-                    WHERE record.id IN $record_ids
-
-                    // Delete PERMISSION edges to KB
-                    OPTIONAL MATCH ()-[perm:PERMISSION]->(kb)
-
-                    // Delete PERMISSION edges to records
-                    OPTIONAL MATCH ()-[perm_rec:PERMISSION]->(record:Record)
-                    WHERE record.id IN $record_ids
-
-                    // Delete RECORD_RELATION edges between records
-                    OPTIONAL MATCH (r1:Record)-[rr:RECORD_RELATION]-(r2:Record)
-                    WHERE r1.id IN $record_ids OR r2.id IN $record_ids
-
-                    WITH collect(DISTINCT bt) + collect(DISTINCT bt_app) +
-                         collect(DISTINCT iot) + collect(DISTINCT perm) +
-                         collect(DISTINCT perm_rec) + collect(DISTINCT rr) AS all_edges
-
+                    UNWIND $record_ids AS record_id
+                    MATCH (record:Record {id: record_id})
+                    OPTIONAL MATCH (record)-[r]-()
+                    WITH collect(DISTINCT r) AS all_edges
                     UNWIND all_edges AS edge
                     WITH edge WHERE edge IS NOT NULL
                     DELETE edge
-
                     RETURN count(edge) AS edges_deleted
                     """
 
                     edge_results = await self.client.execute_query(
                         edges_cleanup_query,
                         parameters={
-                            "kb_id": kb_id,
                             "record_ids": all_record_ids
                         },
                         txn_id=transaction
                     )
 
                     edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
-                    self.logger.info(f"✅ Deleted {edges_deleted} edges for KB {kb_id}")
+                    self.logger.info(f"✅ Deleted {edges_deleted} edges for records")
+                    
+                    # Also delete KB-related edges
+                    kb_edges_query = """
+                    MATCH (kb:RecordGroup {id: $kb_id})
+                    OPTIONAL MATCH (kb)-[r]-()
+                    WITH collect(DISTINCT r) AS kb_edges
+                    UNWIND kb_edges AS edge
+                    WITH edge WHERE edge IS NOT NULL
+                    DELETE edge
+                    RETURN count(edge) AS kb_edges_deleted
+                    """
+                    
+                    kb_edge_results = await self.client.execute_query(
+                        kb_edges_query,
+                        parameters={"kb_id": kb_id},
+                        txn_id=transaction
+                    )
+                    
+                    kb_edges_deleted = kb_edge_results[0]["kb_edges_deleted"] if kb_edge_results else 0
+                    self.logger.info(f"✅ Deleted {kb_edges_deleted} edges for KB {kb_id}")
 
                 # Step 3: Delete all FILE nodes
                 if all_file_ids:
@@ -10504,23 +10799,25 @@ class Neo4jProvider(IGraphDBProvider):
 
     async def delete_edges_by_relationship_types(
         self,
-        record_id: str,
-        relationship_types: List[str],
+        from_id: str,
+        from_collection: str,
         collection: str,
+        relationship_types: List[str],
         transaction: Optional[str] = None
     ) -> int:
         """Delete edges by relationship types."""
         try:
             rel_type = edge_collection_to_relationship(collection)
+            from_label = collection_to_label(from_collection)
             query = f"""
-            MATCH (r:Record {{id: $record_id}})-[rel:{rel_type}]-()
+            MATCH (r:{from_label} {{id: $from_id}})-[rel:{rel_type}]-()
             WHERE rel.relationshipType IN $relationship_types
             DELETE rel
             RETURN count(rel) as deleted_count
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "relationship_types": relationship_types},
+                parameters={"from_id": from_id, "relationship_types": relationship_types},
                 txn_id=transaction
             )
             return results[0].get("deleted_count", 0) if results else 0
@@ -12518,8 +12815,8 @@ class Neo4jProvider(IGraphDBProvider):
     def _get_record_group_children_cypher(self, parent_type: str) -> str:
         """Generate Cypher sub-query to fetch children of a KB or RecordGroup.
 
-        For KB: Children are nested via BELONGS_TO edges with connectorName='KB'
-        For Connector: Children are nested via parentExternalGroupId field or BELONGS_TO edges
+        For both KB and Connector: Children are nested via BELONGS_TO edges only.
+        BELONGS_TO edges are always created when parentExternalGroupId is present (see data_source_entities_processor).
 
         Permission checking is applied for connector record groups.
         """
@@ -12533,26 +12830,19 @@ class Neo4jProvider(IGraphDBProvider):
         // ============================================
         // GET NESTED RECORD GROUPS
         // ============================================
-        // For KB: use BELONGS_TO edges
-        // For Connector: use BELONGS_TO edges OR parentExternalGroupId field
-        OPTIONAL MATCH (child_rg_edge:RecordGroup)-[:BELONGS_TO]->(rg)
-        WHERE NOT coalesce(child_rg_edge.isDeleted, false)
-              AND ((is_kb_rg AND child_rg_edge.connectorName = 'KB' AND child_rg_edge.orgId = $org_id)
-                   OR (NOT is_kb_rg AND child_rg_edge.connectorId = rg.connectorId))
-
-        // For Connector: also check parentExternalGroupId field
-        OPTIONAL MATCH (child_rg_field:RecordGroup)
-        WHERE NOT is_kb_rg
-              AND NOT coalesce(child_rg_field.isDeleted, false)
-              AND child_rg_field.connectorId = rg.connectorId
-              AND child_rg_field.parentExternalGroupId = rg.externalGroupId
+        // For both KB and Connector: use BELONGS_TO edges only
+        // (BELONGS_TO edges are always created when parentExternalGroupId is present)
+        OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(rg)
+        WHERE NOT coalesce(child_rg.isDeleted, false)
+              AND ((is_kb_rg AND child_rg.connectorName = 'KB' AND child_rg.orgId = $org_id)
+                   OR (NOT is_kb_rg AND child_rg.connectorId = rg.connectorId))
 
         WITH rg, u, parent_id, is_kb_rg,
-             collect(DISTINCT child_rg_edge) + collect(DISTINCT child_rg_field) AS all_nested_rgs_raw
+             collect(DISTINCT child_rg) AS all_nested_rgs_raw
 
-        // Filter nulls
+        // Filter nulls (preserve rg context even when no child RecordGroups exist)
         WITH rg, u, parent_id, is_kb_rg,
-             [c IN all_nested_rgs_raw WHERE c IS NOT NULL] AS all_nested_rgs
+             [x IN all_nested_rgs_raw WHERE x IS NOT NULL] AS all_nested_rgs
 
         // ============================================
         // PERMISSION CHECK AND BUILD NESTED RG NODES
