@@ -1815,6 +1815,72 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get record key by external ID failed: {str(e)}")
             return None
 
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: Optional[List[str]] = None,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get all record keys that have the given virtualRecordId.
+        Optionally filter by a list of record IDs.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to look up
+            accessible_record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of record keys that match the criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Base query
+            query = """
+            MATCH (r:Record {virtualRecordId: $virtual_record_id})
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+            WHERE r.id IN $accessible_record_ids
+            """
+
+            query += """
+            RETURN r.id AS record_key
+            """
+
+            parameters = {"virtual_record_id": virtual_record_id}
+            if accessible_record_ids:
+                parameters["accessible_record_ids"] = accessible_record_ids
+
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction
+            )
+
+            # Extract record keys from results
+            record_keys = [result["record_key"] for result in results if result.get("record_key")]
+
+            self.logger.info(
+                "✅ Found %d records with virtualRecordId %s",
+                len(record_keys),
+                virtual_record_id
+            )
+            return record_keys
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error finding records with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return []
+
     async def get_record_by_path(
         self,
         connector_id: str,
@@ -4617,13 +4683,44 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Record not found: {record_id}"
                 }
 
+            # Get file record for event publishing before deletion
+            file_record = None
+            try:
+                file_record = await self.get_document(record_id, CollectionNames.FILES.value, transaction)
+            except Exception as e:
+                self.logger.debug(f"File record not found for record {record_id}: {e}")
+
             # For Neo4j, use generic delete
             await self.delete_records_and_relations(record_id, hard_delete=True, transaction=transaction)
+
+            # Create event payload for router to publish
+            event_data = None
+            try:
+                payload = await self._create_deleted_record_event_payload(record, file_record)
+                if payload:
+                    connector_name = record.get("connectorName", "")
+                    origin = record.get("origin", "")
+                    
+                    # Set connector and origin info
+                    if connector_name:
+                        payload["connectorName"] = connector_name
+                    if origin:
+                        payload["origin"] = origin
+                    
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
 
             return {
                 "success": True,
                 "record_id": record_id,
-                "message": "Record deleted successfully"
+                "message": "Record deleted successfully",
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -6150,35 +6247,48 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             # Query to check if user has permission to the record group
             # Check multiple paths: direct, via groups, via org
+            # This matches the ArangoDB implementation logic
             query = """
             MATCH (userDoc:User {id: $user_key})
             MATCH (recordGroup:RecordGroup {id: $record_group_id})
             WHERE recordGroup.orgId = $org_id
 
             // Direct user -> record group permission
-            OPTIONAL MATCH (userDoc)-[directPerm:PERMISSION {type: 'USER'}]->(recordGroup)
+            OPTIONAL MATCH (userDoc)-[directPerm:PERMISSION]->(recordGroup)
+            WHERE directPerm.type = 'USER'
+            WITH userDoc, recordGroup, collect(directPerm.role) AS directPermissions
 
-            // User -> group -> record group permission
-            OPTIONAL MATCH (userDoc)-[:PERMISSION {type: 'USER'}]->(grp)
-            WHERE grp:Group OR grp:Role
+            // User -> group/role -> record group permission
+            OPTIONAL MATCH (userDoc)-[userToGroup:PERMISSION]->(grp)
+            WHERE userToGroup.type = 'USER' AND (grp:Group OR grp:Role)
+            WITH userDoc, recordGroup, directPermissions, collect(grp) AS userGroups
+
+            UNWIND CASE WHEN size(userGroups) > 0 THEN userGroups ELSE [null] END AS grp
             OPTIONAL MATCH (grp)-[grpPerm:PERMISSION]->(recordGroup)
             WHERE grpPerm.type IN ['GROUP', 'ROLE']
+            WITH userDoc, recordGroup, directPermissions, collect(grpPerm.role) AS groupPermissions
 
             // User -> org -> record group permission
-            OPTIONAL MATCH (userDoc)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
-            OPTIONAL MATCH (org)-[orgPerm:PERMISSION {type: 'ORG'}]->(recordGroup)
+            OPTIONAL MATCH (userDoc)-[belongsTo:BELONGS_TO]->(org)
+            WHERE belongsTo.entityType = 'ORGANIZATION'
+            WITH userDoc, recordGroup, directPermissions, groupPermissions, collect(org) AS userOrgs
 
-            WITH directPerm, grpPerm, orgPerm,
-                 collect(DISTINCT directPerm.role) + collect(DISTINCT grpPerm.role) + collect(DISTINCT orgPerm.role) AS allRoles
+            UNWIND CASE WHEN size(userOrgs) > 0 THEN userOrgs ELSE [null] END AS org
+            OPTIONAL MATCH (org)-[orgPerm:PERMISSION]->(recordGroup)
+            WHERE orgPerm.type = 'ORG'
+            WITH directPermissions, groupPermissions, collect(orgPerm.role) AS orgPermissions
 
-            WITH [role IN allRoles WHERE role IS NOT NULL] AS validRoles
+            // Combine all permissions and filter out nulls
+            WITH directPermissions + groupPermissions + orgPermissions AS allPermissions
+            WITH [p IN allPermissions WHERE p IS NOT NULL] AS validPermissions
 
-            WITH size(validRoles) > 0 AS hasPermission,
+            WITH size(validPermissions) > 0 AS hasPermission,
+                 validPermissions,
                  CASE
-                     WHEN 'OWNER' IN validRoles THEN 'OWNER'
-                     WHEN 'WRITER' IN validRoles THEN 'WRITER'
-                     WHEN 'READER' IN validRoles THEN 'READER'
-                     WHEN 'COMMENTER' IN validRoles THEN 'COMMENTER'
+                     WHEN 'OWNER' IN validPermissions THEN 'OWNER'
+                     WHEN 'WRITER' IN validPermissions THEN 'WRITER'
+                     WHEN 'READER' IN validPermissions THEN 'READER'
+                     WHEN 'COMMENTER' IN validPermissions THEN 'COMMENTER'
                      ELSE null
                  END AS userRole
 
@@ -7695,43 +7805,99 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             self.logger.info(f"🚀 Updating folder {folder_id}")
 
-            # Update FILES collection
-            file_updates = {k: v for k, v in updates.items() if k in ["name"]}
-            if file_updates:
-                query_file = """
-                MATCH (file:File {id: $folder_id})
-                SET file += $updates
-                RETURN file
-                """
-                await self.client.execute_query(
-                    query_file,
-                    parameters={"folder_id": folder_id, "updates": file_updates},
-                    txn_id=transaction
-                )
-
-            # Update RECORDS collection (map 'name' to 'recordName')
-            record_updates = {
-                "recordName": updates.get("name"),
-                "updatedAtTimestamp": get_epoch_timestamp_in_ms()
-            }
-
-            query_record = """
-            MATCH (record:Record {id: $folder_id})
-            SET record += $updates
-            RETURN record
+            # First, get existing File and Record nodes to check if they exist and get current names
+            get_nodes_query = """
+            MATCH (file:File {id: $folder_id})
+            OPTIONAL MATCH (record:Record {id: $folder_id})
+            RETURN file.name AS file_name, record.recordName AS record_name
             """
-
-            results = await self.client.execute_query(
-                query_record,
-                parameters={"folder_id": folder_id, "updates": record_updates},
+            nodes_check = await self.client.execute_query(
+                get_nodes_query,
+                parameters={"folder_id": folder_id},
                 txn_id=transaction
             )
+            
+            if not nodes_check:
+                self.logger.warning(f"⚠️ File node not found for folder {folder_id}")
+                return False
+
+            # Get existing File name to preserve if not in updates (required by Neo4j constraint)
+            file_name = nodes_check[0].get("file_name") if nodes_check else None
+            
+            # Step 1: Update FILES collection with updates (matching Arango: UPDATE folder WITH @updates)
+            # Build SET clause dynamically based on what's in updates
+            set_clauses = []
+            params = {"folder_id": folder_id}
+            
+            for key, value in updates.items():
+                set_clauses.append(f"file.{key} = ${key}")
+                params[key] = value
+            
+            # If name is not in updates, preserve existing name (required by Neo4j constraint)
+            # This ensures the constraint is satisfied even when name is not being updated
+            if "name" not in updates and file_name:
+                set_clauses.append("file.name = $existing_name")
+                params["existing_name"] = file_name
+            
+            # Only update if there are changes or if we need to preserve name
+            if set_clauses:
+                query_file = """
+                MATCH (file:File {id: $folder_id})
+                SET """ + ", ".join(set_clauses) + """
+                RETURN file
+                """
+                file_result = await self.client.execute_query(
+                    query_file,
+                    parameters=params,
+                    txn_id=transaction
+                )
+                
+                if not file_result:
+                    self.logger.warning(f"⚠️ Failed to update File node for folder {folder_id}")
+                    return False
+
+            # Step 2: Update RECORDS collection (matching Arango behavior)
+            # Arango does: recordName = updates.get("name") - can be None if name not in updates
+            updated_at_timestamp = get_epoch_timestamp_in_ms()
+            
+            if "name" in updates:
+                # Update both recordName and updatedAtTimestamp (matching Arango: updates.get("name"))
+                query_record = """
+                MATCH (record:Record {id: $folder_id})
+                SET record.recordName = $recordName,
+                    record.updatedAtTimestamp = $updatedAtTimestamp
+                RETURN record
+                """
+                results = await self.client.execute_query(
+                    query_record,
+                    parameters={
+                        "folder_id": folder_id,
+                        "recordName": updates.get("name"),  # Can be None/empty, matching Arango behavior
+                        "updatedAtTimestamp": updated_at_timestamp
+                    },
+                    txn_id=transaction
+                )
+            else:
+                # Only update updatedAtTimestamp (name not in updates, so don't change recordName)
+                query_record = """
+                MATCH (record:Record {id: $folder_id})
+                SET record.updatedAtTimestamp = $updatedAtTimestamp
+                RETURN record
+                """
+                results = await self.client.execute_query(
+                    query_record,
+                    parameters={
+                        "folder_id": folder_id,
+                        "updatedAtTimestamp": updated_at_timestamp
+                    },
+                    txn_id=transaction
+                )
 
             if results:
                 self.logger.info("✅ Folder updated successfully")
                 return True
 
-            self.logger.warning("⚠️ Folder not found")
+            self.logger.warning("⚠️ Record node not found")
             return False
 
         except Exception as e:
@@ -7838,33 +8004,29 @@ class Neo4jProvider(IGraphDBProvider):
                 file_records = inventory.get("file_records", [])
                 folder_file_nodes = inventory.get("folder_file_nodes", [])
 
-                # Step 2: Delete edges
-                if all_record_keys or all_folders:
+                # Step 2: Delete ALL edges connected to records and folders
+                all_ids = all_record_keys + all_folders
+                if all_ids:
+                    self.logger.info(f"🗑️ Step 2: Deleting all relationships for {len(all_ids)} nodes...")
                     edges_cleanup = """
-                    // Delete RECORD_RELATION edges
-                    MATCH (r1:Record)-[rr:RECORD_RELATION]-(r2:Record)
-                    WHERE r1.id IN $all_ids OR r2.id IN $all_ids
-                    DELETE rr
-
-                    // Delete IS_OF_TYPE edges
-                    WITH $all_ids AS all_ids
-                    MATCH (record:Record)-[iot:IS_OF_TYPE]->(:File)
-                    WHERE record.id IN all_ids
-                    DELETE iot
-
-                    // Delete BELONGS_TO edges
-                    WITH $all_ids AS all_ids
-                    MATCH (record:Record)-[bt:BELONGS_TO]->(:RecordGroup)
-                    WHERE record.id IN all_ids
-                    DELETE bt
+                    UNWIND $all_ids AS node_id
+                    MATCH (node:Record {id: node_id})
+                    OPTIONAL MATCH (node)-[r]-()
+                    WITH collect(DISTINCT r) AS all_edges
+                    UNWIND all_edges AS edge
+                    WITH edge WHERE edge IS NOT NULL
+                    DELETE edge
+                    RETURN count(edge) AS edges_deleted
                     """
 
-                    all_ids = all_record_keys + all_folders
-                    await self.client.execute_query(
+                    edge_results = await self.client.execute_query(
                         edges_cleanup,
                         parameters={"all_ids": all_ids},
                         txn_id=txn_id
                     )
+                    
+                    edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
+                    self.logger.info(f"✅ Deleted {edges_deleted} relationships")
 
                 # Step 3: Delete ALL File nodes (both files and folders)
                 # Combine File node IDs from both files and folders (collected in inventory)
