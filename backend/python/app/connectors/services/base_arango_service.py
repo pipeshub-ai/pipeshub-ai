@@ -16571,10 +16571,11 @@ class BaseArangoService:
                 FILTER ts.name == @name AND ts.userId == @user_id
                 RETURN ts._id
             """
-            toolset_ids = self.db.aql.execute(toolset_query, bind_vars={
+            cursor = self.db.aql.execute(toolset_query, bind_vars={
                 "name": toolset_name,
                 "user_id": user_id
             })
+            toolset_ids = list(cursor)
 
             if not toolset_ids:
                 return []
@@ -16587,7 +16588,8 @@ class BaseArangoService:
                 FILTER agent != null AND agent.isDeleted != true AND agent.deleted != true
                 RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
             """
-            agents = self.db.aql.execute(agent_query, bind_vars={"toolset_ids": toolset_ids})
+            agent_cursor = self.db.aql.execute(agent_query, bind_vars={"toolset_ids": toolset_ids})
+            agents = list(agent_cursor)
 
             if agents:
                 agent_names = list(set(a.get("agentName", "Unknown") for a in agents))

@@ -573,6 +573,8 @@ agent_schema = {
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "deletedAtTimestamp": {"type": "number"},
+            "deletedByUserId": {"type": ["string", "null"]},
             "isDeleted": {"type": "boolean", "default": False}
         },
         "required": ["name", "description", "startMessage", "systemPrompt", "models", "createdBy", "createdAtTimestamp"],

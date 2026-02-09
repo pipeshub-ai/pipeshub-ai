@@ -8645,6 +8645,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             toolset_name: Normalized toolset name
             user_id: User ID who owns the toolset
+            transaction: Optional transaction ID
 
         Returns:
             List of agent names that are using the toolset. Empty list if not in use.
@@ -8661,6 +8662,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "user_id": user_id
             }, txn_id=transaction)
 
+            # Handle None or empty results
             if not toolset_ids:
                 return []
 
@@ -8674,8 +8676,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
             agents = await self.http_client.execute_aql(agent_query, bind_vars={"toolset_ids": toolset_ids}, txn_id=transaction)
 
+            # Handle None or empty results, and filter out any None values
             if agents:
-                agent_names = list(set(a.get("agentName", "Unknown") for a in agents if a))
+                agent_names = list(set(a.get("agentName", "Unknown") for a in agents if a and isinstance(a, dict)))
                 return agent_names
 
             return []
