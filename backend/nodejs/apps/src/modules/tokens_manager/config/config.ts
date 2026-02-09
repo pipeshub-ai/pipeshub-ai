@@ -75,6 +75,9 @@ export interface AppConfig {
   // OAuth Provider config
   oauthIssuer: string;
   oauthBackendUrl: string;
+
+  // Domain check config
+  skipDomainCheck: boolean;
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
@@ -116,5 +119,8 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     // OAuth Provider config - initialize first, then get
     oauthIssuer: (await configService.initializeOAuthIssuer(), await configService.getOAuthIssuer()),
     oauthBackendUrl: await configService.getOAuthBackendUrl(),
+
+    // Domain check config - when true, skip domain matching and use first available org
+    skipDomainCheck: process.env.SKIP_DOMAIN_CHECK === 'true',
   };
 };

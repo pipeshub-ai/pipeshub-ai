@@ -30,7 +30,7 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - STRICT_MODE=${STRICT_MODE:-false}
-
+      - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
 

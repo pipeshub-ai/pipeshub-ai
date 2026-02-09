@@ -216,14 +216,19 @@ export class UserAccountController {
         // User not found - check if JIT provisioning is available for this email domain
         const domain = this.getDomainFromEmail(email);
         let org: InstanceType<typeof Org> | null = null;
-        org = domain ? await Org.findOne({
-          domain,
-          isDeleted: false,
-        }) : null;
-        
 
-        const orgAuthConfig = domain ? await OrgAuthConfig.findOne({
-          orgId: org?._id,
+        if (this.config.skipDomainCheck) {
+          // Skip domain check - find first available org
+          org = await Org.findOne({ isDeleted: false });
+        } else {
+          org = domain ? await Org.findOne({
+            domain,
+            isDeleted: false,
+          }) : null;
+        }
+
+        const orgAuthConfig = org ? await OrgAuthConfig.findOne({
+          orgId: org._id,
           isDeleted: false,
         }) : null;
 
@@ -1730,10 +1735,70 @@ export class UserAccountController {
 
       // Find user to get proper context for configuration access
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
-      const user = await this.iamService.getUserByEmail(email, authToken);
+      const userResult = await this.iamService.getUserByEmail(email, authToken);
 
-      if (user.statusCode !== 200) {
-        throw new NotFoundError('User not found');
+      let configContext: Record<string, any>;
+
+      if (userResult.statusCode === 200) {
+        // Existing user - use their data as config context
+        configContext = userResult.data;
+      } else {
+        // User not found - check if JIT provisioning is enabled for OAuth
+        const domain = this.getDomainFromEmail(email);
+        let org: InstanceType<typeof Org> | null = null;
+
+        if (this.config.skipDomainCheck) {
+          // Skip domain check - find first available org
+          org = await Org.findOne({ isDeleted: false });
+        } else {
+          org = domain
+            ? await Org.findOne({ domain, isDeleted: false })
+            : null;
+        }
+
+        if (!org) {
+          throw new NotFoundError('User not found');
+        }
+
+        const orgAuthConfig = await OrgAuthConfig.findOne({
+          orgId: org._id,
+          isDeleted: false,
+        });
+
+        if (!orgAuthConfig) {
+          throw new NotFoundError('User not found');
+        }
+
+        // Verify OAuth is an allowed method and JIT is enabled
+        const allowedMethods =
+          orgAuthConfig.authSteps[0]?.allowedMethods.map((m: any) => m.type) || [];
+
+        if (!allowedMethods.includes(AuthMethodType.OAUTH)) {
+          throw new NotFoundError('User not found');
+        }
+
+        const jitCheckUser = { orgId: orgAuthConfig.orgId, email };
+        let jitEnabled = false;
+        try {
+          const jitCheckResponse =
+            await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              OAUTH_AUTH_CONFIG_PATH,
+              jitCheckUser,
+              this.config.scopedJwtSecret,
+            );
+          jitEnabled = !!jitCheckResponse.data?.enableJit;
+        } catch (e) {
+          this.logger.debug('OAuth config not available for JIT check in token exchange');
+        }
+
+        if (!jitEnabled) {
+          throw new NotFoundError('User not found');
+        }
+
+        // JIT is enabled - use org context for config lookup
+        configContext = jitCheckUser;
+        this.logger.info('OAuth token exchange for JIT user', { email, orgId: orgAuthConfig.orgId });
       }
 
       // Get OAuth configuration using configuration manager service
@@ -1741,7 +1806,7 @@ export class UserAccountController {
         await this.configurationManagerService.getConfig(
           this.config.cmBackend,
           OAUTH_AUTH_CONFIG_PATH,
-          user.data,
+          configContext,
           this.config.scopedJwtSecret,
         );
 
@@ -1751,7 +1816,7 @@ export class UserAccountController {
 
       const oauthConfig = configManagerResponse.data;
 
-      this.logger.debug('OAuth token exchange initiated', {
+      this.logger.info('OAuth token exchange initiated', {
         provider: oauthConfig.providerName || 'Unknown',
         hasValidConfig: !!(oauthConfig.tokenEndpoint && oauthConfig.clientId && oauthConfig.clientSecret)
       });
