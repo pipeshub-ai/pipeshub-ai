@@ -131,13 +131,11 @@ class RecordGroupAppEdgeMigrationService:
         for rg in record_groups:
             from_id = f"{CollectionNames.RECORD_GROUPS.value}/{rg['_key']}"
             to_id = f"{CollectionNames.APPS.value}/{rg['connectorId']}"
-            entity_type = rg.get("connectorName") or "CONNECTOR"
             created = rg.get("createdAtTimestamp") or timestamp
             updated = rg.get("updatedAtTimestamp") or timestamp
             edges.append({
                 "_from": from_id,
                 "_to": to_id,
-                "entityType": entity_type,
                 "createdAtTimestamp": created,
                 "updatedAtTimestamp": updated,
             })
