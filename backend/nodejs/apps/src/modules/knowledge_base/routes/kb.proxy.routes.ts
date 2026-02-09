@@ -260,7 +260,7 @@ export function createKnowledgeBaseProxyRouter(container: Container): Router {
     '/reindex/record-group/:recordGroupId',
     authMiddleware.authenticate,
     async (req: Request, res: Response) => {
-      await proxyRequest(req, res, `/api/v1/reindex/record-group/${req.params.recordGroupId}`);
+      await proxyRequest(req, res, `/api/v1/record-groups/${req.params.recordGroupId}/reindex`);
     },
   );
 
