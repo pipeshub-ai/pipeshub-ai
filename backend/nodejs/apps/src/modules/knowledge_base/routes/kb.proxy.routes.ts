@@ -515,6 +515,12 @@ export function createKnowledgeBaseProxyRouter(container: Container): Router {
     '/:kbId/folder/:folderId',
     authMiddleware.authenticate,
     async (req: Request, res: Response) => {
+      // Map folderName from frontend to name for backend (matching kb_controllers.ts behavior)
+      const body = req.body;
+      if (body.folderName !== undefined) {
+        body.name = body.folderName;
+        delete body.folderName;
+      }
       await proxyRequest(
         req,
         res,
