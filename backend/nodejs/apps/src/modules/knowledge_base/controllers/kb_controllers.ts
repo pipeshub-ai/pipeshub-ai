@@ -699,7 +699,6 @@ export const deleteFolder =
  */
 export const uploadRecordsToKB =
   (
-    _recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
     notificationService?: NotificationService,
@@ -1016,7 +1015,6 @@ export const uploadRecordsToKB =
  */
 export const uploadRecordsToFolder =
   (
-    _recordRelationService: RecordRelationService,
     keyValueStoreService: KeyValueStoreService,
     appConfig: AppConfig,
     notificationService?: NotificationService,
