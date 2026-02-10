@@ -1108,7 +1108,7 @@ async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
 
 
 async def convert_buffer_to_pdf_stream(
-    buffer: Union[StreamingResponse, Response, bytes, Any],
+    buffer: Union[StreamingResponse, Response, bytes, io.IOBase],
     record_name: str,
     file_extension: Optional[str] = None
 ) -> StreamingResponse:
