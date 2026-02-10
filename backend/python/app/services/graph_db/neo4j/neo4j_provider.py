@@ -4672,7 +4672,7 @@ class Neo4jProvider(IGraphDBProvider):
         user_id: str,
         transaction: Optional[str] = None
     ) -> Dict:
-        """Main entry point for record deletion"""
+        """Main entry point for record deletion. KB records require OWNER, WRITER, or FILEORGANIZER."""
         try:
             # Get record to determine connector type
             record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
@@ -4682,6 +4682,40 @@ class Neo4jProvider(IGraphDBProvider):
                     "code": 404,
                     "reason": f"Record not found: {record_id}"
                 }
+
+            connector_name = record.get("connectorName", "")
+            origin = record.get("origin", "")
+
+            # KB records: require OWNER, WRITER, or FILEORGANIZER (not READER/COMMENTER)
+            is_kb_record = (
+                origin == OriginTypes.UPLOAD.value
+                or connector_name == Connectors.KNOWLEDGE_BASE.value
+            )
+            if is_kb_record:
+                kb_context = await self._get_kb_context_for_record(record_id, transaction)
+                if not kb_context:
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"Knowledge base context not found for record {record_id}",
+                    }
+                user = await self.get_user_by_user_id(user_id)
+                if not user:
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"User not found: {user_id}",
+                    }
+                user_key = user.get("id") or user.get("_key")
+                user_role = await self.get_user_kb_permission(
+                    kb_context.get("kb_id"), user_key, transaction
+                )
+                if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
+                    return {
+                        "success": False,
+                        "code": 403,
+                        "reason": "User lacks permission to delete records",
+                    }
 
             # Get file record for event publishing before deletion
             file_record = None
