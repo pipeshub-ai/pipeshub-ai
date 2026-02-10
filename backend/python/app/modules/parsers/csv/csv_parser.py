@@ -3,7 +3,6 @@ import csv
 import json
 import os
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict, List, Optional, TextIO, Tuple, Union
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -153,7 +152,7 @@ class CSVParser:
 
         # Sort by original index to maintain logical order
         selected_rows.sort(key=lambda x: x[0])
-        
+
         return [row for _, row, _ in selected_rows]
 
     def _deduplicate_headers(self, headers: List[str]) -> List[str]:
@@ -298,7 +297,7 @@ class CSVParser:
         # Process ALL rows uniformly without assuming first row is headers
         raw_rows = []
 
-       
+
         # Extract ALL rows uniformly (including start_row)
         for row_idx in range(start_row, max_row + 1):
             if row_idx < len(all_rows):
@@ -307,7 +306,7 @@ class CSVParser:
                 for col in range(start_col, max_col + 1):
                     if col < len(row):
                         value = row[col].strip()
-                        
+
                         if value:
                             row_data.append(value)
                             visited_cells.add((row_idx, col))
@@ -365,9 +364,9 @@ class CSVParser:
                         # Found a potential table start - expand to find bounds
                         table = self._get_table(all_rows, row_idx, col_idx, visited_cells, max_cols)
                         tables.append(table)
-                        
 
-        
+
+
 
         return tables
 
@@ -469,7 +468,7 @@ class CSVParser:
             headers = await self.generate_headers_with_llm(sample_rows, column_count, llm)
             data_rows = raw_rows
             data_start_line = start_row
-        
+
 
         headers = self._deduplicate_headers(headers)
 
@@ -775,7 +774,7 @@ class CSVParser:
             # Detect headers using LLM
             detection = await self.detect_headers_with_llm(detection_rows, llm)
             logger.info(f"Table {table_idx + 1}: has_headers={detection.has_headers}, num_header_rows={detection.num_header_rows}")
-            
+
             # Unified processing path - handles all three scenarios
             csv_result, line_numbers = await self.process_table_with_header_info(
                 raw_rows,
@@ -875,7 +874,7 @@ class CSVParser:
                 index=table_group_index,
                 type=GroupType.TABLE,
                 format=DataFormat.JSON,
-                
+
                 table_metadata=TableMetadata(
                     num_of_rows=num_of_rows,
                     num_of_cols=num_of_cols,
