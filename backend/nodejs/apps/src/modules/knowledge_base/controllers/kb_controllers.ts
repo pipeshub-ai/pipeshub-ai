@@ -107,7 +107,7 @@ export const getKnowledgeHubNodes =
       }
 
       const { parentType, parentId } = req.params;
-      let url = `${appConfig.connectorBackend}/api/v2/knowledge-hub/nodes`;
+      let url = `${appConfig.connectorBackend}/api/v1/knowledge-hub/nodes`;
 
       if (parentType && parentId) {
         url += `/${parentType}/${parentId}`;
