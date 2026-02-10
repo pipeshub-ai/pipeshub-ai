@@ -222,8 +222,10 @@ async def create_team(request: Request) -> JSONResponse:
 
     # First, ensure creator always gets OWNER role
     creator_permission = {
-        "_from": f"{CollectionNames.USERS.value}/{creator_key}",
-        "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+        "from_id": creator_key,
+        "from_collection": CollectionNames.USERS.value,
+        "to_id": team_key,
+        "to_collection": CollectionNames.TEAMS.value,
         "type": "USER",
         "role": "OWNER",
         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -239,8 +241,10 @@ async def create_team(request: Request) -> JSONResponse:
             continue
         if user_id != creator_key:  # Skip creator as they already have OWNER role
             user_team_edges.append({
-                "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                "_to": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "from_id": user_id,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_key,
+                "to_collection": CollectionNames.TEAMS.value,
                 "type": "USER",
                 "role": role,
                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -269,7 +273,7 @@ async def create_team(request: Request) -> JSONResponse:
         logger.info(f"Team created successfully: {team_body}")
 
         # Fetch the created team with users and permissions
-        team_with_users = await get_team_with_users(graph_provider, team_key, user['_key'])
+        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
 
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
@@ -307,87 +311,15 @@ async def get_teams(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = "FILTER team.name LIKE CONCAT('%', @search, '%')"
-
-    # Query to get teams with current user's permission and team members
-    teams_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team.orgId == @orgId
-    {search_filter}
-    LET current_user_permission = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._from == @currentUserId AND permission._to == team._id
-        RETURN permission
-    )
-    LET team_members = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == team._id
-        LET user = DOCUMENT(permission._from)
-        RETURN {{
-            "id": user._key,
-            "userId": user.userId,
-            "userName": user.fullName,
-            "userEmail": user.email,
-            "role": permission.role,
-            "joinedAt": permission.createdAtTimestamp,
-            "isOwner": permission.role == "OWNER"
-        }}
-    )
-    LET user_count = LENGTH(team_members)
-    SORT team.createdAtTimestamp DESC
-    LIMIT @offset, @limit
-    RETURN {{
-        "id": team._key,
-        "name": team.name,
-        "description": team.description,
-        "createdBy": team.createdBy,
-        "orgId": team.orgId,
-        "createdAtTimestamp": team.createdAtTimestamp,
-        "updatedAtTimestamp": team.updatedAtTimestamp,
-        "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-        "members": team_members,
-        "memberCount": user_count,
-        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-        "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-    }}
-    """
-
-    # Count total teams for pagination
-    count_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team.orgId == @orgId
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        count_params = {"orgId": user_info.get("orgId")}
-        # Get total count
-        if search:
-            count_params["search"] = search
-
-        count_list = await graph_provider.execute_query(count_query, bind_vars=count_params)
-        total_count = count_list[0] if count_list else 0
-
-        # Get teams with pagination
-        teams_params = {
-            "orgId": user_info.get("orgId"),
-            "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            teams_params["search"] = search
-
-        result_list = await graph_provider.execute_query(teams_query, bind_vars=teams_params)
+        # Use interface method to get teams
+        result_list, total_count = await graph_provider.get_teams(
+            org_id=user_info.get("orgId"),
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
+        )
 
         if not result_list:
             return JSONResponse(
@@ -428,57 +360,6 @@ async def get_teams(
         logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch teams")
 
-async def get_team_with_users(graph_provider, team_key: str, user_key: str) -> Optional[Dict]:
-    """Helper function to get team with users and permissions"""
-    team_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team._key == @teamId
-    LET current_user_permission = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._from == @currentUserId AND permission._to == team._id
-        RETURN permission
-    )
-    LET team_members = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == team._id
-        LET user = DOCUMENT(permission._from)
-        RETURN {{
-            "id": user._key,
-            "userId": user.userId,
-            "userName": user.fullName,
-            "userEmail": user.email,
-            "role": permission.role,
-            "joinedAt": permission.createdAtTimestamp,
-            "isOwner": permission.role == "OWNER"
-        }}
-    )
-    LET user_count = LENGTH(team_members)
-    RETURN {{
-        "id": team._key,
-        "name": team.name,
-        "description": team.description,
-        "createdBy": team.createdBy,
-        "orgId": team.orgId,
-        "createdAtTimestamp": team.createdAtTimestamp,
-        "updatedAtTimestamp": team.updatedAtTimestamp,
-        "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-        "members": team_members,
-        "memberCount": user_count,
-        "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-        "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-        "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-    }}
-    """
-
-    result_list = await graph_provider.execute_query(
-        team_query,
-        bind_vars={
-            "teamId": team_key,
-            "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
-        }
-    )
-    return result_list[0] if result_list else None
-
 @router.get("/team/{team_id}")
 async def get_team(request: Request, team_id: str) -> JSONResponse:
     """Get a specific team with its users and permissions"""
@@ -494,8 +375,8 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
-        # Query to get team with current user's permission and team members (same structure as get_teams)
-        result = await get_team_with_users(graph_provider, team_id, user['_key'])
+        # Use interface method to get team with users
+        result = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -512,7 +393,6 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in get_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team")
-
 
 @router.put("/team/{team_id}")
 async def update_team(request: Request, team_id: str) -> JSONResponse:
@@ -588,6 +468,9 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     "userIds": remove_user_ids,
                     "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
                 }
+            deleted_list = await graph_provider.delete_team_member_edges(
+                team_id=team_id,
+                user_ids=remove_user_ids
             )
             if deleted_list:
                 logger.info(f"Removed {len(deleted_list)} users from team {team_id}")
@@ -639,28 +522,11 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                         logger.error(f"Error updating user roles in batch: {str(e)}")
                         raise HTTPException(status_code=500, detail=f"Failed to update user roles: {str(e)}")
             if valid_user_roles:
-                # Batch update all user roles in a single query
-                batch_update_query = f"""
-                FOR user_role IN @update_user_roles
-                    LET user_id = user_role.userId
-                    LET new_role = user_role.role
-                    FOR permission IN {CollectionNames.PERMISSION.value}
-                        FILTER permission._to == @teamId
-                        FILTER SPLIT(permission._from, '/')[1] == user_id
-                        UPDATE permission WITH {{
-                            role: new_role,
-                            updatedAtTimestamp: @timestamp
-                        }} IN {CollectionNames.PERMISSION.value}
-                        RETURN NEW
-                """
                 try:
-                    updated_permissions = await graph_provider.execute_query(
-                        batch_update_query,
-                        bind_vars={
-                            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-                            "update_user_roles": valid_user_roles,
-                            "timestamp": get_epoch_timestamp_in_ms()
-                        }
+                    updated_permissions = await graph_provider.batch_update_team_member_roles(
+                        team_id=team_id,
+                        user_roles=valid_user_roles,
+                        timestamp=get_epoch_timestamp_in_ms()
                     )
                     logger.info(f"Updated {len(updated_permissions)} user roles in batch")
                 except Exception as e:
@@ -677,8 +543,10 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                 # Skip if trying to add creator - they already have OWNER role
                 if user_id != user['_key']:
                     user_team_edges.append({
-                        "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                        "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                        "from_id": user_id,
+                        "from_collection": CollectionNames.USERS.value,
+                        "to_id": team_id,
+                        "to_collection": CollectionNames.TEAMS.value,
                         "type": "USER",
                         "role": role,
                         "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -691,7 +559,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(graph_provider, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -759,8 +627,10 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
             logger.info(f"Skipping creator {creator_key} - they already have OWNER role")
             continue
         user_team_edges.append({
-            "_from": f"{CollectionNames.USERS.value}/{user_id}",
-            "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+            "from_id": user_id,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": team_id,
+            "to_collection": CollectionNames.TEAMS.value,
             "type": "USER",
             "role": role,
             "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -769,7 +639,7 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
 
     if not user_team_edges:
         # If only creator was in the list, just return the team
-        updated_team = await get_team_with_users(graph_provider, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
         return JSONResponse(
             status_code=200,
             content={
@@ -785,7 +655,7 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
             raise HTTPException(status_code=500, detail="Failed to add users to team")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(graph_provider, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -800,7 +670,6 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in add_users_to_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to add users to team")
-
 
 @router.delete("/team/{team_id}/users")
 async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
@@ -861,6 +730,10 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
                 "userIds": user_ids,
                 "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
             }
+        # Delete permissions using interface method
+        deleted_list = await graph_provider.delete_team_member_edges(
+            team_id=team_id,
+            user_ids=user_ids
         )
         if not deleted_list:
             raise HTTPException(status_code=404, detail="No users found in team to remove")
@@ -868,7 +741,7 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
         logger.info(f"Successfully removed {len(deleted_list)} users from team {team_id}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(graph_provider, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -984,6 +857,11 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
                 "user_roles": filtered_updates,
                 "timestamp": timestamp
             }
+        # Batch update all user roles using interface method
+        updated_permissions = await graph_provider.batch_update_team_member_roles(
+            team_id=team_id,
+            user_roles=valid_user_roles,
+            timestamp=timestamp
         )
 
         if not updated_permissions:
@@ -992,7 +870,7 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         logger.info(f"Updated {len(updated_permissions)} user permissions")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(graph_provider, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -1008,7 +886,6 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
     except Exception as e:
         logger.error(f"Error in update_user_permissions: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user permissions")
-
 
 @router.delete("/team/{team_id}")
 async def delete_team(request: Request, team_id: str) -> JSONResponse:
@@ -1042,18 +919,8 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     logger.info(f"Deleting team: {team_id}")
 
     try:
-        # First delete all permission edges
-        delete_query = f"""
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == @teamId
-        REMOVE permission IN {CollectionNames.PERMISSION.value}
-        RETURN OLD
-        """
-
-        await graph_provider.execute_query(
-            delete_query,
-            bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"}
-        )
+        # Delete all permission edges using interface method
+        await graph_provider.delete_all_team_permissions(team_id=team_id)
 
         # Delete the team
         result = await graph_provider.delete_nodes([team_id], CollectionNames.TEAMS.value)
@@ -1072,7 +939,6 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
     except Exception as e:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
-
 
 @router.get("/user/teams")
 async def get_user_teams(
@@ -1095,92 +961,14 @@ async def get_user_teams(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
-
-    # Query to get all teams user is a member of with pagination
-    user_teams_query = f"""
-    FOR permission IN @@permission_collection
-    FILTER permission._from == @userId
-    LET team = DOCUMENT(permission._to)
-    FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
-    {search_filter}
-    SORT team.createdAtTimestamp DESC
-    LIMIT @offset, @limit
-    LET team_members = (
-        FOR member_permission IN @@permission_collection
-        FILTER member_permission._to == team._id
-        LET member_user = DOCUMENT(member_permission._from)
-        FILTER member_user != null
-        RETURN {{
-            "id": member_user._key,
-            "userId": member_user.userId,
-            "userName": member_user.fullName,
-            "userEmail": member_user.email,
-            "role": member_permission.role,
-            "joinedAt": member_permission.createdAtTimestamp,
-            "isOwner": member_permission.role == "OWNER"
-        }}
-    )
-    LET member_count = LENGTH(team_members)
-    RETURN {{
-        "id": team._key,
-        "name": team.name,
-        "description": team.description,
-        "createdBy": team.createdBy,
-        "orgId": team.orgId,
-        "createdAtTimestamp": team.createdAtTimestamp,
-        "updatedAtTimestamp": team.updatedAtTimestamp,
-        "currentUserPermission": permission,
-        "members": team_members,
-        "memberCount": member_count,
-        "canEdit": permission.role IN ["OWNER"],
-        "canDelete": permission.role == "OWNER",
-        "canManageMembers": permission.role IN ["OWNER"]
-    }}
-    """
-
-    # Count query for pagination
-    count_query = f"""
-    FOR permission IN @@permission_collection
-    FILTER permission._from == @userId
-    LET team = DOCUMENT(permission._to)
-    FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        # Get total count
-        count_params = {
-            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "@permission_collection": CollectionNames.PERMISSION.value,
-            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
-        }
-        if search:
-            count_params["search"] = search
-
-        count_list = await graph_provider.execute_query(count_query, bind_vars=count_params)
-        total_count = count_list[0] if count_list else 0
-
-        # Get teams with pagination
-        teams_params = {
-            "userId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "@permission_collection": CollectionNames.PERMISSION.value,
-            "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            teams_params["search"] = search
-
-        result_list = await graph_provider.execute_query(user_teams_query, bind_vars=teams_params)
+        # Use interface method to get user teams
+        result_list, total_count = await graph_provider.get_user_teams(
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
+        )
 
         if not result_list:
             return JSONResponse(
@@ -1242,130 +1030,15 @@ async def get_user_created_teams(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = "FILTER (team.name LIKE CONCAT('%', @search, '%') OR team.description LIKE CONCAT('%', @search, '%'))"
-
-    # Optimized query: Batch fetch team members instead of per-team DOCUMENT() calls
-    # Recommended indexes:
-    # - teams collection: [ "orgId", "createdBy" ] (persistent index)
-    # - permission collection: [ "_to" ] (persistent index)
-    # - permission collection: [ "_from", "_to" ] (persistent index)
-    created_teams_query = f"""
-    // Get teams first
-    LET teams = (
-        FOR team IN {CollectionNames.TEAMS.value}
-            FILTER team.orgId == @orgId
-            FILTER team.createdBy == @userKey
-            {search_filter}
-            SORT team.createdAtTimestamp DESC
-            LIMIT @offset, @limit
-            RETURN team
-    )
-
-    // Batch fetch all team IDs
-    LET team_ids = teams[*]._id
-
-    // Batch fetch all permissions for these teams
-    LET all_permissions = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to IN team_ids
-            RETURN permission
-    )
-
-    // Batch fetch all user IDs from permissions
-    LET user_ids = UNIQUE(all_permissions[* FILTER STARTS_WITH(CURRENT._from, "users/")]._from)
-
-    // Batch fetch all users
-    LET all_users = (
-        FOR user_id IN user_ids
-            LET user = DOCUMENT(user_id)
-            FILTER user != null
-            RETURN {{
-                _id: user._id,
-                _key: user._key,
-                userId: user.userId,
-                fullName: user.fullName,
-                email: user.email
-            }}
-    )
-
-    // Build result with members grouped by team
-    FOR team IN teams
-        LET current_user_permission = FIRST(
-            FOR perm IN all_permissions
-                FILTER perm._from == @currentUserId AND perm._to == team._id
-                RETURN perm
-        )
-        LET team_members = (
-            FOR permission IN all_permissions
-                FILTER permission._to == team._id
-                LET user = FIRST(FOR u IN all_users FILTER u._id == permission._from RETURN u)
-                FILTER user != null
-                RETURN {{
-                    "id": user._key,
-                    "userId": user.userId,
-                    "userName": user.fullName,
-                    "userEmail": user.email,
-                    "role": permission.role,
-                    "joinedAt": permission.createdAtTimestamp,
-                    "isOwner": permission.role == "OWNER"
-                }}
-        )
-        RETURN {{
-            "id": team._key,
-            "name": team.name,
-            "description": team.description,
-            "createdBy": team.createdBy,
-            "orgId": team.orgId,
-            "createdAtTimestamp": team.createdAtTimestamp,
-            "updatedAtTimestamp": team.updatedAtTimestamp,
-            "currentUserPermission": current_user_permission,
-            "members": team_members,
-            "memberCount": LENGTH(team_members),
-            "canEdit": true,
-            "canDelete": true,
-            "canManageMembers": true
-        }}
-    """
-
-    # Count total teams for pagination
-    count_query = f"""
-    FOR team IN {CollectionNames.TEAMS.value}
-    FILTER team.orgId == @orgId
-    FILTER team.createdBy == @userKey
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        count_params = {
-            "orgId": user_info.get("orgId"),
-            "userKey": user['_key']
-        }
-        if search:
-            count_params["search"] = search
-
-        count_list = await graph_provider.execute_query(count_query, bind_vars=count_params)
-        total_count = count_list[0] if count_list else 0
-
-        # Get teams with pagination
-        teams_params = {
-            "orgId": user_info.get("orgId"),
-            "userKey": user['_key'],
-            "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}",
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            teams_params["search"] = search
-
-        result_list = await graph_provider.execute_query(created_teams_query, bind_vars=teams_params)
+        # Use interface method to get user created teams
+        result_list, total_count = await graph_provider.get_user_created_teams(
+            org_id=user_info.get("orgId"),
+            user_key=user['_key'],
+            search=search,
+            page=page,
+            limit=limit
+        )
 
         if not result_list:
             return JSONResponse(
@@ -1423,71 +1096,14 @@ async def get_users(
         "orgId": request.state.user.get("orgId"),
     }
 
-    # Calculate offset
-    offset = (page - 1) * limit
-
-    # Build search filter
-    search_filter = ""
-    if search:
-        search_filter = """
-        FILTER user.fullName LIKE CONCAT('%', @search, '%')
-        OR user.email LIKE CONCAT('%', @search, '%')
-        """
-
-    # Query to get users with their team memberships
-    users_query = f"""
-    FOR edge IN belongsTo
-    FILTER edge._to == CONCAT('organizations/', @orgId)
-    AND edge.entityType == 'ORGANIZATION'
-    LET user = DOCUMENT(edge._from)
-    FILTER user!=null
-    FILTER user.isActive == true
-    {search_filter}
-    SORT user.fullName ASC
-    LIMIT @offset, @limit
-    RETURN {{
-        "id": user._key,
-        "userId": user.userId,
-        "name": user.fullName,
-        "email": user.email,
-        "isActive": user.isActive,
-        "createdAtTimestamp": user.createdAtTimestamp,
-        "updatedAtTimestamp": user.updatedAtTimestamp
-    }}
-    """
-
-    # Count total users for pagination
-    count_query = f"""
-    FOR edge IN belongsTo
-    FILTER edge._to == CONCAT('organizations/', @orgId)
-    AND edge.entityType == 'ORGANIZATION'
-    LET user = DOCUMENT(edge._from)
-    FILTER user!=null
-    FILTER user.isActive == true
-    {search_filter}
-    COLLECT WITH COUNT INTO total_count
-    RETURN total_count
-    """
-
     try:
-        # Get total count
-        count_params = {"orgId": user_info.get("orgId")}
-        if search:
-            count_params["search"] = search
-
-        count_list = await graph_provider.execute_query(count_query, bind_vars=count_params)
-        total_count = count_list[0] if count_list else 0
-
-        # Get users with pagination
-        users_params = {
-            "orgId": user_info.get("orgId"),
-            "offset": offset,
-            "limit": limit
-        }
-        if search:
-            users_params["search"] = search
-
-        result_list = await graph_provider.execute_query(users_query, bind_vars=users_params)
+        # Use interface method to get organization users
+        result_list, total_count = await graph_provider.get_organization_users(
+            org_id=user_info.get("orgId"),
+            search=search,
+            page=page,
+            limit=limit
+        )
         if not result_list:
             return JSONResponse(
                 status_code=200,
@@ -1544,56 +1160,12 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
-        # Query to get team users with current user's permission (flat structure)
-        team_users_query = f"""
-        FOR team IN {CollectionNames.TEAMS.value}
-        FILTER team._key == @teamId AND team.orgId == @orgId
-        LET current_user_permission = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._from == @currentUserId AND permission._to == team._id
-            RETURN permission
+        # Use interface method to get team users
+        result = await graph_provider.get_team_users(
+            team_id=team_id,
+            org_id=user_info.get("orgId"),
+            user_key=user['_key']
         )
-        LET team_members = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == team._id
-            LET user = DOCUMENT(permission._from)
-            RETURN {{
-                "id": user._key,
-                "userId": user.userId,
-                "userName": user.fullName,
-                "userEmail": user.email,
-                "role": permission.role,
-                "joinedAt": permission.createdAtTimestamp,
-                "isOwner": permission.role == "OWNER"
-            }}
-        )
-        LET user_count = LENGTH(team_members)
-        RETURN {{
-            "id": team._key,
-            "name": team.name,
-            "description": team.description,
-            "createdBy": team.createdBy,
-            "orgId": team.orgId,
-            "createdAtTimestamp": team.createdAtTimestamp,
-            "updatedAtTimestamp": team.updatedAtTimestamp,
-            "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-            "members": team_members,
-            "memberCount": user_count,
-            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-            "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-        }}
-        """
-
-        result_list = await graph_provider.execute_query(
-            team_users_query,
-            bind_vars={
-                "teamId": team_id,
-                "orgId": user_info.get("orgId"),
-                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}"
-            }
-        )
-        result = result_list[0] if result_list else None
 
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
@@ -1646,16 +1218,9 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
 
         # Remove users if specified
         if remove_user_ids:
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
-            permissions = await graph_provider.execute_query(
-                delete_query,
-                bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}", "userIds": remove_user_ids}
+            permissions = await graph_provider.delete_team_member_edges(
+                team_id=team_id,
+                user_ids=remove_user_ids
             )
             if not permissions:
                 raise HTTPException(status_code=404, detail="No users found in team to remove")
@@ -1666,8 +1231,10 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
             user_team_edges = []
             for user_id in add_user_ids:
                 user_team_edges.append({
-                    "_from": f"{CollectionNames.USERS.value}/{user_id}",
-                    "_to": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "from_id": user_id,
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": team_id,
+                    "to_collection": CollectionNames.TEAMS.value,
                     "type": "USER",
                     "role": role,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
@@ -1680,7 +1247,7 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
             logger.info(f"Successfully added {len(add_user_ids)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await get_team_with_users(graph_provider, team_id, user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -1723,60 +1290,13 @@ async def search_teams(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Search query is required")
 
     try:
-        # Search teams by name or description with current user's permission
-        search_query = f"""
-        FOR team IN {CollectionNames.TEAMS.value}
-        FILTER team.orgId == @orgId
-        FILTER team.name LIKE CONCAT("%", @query, "%") OR team.description LIKE CONCAT("%", @query, "%")
-        LET current_user_permission = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._from == @currentUserId AND permission._to == team._id
-            RETURN permission
-        )
-        LET team_members = (
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == team._id
-            LET user = DOCUMENT(permission._from)
-            RETURN {{
-                "id": user._key,
-                "userId": user.userId,
-                "userName": user.fullName,
-                "userEmail": user.email,
-                "role": permission.role,
-                "joinedAt": permission.createdAtTimestamp,
-                "isOwner": user._key == team.createdBy
-            }}
-        )
-        LET user_count = LENGTH(team_members)
-        LIMIT @offset, @limit
-        RETURN {{
-            "team": {{
-                "id": team._key,
-                "name": team.name,
-                "description": team.description,
-                "createdBy": team.createdBy,
-                "orgId": team.orgId,
-                "createdAtTimestamp": team.createdAtTimestamp,
-                "updatedAtTimestamp": team.updatedAtTimestamp
-            }},
-            "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
-            "members": team_members,
-            "memberCount": user_count,
-            "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-            "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
-            "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
-        }}
-        """
-
-        result = await graph_provider.execute_query(
-            search_query,
-            bind_vars={
-                "orgId": user_info.get("orgId"),
-                "query": query,
-                "limit": limit,
-                "offset": offset,
-                "currentUserId": f"{CollectionNames.USERS.value}/{user['_key']}"
-            }
+        # Use interface method to search teams
+        result = await graph_provider.search_teams(
+            org_id=user_info.get("orgId"),
+            user_key=user['_key'],
+            query=query,
+            limit=limit,
+            offset=offset
         )
         return JSONResponse(
             status_code=200,

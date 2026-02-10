@@ -3464,3 +3464,234 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    # ==================== Team Operations ====================
+
+    @abstractmethod
+    async def get_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 10,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get teams for an organization with pagination, search, members, and permissions.
+
+        Args:
+            org_id (str): Organization ID
+            user_key (str): Current user's key (for permission checking)
+            search (Optional[str]): Search query for team name
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_team_with_users(
+        self,
+        team_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get a single team with its members and permissions.
+
+        Args:
+            team_id (str): Team ID
+            user_key (str): Current user's key (for permission checking)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Team data with members and permissions, None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_teams(
+        self,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get all teams that a user is a member of.
+
+        Args:
+            user_key (str): User's key
+            search (Optional[str]): Search query for team name or description
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_user_created_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get all teams created by a user.
+
+        Args:
+            org_id (str): Organization ID
+            user_key (str): User's key
+            search (Optional[str]): Search query for team name or description
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
+        """
+        pass
+
+    @abstractmethod
+    async def get_team_users(
+        self,
+        team_id: str,
+        org_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get all users in a specific team.
+
+        Args:
+            team_id (str): Team ID
+            org_id (str): Organization ID
+            user_key (str): Current user's key (for permission checking)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Team data with all members, None if not found
+        """
+        pass
+
+    @abstractmethod
+    async def search_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Search teams by name or description.
+
+        Args:
+            org_id (str): Organization ID
+            user_key (str): Current user's key (for permission checking)
+            query (str): Search query string
+            limit (int): Maximum number of results
+            offset (int): Offset for pagination
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of matching teams with members and permissions
+        """
+        pass
+
+    @abstractmethod
+    async def delete_team_member_edges(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Delete edges to remove team members.
+
+        Args:
+            team_id (str): Team ID
+            user_ids (List[str]): List of user IDs to remove from team
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of deleted permission edges (OLD values)
+        """
+        pass
+
+    @abstractmethod
+    async def batch_update_team_member_roles(
+        self,
+        team_id: str,
+        user_roles: List[Dict[str, str]],
+        timestamp: int,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Batch update user roles in a team.
+
+        Args:
+            team_id (str): Team ID
+            user_roles (List[Dict[str, str]]): List of {userId: str, role: str} dictionaries
+            timestamp (int): Timestamp for updatedAtTimestamp field
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of updated permission edges
+        """
+        pass
+
+    @abstractmethod
+    async def delete_all_team_permissions(
+        self,
+        team_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete all permissions for a team.
+
+        Args:
+            team_id (str): Team ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            None
+        """
+        pass
+
+    # ==================== User Operations ====================
+
+    @abstractmethod
+    async def get_organization_users(
+        self,
+        org_id: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get users in an organization with pagination and search.
+
+        Args:
+            org_id (str): Organization ID
+            search (Optional[str]): Search query for user name or email
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of users, total count)
+        """
+        pass

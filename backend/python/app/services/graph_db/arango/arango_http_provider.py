@@ -9995,6 +9995,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "grantedTeams": [t["team_id"] for t in teams_to_insert],
                 "role": role,
                 "kbId": kb_id,
+                "details": {},
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
@@ -16359,3 +16360,731 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 str(e)
             )
             return []
+
+    # ==================== Team Operations ====================
+
+    async def get_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 10,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get teams for an organization with pagination, search, members, and permissions.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = "FILTER LOWER(team.name) LIKE @search"
+
+            # Query to get teams with current user's permission and team members
+            teams_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            {search_filter}
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            SORT team.createdAtTimestamp DESC
+            LIMIT @offset, @limit
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            # Count total teams for pagination
+            count_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            # Get total count
+            count_params = {"orgId": org_id}
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get teams with pagination
+            teams_params = {
+                "orgId": org_id,
+                "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                teams_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(teams_query, bind_vars=teams_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
+            return [], 0
+
+    async def get_team_with_users(
+        self,
+        team_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get a single team with its members and permissions.
+        """
+        try:
+            team_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team._key == @teamId
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            result_list = await self.execute_query(
+                team_query,
+                bind_vars={
+                    "teamId": team_id,
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                },
+                transaction=transaction
+            )
+            return result_list[0] if result_list else None
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_with_users: {str(e)}", exc_info=True)
+            return None
+
+    async def get_user_teams(
+        self,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get all teams that a user is a member of.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
+
+            # Query to get all teams user is a member of with pagination
+            user_teams_query = f"""
+            FOR permission IN @@permission_collection
+            FILTER permission._from == @userId
+            LET team = DOCUMENT(permission._to)
+            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            {search_filter}
+            SORT team.createdAtTimestamp DESC
+            LIMIT @offset, @limit
+            LET team_members = (
+                FOR member_permission IN @@permission_collection
+                FILTER member_permission._to == team._id
+                LET member_user = DOCUMENT(member_permission._from)
+                FILTER member_user != null
+                RETURN {{
+                    "id": member_user._key,
+                    "userId": member_user.userId,
+                    "userName": member_user.fullName,
+                    "userEmail": member_user.email,
+                    "role": member_permission.role,
+                    "joinedAt": member_permission.createdAtTimestamp,
+                    "isOwner": member_permission.role == "OWNER"
+                }}
+            )
+            LET member_count = LENGTH(team_members)
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": permission,
+                "members": team_members,
+                "memberCount": member_count,
+                "canEdit": permission.role IN ["OWNER"],
+                "canDelete": permission.role == "OWNER",
+                "canManageMembers": permission.role IN ["OWNER"]
+            }}
+            """
+
+            # Count query for pagination
+            count_query = f"""
+            FOR permission IN @@permission_collection
+            FILTER permission._from == @userId
+            LET team = DOCUMENT(permission._to)
+            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            # Get total count
+            count_params = {
+                "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                "@permission_collection": CollectionNames.PERMISSION.value,
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+            }
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get teams with pagination
+            teams_params = {
+                "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                "@permission_collection": CollectionNames.PERMISSION.value,
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                teams_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
+            return [], 0
+
+    async def get_user_created_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get all teams created by a user.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
+
+            # Optimized query: Batch fetch team members instead of per-team DOCUMENT() calls
+            created_teams_query = f"""
+            // Get teams first
+            LET teams = (
+                FOR team IN {CollectionNames.TEAMS.value}
+                    FILTER team.orgId == @orgId
+                    FILTER team.createdBy == @userKey
+                    {search_filter}
+                    SORT team.createdAtTimestamp DESC
+                    LIMIT @offset, @limit
+                    RETURN team
+            )
+
+            // Batch fetch all team IDs
+            LET team_ids = teams[*]._id
+
+            // Batch fetch all permissions for these teams
+            LET all_permissions = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to IN team_ids
+                    RETURN permission
+            )
+
+            // Batch fetch all user IDs from permissions
+            LET user_ids = UNIQUE(all_permissions[* FILTER STARTS_WITH(CURRENT._from, "users/")]._from)
+
+            // Batch fetch all users
+            LET all_users = (
+                FOR user_id IN user_ids
+                    LET user = DOCUMENT(user_id)
+                    FILTER user != null
+                    RETURN {{
+                        _id: user._id,
+                        _key: user._key,
+                        userId: user.userId,
+                        fullName: user.fullName,
+                        email: user.email
+                    }}
+            )
+
+            // Build result with members grouped by team
+            FOR team IN teams
+                LET current_user_permission = FIRST(
+                    FOR perm IN all_permissions
+                        FILTER perm._from == @currentUserId AND perm._to == team._id
+                        RETURN perm
+                )
+                LET team_members = (
+                    FOR permission IN all_permissions
+                        FILTER permission._to == team._id
+                        LET user = FIRST(FOR u IN all_users FILTER u._id == permission._from RETURN u)
+                        FILTER user != null
+                        RETURN {{
+                            "id": user._key,
+                            "userId": user.userId,
+                            "userName": user.fullName,
+                            "userEmail": user.email,
+                            "role": permission.role,
+                            "joinedAt": permission.createdAtTimestamp,
+                            "isOwner": permission.role == "OWNER"
+                        }}
+                )
+                RETURN {{
+                    "id": team._key,
+                    "name": team.name,
+                    "description": team.description,
+                    "createdBy": team.createdBy,
+                    "orgId": team.orgId,
+                    "createdAtTimestamp": team.createdAtTimestamp,
+                    "updatedAtTimestamp": team.updatedAtTimestamp,
+                    "currentUserPermission": current_user_permission,
+                    "members": team_members,
+                    "memberCount": LENGTH(team_members),
+                    "canEdit": true,
+                    "canDelete": true,
+                    "canManageMembers": true
+                }}
+            """
+
+            # Count total teams for pagination
+            count_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            FILTER team.createdBy == @userKey
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            count_params = {
+                "orgId": org_id,
+                "userKey": user_key
+            }
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get teams with pagination
+            teams_params = {
+                "orgId": org_id,
+                "userKey": user_key,
+                "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                teams_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(created_teams_query, bind_vars=teams_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
+            return [], 0
+
+    async def get_team_users(
+        self,
+        team_id: str,
+        org_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get all users in a specific team.
+        """
+        try:
+            team_users_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team._key == @teamId AND team.orgId == @orgId
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            result_list = await self.execute_query(
+                team_users_query,
+                bind_vars={
+                    "teamId": team_id,
+                    "orgId": org_id,
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                },
+                transaction=transaction
+            )
+            return result_list[0] if result_list else None
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
+            return None
+
+    async def search_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Search teams by name or description.
+        """
+        try:
+            search_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            FILTER LOWER(team.name) LIKE @query OR LOWER(team.description) LIKE @query
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": user._key == team.createdBy
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            LIMIT @offset, @limit
+            RETURN {{
+                "team": {{
+                    "id": team._key,
+                    "name": team.name,
+                    "description": team.description,
+                    "createdBy": team.createdBy,
+                    "orgId": team.orgId,
+                    "createdAtTimestamp": team.createdAtTimestamp,
+                    "updatedAtTimestamp": team.updatedAtTimestamp
+                }},
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            result = await self.execute_query(
+                search_query,
+                bind_vars={
+                    "orgId": org_id,
+                    "query": f"%{query.lower()}%",
+                    "limit": limit,
+                    "offset": offset,
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                },
+                transaction=transaction
+            )
+            return result if result else []
+
+        except Exception as e:
+            self.logger.error(f"Error in search_teams: {str(e)}", exc_info=True)
+            return []
+
+    async def delete_team_member_edges(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Delete edges to remove team members.
+        """
+        try:
+            delete_query = f"""
+            FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER SPLIT(permission._from, '/')[1] IN @userIds
+            REMOVE permission IN {CollectionNames.PERMISSION.value}
+            RETURN OLD
+            """
+
+            deleted_list = await self.execute_query(
+                delete_query,
+                bind_vars={
+                    "userIds": user_ids,
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+                },
+                transaction=transaction
+            )
+            return deleted_list if deleted_list else []
+
+        except Exception as e:
+            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
+            return []
+
+    async def batch_update_team_member_roles(
+        self,
+        team_id: str,
+        user_roles: List[Dict[str, str]],
+        timestamp: int,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Batch update user roles in a team.
+        """
+        try:
+            batch_update_query = f"""
+            FOR user_role IN @user_roles
+                LET user_id = user_role.userId
+                LET new_role = user_role.role
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @team_id
+                    FILTER SPLIT(permission._from, '/')[1] == user_id
+                    UPDATE permission WITH {{
+                        role: new_role,
+                        updatedAtTimestamp: @timestamp
+                    }} IN {CollectionNames.PERMISSION.value}
+                    RETURN {{
+                        _key: NEW._key,
+                        _from: NEW._from,
+                        role: NEW.role,
+                        updatedAt: NEW.updatedAtTimestamp
+                    }}
+            """
+
+            updated_permissions = await self.execute_query(
+                batch_update_query,
+                bind_vars={
+                    "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "user_roles": user_roles,
+                    "timestamp": timestamp
+                },
+                transaction=transaction
+            )
+            return updated_permissions if updated_permissions else []
+
+        except Exception as e:
+            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
+            return []
+
+    async def delete_all_team_permissions(
+        self,
+        team_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete all permissions for a team.
+        """
+        try:
+            delete_query = f"""
+            FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            REMOVE permission IN {CollectionNames.PERMISSION.value}
+            RETURN OLD
+            """
+
+            await self.execute_query(
+                delete_query,
+                bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"},
+                transaction=transaction
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in delete_all_team_permissions: {str(e)}", exc_info=True)
+            raise
+
+    # ==================== User Operations ====================
+
+    async def get_organization_users(
+        self,
+        org_id: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get users in an organization with pagination and search.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = """
+                FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)
+                """
+
+            # Query to get users with their team memberships
+            users_query = f"""
+            FOR edge IN belongsTo
+            FILTER edge._to == CONCAT('organizations/', @orgId)
+            AND edge.entityType == 'ORGANIZATION'
+            LET user = DOCUMENT(edge._from)
+            FILTER user!=null
+            FILTER user.isActive == true
+            {search_filter}
+            SORT user.fullName ASC
+            LIMIT @offset, @limit
+            RETURN {{
+                "id": user._key,
+                "userId": user.userId,
+                "name": user.fullName,
+                "email": user.email,
+                "isActive": user.isActive,
+                "createdAtTimestamp": user.createdAtTimestamp,
+                "updatedAtTimestamp": user.updatedAtTimestamp
+            }}
+            """
+
+            # Count total users for pagination
+            count_query = f"""
+            FOR edge IN belongsTo
+            FILTER edge._to == CONCAT('organizations/', @orgId)
+            AND edge.entityType == 'ORGANIZATION'
+            LET user = DOCUMENT(edge._from)
+            FILTER user!=null
+            FILTER user.isActive == true
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            # Get total count
+            count_params = {"orgId": org_id}
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get users with pagination
+            users_params = {
+                "orgId": org_id,
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                users_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(users_query, bind_vars=users_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
+            return [], 0
