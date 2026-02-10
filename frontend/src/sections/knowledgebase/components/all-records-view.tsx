@@ -1362,18 +1362,37 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
 
           const menuActions: ActionMenuItem[] = [];
 
-          // Only show Open action if node has children or is a record
-          if (node.hasChildren || node.nodeType === 'record') {
+          // For records: always show "View Record", and if has children, also show "Open"
+          if (node.nodeType === 'record') {
+            // Always show "View Record" option for records
+            menuActions.push({
+              label: 'View Record',
+              icon: eyeIcon,
+              color: theme.palette.primary.main,
+              onClick: () => {
+                onNavigateToRecord(node.id);
+              },
+            });
+
+            // If record has children, also show "Open" option to navigate into it
+            if (node.hasChildren) {
+              menuActions.push({
+                label: 'Open',
+                icon: folderOpenIcon,
+                color: theme.palette.primary.main,
+                onClick: () => {
+                  handleRowClick(node);
+                },
+              });
+            }
+          } else if (node.hasChildren) {
+            // For non-records with children, show "Open" option
             menuActions.push({
               label: 'Open',
               icon: eyeIcon,
               color: theme.palette.primary.main,
               onClick: () => {
-                if (node.hasChildren) {
-                  handleRowClick(node);
-                } else {
-                  onNavigateToRecord(node.id);
-                }
+                handleRowClick(node);
               },
             });
           }
