@@ -903,24 +903,61 @@ async def stream_record(
                                     )
 
                             # Convert to PDF
-                            pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+                            try:
+                                pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+                            except HTTPException:
+                                # Re-raise HTTPException from convert_to_pdf
+                                raise
+                            except Exception as conv_err:
+                                # Catch any other exceptions from convert_to_pdf
+                                logger.error(f"Error in convert_to_pdf: {str(conv_err)}", exc_info=True)
+                                raise HTTPException(
+                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                    detail=f"PDF conversion failed: {str(conv_err)}"
+                                )
+
+                            # Verify PDF file exists before creating the iterator
+                            if not os.path.exists(pdf_path):
+                                # Try to find PDF files in the temp directory as fallback
+                                pdf_files = [f for f in os.listdir(temp_dir) if f.endswith('.pdf')]
+                                if pdf_files:
+                                    # Use the first PDF file found (LibreOffice might have renamed it)
+                                    pdf_path = os.path.join(temp_dir, pdf_files[0])
+                                    logger.warning(f"Expected PDF not found, using: {pdf_path}")
+                                else:
+                                    error_msg = f"PDF conversion completed but file not found at: {pdf_path}. No PDF files in temp directory."
+                                    logger.error(error_msg)
+                                    raise HTTPException(
+                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                        detail="PDF conversion failed - output file not found"
+                                    )
 
                             # Return the converted PDF as a streaming response
                             pdf_filename = f"{Path(record_name).stem}.pdf" if record_name else "converted_file.pdf"
 
                             async def pdf_file_iterator() -> AsyncGenerator[bytes, None]:
                                 try:
+                                    # Double-check file exists before opening
+                                    if not os.path.exists(pdf_path):
+                                        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+                                    
                                     with open(pdf_path, "rb") as pdf_file:
                                         while True:
                                             chunk = await asyncio.to_thread(pdf_file.read, 8192)
                                             if not chunk:
                                                 break
                                             yield chunk
-                                except Exception as e:
-                                    logger.error(f"Error reading PDF file: {str(e)}")
+                                except FileNotFoundError as e:
+                                    logger.error(f"PDF file not found: {str(e)}")
                                     raise HTTPException(
                                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail="Error reading converted PDF file",
+                                        detail=f"PDF file not found: {str(e)}"
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Error reading PDF file: {str(e)}", exc_info=True)
+                                    raise HTTPException(
+                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                        detail=f"Error reading converted PDF file: {str(e)}"
                                     )
 
                             # Use create_stream_record_response for consistent header handling
