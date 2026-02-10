@@ -80,6 +80,10 @@ services:
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+
+      # Indexing service config
+      - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
+      - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-7}
     depends_on:
       qdrant:
         condition: service_healthy
