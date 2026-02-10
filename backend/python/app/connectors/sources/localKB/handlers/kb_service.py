@@ -784,10 +784,37 @@ class KnowledgeBaseService:
         file_metadata: Optional[Dict] = None,
     ) -> Optional[Dict]:
         """
-        Update a record directly in KB root (not in any folder)
+        Update a record directly in KB root (not in any folder).
+        Only OWNER, WRITER, and FILEORGANIZER can update; READER and COMMENTER cannot.
         """
         try:
             self.logger.info(f"🚀 Updating record {record_id}")
+
+            # Resolve KB context and check edit permission (OWNER/WRITER/FILEORGANIZER only)
+            kb_context = await self.graph_provider._get_kb_context_for_record(record_id)
+            if not kb_context:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": "Knowledge base context not found for record",
+                }
+            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found for user_id: {user_id}",
+                }
+            user_key = user.get("id") or user.get("_key")
+            user_role = await self.graph_provider.get_user_kb_permission(
+                kb_context.get("kb_id"), user_key
+            )
+            if user_role not in ["OWNER", "WRITER", "FILEORGANIZER"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": "User lacks permission to edit records",
+                }
 
             # Call update method
             result = await self.graph_provider.update_record(
