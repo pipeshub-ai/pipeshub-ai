@@ -177,7 +177,7 @@ class CSVParser:
                 seen[base_name] += 1
                 unique_name = f"{base_name}_{seen[base_name]}"
             else:
-                seen[base_name] = 0
+                seen[base_name] = 1
                 unique_name = base_name
 
             deduplicated.append(unique_name)
@@ -485,7 +485,7 @@ class CSVParser:
             }
 
             # Skip entirely empty rows
-            if not all(value is "null" for value in row_dict.values()):
+            if not all(value == "null" for value in row_dict.values()):
                 csv_result.append(row_dict)
                 line_numbers.append(data_start_line + idx)
 
