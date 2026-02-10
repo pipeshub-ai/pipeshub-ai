@@ -1020,12 +1020,67 @@ class KnowledgeBaseService :
                     "code": "400"
                 }
 
-            # Get current permissions for all users and teams in a single batch query
-            current_permissions = await self.arango_service.get_kb_permissions(
-                kb_id=kb_id,
-                user_ids=user_ids,
-                team_ids=team_ids
+            #Get current permissions and owner count in one go
+            # Build conditions for batch query
+            conditions = []
+            bind_vars = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSION.value,
+            }
+
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            if not conditions:
+                return {
+                    "success": False,
+                    "reason": "No users or teams provided for permission update",
+                    "code": "400"
+                }
+
+            # Single query to get permissions and owner count
+            permissions_and_count_query = f"""
+            LET current_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER ({' OR '.join(conditions) if conditions else 'true'})
+                    RETURN {{
+                        id: SPLIT(perm._from, '/')[1],
+                        type: perm.type,
+                        role: perm.role
+                    }}
             )
+            LET owner_count = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.role == 'OWNER'
+                    COLLECT WITH COUNT INTO count
+                    RETURN count
+            )
+            RETURN {{
+                permissions: current_perms,
+                ownerCount: LENGTH(owner_count) > 0 ? owner_count[0] : 0
+            }}
+            """
+
+            result_cursor = self.arango_service.db.aql.execute(permissions_and_count_query, bind_vars=bind_vars)
+            result_data = next(result_cursor, {})
+
+            # Organize permissions by type
+            permissions_list = result_data.get("permissions", [])
+            current_permissions = {"users": {}, "teams": {}}
+            for perm in permissions_list:
+                if perm["type"] == "USER":
+                    current_permissions["users"][perm["id"]] = perm["role"]
+                elif perm["type"] == "TEAM":
+                    current_permissions["teams"][perm["id"]] = None
+
+            total_owner_count = result_data.get("ownerCount", 0)
 
             # Filter out users/teams that don't have permissions (skip them instead of erroring)
             valid_user_ids = []
@@ -1058,7 +1113,6 @@ class KnowledgeBaseService :
                     "skipped_teams": skipped_teams
                 }
 
-
             owners_being_updated = []
 
             for user_id in valid_user_ids:
@@ -1084,15 +1138,14 @@ class KnowledgeBaseService :
             if len(owners_being_updated) == 1 and len(valid_user_ids) == 1:
                 owner_user_id = owners_being_updated[0]
                 if new_role != "OWNER":
-                    # Owner is being downgraded - check minimum requirement
-                    owner_count = await self.arango_service.count_kb_owners(kb_id)
-                    if owner_count <= 1:
+                    # Owner is being downgraded - check minimum requirement using already fetched count
+                    if total_owner_count <= 1:
                         return {
                             "success": False,
                             "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
                             "code": "400"
                         }
-                    self.logger.info(f"⚠️ Downgrading Owner {owner_user_id} to {new_role} on KB {kb_id} (remaining owners: {owner_count - 1})")
+                    self.logger.info(f"⚠️ Downgrading Owner {owner_user_id} to {new_role} on KB {kb_id} (remaining owners: {total_owner_count - 1})")
                 # If new_role == "OWNER", it's a no-op (no change), which is fine
 
             # Update permissions using batch update method for valid entities only
