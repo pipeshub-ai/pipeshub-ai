@@ -1,5 +1,6 @@
 """Knowledge Hub Unified Browse Service"""
 
+import re
 import traceback
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
@@ -32,18 +33,11 @@ FOLDER_MIME_TYPES = [
     'text/directory'
 ]
 
-
-
-
-
-
-
 def _get_node_type_value(node_type) -> str:
     """Safely extract the string value from a NodeType enum or string."""
     if hasattr(node_type, 'value'):
         return node_type.value
     return str(node_type)
-
 
 class KnowledgeHubService:
     """Service for unified Knowledge Hub browse API"""
@@ -151,52 +145,29 @@ class KnowledgeHubService:
             # Initialize available_filters
             available_filters = None
 
-            if parent_id and (has_flattening_filters or flattened):
-                # Recursive search within parent and all its descendants (flattened view)
-                items, total_count, _ = await self._get_recursive_search_nodes(
+            if (parent_id and (has_flattening_filters or flattened)) or (is_search and parent_id is None):
+                # Search mode: Global search (no parent) or scoped search (within parent and descendants)
+                items, total_count, available_filters = await self._search_nodes(
                     user_key=user_key,
                     org_id=org_id,
-                    parent_id=parent_id,
+                    skip=skip,
+                    limit=limit,
+                    sort_by=sort_by,
+                    sort_order=sort_order,
+                    q=q,
+                    node_types=node_types,
+                    record_types=record_types,
+                    origins=origins,
+                    connector_ids=connector_ids,
+                    kb_ids=kb_ids,
+                    indexing_status=indexing_status,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    size=size,
+                    only_containers=only_containers,
+                    parent_id=parent_id,  # None for global search, set for scoped search
                     parent_type=parent_type,
-                    skip=skip,
-                    limit=limit,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    q=q,
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    kb_ids=kb_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
-                )
-                # Fetch available filters if requested
-                if include and 'availableFilters' in include:
-                    available_filters = await self._get_available_filters(user_key, org_id)
-            elif is_search and parent_id is None:
-                # Global search across all nodes (only when no parent_id)
-                items, total_count, available_filters = await self._get_search_nodes(
-                    user_key=user_key,
-                    org_id=org_id,
-                    skip=skip,
-                    limit=limit,
-                    sort_by=sort_by,
-                    sort_order=sort_order,
-                    q=q,
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    kb_ids=kb_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
+                    include_filters=(parent_id is None) or (include and 'availableFilters' in include),
                 )
             else:
                 # Browse mode - get direct children of parent only
@@ -225,11 +196,8 @@ class KnowledgeHubService:
                 if include and 'availableFilters' in include:
                     available_filters = await self._get_available_filters(user_key, org_id)
 
-            # Fetch permissions for all items in batch and assign to each item
-            permissions_map = await self._get_batch_permissions(user_key, items)
-            for item in items:
-                if item.id in permissions_map:
-                    item.permission = permissions_map[item.id]
+            # Permissions are now included directly from queries (userRole field)
+            # No need for separate batch permission fetch
 
             # Calculate pagination
             total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
@@ -407,7 +375,8 @@ class KnowledgeHubService:
         sort_field = sort_field_map.get(sort_by, "name")
         sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
 
-        # Use unified provider method - pass structured parameters directly
+        # Use provider method for simple tree navigation (no filters)
+        # For filtered results, the API should use the search endpoint instead
         result = await self.graph_provider.get_knowledge_hub_children(
             parent_id=parent_id,
             parent_type=parent_type,
@@ -417,16 +386,6 @@ class KnowledgeHubService:
             limit=limit,
             sort_field=sort_field,
             sort_dir=sort_dir,
-            search_query=q,
-            node_types=node_types,
-            record_types=record_types,
-            origins=origins,
-            connector_ids=connector_ids,
-            kb_ids=kb_ids,
-            indexing_status=indexing_status,
-            created_at=created_at,
-            updated_at=updated_at,
-            size=size,
             only_containers=only_containers,
         )
 
@@ -439,8 +398,6 @@ class KnowledgeHubService:
         # Available filters are always None for browse mode (children)
         # They're only returned in search mode or can be fetched separately
         return items, total_count, None
-
-
 
     async def _get_root_level_nodes(
         self,
@@ -535,61 +492,6 @@ class KnowledgeHubService:
             self.logger.error(f"❌ Failed to get root level nodes: {str(e)}")
             raise
 
-
-
-
-    def _get_record_type_label(self, record_type: str) -> str:
-        """Convert record type enum value to human-readable label"""
-        label_map = {
-            "FILE": "File",
-            "DRIVE": "Drive",
-            "WEBPAGE": "Webpage",
-            "MESSAGE": "Message",
-            "MAIL": "Mail",
-            "GROUP_MAIL": "Group Mail",
-            "TICKET": "Ticket",
-            "COMMENT": "Comment",
-            "INLINE_COMMENT": "Inline Comment",
-            "CONFLUENCE_PAGE": "Confluence Page",
-            "CONFLUENCE_BLOGPOST": "Confluence Blogpost",
-            "SHAREPOINT_PAGE": "SharePoint Page",
-            "SHAREPOINT_LIST": "SharePoint List",
-            "SHAREPOINT_LIST_ITEM": "SharePoint List Item",
-            "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint Document Library",
-            "LINK": "Link",
-            "PROJECT": "Project",
-            "OTHERS": "Others",
-        }
-        return label_map.get(record_type, record_type.replace("_", " ").title())
-
-    def _get_indexing_status_label(self, status: str) -> str:
-        """Convert indexing status enum value to human-readable label"""
-        label_map = {
-            "NOT_STARTED": "Not Started",
-            "IN_PROGRESS": "In Progress",
-            "COMPLETED": "Completed",
-            "FAILED": "Failed",
-            "QUEUED": "Queued",
-            "PAUSED": "Paused",
-            "FILE_TYPE_NOT_SUPPORTED": "File Type Not Supported",
-            "AUTO_INDEX_OFF": "Manual Indexing",
-            "EMPTY": "Empty",
-            "ENABLE_MULTIMODAL_MODELS": "Enable Multimodal Models",
-            "CONNECTOR_DISABLED": "Connector Disabled",
-        }
-        return label_map.get(status, status.replace("_", " ").title())
-
-    def _get_sort_field_label(self, sort_field: str) -> str:
-        """Convert sort field enum value to human-readable label"""
-        label_map = {
-            "name": "Name",
-            "createdAt": "Created Date",
-            "updatedAt": "Modified Date",
-            "size": "Size",
-            "type": "Type",
-        }
-        return label_map.get(sort_field, sort_field.replace("_", " ").title())
-
     async def _get_available_filters(self, user_key: str, org_id: str) -> AvailableFilters:
         """Get filter options (dynamic KBs/Apps + static others)"""
         try:
@@ -600,18 +502,16 @@ class KnowledgeHubService:
             kb_options = [
                 FilterOption(
                     id=k['id'],
-                    label=k['name'],
-                    iconPath='/assets/icons/connectors/collections.svg'
+                    label=k['name']
                 )
                 for k in kbs_data
             ]
 
-            # App/Connector options with iconPath and connectorType
+            # App/Connector options with connectorType
             app_options = [
                 FilterOption(
                     id=a['id'],
                     label=a['name'],
-                    iconPath=a.get('iconPath', '/assets/icons/connectors/default.svg'),
                     connectorType=a.get('type', a.get('name'))
                 )
                 for a in apps_data
@@ -626,37 +526,25 @@ class KnowledgeHubService:
                 NodeType.KB: "Knowledge Base",
             }
 
-            # Node type icon paths mapping
-            node_type_icons = {
-                NodeType.FOLDER: '/assets/icons/files/folder.svg',
-                NodeType.RECORD: '/assets/icons/files/file.svg',
-                NodeType.RECORD_GROUP: '/assets/icons/files/folder-open.svg',
-                NodeType.APP: '/assets/icons/connectors/default.svg',
-                NodeType.KB: '/assets/icons/kb/knowledge-base.svg',
-            }
-
             return AvailableFilters(
                 nodeTypes=[
                     FilterOption(
                         id=nt.value,
-                        label=node_type_labels.get(nt, nt.value),
-                        iconPath=node_type_icons.get(nt, '/assets/icons/files/file.svg')
+                        label=node_type_labels.get(nt, nt.value)
                     )
                     for nt in NodeType
                 ],
                 recordTypes=[
                     FilterOption(
                         id=rt.value,
-                        label=self._get_record_type_label(rt.value),
-                        iconPath=self._get_record_type_icon_path(rt.value)
+                        label=self._format_enum_label(rt.value)
                     )
                     for rt in RecordType
                 ],
                 origins=[
                     FilterOption(
                         id=ot.value,
-                        label="Knowledge Base" if ot == OriginType.KB else "External Connector",
-                        iconPath='/assets/icons/connectors/default.svg'
+                        label="Knowledge Base" if ot == OriginType.KB else "External Connector"
                     )
                     for ot in OriginType
                 ],
@@ -665,15 +553,14 @@ class KnowledgeHubService:
                 indexingStatus=[
                     FilterOption(
                         id=status.value,
-                        label=self._get_indexing_status_label(status.value),
-                        iconPath=self._get_indexing_status_icon_path(status.value)
+                        label=self._format_enum_label(status.value, {"AUTO_INDEX_OFF": "Manual Indexing"})
                     )
                     for status in IndexingStatus
                 ],
                 sortBy=[
                     FilterOption(
                         id=sf.value,
-                        label=self._get_sort_field_label(sf.value)
+                        label=self._format_enum_label(sf.value, {"createdAt": "Created Date", "updatedAt": "Modified Date"})
                     )
                     for sf in SortField
                 ],
@@ -689,120 +576,7 @@ class KnowledgeHubService:
             self.logger.error(f"Failed to get available filters: {e}")
             return AvailableFilters()
 
-    def _get_record_type_icon_path(self, record_type: str) -> str:
-        """Get icon path for record type"""
-        icon_map = {
-            "FILE": '/assets/icons/files/file.svg',
-            "DRIVE": '/assets/icons/files/folder-open.svg',
-            "WEBPAGE": '/assets/icons/files/webpage.svg',
-            "MESSAGE": '/assets/icons/files/message.svg',
-            "MAIL": '/assets/icons/files/mail.svg',
-            "GROUP_MAIL": '/assets/icons/files/mail.svg',
-            "TICKET": '/assets/icons/files/ticket.svg',
-            "COMMENT": '/assets/icons/files/comment.svg',
-            "INLINE_COMMENT": '/assets/icons/files/comment.svg',
-            "CONFLUENCE_PAGE": '/assets/icons/files/webpage.svg',
-            "CONFLUENCE_BLOGPOST": '/assets/icons/files/webpage.svg',
-            "SHAREPOINT_PAGE": '/assets/icons/files/webpage.svg',
-            "SHAREPOINT_LIST": '/assets/icons/files/file.svg',
-            "SHAREPOINT_LIST_ITEM": '/assets/icons/files/file.svg',
-            "SHAREPOINT_DOCUMENT_LIBRARY": '/assets/icons/files/folder-open.svg',
-            "LINK": '/assets/icons/files/webpage.svg',
-            "PROJECT": '/assets/icons/files/folder-open.svg',
-            "OTHERS": '/assets/icons/files/file.svg',
-        }
-        return icon_map.get(record_type, '/assets/icons/files/file.svg')
-
-    def _get_indexing_status_icon_path(self, status: str) -> str:
-        """Get icon path for indexing status"""
-        icon_map = {
-            "NOT_STARTED": '/assets/icons/status/not-started.svg',
-            "IN_PROGRESS": '/assets/icons/status/in-progress.svg',
-            "COMPLETED": '/assets/icons/status/completed.svg',
-            "FAILED": '/assets/icons/status/failed.svg',
-            "QUEUED": '/assets/icons/status/queued.svg',
-            "PAUSED": '/assets/icons/status/paused.svg',
-            "FILE_TYPE_NOT_SUPPORTED": '/assets/icons/status/not-supported.svg',
-            "AUTO_INDEX_OFF": '/assets/icons/status/manual.svg',
-            "EMPTY": '/assets/icons/status/empty.svg',
-            "ENABLE_MULTIMODAL_MODELS": '/assets/icons/status/in-progress.svg',
-            "CONNECTOR_DISABLED": '/assets/icons/status/paused.svg',
-        }
-        return icon_map.get(status, '/assets/icons/status/default.svg')
-
-    async def _get_recursive_search_nodes(
-        self,
-        user_key: str,  # Currently unused but kept for potential future permission checks
-        org_id: str,
-        parent_id: str,
-        parent_type: str,
-        skip: int,
-        limit: int,
-        sort_by: str,
-        sort_order: str,
-        q: Optional[str],
-        node_types: Optional[List[str]],
-        record_types: Optional[List[str]],
-        origins: Optional[List[str]],
-        connector_ids: Optional[List[str]],
-        kb_ids: Optional[List[str]],
-        indexing_status: Optional[List[str]],
-        created_at: Optional[Dict[str, Optional[int]]],
-        updated_at: Optional[Dict[str, Optional[int]]],
-        size: Optional[Dict[str, Optional[int]]],
-        only_containers: bool,
-    ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
-        """Search recursively within a parent node and all its descendants."""
-        try:
-            # Build sort clause
-            sort_field_map = {
-                "name": "name",
-                "createdAt": "createdAt",
-                "updatedAt": "updatedAt",
-                "size": "sizeInBytes",
-                "type": "nodeType",
-            }
-            sort_field = sort_field_map.get(sort_by, "name")
-            sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
-
-            # Use the provider method for recursive search - pass structured parameters directly
-            result = await self.graph_provider.get_knowledge_hub_recursive_search(
-                parent_id=parent_id,
-                parent_type=parent_type,
-                org_id=org_id,
-                user_key=user_key,
-                skip=skip,
-                limit=limit,
-                sort_field=sort_field,
-                sort_dir=sort_dir,
-                search_query=q,
-                node_types=node_types,
-                record_types=record_types,
-                origins=origins,
-                connector_ids=connector_ids,
-                kb_ids=kb_ids,
-                indexing_status=indexing_status,
-                created_at=created_at,
-                updated_at=updated_at,
-                size=size,
-                only_containers=only_containers,
-            )
-
-            nodes_data = result.get('nodes', [])
-            total_count = result.get('total', 0)
-
-            # Convert to NodeItem objects
-            items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
-
-            return items, total_count, None
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get recursive search nodes: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            raise
-
-    async def _get_search_nodes(
+    async def _search_nodes(
         self,
         user_key: str,
         org_id: str,
@@ -821,12 +595,43 @@ class KnowledgeHubService:
         updated_at: Optional[Dict[str, Optional[int]]],
         size: Optional[Dict[str, Optional[int]]],
         only_containers: bool,
+        parent_id: Optional[str] = None,
+        parent_type: Optional[str] = None,
+        include_filters: bool = False,
     ) -> Tuple[List[NodeItem], int, Optional[AvailableFilters]]:
-        """Get search results (global search across all nodes)"""
-        try:
-            # Get user's accessible apps
-            user_apps_ids = await self.graph_provider.get_user_app_ids(user_key)
+        """
+        Search for nodes (global or scoped within parent).
 
+        This unified method handles both:
+        - Global search: When parent_id is None, searches across all nodes
+        - Scoped search: When parent_id is provided, searches within parent and descendants
+
+        Args:
+            user_key: User's key for permission filtering
+            org_id: Organization ID
+            skip: Number of items to skip for pagination
+            limit: Maximum number of items to return
+            sort_by: Sort field
+            sort_order: Sort order (asc/desc)
+            q: Optional search query
+            node_types: Optional list of node types to filter by
+            record_types: Optional list of record types to filter by
+            origins: Optional list of origins to filter by
+            connector_ids: Optional list of connector IDs to filter by
+            kb_ids: Optional list of KB IDs to filter by
+            indexing_status: Optional list of indexing statuses to filter by
+            created_at: Optional date range filter for creation date
+            updated_at: Optional date range filter for update date
+            size: Optional size range filter
+            only_containers: If True, only return nodes that can have children
+            parent_id: Optional parent to scope search within (None for global)
+            parent_type: Type of parent (required if parent_id provided)
+            include_filters: Whether to fetch available filters
+
+        Returns:
+            Tuple of (items, total_count, available_filters)
+        """
+        try:
             # Build sort clause
             sort_field_map = {
                 "name": "name",
@@ -838,11 +643,10 @@ class KnowledgeHubService:
             sort_field = sort_field_map.get(sort_by, "name")
             sort_dir = "ASC" if sort_order.lower() == "asc" else "DESC"
 
-            # Use the provider method
-            result = await self.graph_provider.get_knowledge_hub_search_nodes(
-                user_key=user_key,
+            # Call unified provider method
+            result = await self.graph_provider.get_knowledge_hub_search(
                 org_id=org_id,
-                user_app_ids=user_apps_ids,
+                user_key=user_key,
                 skip=skip,
                 limit=limit,
                 sort_field=sort_field,
@@ -858,6 +662,8 @@ class KnowledgeHubService:
                 updated_at=updated_at,
                 size=size,
                 only_containers=only_containers,
+                parent_id=parent_id,  # Can be None for global search
+                parent_type=parent_type,
             )
 
             nodes_data = result.get('nodes', [])
@@ -866,22 +672,18 @@ class KnowledgeHubService:
             # Convert to NodeItem objects
             items = [self._doc_to_node_item(node_doc) for node_doc in nodes_data]
 
-            # Get available filters
-            available_filters = await self._get_available_filters(user_key, org_id)
+            # Get available filters if requested
+            available_filters = None
+            if include_filters:
+                available_filters = await self._get_available_filters(user_key, org_id)
 
             return items, total_count, available_filters
 
         except Exception as e:
-            self.logger.error(f"❌ Failed to get search nodes: {str(e)}")
+            scope = f"within parent {parent_id}" if parent_id else "globally"
+            self.logger.error(f"❌ Failed to search nodes {scope}: {str(e)}")
             self.logger.error(traceback.format_exc())
             raise
-
-    async def _is_folder(self, record_id: str) -> bool:
-        """Check if a record is a folder (isFile=false or mimeType is folder)"""
-        return await self.graph_provider.is_knowledge_hub_folder(
-            record_id=record_id,
-            folder_mime_types=FOLDER_MIME_TYPES,
-        )
 
     async def _validate_node_existence_and_type(
         self,
@@ -932,10 +734,6 @@ class KnowledgeHubService:
             )
         return None
 
-
-
-
-
     async def _get_breadcrumbs(self, node_id: str) -> List[BreadcrumbItem]:
         """
         Get breadcrumb trail for a node using the optimized provider method.
@@ -965,8 +763,8 @@ class KnowledgeHubService:
 
     async def _get_permissions(
         self, user_key: str, org_id: str, parent_id: Optional[str]
-    ) -> PermissionsInfo:
-        """Get user permissions for the current context"""
+    ) -> Optional[PermissionsInfo]:
+        """Get user permissions for the current context. Returns None if user has no permission."""
         try:
             perm_data = await self.graph_provider.get_knowledge_hub_context_permissions(
                 user_key=user_key,
@@ -974,8 +772,13 @@ class KnowledgeHubService:
                 parent_id=parent_id,
             )
 
+            # If role is None, user has no permission - return None
+            role = perm_data.get('role')
+            if role is None:
+                return None
+
             return PermissionsInfo(
-                role=perm_data.get('role', 'READER'),
+                role=role,
                 canUpload=perm_data.get('canUpload', False),
                 canCreateFolders=perm_data.get('canCreateFolders', False),
                 canEdit=perm_data.get('canEdit', False),
@@ -986,19 +789,25 @@ class KnowledgeHubService:
         except Exception as e:
             self.logger.error(f"❌ Failed to get permissions: {str(e)}")
             self.logger.error(traceback.format_exc())
-            # Return default safe permissions
-            return PermissionsInfo(
-                role="READER",
-                canUpload=False,
-                canCreateFolders=False,
-                canEdit=False,
-                canDelete=False,
-                canManagePermissions=False,
-            )
-
+            # Return None on error (no permission granted)
+            return None
 
     def _doc_to_node_item(self, doc: Dict[str, Any]) -> NodeItem:
         """Convert a database document to a NodeItem"""
+        # Extract ID - prefer 'id' field, fallback to '_key' or parse from '_id'
+        doc_id = doc.get('id')
+        if not doc_id or (isinstance(doc_id, str) and not doc_id.strip()):
+            if '_key' in doc and doc['_key']:
+                doc_id = doc['_key']
+            elif '_id' in doc and doc['_id']:
+                _id_value = doc['_id']
+                if isinstance(_id_value, str) and '/' in _id_value:
+                    doc_id = _id_value.split('/', 1)[1]
+                else:
+                    doc_id = _id_value
+            else:
+                doc_id = ''
+
         node_type_str = doc.get('nodeType', 'record')
         try:
             node_type = NodeType(node_type_str)
@@ -1006,12 +815,22 @@ class KnowledgeHubService:
             node_type = NodeType.RECORD
 
         # Get origin
-        origin_str = doc.get('source', 'KB')
+        origin_str = doc.get('origin', 'KB')
         origin = OriginType.KB if origin_str == 'KB' else OriginType.CONNECTOR
+
+        # Convert userRole to ItemPermission if present
+        permission = None
+        user_role = doc.get('userRole')
+        if user_role:
+            # Handle case where userRole might be a list (defensive safeguard)
+            if isinstance(user_role, list):
+                user_role = user_role[0] if user_role else None
+            if user_role:
+                permission = self._role_to_permission(user_role)
 
         # Build NodeItem
         item = NodeItem(
-            id=doc.get('id', ''),
+            id=doc_id,
             name=doc.get('name', ''),
             nodeType=node_type,
             parentId=doc.get('parentId'),
@@ -1028,52 +847,56 @@ class KnowledgeHubService:
             webUrl=doc.get('webUrl'),
             hasChildren=doc.get('hasChildren', False),
             previewRenderable=doc.get('previewRenderable'),
+            permission=permission,
             sharingStatus=doc.get('sharingStatus'),
         )
 
         return item
 
-    async def _get_batch_permissions(
-        self,
-        user_key: str,
-        items: List[NodeItem]
-    ) -> Dict[str, ItemPermission]:
+    def _role_to_permission(self, role: str) -> ItemPermission:
         """
-        Get permissions for multiple items in a single batch query.
-        Returns a dict mapping item_id -> ItemPermission
+        Convert a user role string to ItemPermission object with computed flags.
+
+        Permission hierarchy:
+        - OWNER, ADMIN: Full control (edit + delete)
+        - EDITOR, WRITER: Can edit but not delete
+        - COMMENTER, READER: Read-only (no edit, no delete)
         """
-        if not items:
-            return {}
+        role_upper = role.upper() if role else ''
 
-        try:
-            # Collect node IDs and types
-            node_ids = []
-            node_types = []
+        # Determine edit and delete permissions based on role
+        can_edit = role_upper in ['OWNER', 'ADMIN', 'EDITOR', 'WRITER']
+        can_delete = role_upper in ['OWNER', 'ADMIN']
 
-            for item in items:
-                node_ids.append(item.id)
-                node_types.append(_get_node_type_value(item.nodeType))
+        return ItemPermission(
+            role=role,
+            canEdit=can_edit,
+            canDelete=can_delete,
+        )
 
-            # Use the provider method
-            perm_map = await self.graph_provider.get_knowledge_hub_node_permissions(
-                user_key=user_key,
-                node_ids=node_ids,
-                node_types=node_types,
-            )
+    def _format_enum_label(self, value: str, special_cases: Optional[Dict[str, str]] = None) -> str:
+        """
+        Convert enum value to human-readable label.
 
-            # Convert to ItemPermission objects
-            permissions = {}
-            for node_id, perm_data in perm_map.items():
-                permissions[node_id] = ItemPermission(
-                    role=perm_data.get('role', 'READER'),
-                    canEdit=perm_data.get('canEdit', False),
-                    canDelete=perm_data.get('canDelete', False),
-                    )
+        Handles both UPPER_SNAKE_CASE and camelCase:
+        - "FILE_NAME" → "File Name"
+        - "createdAt" → "Created At"
+        - "autoIndexOff" → "Auto Index Off"
 
-            return permissions
+        Args:
+            value: The enum value to format
+            special_cases: Optional dict of special case mappings that differ from generic formatting
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get batch permissions: {str(e)}")
-            self.logger.error(traceback.format_exc())
-            # Return empty dict - items will have no permission field
-            return {}
+        Returns:
+            Human-readable label
+        """
+        if special_cases and value in special_cases:
+            return special_cases[value]
+
+        # Handle camelCase by inserting space before uppercase letters
+        # Insert space before uppercase letters that follow lowercase letters
+        spaced = re.sub(r'([a-z])([A-Z])', r'\1 \2', value)
+        # Replace underscores with spaces
+        spaced = spaced.replace("_", " ")
+        # Title case each word
+        return spaced.title()

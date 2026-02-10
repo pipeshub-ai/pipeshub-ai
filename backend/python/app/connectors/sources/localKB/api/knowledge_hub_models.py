@@ -14,18 +14,10 @@ class NodeType(str, Enum):
     RECORD_GROUP = "recordGroup"
     RECORD = "record"
 
-
 class OriginType(str, Enum):
     """Valid origin types for nodes"""
     KB = "KB"
     CONNECTOR = "CONNECTOR"
-
-
-class ViewMode(str, Enum):
-    """Valid view modes for the API"""
-    CHILDREN = "children"
-    SEARCH = "search"
-
 
 class SortField(str, Enum):
     """Valid sort fields"""
@@ -35,54 +27,10 @@ class SortField(str, Enum):
     SIZE = "size"
     TYPE = "type"
 
-
 class SortOrder(str, Enum):
     """Valid sort order values"""
     ASC = "asc"
     DESC = "desc"
-
-
-class RecordTypeFilter(str, Enum):
-    """Valid record types for filtering"""
-    FILE = "FILE"
-    WEBPAGE = "WEBPAGE"
-    MESSAGE = "MESSAGE"
-    EMAIL = "EMAIL"
-    TICKET = "TICKET"
-    COMMENT = "COMMENT"
-    MAIL = "MAIL"
-    OTHERS = "OTHERS"
-
-
-class IndexingStatusFilter(str, Enum):
-    """Valid indexing status values for filtering"""
-    NOT_STARTED = "NOT_STARTED"
-    IN_PROGRESS = "IN_PROGRESS"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    QUEUED = "QUEUED"
-    PAUSED = "PAUSED"
-    FILE_TYPE_NOT_SUPPORTED = "FILE_TYPE_NOT_SUPPORTED"
-    AUTO_INDEX_OFF = "AUTO_INDEX_OFF"
-    EMPTY = "EMPTY"
-
-
-class ConnectorFilter(str, Enum):
-    """Valid connector names for filtering"""
-    JIRA = "JIRA"
-    SLACK = "SLACK"
-    DRIVE = "DRIVE"
-    ONEDRIVE = "ONEDRIVE"
-    CONFLUENCE = "CONFLUENCE"
-    SHAREPOINT_ONLINE = "SHAREPOINT ONLINE"
-    OUTLOOK = "OUTLOOK"
-    GMAIL = "GMAIL"
-    NOTION = "NOTION"
-    BOX = "BOX"
-    DROPBOX = "DROPBOX"
-    SERVICENOW = "SERVICENOW"
-    KNOWLEDGE_BASE = "KB"
-
 
 class IncludeOption(str, Enum):
     """Valid include options for response expansions"""
@@ -91,19 +39,16 @@ class IncludeOption(str, Enum):
     AVAILABLE_FILTERS = "availableFilters"
     PERMISSIONS = "permissions"
 
-
 # Request Models
 class DateRangeFilter(BaseModel):
     """Date range filter with optional gte/lte bounds"""
     gte: Optional[int] = Field(None, description="Greater than or equal to (epoch ms)")
     lte: Optional[int] = Field(None, description="Less than or equal to (epoch ms)")
 
-
 class SizeRangeFilter(BaseModel):
     """Size range filter with optional gte/lte bounds"""
     gte: Optional[int] = Field(None, description="Greater than or equal to (bytes)")
     lte: Optional[int] = Field(None, description="Less than or equal to (bytes)")
-
 
 # Response Models
 class ItemPermission(BaseModel):
@@ -111,7 +56,6 @@ class ItemPermission(BaseModel):
     role: str = Field(..., description="User's role on this item (OWNER, WRITER, READER, etc.)")
     canEdit: bool = Field(..., description="Whether user can edit this item")
     canDelete: bool = Field(..., description="Whether user can delete this item")
-
 
 class NodeItem(BaseModel):
     """Response model for a single node in the knowledge hub hierarchy"""
@@ -139,7 +83,6 @@ class NodeItem(BaseModel):
         use_enum_values = True
         exclude_none = True
 
-
 class CurrentNode(BaseModel):
     """Response model for the current node being browsed"""
     id: str = Field(..., description="Current node ID")
@@ -149,7 +92,6 @@ class CurrentNode(BaseModel):
 
     class Config:
         exclude_none = True
-
 
 class BreadcrumbItem(BaseModel):
     """Response model for a breadcrumb item"""
@@ -161,7 +103,6 @@ class BreadcrumbItem(BaseModel):
     class Config:
         exclude_none = True
 
-
 class PaginationInfo(BaseModel):
     """Response model for pagination information"""
     page: int = Field(..., description="Current page number")
@@ -171,15 +112,12 @@ class PaginationInfo(BaseModel):
     hasNext: bool = Field(..., description="Whether there is a next page")
     hasPrev: bool = Field(..., description="Whether there is a previous page")
 
-
 class FilterOption(BaseModel):
     """Response model for a filter option"""
     id: str = Field(..., description="Filter ID value to send in requests")
     label: str = Field(..., description="Display label for the filter")
     type: Optional[str] = Field(None, description="Additional type information (e.g., connector type for apps)")
-    iconPath: Optional[str] = Field(None, description="SVG icon path from assets folder")
     connectorType: Optional[str] = Field(None, description="Connector type/name (for connectors only)")
-
 
 class AvailableFilters(BaseModel):
     """Response model for available filter options"""
@@ -191,7 +129,6 @@ class AvailableFilters(BaseModel):
     indexingStatus: List[FilterOption] = Field(default_factory=list, description="Available indexing statuses")
     sortBy: List[FilterOption] = Field(default_factory=list, description="Available sort fields")
     sortOrder: List[FilterOption] = Field(default_factory=list, description="Available sort orders")
-
 
 class AppliedFilters(BaseModel):
     """Response model for applied filters"""
@@ -211,7 +148,6 @@ class AppliedFilters(BaseModel):
     class Config:
         exclude_none = True
 
-
 class FiltersInfo(BaseModel):
     """Response model for filters information"""
     applied: AppliedFilters = Field(..., description="Currently applied filters")
@@ -220,18 +156,15 @@ class FiltersInfo(BaseModel):
     class Config:
         exclude_none = True
 
-
 class CountItem(BaseModel):
     """A single count item with label and count"""
     label: str = Field(..., description="Label for this count (e.g., 'folders', 'files', 'pages')")
     count: int = Field(..., description="Number of items")
 
-
 class CountsInfo(BaseModel):
     """Response model for counts information"""
     items: List[CountItem] = Field(..., description="Breakdown of counts by type")
     total: int = Field(..., description="Total number of nodes")
-
 
 class PermissionsInfo(BaseModel):
     """Response model for permissions information"""
@@ -241,7 +174,6 @@ class PermissionsInfo(BaseModel):
     canEdit: bool = Field(..., description="Whether user can edit")
     canDelete: bool = Field(..., description="Whether user can delete")
     canManagePermissions: bool = Field(..., description="Whether user can manage permissions")
-
 
 class KnowledgeHubNodesResponse(BaseModel):
     """Response model for the Knowledge Hub nodes API"""
@@ -261,10 +193,8 @@ class KnowledgeHubNodesResponse(BaseModel):
         # Exclude None values from JSON response
         exclude_none = True
 
-
 class KnowledgeHubErrorResponse(BaseModel):
     """Response model for errors"""
     success: bool = Field(False, description="Success status")
     reason: str = Field(..., description="Error reason")
     code: Optional[int] = Field(None, description="Error code")
-
