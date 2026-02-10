@@ -10,8 +10,8 @@ import asyncio
 import os
 import uuid
 from logging import Logger
-from typing import Any, Dict, List, Optional, Set, Tuple
-from urllib.parse import urljoin, urlparse
+from typing import AsyncIterator, Dict, List, Optional, Set, Tuple
+from urllib.parse import ParseResult, urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup, Comment
@@ -74,6 +74,13 @@ HTTP_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+
+# Logging helpers / HTTP status thresholds
+HTTP_ERROR_THRESHOLD = 400
+HTTP_SUCCESS_MIN = 200
+HTTP_SUCCESS_MAX = 399
+LOG_URL_PREVIEW_LEN = 80
+LOG_URL_SHORT_PREVIEW_LEN = 70
 
 
 def _normalize_published_site_url(url: Optional[str]) -> str:
@@ -220,7 +227,7 @@ class GoogleSitesConnector(BaseConnector):
             url = url.split("#")[0]
         return url
 
-    def _same_origin(self, page_url: str, base_parsed: Any) -> bool:
+    def _same_origin(self, page_url: str, base_parsed: ParseResult) -> bool:
         """Return True if page_url has same scheme and netloc as base."""
         try:
             p = urlparse(page_url)
@@ -234,8 +241,12 @@ class GoogleSitesConnector(BaseConnector):
         """Fetch URL; return (html, title, final_url). On failure return (None, None, None)."""
         try:
             async with session.get(url, headers=HTTP_HEADERS, allow_redirects=True) as response:
-                if response.status >= 400:
-                    self.logger.warning("[Google Sites] CRAWL:   HTTP %s for %s", response.status, url[:80])
+                if response.status >= HTTP_ERROR_THRESHOLD:
+                    self.logger.warning(
+                        "[Google Sites] CRAWL:   HTTP %s for %s",
+                        response.status,
+                        url[:LOG_URL_PREVIEW_LEN],
+                    )
                     return None, None, None
                 content_type = (response.headers.get("Content-Type") or "").lower()
                 if "text/html" not in content_type and "application/xhtml" not in content_type:
@@ -247,14 +258,21 @@ class GoogleSitesConnector(BaseConnector):
                 title = title_tag.get_text(strip=True) if title_tag else None
                 return html, title or "", final_url
         except asyncio.TimeoutError:
-            self.logger.warning("[Google Sites] CRAWL:   Timeout %s", url[:80])
+            self.logger.warning(
+                "[Google Sites] CRAWL:   Timeout %s",
+                url[:LOG_URL_PREVIEW_LEN],
+            )
             return None, None, None
         except Exception as e:
-            self.logger.warning("[Google Sites] CRAWL:   Error %s: %s", url[:80], e)
+            self.logger.warning(
+                "[Google Sites] CRAWL:   Error %s: %s",
+                url[:LOG_URL_PREVIEW_LEN],
+                e,
+            )
             return None, None, None
 
     def _extract_same_origin_links(
-        self, html: str, current_url: str, base_parsed: Any
+        self, html: str, current_url: str, base_parsed: ParseResult
     ) -> List[str]:
         """Extract same-origin links from HTML."""
         links_set: Set[str] = set()
@@ -300,11 +318,17 @@ class GoogleSitesConnector(BaseConnector):
                 self.logger.error("[Google Sites] SYNC:   ❌ Published site URL is required")
                 raise ValueError("Published site URL is required. Set the 'Published site URL' filter and try again.")
             try:
-                start_url = _normalize_published_site_url(raw_url.strip() if isinstance(raw_url, str) else str(raw_url))
+                start_url = _normalize_published_site_url(
+                    raw_url.strip() if isinstance(raw_url, str) else str(raw_url)
+                )
             except ValueError as e:
                 self.logger.error("[Google Sites] SYNC:   ❌ Invalid URL: %s", e)
                 raise
-            self.logger.info("[Google Sites] SYNC:   Published site URL: %s", start_url[:80] + ("..." if len(start_url) > 80 else ""))
+            self.logger.info(
+                "[Google Sites] SYNC:   Published site URL: %s",
+                start_url[:LOG_URL_PREVIEW_LEN]
+                + ("..." if len(start_url) > LOG_URL_PREVIEW_LEN else ""),
+            )
             self.logger.info("")
 
             # Step 3: Sync app users
@@ -331,7 +355,17 @@ class GoogleSitesConnector(BaseConnector):
                     if url_norm in visited:
                         continue
                     visited.add(url_norm)
-                    self.logger.info("[Google Sites] SYNC:   Fetch [%s/%s] %s", len(visited), MAX_CRAWL_PAGES, url_norm[:70] + ("..." if len(url_norm) > 70 else ""))
+                    self.logger.info(
+                        "[Google Sites] SYNC:   Fetch [%s/%s] %s",
+                        len(visited),
+                        MAX_CRAWL_PAGES,
+                        url_norm[:LOG_URL_SHORT_PREVIEW_LEN]
+                        + (
+                            "..."
+                            if len(url_norm) > LOG_URL_SHORT_PREVIEW_LEN
+                            else ""
+                        ),
+                    )
                     html, title, final_url = await self._fetch_page(session, url_norm)
                     if html is None:
                         continue
@@ -458,7 +492,7 @@ class GoogleSitesConnector(BaseConnector):
             try:
                 async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
                     async with session.head(start_url, headers=HTTP_HEADERS, allow_redirects=True) as response:
-                        if 200 <= response.status < 400:
+                        if HTTP_SUCCESS_MIN <= response.status <= HTTP_SUCCESS_MAX:
                             self.logger.info(
                                 "[Google Sites] TEST:   ✓ Published site URL reachable (HTTP %s)",
                                 response.status,
@@ -536,8 +570,8 @@ class GoogleSitesConnector(BaseConnector):
         )
         self.logger.info(
             "[Google Sites] STREAM:   URL: %s",
-            (record.weburl or "").strip()[:70] + "..."
-            if len((record.weburl or "")) > 70
+            (record.weburl or "").strip()[:LOG_URL_SHORT_PREVIEW_LEN] + "..."
+            if len((record.weburl or "")) > LOG_URL_SHORT_PREVIEW_LEN
             else (record.weburl or "(none)"),
         )
 
@@ -552,7 +586,7 @@ class GoogleSitesConnector(BaseConnector):
             try:
                 async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
                     async with session.get(page_url, headers=HTTP_HEADERS, allow_redirects=True) as response:
-                        if response.status >= 400:
+                        if response.status >= HTTP_ERROR_THRESHOLD:
                             raise HTTPException(
                                 status_code=HttpStatusCode.NOT_FOUND.value,
                                 detail=f"Page returned HTTP {response.status}",
@@ -569,7 +603,7 @@ class GoogleSitesConnector(BaseConnector):
             self.logger.info("[Google Sites] STREAM:   ✓ Returning %s bytes", len(content_bytes))
             self.logger.info("")
 
-            async def content_gen():
+            async def content_gen() -> AsyncIterator[bytes]:
                 yield content_bytes
 
             return create_stream_record_response(
