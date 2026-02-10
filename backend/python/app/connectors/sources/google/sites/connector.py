@@ -7,6 +7,7 @@ FileRecords per page, and streams content for indexing via HTTP fetch.
 """
 
 import asyncio
+import os
 import uuid
 from logging import Logger
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -60,7 +61,7 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-DEFAULT_CONNECTOR_ENDPOINT = "http://localhost:8000"
+DEFAULT_CONNECTOR_ENDPOINT = os.getenv("CONNECTOR_ENDPOINT", "http://localhost:8000")
 
 # URL-based crawl limits
 MAX_CRAWL_PAGES = 500
@@ -114,10 +115,10 @@ def _normalize_published_site_url(url: Optional[str]) -> str:
         ])
     ])\
     .configure(lambda builder: builder
-        .with_icon("/assets/icons/connectors/drive.svg")
+        .with_icon("/assets/icons/connectors/google_sites.svg")
         .add_documentation_link(DocumentationLink(
-            "Google Drive API – Service account",
-            "https://developers.google.com/identity/protocols/oauth2/service-account",
+            "Google Sites API – Service account",
+            "https://developers.google.com/sites/api/v1/overview",
             "setup"
         ))
         .add_filter_field(FilterField(
@@ -256,7 +257,7 @@ class GoogleSitesConnector(BaseConnector):
         self, html: str, current_url: str, base_parsed: Any
     ) -> List[str]:
         """Extract same-origin links from HTML."""
-        links: List[str] = []
+        links_set: Set[str] = set()
         soup = BeautifulSoup(html, "html.parser")
         for anchor in soup.find_all("a", href=True):
             href = (anchor.get("href") or "").strip()
@@ -271,9 +272,9 @@ class GoogleSitesConnector(BaseConnector):
             if not self._same_origin(absolute, base_parsed):
                 continue
             normalized = self._normalize_crawl_url(absolute)
-            if normalized not in links:
-                links.append(normalized)
-        return links
+            if normalized not in links_set:
+                links_set.add(normalized)
+        return list(links_set)
 
     async def run_sync(self) -> None:
         """Main sync: crawl published site URL over HTTP, discover pages, create RecordGroup + FileRecords."""
@@ -319,6 +320,7 @@ class GoogleSitesConnector(BaseConnector):
             visited: Set[str] = set()
             to_visit: List[str] = [self._normalize_crawl_url(start_url)]
             pages_collected: List[Tuple[str, str, str]] = []  # (url, title, final_url)
+            collected_pages_set: Set[str] = set()
 
             async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
                 # Step 4: BFS crawl
@@ -334,8 +336,9 @@ class GoogleSitesConnector(BaseConnector):
                     if html is None:
                         continue
                     final_norm = self._normalize_crawl_url(final_url)
-                    if final_norm not in {p[0] for p in pages_collected}:
+                    if final_norm not in collected_pages_set:
                         pages_collected.append((final_norm, title or "Page", final_url))
+                        collected_pages_set.add(final_norm)
                     if len(visited) < MAX_CRAWL_PAGES:
                         for link in self._extract_same_origin_links(html, final_url, base_parsed):
                             if self._normalize_crawl_url(link) not in visited:
