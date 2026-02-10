@@ -12,7 +12,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import RedirectResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -290,6 +289,14 @@ async def _build_oauth_config(
     if hasattr(oauth_config, 'token_access_type') and oauth_config.token_access_type:
         if "access_type" not in config.get("additionalParams", {}):
             config["tokenAccessType"] = oauth_config.token_access_type
+
+    # Add scope_parameter_name if specified (defaults to "scope" if not provided)
+    if hasattr(oauth_config, 'scope_parameter_name') and oauth_config.scope_parameter_name != "scope":
+        config["scopeParameterName"] = oauth_config.scope_parameter_name
+
+    # Add token_response_path if specified (optional, for providers with nested token responses)
+    if hasattr(oauth_config, 'token_response_path') and oauth_config.token_response_path:
+        config["tokenResponsePath"] = oauth_config.token_response_path
 
     return config
 
@@ -800,14 +807,22 @@ async def handle_oauth_callback(
     """Handle OAuth callback and exchange code for tokens"""
     base_url = base_url or "http://localhost:3001"
 
-    # Handle OAuth errors
+    # Handle OAuth errors - return JSON instead of RedirectResponse
     if error and error not in ["null", "undefined", "None", ""]:
         logger.error(f"OAuth provider returned error: {error}")
-        return RedirectResponse(url=f"{base_url}/tools?oauth_error={error}")
+        return {
+            "success": False,
+            "error": error,
+            "redirect_url": f"{base_url}/tools?oauth_error={error}"
+        }
 
     if not code or not state:
         logger.error("OAuth callback missing required parameters")
-        return RedirectResponse(url=f"{base_url}/tools?oauth_error=missing_parameters")
+        return {
+            "success": False,
+            "error": "missing_parameters",
+            "redirect_url": f"{base_url}/tools?oauth_error=missing_parameters"
+        }
 
     try:
         user_context = _get_user_context(request)
@@ -901,17 +916,33 @@ async def handle_oauth_callback(
         except Exception as e:
             logger.error(f"Failed to schedule token refresh: {e}")
 
-        return RedirectResponse(url=f"{base_url}/tools?oauth_success=true&toolset_id={synthetic_id}")
+        # Return JSON response with redirect_url (matches connector pattern)
+        return {
+            "success": True,
+            "redirect_url": f"{base_url}/tools?oauth_success=true&toolset_id={synthetic_id}"
+        }
 
     except (ToolsetError, OAuthConfigError, InvalidAuthConfigError) as e:
         logger.error(f"OAuth callback error: {e.detail}")
-        return RedirectResponse(url=f"{base_url}/tools?oauth_error={type(e).__name__}")
+        return {
+            "success": False,
+            "error": type(e).__name__,
+            "redirect_url": f"{base_url}/tools?oauth_error={type(e).__name__}"
+        }
     except HTTPException as e:
         logger.error(f"OAuth callback HTTP error: {e.detail}")
-        return RedirectResponse(url=f"{base_url}/tools?oauth_error=auth_failed")
+        return {
+            "success": False,
+            "error": "auth_failed",
+            "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"
+        }
     except Exception as e:
         logger.error(f"Unexpected OAuth callback error: {e}")
-        return RedirectResponse(url=f"{base_url}/tools?oauth_error=server_error")
+        return {
+            "success": False,
+            "error": "server_error",
+            "redirect_url": f"{base_url}/tools?oauth_error=server_error"
+        }
 
 
 # ============================================================================

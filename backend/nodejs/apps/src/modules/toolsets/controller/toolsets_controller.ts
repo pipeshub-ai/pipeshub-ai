@@ -578,10 +578,10 @@ export const handleOAuthCallback =
         headers
       );
 
-      // Handle 302 redirect responses from Python backend
+      // Handle redirect responses from Python backend (302, 307, etc.)
       if (
         connectorResponse &&
-        connectorResponse.statusCode === 302 &&
+        (connectorResponse.statusCode === 302 || connectorResponse.statusCode === 307) &&
         connectorResponse.headers?.location
       ) {
         const redirectUrl = connectorResponse.headers.location;

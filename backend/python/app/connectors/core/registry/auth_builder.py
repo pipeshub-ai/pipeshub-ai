@@ -104,6 +104,8 @@ class OAuthConfig:
     auth_fields: List[AuthField] = field(default_factory=list)
     token_access_type: Optional[str] = None
     additional_params: Dict[str, Any] = field(default_factory=dict)
+    scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
+    token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
     # Display metadata - stored in OAuth config to make it self-contained
     icon_path: str = "/assets/icons/connectors/default.svg"
     app_group: str = ""
@@ -136,6 +138,8 @@ class OAuthConfig:
             ],
             "token_access_type": self.token_access_type,
             "additional_params": self.additional_params,
+            "scope_parameter_name": self.scope_parameter_name,
+            "token_response_path": self.token_response_path,
             "icon_path": self.icon_path,
             "app_group": self.app_group,
             "app_description": self.app_description,
@@ -185,6 +189,8 @@ class OAuthConfig:
             auth_fields=auth_fields,
             token_access_type=data.get("token_access_type"),
             additional_params=data.get("additional_params", {}),
+            scope_parameter_name=data.get("scope_parameter_name", "scope"),
+            token_response_path=data.get("token_response_path") or data.get("tokenResponsePath"),
             icon_path=data.get("icon_path", "/assets/icons/connectors/default.svg"),
             app_group=data.get("app_group", ""),
             app_description=data.get("app_description", ""),
@@ -260,6 +266,8 @@ class AuthBuilder:
         fields: Optional[List[AuthField]] = None,
         token_access_type: Optional[str] = None,
         additional_params: Optional[Dict[str, Any]] = None,
+        scope_parameter_name: Optional[str] = None,
+        token_response_path: Optional[str] = None,
         icon_path: Optional[str] = None,
         app_group: Optional[str] = None,
         app_description: Optional[str] = None,
@@ -281,6 +289,10 @@ class AuthBuilder:
             fields: List of auth fields (defaults to empty)
             token_access_type: Optional token access type (e.g., "offline")
             additional_params: Optional additional OAuth parameters
+            scope_parameter_name: Optional parameter name for scopes in authorization URL
+                                  (defaults to "scope", use "user_scope" for Slack user scopes)
+            token_response_path: Optional path to extract token from nested response
+                                 (e.g., "authed_user" for Slack OAuth v2 user tokens)
             icon_path: Optional icon path for display
             app_group: Optional app group name
             app_description: Optional app description
@@ -298,6 +310,8 @@ class AuthBuilder:
             auth_fields=fields or [],
             token_access_type=token_access_type,
             additional_params=additional_params or {},
+            scope_parameter_name=scope_parameter_name or "scope",
+            token_response_path=token_response_path,
             icon_path=icon_path or "/assets/icons/connectors/default.svg",
             app_group=app_group or "",
             app_description=app_description or "",

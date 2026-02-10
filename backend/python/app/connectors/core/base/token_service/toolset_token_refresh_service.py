@@ -264,6 +264,18 @@ class ToolsetTokenRefreshService:
                     if additional_params:
                         oauth_flow_config["additionalParams"] = additional_params
 
+                # Add scope_parameter_name if not already set and different from default
+                if "scopeParameterName" not in oauth_flow_config:
+                    scope_param_name = getattr(oauth_config_obj, 'scope_parameter_name', None)
+                    if scope_param_name and scope_param_name != "scope":
+                        oauth_flow_config["scopeParameterName"] = scope_param_name
+
+                # Add token_response_path if not already set
+                if "tokenResponsePath" not in oauth_flow_config:
+                    token_response_path = getattr(oauth_config_obj, 'token_response_path', None)
+                    if token_response_path:
+                        oauth_flow_config["tokenResponsePath"] = token_response_path
+
                 self.logger.debug(f"Enriched OAuth config from registry for {toolset_type}")
 
         except Exception as e:
@@ -352,6 +364,16 @@ class ToolsetTokenRefreshService:
             oauth_flow_config["tokenAccessType"] = auth_config["tokenAccessType"]
         if "additionalParams" in auth_config:
             oauth_flow_config["additionalParams"] = auth_config["additionalParams"]
+        if "scopeParameterName" in auth_config:
+            oauth_flow_config["scopeParameterName"] = auth_config["scopeParameterName"]
+        elif oauth_config_obj and hasattr(oauth_config_obj, 'scope_parameter_name') and oauth_config_obj.scope_parameter_name != "scope":
+            oauth_flow_config["scopeParameterName"] = oauth_config_obj.scope_parameter_name
+
+        # Add token_response_path if specified
+        if "tokenResponsePath" in auth_config:
+            oauth_flow_config["tokenResponsePath"] = auth_config["tokenResponsePath"]
+        elif oauth_config_obj and hasattr(oauth_config_obj, 'token_response_path') and oauth_config_obj.token_response_path:
+            oauth_flow_config["tokenResponsePath"] = oauth_config_obj.token_response_path
 
         # Enrich from registry if fields are missing
         self._enrich_from_toolset_registry(oauth_flow_config, toolset_type)

@@ -125,6 +125,8 @@ tools: List[ToolDefinition] = [
                     "reactions:write"
                 ]
             ),
+            scope_parameter_name="user_scope",  # Slack uses user_scope for user scopes (agent scopes are user scopes)
+            token_response_path="authed_user",  # Slack OAuth v2 returns user tokens in authed_user object
             fields=[
                 CommonFields.client_id("Slack App Console"),
                 CommonFields.client_secret("Slack App Console")
