@@ -34,7 +34,6 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.registry.auth_builder import AuthBuilder, AuthType
 from app.connectors.core.registry.connector_builder import (
     AuthField,
-    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     DocumentationLink,
@@ -478,32 +477,32 @@ class GoogleSitesConnector(BaseConnector):
     def _clean_html_for_indexing(self, html: str) -> str:
         """Parse with BeautifulSoup and extract clean text content for indexing."""
         soup = BeautifulSoup(html, "html.parser")
-        
+
         # Remove non-content elements
         for tag in soup.find_all(["script", "style", "noscript", "iframe", "svg", "nav", "footer", "header", "aside"]):
             tag.decompose()
-        
+
         # Remove comments
         for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
             comment.extract()
-        
+
         # Extract title
         title = ""
         title_tag = soup.find("title")
         if title_tag:
             title = title_tag.get_text(strip=True)
-        
+
         # Get main content area
         main = soup.find("main") or soup.find("article") or soup.find("body")
         content_element = main if main else soup
-        
+
         # Extract clean text using BeautifulSoup's get_text
         text_content = content_element.get_text(separator="\n", strip=True)
-        
+
         # Prepend title if available
         if title:
             text_content = f"{title}\n\n{text_content}"
-        
+
         # Clean up whitespace
         lines = [line.strip() for line in text_content.split("\n") if line.strip()]
         return "\n".join(lines)
