@@ -856,24 +856,51 @@ async def stream_record(
                             temp_file_name = record_name if record_name else f"file.{file_extension or 'tmp'}"
                             temp_file_path = os.path.join(temp_dir, temp_file_name)
 
-                            # Read the stream content and save to temp file
-                            if isinstance(buffer, StreamingResponse):
-                                # Read all chunks from the stream
-                                content = b""
-                                async for chunk in buffer.body_iterator:
-                                    content += chunk
-
-                                # Write to temp file
-                                with open(temp_file_path, "wb") as f:
-                                    f.write(content)
-                            else:
-                                # If buffer is already bytes or file-like
-                                if hasattr(buffer, 'read'):
-                                    with open(temp_file_path, "wb") as f:
-                                        f.write(buffer.read())
+                            # Stream content directly to the temp file to avoid loading it all into memory
+                            with open(temp_file_path, "wb") as f:
+                                if isinstance(buffer, StreamingResponse):
+                                    async for chunk in buffer.body_iterator:
+                                        await asyncio.to_thread(f.write, chunk)
+                                elif isinstance(buffer, Response):
+                                    # Response object: extract body content
+                                    # FastAPI Response stores content in body attribute
+                                    try:
+                                        body_content = buffer.body
+                                        if body_content:
+                                            # body_content might be bytes or a callable
+                                            if callable(body_content):
+                                                body_content = body_content()
+                                            if isinstance(body_content, bytes):
+                                                await asyncio.to_thread(f.write, body_content)
+                                            else:
+                                                raise HTTPException(
+                                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                                    detail=f"Response body is not bytes: {type(body_content)}"
+                                                )
+                                        else:
+                                            raise HTTPException(
+                                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                                detail="Response object has no body content"
+                                            )
+                                    except AttributeError:
+                                        # Fallback: try to get content from Response
+                                        raise HTTPException(
+                                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                            detail="Cannot extract body from Response object"
+                                        )
+                                elif hasattr(buffer, 'read'):
+                                    while True:
+                                        chunk = await asyncio.to_thread(buffer.read, 8192)
+                                        if not chunk:
+                                            break
+                                        await asyncio.to_thread(f.write, chunk)
+                                elif isinstance(buffer, bytes):
+                                    await asyncio.to_thread(f.write, buffer)
                                 else:
-                                    with open(temp_file_path, "wb") as f:
-                                        f.write(buffer)
+                                    raise HTTPException(
+                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                        detail=f"Unsupported buffer type for conversion: {type(buffer)}"
+                                    )
 
                             # Convert to PDF
                             pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
@@ -904,10 +931,13 @@ async def stream_record(
                                 fallback_filename="converted_file.pdf"
                             )
                     except Exception as conv_error:
-                        logger.error(f"Error converting file to PDF: {str(conv_error)}")
-                        # If conversion fails, return original buffer
-                        logger.warning("PDF conversion failed, returning original file")
-                        return buffer
+                        logger.error(f"Error converting file to PDF: {str(conv_error)}", exc_info=True)
+                        # Raise error instead of silently returning original buffer
+                        # This ensures the frontend receives an error response
+                        raise HTTPException(
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                            detail=f"Failed to convert file to PDF: {str(conv_error)}"
+                        )
                 else:
                     # File type doesn't need conversion, return original buffer
                     logger.info(f"File type {mime_type} doesn't need conversion, returning original")
