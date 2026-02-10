@@ -1058,6 +1058,43 @@ class KnowledgeBaseService :
                     "skipped_teams": skipped_teams
                 }
 
+
+            owners_being_updated = []
+
+            for user_id in valid_user_ids:
+                current_role = current_permissions["users"].get(user_id)
+                if current_role == "OWNER":
+                    owners_being_updated.append(user_id)
+
+            # Bulk Operation Prevention: Cannot perform bulk operations on Owner permissions
+            if len(valid_user_ids) > 1 and owners_being_updated:
+                # Check if this is a bulk promotion to OWNER (all non-Owners being promoted)
+                if new_role == "OWNER" and len(owners_being_updated) == 0:
+                    # Bulk promotion to OWNER is allowed but should be logged
+                    self.logger.info(f"⚠️ Bulk promotion of {len(valid_user_ids)} users to OWNER role on KB {kb_id}")
+                else:
+                    # Mixed operation or bulk update of existing Owners - reject
+                    return {
+                        "success": False,
+                        "reason": "Cannot perform bulk operations on Owner permissions. Please update Owners one at a time.",
+                        "code": "400"
+                    }
+
+            # Single Owner Update Validation
+            if len(owners_being_updated) == 1 and len(valid_user_ids) == 1:
+                owner_user_id = owners_being_updated[0]
+                if new_role != "OWNER":
+                    # Owner is being downgraded - check minimum requirement
+                    owner_count = await self.arango_service.count_kb_owners(kb_id)
+                    if owner_count <= 1:
+                        return {
+                            "success": False,
+                            "reason": "Cannot remove all owners from the knowledge base. At least one owner must remain.",
+                            "code": "400"
+                        }
+                    self.logger.info(f"⚠️ Downgrading Owner {owner_user_id} to {new_role} on KB {kb_id} (remaining owners: {owner_count - 1})")
+                # If new_role == "OWNER", it's a no-op (no change), which is fine
+
             # Update permissions using batch update method for valid entities only
             result = await self.arango_service.update_kb_permission(
                 kb_id=kb_id,

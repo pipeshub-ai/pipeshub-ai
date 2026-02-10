@@ -12148,7 +12148,7 @@ class BaseArangoService:
             # Build conditions for targets
             target_conditions = []
             if user_ids:
-                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
+                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
                 bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
 
             # Teams don't have roles - they just have access or not
