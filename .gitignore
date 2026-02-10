@@ -182,3 +182,4 @@ image_*.png
 backend/python/cleanup.ps1
 .vscode/settings.json
 pyrightconfig.json
+.claude/settings.local.json
