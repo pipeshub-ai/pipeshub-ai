@@ -796,7 +796,7 @@ class KnowledgeHubService:
         """Convert a database document to a NodeItem"""
         # Extract ID - prefer 'id' field, fallback to '_key' or parse from '_id'
         doc_id = doc.get('id')
-        if not doc_id or (isinstance(doc_id, str) and not doc_id.strip()):
+        if not isinstance(doc_id, str) or not doc_id.strip():
             if '_key' in doc and doc['_key']:
                 doc_id = doc['_key']
             elif '_id' in doc and doc['_id']:
