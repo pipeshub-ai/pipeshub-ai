@@ -19,7 +19,7 @@ import PdfHighlighterComp from '../qna/chatbot/components/pdf-highlighter';
 import MarkdownViewer from '../qna/chatbot/components/markdown-highlighter';
 import { createScrollableContainerStyle } from '../qna/chatbot/utils/styles/scrollbar';
 import { useConnectors } from '../accountdetails/connectors/context';
-import { getWebUrlWithFragment } from './utils/utils';
+import { getExtensionFromMimeType, getWebUrlWithFragment } from './utils/utils';
 
 import type { Filters } from './types/knowledge-base';
 import type { PipesHub, SearchResult, AggregatedDocument } from './types/search-response';
@@ -60,6 +60,7 @@ function getDocumentType(extension: string) {
   if (extension === 'txt') return 'text';
   if (extension === 'md') return 'md';
   if (extension === 'mdx') return 'mdx';
+  if (['pptx', 'ppt'].includes(extension)) return 'pdf';
   if (['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(extension)) return 'image';
   return 'other';
 }
@@ -313,7 +314,10 @@ export default function KnowledgeBaseSearch() {
       // Unified streaming - use stream/record API for both KB and connector records
       try {
         let params: { convertTo?: string } = {};
-        if (['pptx', 'ppt'].includes(record?.extension)) {
+        const ext = getExtensionFromMimeType(record?.mimeType || '') || record?.extension || '';
+        const isPowerPoint = ['pptx', 'ppt'].includes(ext);
+        const isGoogleSlides = record?.mimeType === 'application/vnd.google-apps.presentation';
+        if (isPowerPoint || isGoogleSlides) {
           params = { convertTo: 'application/pdf' };
           handleLargePPTFile(record);
         }

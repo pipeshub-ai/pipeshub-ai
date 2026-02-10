@@ -821,13 +821,100 @@ async def stream_record(
                     detail=f"Connector '{connector_id}' not found"
                 )
 
-            # Pass user_id for google drive
+            # Get the buffer from connector (without passing convertTo)
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
                 buffer = await connector_obj.stream_record(record, user_id)
             else:
                 buffer = await connector_obj.stream_record(record)
 
-            return buffer
+            # Handle conversion after getting the buffer
+            if convertTo == MimeTypes.PDF.value:
+                # Get mime type and extension to check if conversion is needed
+                mime_type = get_mime_type_from_record(record)
+                record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None) or 'file'
+
+                # Determine file extension from record name or mime type
+                file_extension = None
+                if record_name and '.' in record_name:
+                    file_extension = record_name.split('.')[-1].lower()
+
+                # Check if this file type needs conversion (PPT, PPTX, Google Slides)
+                needs_conversion = (
+                    file_extension in ['ppt', 'pptx'] or
+                    mime_type in [
+                        MimeTypes.PPT.value,
+                        MimeTypes.PPTX.value,
+                        MimeTypes.GOOGLE_SLIDES.value
+                    ]
+                )
+
+                if needs_conversion:
+                    logger.info(f"Converting {record_name} to PDF")
+                    try:
+                        with tempfile.TemporaryDirectory() as temp_dir:
+                            # Determine file name for temp file
+                            temp_file_name = record_name if record_name else f"file.{file_extension or 'tmp'}"
+                            temp_file_path = os.path.join(temp_dir, temp_file_name)
+
+                            # Read the stream content and save to temp file
+                            if isinstance(buffer, StreamingResponse):
+                                # Read all chunks from the stream
+                                content = b""
+                                async for chunk in buffer.body_iterator:
+                                    content += chunk
+
+                                # Write to temp file
+                                with open(temp_file_path, "wb") as f:
+                                    f.write(content)
+                            else:
+                                # If buffer is already bytes or file-like
+                                if hasattr(buffer, 'read'):
+                                    with open(temp_file_path, "wb") as f:
+                                        f.write(buffer.read())
+                                else:
+                                    with open(temp_file_path, "wb") as f:
+                                        f.write(buffer)
+
+                            # Convert to PDF
+                            pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+
+                            # Return the converted PDF as a streaming response
+                            pdf_filename = f"{Path(record_name).stem}.pdf" if record_name else "converted_file.pdf"
+
+                            async def pdf_file_iterator() -> AsyncGenerator[bytes, None]:
+                                try:
+                                    with open(pdf_path, "rb") as pdf_file:
+                                        while True:
+                                            chunk = await asyncio.to_thread(pdf_file.read, 8192)
+                                            if not chunk:
+                                                break
+                                            yield chunk
+                                except Exception as e:
+                                    logger.error(f"Error reading PDF file: {str(e)}")
+                                    raise HTTPException(
+                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                        detail="Error reading converted PDF file",
+                                    )
+
+                            # Use create_stream_record_response for consistent header handling
+                            return create_stream_record_response(
+                                pdf_file_iterator(),
+                                filename=pdf_filename,
+                                mime_type="application/pdf",
+                                fallback_filename="converted_file.pdf"
+                            )
+                    except Exception as conv_error:
+                        logger.error(f"Error converting file to PDF: {str(conv_error)}")
+                        # If conversion fails, return original buffer
+                        logger.warning("PDF conversion failed, returning original file")
+                        return buffer
+                else:
+                    # File type doesn't need conversion, return original buffer
+                    logger.info(f"File type {mime_type} doesn't need conversion, returning original")
+                    return buffer
+            else:
+                # No conversion requested, return original buffer
+                return buffer
         except Exception as e:
             logger.error(f"Error downloading file: {str(e)}", exc_info=True)
             raise HTTPException(
