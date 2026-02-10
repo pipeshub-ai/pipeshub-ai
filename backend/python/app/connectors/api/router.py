@@ -919,45 +919,66 @@ async def stream_record(
                             # Verify PDF file exists before creating the iterator
                             if not os.path.exists(pdf_path):
                                 # Try to find PDF files in the temp directory as fallback
-                                pdf_files = [f for f in os.listdir(temp_dir) if f.endswith('.pdf')]
-                                if pdf_files:
-                                    # Use the first PDF file found (LibreOffice might have renamed it)
-                                    pdf_path = os.path.join(temp_dir, pdf_files[0])
-                                    logger.warning(f"Expected PDF not found, using: {pdf_path}")
-                                else:
-                                    error_msg = f"PDF conversion completed but file not found at: {pdf_path}. No PDF files in temp directory."
-                                    logger.error(error_msg)
+                                try:
+                                    all_files = os.listdir(temp_dir)
+                                    pdf_files = [f for f in all_files if f.endswith('.pdf')]
+                                    logger.info(f"Expected PDF not found at {pdf_path}. Files in temp_dir: {all_files}")
+                                    if pdf_files:
+                                        # Use the first PDF file found (LibreOffice might have renamed it)
+                                        pdf_path = os.path.join(temp_dir, pdf_files[0])
+                                        logger.warning(f"Using alternative PDF file: {pdf_path}")
+                                    else:
+                                        error_msg = f"PDF conversion completed but file not found at: {pdf_path}. Files in temp_dir: {all_files}"
+                                        logger.error(error_msg)
+                                        raise HTTPException(
+                                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                            detail="PDF conversion failed - output file not found"
+                                        )
+                                except OSError as e:
+                                    logger.error(f"Error listing temp directory: {str(e)}")
                                     raise HTTPException(
                                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail="PDF conversion failed - output file not found"
+                                        detail=f"PDF conversion failed - cannot access temp directory: {str(e)}"
                                     )
+
+                            # Final verification that the file exists and is readable
+                            if not os.path.exists(pdf_path) or not os.path.isfile(pdf_path):
+                                error_msg = f"PDF file validation failed: {pdf_path} does not exist or is not a file"
+                                logger.error(error_msg)
+                                raise HTTPException(
+                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                    detail="PDF conversion failed - output file validation failed"
+                                )
+
+                            # Read the PDF file into memory before temp directory is cleaned up
+                            # This is necessary because the temp directory will be deleted when we exit the 'with' block
+                            # but the async generator will be consumed later
+                            try:
+                                with open(pdf_path, "rb") as pdf_file:
+                                    pdf_content = await asyncio.to_thread(pdf_file.read)
+                                logger.info(f"Successfully read PDF file: {len(pdf_content)} bytes")
+                            except Exception as e:
+                                logger.error(f"Error reading PDF file into memory: {str(e)}", exc_info=True)
+                                raise HTTPException(
+                                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                                    detail=f"Error reading converted PDF file: {str(e)}"
+                                )
 
                             # Return the converted PDF as a streaming response
                             pdf_filename = f"{Path(record_name).stem}.pdf" if record_name else "converted_file.pdf"
 
+                            # Create iterator from in-memory content
                             async def pdf_file_iterator() -> AsyncGenerator[bytes, None]:
                                 try:
-                                    # Double-check file exists before opening
-                                    if not os.path.exists(pdf_path):
-                                        raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-                                    
-                                    with open(pdf_path, "rb") as pdf_file:
-                                        while True:
-                                            chunk = await asyncio.to_thread(pdf_file.read, 8192)
-                                            if not chunk:
-                                                break
-                                            yield chunk
-                                except FileNotFoundError as e:
-                                    logger.error(f"PDF file not found: {str(e)}")
-                                    raise HTTPException(
-                                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail=f"PDF file not found: {str(e)}"
-                                    )
+                                    # Stream the PDF content in chunks
+                                    chunk_size = 8192
+                                    for i in range(0, len(pdf_content), chunk_size):
+                                        yield pdf_content[i:i + chunk_size]
                                 except Exception as e:
-                                    logger.error(f"Error reading PDF file: {str(e)}", exc_info=True)
+                                    logger.error(f"Error streaming PDF content: {str(e)}", exc_info=True)
                                     raise HTTPException(
                                         status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                        detail=f"Error reading converted PDF file: {str(e)}"
+                                        detail=f"Error streaming converted PDF file: {str(e)}"
                                     )
 
                             # Use create_stream_record_response for consistent header handling
