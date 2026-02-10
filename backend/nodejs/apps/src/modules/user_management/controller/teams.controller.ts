@@ -1,7 +1,15 @@
 import { Response, NextFunction } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  ConflictError,
+  ForbiddenError,
+  InternalServerError,
+  NotFoundError,
+  ServiceUnavailableError,
+  UnauthorizedError,
+} from '../../../libs/errors/http.errors';
 import {
   AICommandOptions,
   AIServiceCommand,
@@ -11,6 +19,87 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
 import { validateNoFormatSpecifiers, validateNoXSS } from '../../../utils/xss-sanitization';
+
+const AI_SERVICE_UNAVAILABLE_MESSAGE =
+  'AI Service is currently unavailable. Please check your network connection or try again later.';
+
+/**
+ * Handle backend errors from AI service responses
+ * Extracts error messages from response data and creates appropriate HTTP errors
+ */
+const handleBackendError = (error: any, operation: string): Error => {
+  if (error) {
+    if (
+      (error?.cause && error.cause.code === 'ECONNREFUSED') ||
+      (typeof error?.message === 'string' &&
+        error.message.includes('fetch failed'))
+    ) {
+      return new ServiceUnavailableError(
+        AI_SERVICE_UNAVAILABLE_MESSAGE,
+        error,
+      );
+    }
+
+    const { statusCode, data, message } = error;
+    const errorDetail =
+      data?.detail ||
+      data?.reason ||
+      data?.message ||
+      message ||
+      'Unknown error';
+
+    if (errorDetail === 'ECONNREFUSED') {
+      return new ServiceUnavailableError(
+        AI_SERVICE_UNAVAILABLE_MESSAGE,
+        error,
+      );
+    }
+
+    switch (statusCode) {
+      case 400:
+        return new BadRequestError(errorDetail);
+      case 401:
+        return new UnauthorizedError(errorDetail);
+      case 403:
+        return new ForbiddenError(errorDetail);
+      case 404:
+        return new NotFoundError(errorDetail);
+      case 409:
+        return new ConflictError(errorDetail);
+      case 500:
+        return new InternalServerError(errorDetail);
+      default:
+        return new InternalServerError(`Backend error: ${errorDetail}`);
+    }
+  }
+
+  if (error.request) {
+    return new InternalServerError('Backend service unavailable');
+  }
+
+  return new InternalServerError(`${operation} failed: ${error.message}`);
+};
+
+/**
+ * Handle AI service response
+ * Checks status code and extracts error messages if needed
+ */
+const handleAIServiceResponse = (
+  aiResponse: any,
+  res: Response,
+  operation: string,
+  failureMessage: string,
+  successStatus: number = HTTP_STATUS.OK,
+) => {
+  if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK && aiResponse.statusCode !== HTTP_STATUS.CREATED) {
+    throw handleBackendError(aiResponse, operation);
+  }
+  const responseData = aiResponse.data;
+  if (!responseData) {
+    throw new NotFoundError(`${operation} failed: ${failureMessage}`);
+  }
+  res.status(successStatus).json(responseData);
+};
 
 @injectable()
 export class TeamsController {
@@ -50,18 +139,21 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to create team');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.CREATED).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Creating team',
+        'Team creation failed',
+        HTTP_STATUS.CREATED,
+      );
     } catch (error: any) {
       this.logger.error('Error creating team', {
         requestId,
         message: 'Error creating team',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'create team');
+      next(handledError);
     }
   }
 
@@ -91,18 +183,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to get team');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Getting team',
+        'Team not found',
+      );
     } catch (error: any) {
       this.logger.error('Error getting team', {
         requestId,
         message: 'Error getting team',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'get team');
+      next(handledError);
     }
   }
 
@@ -156,18 +250,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to get teams');
-      }
-      const teams = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(teams);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Getting teams',
+        'Teams not found',
+      );
     } catch (error: any) {
       this.logger.error('Error getting teams', {
         requestId,
         message: 'Error getting teams',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'get teams');
+      next(handledError);
     }
   }
 
@@ -198,18 +294,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to add users to team');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Adding users to team',
+        'Failed to add users to team',
+      );
     } catch (error: any) {
       this.logger.error('Error adding users to team', {
         requestId,
         message: 'Error adding users to team',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'add users to team');
+      next(handledError);
     }
   }
 
@@ -240,18 +338,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to update team');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Updating team',
+        'Failed to update team',
+      );
     } catch (error: any) {
       this.logger.error('Error updating team', {
         requestId,
         message: 'Error updating team',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'update team');
+      next(handledError);
     }
   }
 
@@ -281,18 +381,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to delete team');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Deleting team',
+        'Failed to delete team',
+      );
     } catch (error: any) {
       this.logger.error('Error deleting team', {
         requestId,
         message: 'Error deleting team',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'delete team');
+      next(handledError);
     }
   }
 
@@ -324,18 +426,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to remove user from team');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Removing user from team',
+        'Failed to remove user from team',
+      );
     } catch (error: any) {
       this.logger.error('Error removing user from team', {
         requestId,
         message: 'Error removing user from team',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'remove user from team');
+      next(handledError);
     }
   }
 
@@ -365,18 +469,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to get team users');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Getting team users',
+        'Team users not found',
+      );
     } catch (error: any) {
       this.logger.error('Error getting team users', {
         requestId,
         message: 'Error getting team users',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'get team users');
+      next(handledError);
     }
   }
 
@@ -473,18 +579,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to update team users permissions');
-      }
-      const team = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(team);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Updating team users permissions',
+        'Failed to update team users permissions',
+      );
     } catch (error: any) {
       this.logger.error('Error updating team users permissions', {
         requestId,
         message: 'Error updating team users permissions',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'update team users permissions');
+      next(handledError);
     }
   }
 
@@ -538,18 +646,20 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
-      if (aiResponse && aiResponse.statusCode !== HTTP_STATUS.OK) {
-        throw new BadRequestError('Failed to get user created teams');
-      }
-      const teams = aiResponse.data;
-      res.status(HTTP_STATUS.OK).json(teams);
+      handleAIServiceResponse(
+        aiResponse,
+        res,
+        'Getting user created teams',
+        'User created teams not found',
+      );
     } catch (error: any) {
       this.logger.error('Error getting user created teams', {
         requestId,
         message: 'Error getting user created teams',
         error: error.message,
       });
-      next(error);
+      const handledError = handleBackendError(error, 'get user created teams');
+      next(handledError);
     }
   }
 }
