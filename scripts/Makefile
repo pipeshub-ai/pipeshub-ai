@@ -114,18 +114,21 @@ help: ## Show this help message
 install-deps-linux: ## Install system dependencies on Linux
 	@echo "$(BLUE)Installing Linux dependencies...$(NC)"
 	sudo apt update
-	sudo apt install -y python3.10-venv
 	sudo apt-get install -y libreoffice
 	sudo apt install -y ocrmypdf tesseract-ocr ghostscript unpaper qpdf
+	@echo "$(BLUE)Installing uv package manager...$(NC)"
+	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)Linux dependencies installed successfully!$(NC)"
 
 install-deps-mac: ## Install system dependencies on macOS
 	@echo "$(BLUE)Installing macOS dependencies...$(NC)"
 	@echo "$(YELLOW)Installing Homebrew if not already installed...$(NC)"
 	@bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || echo "Homebrew already installed"
-	brew install python@3.10
-	brew install libreoffice
-	brew install ocrmypdf ghostscript unpaper qpdf tesseract
+	brew install python@3.10 || true
+	brew install libreoffice || true
+	brew install ocrmypdf ghostscript unpaper qpdf tesseract || true
+	@echo "$(BLUE)Installing uv package manager...$(NC)"
+	curl -LsSf https://astral.sh/uv/install.sh | sh
 	@echo "$(GREEN)macOS dependencies installed successfully!$(NC)"
 
 install-deps-windows: ## Show Windows installation instructions
@@ -396,10 +399,10 @@ setup-python: ## Setup Python backend (create venv and install dependencies)
 	fi
 	@if [ ! -d $(ROOT_DIR)/backend/python/venv ]; then \
 		echo "$(BLUE)Creating Python virtual environment...$(NC)"; \
-		cd $(ROOT_DIR)/backend/python && python3.10 -m venv venv; \
+		cd $(ROOT_DIR)/backend/python && uv venv venv --python 3.10; \
 	fi
 	@echo "$(BLUE)Installing Python dependencies...$(NC)"
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && pip install -e .
+	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e .
 	@echo "$(BLUE)Installing additional language models...$(NC)"
 	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && python -m spacy download en_core_web_sm && python -c "import nltk; nltk.download('punkt')"
 	@echo "$(GREEN)Python backend setup complete!$(NC)"
@@ -416,7 +419,7 @@ setup-python-deps: ## Install Python dependencies (requires existing venv)
 		echo "$(RED)Error: Virtual environment not found. Run 'make setup-python' first$(NC)"; \
 		exit 1; \
 	fi
-	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && pip install -e .
+	cd $(ROOT_DIR)/backend/python && source venv/bin/activate && uv pip install -e .
 
 implode-setup-python: ## Remove Python setup
 	@echo "$(YELLOW)Removing Python setup...$(NC)"
