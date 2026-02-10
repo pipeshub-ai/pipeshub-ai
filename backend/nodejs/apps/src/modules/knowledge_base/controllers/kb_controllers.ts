@@ -2410,89 +2410,41 @@ export const createKBPermission =
 
       logger.info(
         `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
-        {
-          userIds:
-            userIds.length > 5
-              ? `${userIds.slice(0, 5).join(', ')} and ${userIds.length - 5} more`
-              : userIds.join(', '),
-          teamIds:
-            teamIds.length > 5
-              ? `${teamIds.slice(0, 5).join(', ')} and ${teamIds.length - 5} more`
-              : teamIds.join(', '),
-          role: role || 'N/A (team access)',
-        },
       );
 
-      try {
-        const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
-          userIds: userIds,
-          teamIds: teamIds,
-        };
-        // Only include role if it's provided (for users)
-        if (role) {
-          payload.role = role;
-        }
-
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.POST,
-          req.headers as Record<string, string>,
-          payload,
-        );
-
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to create permissions');
-        }
-
-        const permissionResult = response.data as any;
-
-        logger.info('Permissions created successfully', {
-          kbId,
-          grantedCount: permissionResult.grantedCount,
-          updatedCount: permissionResult.updatedCount,
-          role: role || 'N/A (team access)',
-        });
-
-        res.status(201).json({
-          kbId: kbId,
-          permissionResult,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission creation', {
-          kbId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        // Handle different error types from Python service
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - only KB owners can grant permissions',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          const errorData = pythonServiceError.response?.data;
-          if (errorData?.reason?.includes('Users not found')) {
-            throw new NotFoundError(errorData.reason);
-          } else {
-            throw new NotFoundError('Knowledge base not found');
-          }
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid permission data',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to create permissions: ${pythonServiceError.message}`,
-          );
-        }
+      const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
+        userIds: userIds,
+        teamIds: teamIds,
+      };
+      // Only include role if it's provided (for users)
+      if (role) {
+        payload.role = role;
       }
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        payload,
+      );
+
+      if (response.statusCode !== 200 && response.statusCode !== 201) {
+        throw handleBackendError(response, 'create permissions');
+      }
+
+      const permissionResult = response.data as any;
+      if (!permissionResult) {
+        throw new NotFoundError('Failed to create permissions');
+      }
+
+      res.status(201).json({
+        kbId: kbId,
+        permissionResult,
+      });
     } catch (error: any) {
-      logger.error('Error Creating permissions for knowledge base', {
+      logger.error('Error creating KB permissions', {
         error: error.message,
         kbId: req.params.kbId,
-        status: error.response?.status,
-        data: error.response?.data,
       });
       const handleError = handleBackendError(error, 'create permissions');
       next(handleError);
@@ -2539,72 +2491,33 @@ export const updateKBPermission =
         `Updating permission for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId} to ${role}`,
       );
 
-      try {
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.PUT,
-          req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-            role: role,
-          },
-        );
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.PUT,
+        req.headers as Record<string, string>,
+        {
+          userIds: userIds,
+          teamIds: teamIds,
+          role: role,
+        },
+      );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to update permission');
-        }
-
-        const updateResult = response.data as any;
-
-        logger.info('Permission updated successfully', {
-          kbId,
-          userIds: updateResult.userIds,
-          teamIds: updateResult.teamIds,
-          newRole: updateResult.newRole,
-        });
-
-        res.status(200).json({
-          kbId: kbId,
-          userIds: updateResult.userIds,
-          teamIds: updateResult.teamIds,
-          newRole: updateResult.newRole,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission update', {
-          kbId,
-          userIds: req.body.userIds,
-          teamIds: req.body.teamIds,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - only KB owners can update permissions',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError(
-            'User permission not found on this knowledge base',
-          );
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Invalid permission update data',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to update permission: ${pythonServiceError.message}`,
-          );
-        }
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'update permissions');
       }
+
+      const updateResult = response.data as any;
+
+      res.status(200).json({
+        kbId: kbId,
+        userIds: updateResult.userIds,
+        teamIds: updateResult.teamIds,
+        newRole: updateResult.newRole,
+      });
     } catch (error: any) {
       logger.error('Error updating KB permission', {
-        kbId: req.params.kbId,
-        userIds: req.body.userIds,
-        teamIds: req.body.teamIds,
         error: error.message,
-        requestId: req.context?.requestId,
+        kbId: req.params.kbId,
       });
       const handleError = handleBackendError(error, 'update permissions');
       next(handleError);
@@ -2633,70 +2546,31 @@ export const removeKBPermission =
         `Removing permission for ${userIds.length} users and ${teamIds.length} teams from KB ${kbId}`,
       );
 
-      try {
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.DELETE,
-          req.headers as Record<string, string>,
-          {
-            userIds: userIds,
-            teamIds: teamIds,
-          },
-        );
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.DELETE,
+        req.headers as Record<string, string>,
+        {
+          userIds: userIds,
+          teamIds: teamIds,
+        },
+      );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to remove permission');
-        }
-
-        const removeResult = response.data as any;
-
-        logger.info('Permission removed successfully', {
-          kbId,
-          userIds: removeResult.userIds,
-          teamIds: removeResult.teamIds,
-        });
-
-        res.status(200).json({
-          kbId: kbId,
-          userIds: removeResult.userIds,
-          teamIds: removeResult.teamIds,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission removal', {
-          kbId,
-          userIds: req.body.userIds,
-          teamIds: req.body.teamIds,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - only KB owners can remove permissions',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError(
-            'User permission not found on this knowledge base',
-          );
-        } else if (pythonServiceError.response?.status === 400) {
-          throw new BadRequestError(
-            pythonServiceError.response?.data?.reason ||
-              'Cannot remove permission',
-          );
-        } else {
-          throw new InternalServerError(
-            `Failed to remove permission: ${pythonServiceError.message}`,
-          );
-        }
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'remove permissions');
       }
+
+      const removeResult = response.data as any;
+
+      res.status(200).json({
+        kbId: kbId,
+        userIds: removeResult.userIds,
+        teamIds: removeResult.teamIds,
+      });
     } catch (error: any) {
       logger.error('Error removing KB permission', {
-        kbId: req.params.kbId,
-        userIds: req.body.userIds,
-        teamIds: req.body.teamIds,
         error: error.message,
-        requesterId: req.user?.userId,
-        requestId: req.context?.requestId,
+        kbId: req.params.kbId,
       });
       const handleError = handleBackendError(error, 'removing KB permissions');
       next(handleError);
@@ -2718,56 +2592,30 @@ export const listKBPermissions =
 
       logger.info(`Listing permissions for KB ${kbId}`);
 
-      try {
-        const response = await executeConnectorCommand(
-          `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
-          HttpMethod.GET,
-          req.headers as Record<string, string>,
-        );
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
 
-        if (response.statusCode !== 200) {
-          throw new InternalServerError('Failed to list permissions');
-        }
-
-        const listResult = response.data as any;
-
-        logger.info('Permissions listed successfully', {
-          kbId,
-          totalCount: listResult.totalCount,
-        });
-
-        res.status(200).json({
-          kbId: kbId,
-          permissions: listResult.permissions,
-          totalCount: listResult.totalCount,
-        });
-      } catch (pythonServiceError: any) {
-        logger.error('Error calling Python service for permission listing', {
-          kbId,
-          error: pythonServiceError.message,
-          response: pythonServiceError.response?.data,
-        });
-
-        if (pythonServiceError.response?.status === 403) {
-          throw new ForbiddenError(
-            'Permission denied - you do not have access to this knowledge base',
-          );
-        } else if (pythonServiceError.response?.status === 404) {
-          throw new NotFoundError('Knowledge base not found');
-        } else {
-          throw new InternalServerError(
-            `Failed to list permissions: ${pythonServiceError.message}`,
-          );
-        }
+      if (response.statusCode !== 200) {
+        throw handleBackendError(response, 'list permissions');
       }
+
+      const listResult = response.data as any;
+
+      res.status(200).json({
+        kbId: kbId,
+        permissions: listResult.permissions,
+        totalCount: listResult.totalCount,
+      });
     } catch (error: any) {
       logger.error('Error listing KB permissions', {
-        kbId: req.params.kbId,
         error: error.message,
-        requesterId: req.user?.userId,
-        requestId: req.context?.requestId,
+        kbId: req.params.kbId,
       });
-      next(error);
+      const handleError = handleBackendError(error, 'list permissions');
+      next(handleError);
     }
   };
 

@@ -287,13 +287,25 @@ const EditTeamDialog: React.FC<EditTeamDialogProps> = ({
     setSubmitting(true);
     try {
       // Build memberRoles array from teamMembers and memberRoles state
+      // Filter out unchanged Owners (if role is still OWNER, don't include in update)
       const userRoles = teamMembers
         .map((member) => {
           const userId = member.id || member._key || member._id;
           if (!userId) return null;
+          
+          const existingMember = team?.members.find((m) => m.id === userId);
+          const isOwner = existingMember?.isOwner || false;
+          const newRole = memberRoles[userId] || teamRole;
+          
+          // If user is an Owner and role hasn't changed (still OWNER), skip them
+          if (isOwner && newRole === 'OWNER') {
+            return null; // Don't include unchanged Owners
+          }
+          
+          // Include if: non-Owner, or Owner with changed role
           return {
             userId,
-            role: (memberRoles[userId] || teamRole) as 'READER' | 'WRITER' | 'OWNER',
+            role: newRole as 'READER' | 'WRITER' | 'OWNER',
           };
         })
         .filter((ur): ur is { userId: string; role: 'READER' | 'WRITER' | 'OWNER' } => ur !== null);
@@ -859,7 +871,6 @@ const EditTeamDialog: React.FC<EditTeamDialogProps> = ({
                                 <Select
                                   value={memberRoles[member.id || member._key || member._id || ''] || (team?.members.find((m) => m.id === (member.id || member._key || member._id))?.role) || teamRole}
                                   onChange={(e) => handleMemberRoleChange(member.id || member._key || member._id || '', e.target.value)}
-                                  disabled={team?.members.find((m) => m.id === (member.id || member._key || member._id))?.isOwner || false}
                                   sx={{
                                     height: 32,
                                     fontSize: '0.75rem',
@@ -876,11 +887,10 @@ const EditTeamDialog: React.FC<EditTeamDialogProps> = ({
                                   ))}
                                 </Select>
                               </FormControl>
-                              {!(team?.members.find((m) => m.id === (member.id || member._key || member._id))?.isOwner) && (
-                                <IconButton
-                                  edge="end"
-                                  size="small"
-                                  onClick={() => handleRemoveMember(member)}
+                              <IconButton
+                                edge="end"
+                                size="small"
+                                onClick={() => handleRemoveMember(member)}
                                   sx={{
                                     width: 32,
                                     height: 32,
@@ -893,7 +903,6 @@ const EditTeamDialog: React.FC<EditTeamDialogProps> = ({
                                 >
                                   <Icon icon={deleteIcon} width={16} height={16} />
                                 </IconButton>
-                              )}
                             </Stack>
                           }
                         >
