@@ -815,7 +815,6 @@ class ExcelParser:
                 )
 
             # Build dynamic row text based on actual available rows
-            len(first_rows)
             rows_text_lines = []
             for i, row in enumerate(first_rows[:4], start=1):  # Show up to 4 rows
                 row_str = [str(v) if v is not None else "" for v in row]
@@ -849,7 +848,6 @@ class ExcelParser:
 
                 return parsed_response
 
-            # Fallback: assume single-row headers exist if LLM fails
             self.logger.warning("Header detection LLM call failed, defaulting to no headers")
             return ExcelHeaderDetection(
                 has_headers=False,

@@ -1482,16 +1482,9 @@ class Processor:
             # Signal parsing complete after delimited file is parsed (before LLM block creation)
             yield {"event": "parsing_complete", "data": {"record_id": recordId}}
 
-            # Route to appropriate processing method based on number of tables
-            if len(tables) == 1:
-                # Single table - use existing logic for backward compatibility
-                self.logger.info("📊 Processing as single table (backward compatibility mode)")
-                csv_result, line_numbers = parser.convert_table_to_dict(tables[0])
-                block_containers = await parser.get_blocks_from_csv_result(csv_result, line_numbers, llm)
-            else:
-                # Multiple tables - use new multi-table processing
-                self.logger.info(f"📊 Processing {len(tables)} tables with multi-table logic")
-                block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
+            # Process all tables using unified multi-table logic
+            self.logger.info(f"📊 Processing {len(tables)} table(s)")
+            block_containers = await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
 
             record.block_containers = block_containers
 

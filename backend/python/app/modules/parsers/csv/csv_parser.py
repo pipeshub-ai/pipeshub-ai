@@ -24,10 +24,10 @@ from app.models.blocks import (
     TableMetadata,
 )
 from app.modules.parsers.excel.prompt_template import (
-    HeaderDetection,
+    CSVHeaderDetection,
     TableHeaders,
-    csv_header_detection_prompt,
     csv_header_generation_prompt,
+    excel_header_detection_prompt,
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
@@ -46,7 +46,8 @@ DEFAULT_BATCH_SIZE = 50  # Default batch size for processing rows
 MAX_CONCURRENT_BATCHES = 10  # Maximum number of concurrent batches for LLM calls
 MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header generation
 MAX_SUMMARY_SAMPLE_ROWS = 10  # Maximum number of sample rows for table summary
-MIN_ROWS_FOR_HEADER_ANALYSIS = 2  # Minimum number of rows required for header analysis
+MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
+MAX_HEADER_DETECTION_ROWS = 10  # CSV uses 6 rows (vs Excel's 4)
 
 class CSVParser:
     def __init__(
@@ -65,7 +66,7 @@ class CSVParser:
         self.quotechar = quotechar
         self.encoding = encoding
         self.table_summary_prompt = table_summary_prompt
-        self.csv_header_detection_prompt = csv_header_detection_prompt
+        self.excel_header_detection_prompt = excel_header_detection_prompt
         self.csv_header_generation_prompt = csv_header_generation_prompt
 
         # Configure retry parameters
@@ -73,120 +74,8 @@ class CSVParser:
         self.min_wait = 1  # seconds
         self.max_wait = 10  # seconds
 
-    def read_file(
-        self, file_path: str | Path, encoding: Optional[str] = None
-    ) -> Tuple[List[Dict[str, Any]], List[int]]: # line_numbers: List of line numbers from the CSV file
-        """
-        Read a CSV file and return its contents as a list of dictionaries.
-
-        Args:
-            file_path: Path to the CSV file
-            encoding: Optional encoding to use for this specific read (overrides default)
-
-        Returns:
-            Tuple of (data, line_numbers) where:
-            - data: List of dictionaries where keys are column headers and values are row values
-            - line_numbers: List of actual line numbers from the CSV file, where line_numbers[i] corresponds to data[i]
-
-        Raises:
-            FileNotFoundError: If the specified file doesn't exist
-            ValueError: If the CSV file is empty or malformed
-            UnicodeDecodeError: If the file cannot be decoded with the specified encoding
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            raise FileNotFoundError(f"CSV file not found: {file_path}")
-
-        # Use provided encoding or fall back to default
-        file_encoding = encoding or self.encoding
-
-        with open(file_path, "r", encoding=file_encoding) as file:
-            return self.read_stream(file)
-
-    def read_stream(self, file_stream: TextIO) -> Tuple[List[Dict[str, Any]], List[int]]:  # line_numbers: List of line numbers from the CSV file
-        """
-        Read a CSV from a file stream and return its contents as a list of dictionaries.
-
-        Args:
-            file_stream: An opened file stream containing CSV data
-
-        Returns:
-            Tuple of (data, line_numbers) where:
-            - data: List of dictionaries where keys are column headers and values are row values
-            - line_numbers: List of actual line numbers from the CSV file, where line_numbers[i] corresponds to data[i]
-        """
-        reader = csv.reader(
-            file_stream, delimiter=self.delimiter, quotechar=self.quotechar
-        )
-
-        # Read all rows as lists first
-        all_rows = list(reader)
-
-        if not all_rows:
-            raise ValueError("CSV file is empty or has no valid rows")
-
-        # Use first row as headers, generating placeholder names for empty values
-        first_row = all_rows[0]
-        headers = [
-            stripped if col and (stripped := str(col).strip()) else f"Column_{i}"
-            for i, col in enumerate(first_row, start=1)
-        ]
-
-        # Convert remaining rows to dictionaries
-        data = []
-        line_numbers = []
-        row_number = 2  # First data row starts at line 2 (line 1 is headers)
-
-        for row in all_rows[1:]:
-            # Pad row if it's shorter than headers, or truncate if longer
-            padded_row = row + [""] * (len(headers) - len(row)) if len(row) < len(headers) else row[:len(headers)]
-
-            # Create dictionary with parsed values
-            cleaned_row = {
-                headers[i]: self._parse_value(padded_row[i])
-                for i in range(len(headers))
-            }
-
-            # Skip rows where all values are None
-            if not all(value is None for value in cleaned_row.values()):
-                line_numbers.append(row_number)
-                data.append(cleaned_row)
-
-            row_number += 1
-
-        if not data:
-            raise ValueError("CSV file is empty or has no valid rows")
-        return (data, line_numbers)
 
 
-    def write_file(self, file_path: str | Path, data: List[Dict[str, Any]]) -> None:
-        """
-        Write data to a CSV file.
-
-        Args:
-            file_path: Path where the CSV file should be written
-            data: List of dictionaries to write to the CSV
-
-        Raises:
-            ValueError: If the data is empty or malformed
-        """
-        if not data:
-            raise ValueError("No data provided to write to CSV")
-
-        file_path = Path(file_path)
-        fieldnames = data[0].keys()
-
-        with open(file_path, "w", encoding=self.encoding, newline="") as file:
-            writer = csv.DictWriter(
-                file,
-                fieldnames=fieldnames,
-                delimiter=self.delimiter,
-                quotechar=self.quotechar,
-                quoting=csv.QUOTE_MINIMAL,
-            )
-
-            writer.writeheader()
-            writer.writerows(data)
 
     def _parse_value(self, value: str) -> int | float | bool | str | None:
         """
@@ -198,11 +87,6 @@ class CSVParser:
         Returns:
             Parsed value as the appropriate type (int, float, bool, or string)
         """
-        if value is None or value.strip() == "":
-            return None
-
-        # Remove leading/trailing whitespace
-        value = value.strip()
 
         # Try to convert to boolean
         if value.lower() in ("true", "false"):
@@ -228,8 +112,8 @@ class CSVParser:
         return sum(1 for value in row.values() if value is None or value == "")
 
     def _select_representative_sample_rows(
-        self, csv_result: List[Dict[str, Any]], num_sample_rows: int = 5
-    ) -> List[Tuple[int, Dict[str, Any], int]]:
+        self, raw_rows: List[List[Any]]
+    ) -> List[List[Any]]:
         """
         Select representative sample rows from CSV data by prioritizing rows with fewer empty values.
 
@@ -247,73 +131,59 @@ class CSVParser:
         selected_rows = []
         fallback_rows = []
 
-        for idx, row in enumerate(csv_result):
-            empty_count = self._count_empty_values(row)
+        for idx, row in enumerate(raw_rows):
+            empty_count = sum(1 for value in row if value == "null")
 
             if empty_count == 0:
                 # Perfect row with no empty values
                 selected_rows.append((idx, row, empty_count))
-                if len(selected_rows) >= num_sample_rows:
+                if len(selected_rows) >= MAX_HEADER_GENERATION_ROWS:
                     break  # Early stop - found enough perfect rows
             else:
                 # Keep track of best non-perfect rows as fallback
                 fallback_rows.append((idx, row, empty_count))
 
         # If we didn't find enough perfect rows, supplement with the best fallback rows
-        if len(selected_rows) < num_sample_rows:
+        if len(selected_rows) < MAX_HEADER_GENERATION_ROWS:
             # Sort fallback rows by empty count (ascending), then by index
             fallback_rows.sort(key=lambda x: (x[2], x[0]))
             # Add the best fallback rows to reach the target count
-            needed = num_sample_rows - len(selected_rows)
+            needed = MAX_HEADER_GENERATION_ROWS - len(selected_rows)
             selected_rows.extend(fallback_rows[:needed])
 
         # Sort by original index to maintain logical order
         selected_rows.sort(key=lambda x: x[0])
+        
+        return [row for _, row, _ in selected_rows]
 
-        return selected_rows
-
-    def _reconstruct_csv_with_new_headers(
-        self,
-        new_headers: List[str],
-        current_headers: List[str],
-        all_data_rows: List[List[Any]],
-        first_row_line_number: int,
-        existing_line_numbers: List[int]
-    ) -> Tuple[List[Dict[str, Any]], List[int]]:
+    def _deduplicate_headers(self, headers: List[str]) -> List[str]:
         """
-        Reconstruct csv_result with newly generated headers.
-
-        This helper creates a new csv_result where:
-        - The first row contains the old headers as data (with "null" for auto-generated columns)
-        - Subsequent rows contain the actual data
-        - All rows use the new headers as keys
+        Add suffixes to duplicate headers: Header, Header_2, Header_3, etc.
 
         Args:
-            new_headers: List of newly generated header names
-            current_headers: List of current/old header names
-            all_data_rows: All data rows as lists of values
-            first_row_line_number: Line number for the first row (old headers)
-            existing_line_numbers: Line numbers for the data rows
+            headers: List of header strings (may contain duplicates)
 
         Returns:
-            Tuple of (reconstructed_csv_result, reconstructed_line_numbers)
+            List of deduplicated headers with numeric suffixes
         """
-        # Create first row with old headers as data
-        csv_result = [{
-            new_headers[i]: "null" if current_headers[i].startswith("Column_") else current_headers[i]
-            for i in range(len(new_headers))
-        }]
+        seen = {}
+        deduplicated = []
+        for header in headers:
+            # Get base name (use Column_N for empty headers)
+            base_name = header
 
-        # Reconstruct line_numbers: first row gets specified line number, then existing
-        line_numbers = [first_row_line_number] + existing_line_numbers
+            # Handle duplicates by adding numeric suffix
+            if base_name in seen:
+                seen[base_name] += 1
+                unique_name = f"{base_name}_{seen[base_name]}"
+            else:
+                seen[base_name] = 0
+                unique_name = base_name
 
-        # Add remaining data rows with new headers
-        csv_result.extend([
-            {new_headers[i]: row[i] for i in range(len(new_headers))}
-            for row in all_data_rows
-        ])
+            deduplicated.append(unique_name)
 
-        return (csv_result, line_numbers)
+        return deduplicated
+
 
     def read_raw_rows(self, file_stream: TextIO) -> List[List[str]]:
         """
@@ -360,93 +230,6 @@ class CSVParser:
             for value in values_to_check
         )
 
-    def _is_empty_column(self, all_rows: List[List[Any]], col_idx: int, start_row: Optional[int] = None, end_row: Optional[int] = None) -> bool:
-        """
-        Check if a column is empty within a specific row range.
-
-        Args:
-            all_rows: List of all rows
-            col_idx: Column index to check
-            start_row: Optional starting row index (inclusive, 0-based)
-            end_row: Optional ending row index (inclusive, 0-based)
-
-        Returns:
-            True if all values in the column (within specified range) are empty/None, False otherwise
-        """
-        if not all_rows:
-            return True
-
-        # Determine row range to check
-        if start_row is not None and end_row is not None:
-            rows_to_check = all_rows[start_row:end_row + 1]
-        elif start_row is not None:
-            rows_to_check = all_rows[start_row:]
-        elif end_row is not None:
-            rows_to_check = all_rows[:end_row + 1]
-        else:
-            rows_to_check = all_rows
-
-        # Check all rows in the specified range
-        for row in rows_to_check:
-            if col_idx < len(row):
-                value = row[col_idx]
-                if value is not None and isinstance(value, str) and value.strip():
-                    return False
-
-        return True
-
-    def _extract_rectangular_table(
-        self,
-        all_rows: List[List[Any]],
-        start_row: int,
-        start_col: int,
-        end_row: int,
-        end_col: int
-    ) -> Dict[str, Any]:
-        """
-        Extract a table from a bounded rectangular region.
-
-        Args:
-            all_rows: All rows from the CSV
-            start_row: Starting row index (0-based)
-            start_col: Starting column index (0-based)
-            end_row: Ending row index (inclusive, 0-based)
-            end_col: Ending column index (inclusive, 0-based)
-
-        Returns:
-            Dictionary with headers, data, and metadata
-        """
-        if start_row > end_row or start_col > end_col:
-            return {
-                "headers": [],
-                "data": [],
-                "start_row": start_row + 1,  # Convert to 1-based line numbers
-                "end_row": end_row + 1,
-                "column_count": 0,
-            }
-
-        # Extract header row
-        header_row = all_rows[start_row][start_col:end_col + 1] if start_row < len(all_rows) else []
-
-        # Extract data rows
-        data_rows = []
-        for row_idx in range(start_row + 1, min(end_row + 1, len(all_rows))):
-            row = all_rows[row_idx]
-            if row_idx < len(all_rows):
-                # Extract columns for this row, pad if necessary
-                row_data = row[start_col:end_col + 1] if start_col < len(row) else []
-                # Pad to match column count
-                while len(row_data) < len(header_row):
-                    row_data.append("")
-                data_rows.append(row_data[:len(header_row)])
-
-        return {
-            "headers": header_row,
-            "data": data_rows,
-            "start_row": start_row + 1,  # Convert to 1-based line numbers
-            "end_row": end_row + 1,
-            "column_count": len(header_row),
-        }
 
     def _get_table(
         self,
@@ -471,16 +254,12 @@ class CSVParser:
             max_cols: Maximum number of columns across all rows
 
         Returns:
-            Dictionary with headers, data, and metadata
+            Dictionary with raw_rows (all rows without header assumptions) and metadata:
+            - raw_rows: List of all rows in the table
+            - start_row: Starting line number (1-based)
+            - end_row: Ending line number (1-based)
+            - column_count: Number of columns in the table
         """
-        if start_row >= len(all_rows) or start_col < 0:
-            return {
-                "headers": [],
-                "data": [],
-                "start_row": start_row + 1,
-                "end_row": start_row + 1,
-                "column_count": 0,
-            }
 
         # Find the last column of the table by scanning right
         max_col = start_col
@@ -493,7 +272,7 @@ class CSVParser:
             for r in range(start_row, max_row_in_file + 1):
                 if r < len(all_rows) and col < len(all_rows[r]):
                     value = all_rows[r][col]
-                    if value is not None and isinstance(value, str) and value.strip():
+                    if value.strip():
                         has_data = True
                         max_col = col
                         break
@@ -502,72 +281,46 @@ class CSVParser:
 
         # Find the last row of the table by scanning down
         max_row = start_row
-        for row in range(start_row, max_row_in_file + 1):
+        for row in range(start_row+1, max_row_in_file + 1):
             has_data = False
             # Check if this row has any data in the columns we've determined
             for col in range(start_col, max_col + 1):
                 if row < len(all_rows) and col < len(all_rows[row]):
                     value = all_rows[row][col]
-                    if value is not None and isinstance(value, str) and value.strip():
+                    if value.strip():
                         has_data = True
                         max_row = row
                         break
-            if not has_data:
+            if not has_data and row != start_row+1:
                 break
 
         # Now extract the rectangular table region
-        table_data = []
-        headers = []
+        # Process ALL rows uniformly without assuming first row is headers
+        raw_rows = []
 
-        # Process header row
-        if start_row < len(all_rows):
-            header_row = all_rows[start_row]
-            header_cells = []
-            for col in range(start_col, max_col + 1):
-                if col < len(header_row):
-                    value = header_row[col]
-                    header_cells.append(value)
-                    visited_cells.add((start_row, col))
-                else:
-                    header_cells.append("")
-
-            # Only consider it a header row if at least one cell has data
-            if any(
-                val is not None and (not isinstance(val, str) or val.strip())
-                for val in header_cells
-            ):
-                headers = header_cells
-                table_data.append(header_cells)
-            else:
-                return {
-                    "headers": [],
-                    "data": [],
-                    "start_row": start_row + 1,
-                    "end_row": start_row + 1,
-                    "column_count": 0,
-                }
-
-        # Process data rows within the determined boundaries
-        for row_idx in range(start_row + 1, max_row + 1):
+       
+        # Extract ALL rows uniformly (including start_row)
+        for row_idx in range(start_row, max_row + 1):
             if row_idx < len(all_rows):
                 row = all_rows[row_idx]
                 row_data = []
                 for col in range(start_col, max_col + 1):
                     if col < len(row):
-                        value = row[col]
-                        row_data.append(value)
-                        if value is not None and isinstance(value, str) and value.strip():
+                        value = row[col].strip()
+                        
+                        if value:
+                            row_data.append(value)
                             visited_cells.add((row_idx, col))
+                        else:
+                            row_data.append("null")
                     else:
-                        row_data.append("")
-                table_data.append(row_data)
+                        row_data.append("null")
+                raw_rows.append(row_data)
 
         return {
-            "headers": headers,
-            "data": table_data[1:] if table_data else [],  # Skip header row from data
+            "raw_rows": raw_rows,  # All rows without header assumptions
             "start_row": start_row + 1,  # Convert to 1-based line numbers
             "end_row": max_row + 1,
-            "column_count": len(headers),
         }
 
     def find_tables_in_csv(self, all_rows: List[List[Any]]) -> List[Dict[str, Any]]:
@@ -584,8 +337,7 @@ class CSVParser:
 
         Returns:
             List of table dictionaries, each containing:
-            - headers: List of header values
-            - data: List of data rows (as lists)
+            - raw_rows: List of all rows (without header assumptions)
             - start_row: Starting line number (1-based)
             - end_row: Ending line number (1-based)
             - column_count: Number of columns
@@ -609,37 +361,13 @@ class CSVParser:
                 # Check if cell has non-empty data
                 if row_idx < len(all_rows) and col_idx < len(all_rows[row_idx]):
                     value = all_rows[row_idx][col_idx]
-                    if value is not None and isinstance(value, str) and value.strip():
+                    if value.strip():
                         # Found a potential table start - expand to find bounds
                         table = self._get_table(all_rows, row_idx, col_idx, visited_cells, max_cols)
+                        tables.append(table)
+                        
 
-                        # Check if table has meaningful data
-                        has_data = any(
-                            val is not None and (not isinstance(val, str) or val.strip())
-                            for val in table["headers"]
-                        ) or any(
-                            any(val is not None and (not isinstance(val, str) or val.strip()) for val in row)
-                            for row in table["data"]
-                        )
-
-                        if has_data:
-                            tables.append(table)
-
-        # If no tables detected, treat entire file as single table
-        if not tables:
-            max_col = max((len(row) - 1 for row in all_rows), default=0)
-            table = self._extract_rectangular_table(
-                all_rows,
-                0,
-                0,
-                len(all_rows) - 1,
-                max_col
-            )
-            if table["data"] or any(
-                val is not None and (not isinstance(val, str) or val.strip())
-                for val in table["headers"]
-            ):
-                tables.append(table)
+        
 
         return tables
 
@@ -651,78 +379,189 @@ class CSVParser:
         """Wrapper for LLM calls with retry logic"""
         return await llm.ainvoke(messages)
 
-    def _convert_rows_to_strings(self, rows: List[List[Any]], num_rows: int = 6) -> List[List[str]]:
+
+    def _concatenate_multirow_headers(
+        self, multirow_headers: List[List[Any]], column_count: int
+    ) -> List[str]:
         """
-        Convert multiple rows to lists of strings.
+        Concatenate multi-row headers with underscores (same logic as Excel parser).
 
         Args:
-            rows: List of rows where each row is a list of values
-            num_rows: Number of rows to convert (default: 6)
+            multirow_headers: List of header rows
+            column_count: Expected number of columns
 
         Returns:
-            List of converted rows, where each row is a list of strings.
-            Returns empty list for rows that don't exist.
+            List of concatenated header strings
         """
-        return [
-            [str(v) if v is not None else "" for v in rows[i]] if i < len(rows) else []
-            for i in range(num_rows)
-        ]
+        logger.info(f"Concatenating {len(multirow_headers)} header rows")
+        consolidated = []
+
+        for col_idx in range(column_count):
+            # Collect non-empty values from all header rows for this column
+            parts = []
+            seen = set()  # Track seen values to avoid duplicates
+
+            for header_row in multirow_headers:
+                if col_idx < len(header_row):
+                    value = header_row[col_idx]
+                    if value not in seen and value != "null":
+                        parts.append(value)
+                        seen.add(value)
+
+            # Join with underscores or use generic name if no parts
+            if parts:
+                header = parts[-1]
+            else:
+                header = f"Column_{col_idx + 1}"
+
+            consolidated.append(header)
+
+        return consolidated
+
+    async def process_table_with_header_info(
+        self,
+        raw_rows: List[List[Any]],
+        detection: CSVHeaderDetection,
+        start_row: int,
+        llm: BaseChatModel
+    ) -> Tuple[List[Dict[str, Any]], List[int]]:
+        """
+        Unified processing path for all header scenarios.
+        Handles single-row, multi-row, and no-header cases in one method.
+
+        Args:
+            raw_rows: All table rows without header assumptions
+            detection: Header detection result from LLM
+            start_row: Starting line number (1-based)
+            llm: Language model for header generation if needed
+
+        Returns:
+            Tuple of (csv_result, line_numbers)
+        """
+        if not raw_rows:
+            return ([], [])
+
+        column_count = len(raw_rows[0]) if raw_rows else 0
+
+        if detection.has_headers and detection.num_header_rows == 1:
+            # Scenario 1: Single-row headers
+            headers = [v if v != "null" else f"Column_{i+1}" for i, v in enumerate(raw_rows[0])]
+
+            data_rows = raw_rows[1:]
+            data_start_line = start_row + 1
+
+        elif detection.has_headers and detection.num_header_rows > 1:
+            # Scenario 2: Multi-row headers - concatenate them
+            header_rows = raw_rows[:detection.num_header_rows]
+            headers = self._concatenate_multirow_headers(header_rows, column_count)
+            data_rows = raw_rows[detection.num_header_rows:]
+            data_start_line = start_row + detection.num_header_rows
+
+        else:
+            # Scenario 3: No headers - generate them using smart sampling
+            logger.info("No headers detected, generating with smart sampling")
+
+            if len(raw_rows) > MAX_HEADER_GENERATION_ROWS:
+                sample_rows = self._select_representative_sample_rows(raw_rows)
+            else:
+                sample_rows = raw_rows
+
+            headers = await self.generate_headers_with_llm(sample_rows, column_count, llm)
+            data_rows = raw_rows
+            data_start_line = start_row
+        
+
+        headers = self._deduplicate_headers(headers)
+
+        csv_result = []
+        line_numbers = []
+
+        for idx, row in enumerate(data_rows):
+
+            # Create dictionary with parsed values
+            row_dict = {
+                headers[i]: self._parse_value(row[i])
+                for i in range(column_count)
+            }
+
+            # Skip entirely empty rows
+            if not all(value is "null" for value in row_dict.values()):
+                csv_result.append(row_dict)
+                line_numbers.append(data_start_line + idx)
+
+        return (csv_result, line_numbers)
 
     async def detect_headers_with_llm(
         self, first_rows: List[List[Any]], llm: BaseChatModel
-    ) -> bool:
+    ) -> CSVHeaderDetection:
         """
-        Use LLM to detect if the first row contains valid headers.
+        Use LLM to detect if the first row contains valid headers and how many header rows exist.
 
         Args:
             first_rows: List of first 6 rows as lists of values
             llm: Language model instance
 
         Returns:
-            True if valid headers detected, False otherwise
+            CSVHeaderDetection object with has_headers, num_header_rows, confidence, and reasoning
         """
         try:
             if len(first_rows) < MIN_ROWS_FOR_HEADER_ANALYSIS:
-                # Not enough rows to analyze, assume headers exist
-                return True
+                return CSVHeaderDetection(
+                    has_headers=False,
+                    num_header_rows=0,
+                    confidence="low",
+                    reasoning="Not enough rows to analyze, defaulting to no headers"
+                )
 
-            # Prepare rows for prompt (convert to strings for display)
-            row1, row2, row3, row4, row5, row6 = self._convert_rows_to_strings(first_rows, 6)
+            # Format rows for prompt (same format as Excel parser)
+            rows_text_lines = []
+            for i, row in enumerate(first_rows, start=1):
+                rows_text_lines.append(f"Row {i}: {row}")
 
-            messages = self.csv_header_detection_prompt.format_messages(
-                row1=row1,
-                row2=row2,
-                row3=row3,
-                row4=row4,
-                row5=row5,
-                row6=row6,
+            rows_text = "\n".join(rows_text_lines)
+
+            logger.info("Calling LLM for CSV header detection using Excel prompt")
+            messages = self.excel_header_detection_prompt.format_messages(
+                rows_text=rows_text
             )
 
             # Use centralized utility with reflection
             parsed_response = await invoke_with_structured_output_and_reflection(
-                llm, messages, HeaderDetection
+                llm, messages, CSVHeaderDetection
             )
 
-            print(f"parsed_responseeeeee: {parsed_response}")
-
             if parsed_response is not None:
-                # Only trust high-confidence detections, or if low confidence but says has_headers
+                # Validate and normalize the response
                 if parsed_response.confidence == "high":
-                    return parsed_response.has_headers
-                elif parsed_response.confidence == "low" and parsed_response.has_headers:
-                    # Low confidence but says headers exist - be conservative and keep them
-                    return True
-                else:
-                    # Low confidence and says no headers - generate new ones
-                    return False
+                # If has_headers=True but num_header_rows=0, correct to num_header_rows=1
+                    if parsed_response.has_headers and parsed_response.num_header_rows == 0:
+                        logger.warning("LLM returned has_headers=True but num_header_rows=0, correcting to 1")
+                        parsed_response.num_header_rows = 1
 
-            # Fallback: assume headers exist if LLM fails
-            logger.warning("Header detection LLM call failed, defaulting to assuming headers exist")
-            return True
+                    # If has_headers=False, ensure num_header_rows=0
+                    if not parsed_response.has_headers and parsed_response.num_header_rows > 0:
+                        logger.warning(f"LLM returned has_headers=False but num_header_rows={parsed_response.num_header_rows}, correcting to 0")
+                        parsed_response.num_header_rows = 0
+
+                    return parsed_response
+
+            # Fallback: assume single-row headers exist if LLM fails
+            logger.warning("Header detection LLM call failed, defaulting to no headers")
+            return CSVHeaderDetection(
+                has_headers=False,
+                num_header_rows=0,
+                confidence="low",
+                reasoning="LLM call failed, defaulting to no headers"
+            )
 
         except Exception as e:
-            logger.warning(f"Error in header detection: {e}, defaulting to assuming headers exist")
-            return True
+            logger.warning(f"Error in header detection: {e}, defaulting to no headers")
+            return CSVHeaderDetection(
+                has_headers=False,
+                num_header_rows=0,
+                confidence="low",
+                reasoning=f"Error occurred: {str(e)}, defaulting to no headers"
+            )
 
     async def generate_headers_with_llm(
         self, sample_data: List[List[Any]], column_count: int, llm: BaseChatModel
@@ -739,19 +578,14 @@ class CSVParser:
             List of generated header names
         """
         try:
-            # Format sample data for display
-            formatted_samples = []
-            for row in sample_data[:MAX_HEADER_GENERATION_ROWS]:
-                formatted_row = [str(v) if v is not None else "" for v in row]
-                formatted_samples.append(formatted_row)
 
             # Format as JSON string for prompt
-            sample_data_str = json.dumps(formatted_samples, indent=2)
-
+            sample_data_str = json.dumps(sample_data, indent=2)
+            sample_count = len(sample_data)
             messages = self.csv_header_generation_prompt.format_messages(
                 sample_data=sample_data_str,
                 column_count=column_count,
-                sample_count=len(formatted_samples),
+                sample_count=sample_count,
             )
 
             # Use centralized utility with reflection
@@ -773,11 +607,11 @@ class CSVParser:
 
             # Fallback: generate generic headers
             logger.warning("Header generation LLM call failed, using generic headers")
-            return [f"Column_{i}" for i in range(column_count)]
+            return [f"Column_{i+1}" for i in range(column_count)]
 
         except Exception as e:
             logger.warning(f"Error in header generation: {e}, using generic headers")
-            return [f"Column_{i}" for i in range(column_count)]
+            return [f"Column_{i+1}" for i in range(column_count)]
 
     async def get_table_summary(self, llm, rows: List[Dict[str, Any]]) -> str:
         """Get table summary from LLM"""
@@ -849,6 +683,7 @@ class CSVParser:
             processed_texts.extend(descriptions)
 
         return processed_texts
+
     def convert_table_to_dict(self, table: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], List[int]]:
         """
         Convert a table (with headers and data rows as lists) to dictionary format.
@@ -929,43 +764,28 @@ class CSVParser:
 
         # Process each table independently
         for table_idx, table in enumerate(tables):
-            # Convert table to dictionary format
-            csv_result, line_numbers = self.convert_table_to_dict(table)
+            raw_rows = table["raw_rows"]
+
+            if not raw_rows:
+                continue
+
+            # Prepare rows for header detection (first N rows)
+            detection_rows = raw_rows[:MAX_HEADER_DETECTION_ROWS]
+
+            # Detect headers using LLM
+            detection = await self.detect_headers_with_llm(detection_rows, llm)
+            logger.info(f"Table {table_idx + 1}: has_headers={detection.has_headers}, num_header_rows={detection.num_header_rows}")
+            
+            # Unified processing path - handles all three scenarios
+            csv_result, line_numbers = await self.process_table_with_header_info(
+                raw_rows,
+                detection,
+                table["start_row"],
+                llm
+            )
 
             if not csv_result:
                 continue
-
-            # Phase 1: Detect if headers are valid for this table
-            current_headers = list(csv_result[0].keys())
-            first_rows = [current_headers]
-
-            # Select representative sample rows using helper method
-            selected_rows = self._select_representative_sample_rows(csv_result, NUM_SAMPLE_ROWS)
-            first_rows.extend([list(row[1].values()) for row in selected_rows])
-
-            has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
-
-            # Phase 2: Generate headers if needed
-            if not has_valid_headers:
-                logger.info(f"No valid headers detected for table {table_idx + 1}, generating headers with LLM")
-                all_data_rows = [list(row.values()) for row in csv_result]
-
-                new_headers = await self.generate_headers_with_llm(
-                    all_data_rows[:MAX_HEADER_GENERATION_ROWS],
-                    len(current_headers),
-                    llm
-                )
-
-                # Reconstruct csv_result with new headers using helper
-                csv_result, line_numbers = self._reconstruct_csv_with_new_headers(
-                    new_headers,
-                    current_headers,
-                    all_data_rows,
-                    table["start_row"],
-                    line_numbers
-                )
-            else:
-                logger.info(f"Valid headers detected for table {table_idx + 1}, using existing headers")
 
             # Add current table rows to cumulative count
             table_row_count = len(csv_result)
@@ -1021,7 +841,6 @@ class CSVParser:
                                 data={
                                     "row_natural_language_text": row_text,
                                     "row_number": actual_row_number,
-                                    "row": json.dumps(row)
                                 },
                                 parent_index=table_group_index,
                             )
@@ -1042,28 +861,29 @@ class CSVParser:
                             data={
                                 "row_natural_language_text": row_text,
                                 "row_number": actual_row_number,
-                                "row": json.dumps(row)
                             },
                             parent_index=table_group_index,
                         )
                     )
                     table_row_block_indices.append(block_index)
 
-            # Create markdown for this table
-            csv_markdown = self.to_markdown(csv_result)
+            num_of_rows = table_row_count
+            num_of_cols = len(column_headers)
+            num_of_cells = num_of_rows * num_of_cols
 
             table_group = BlockGroup(
                 index=table_group_index,
                 type=GroupType.TABLE,
                 format=DataFormat.JSON,
+                
                 table_metadata=TableMetadata(
-                    num_of_rows=len(csv_result),
-                    num_of_cols=len(column_headers),
+                    num_of_rows=num_of_rows,
+                    num_of_cols=num_of_cols,
+                    num_of_cells=num_of_cells,
                 ),
                 data={
                     "table_summary": table_summary,
                     "column_headers": column_headers,
-                    "table_markdown": csv_markdown,
                 },
                 children=BlockGroupChildren.from_indices(block_indices=table_row_block_indices),
             )
@@ -1071,202 +891,4 @@ class CSVParser:
 
         return BlocksContainer(blocks=blocks, block_groups=block_groups)
 
-    #  recordName, recordId, version, source, orgId, csv_binary, virtual_record_id
-    async def get_blocks_from_csv_result(self, csv_result: List[Dict[str, Any]], line_numbers: List[int], llm: BaseChatModel) -> BlocksContainer:
 
-        blocks = []
-        block_indices = []
-
-        # Phase 1: Detect if headers are valid
-        current_headers = list(csv_result[0].keys())
-        first_rows = [current_headers]
-
-        # Select representative sample rows using helper method
-        selected_rows = self._select_representative_sample_rows(csv_result, NUM_SAMPLE_ROWS)
-        first_rows.extend([list(row[1].values()) for row in selected_rows])
-
-        has_valid_headers = await self.detect_headers_with_llm(first_rows, llm)
-
-        # Phase 2: Generate headers if needed
-        if not has_valid_headers:
-            logger.info("No valid headers detected, generating headers with LLM")
-            # Treat all rows as data (including first row which was treated as header)
-            # Convert all rows to list format, preserving line numbers
-            all_data_rows = [list(row.values()) for row in csv_result]
-
-            new_headers = await self.generate_headers_with_llm(
-                all_data_rows[:MAX_HEADER_GENERATION_ROWS],
-                len(current_headers),
-                llm
-            )
-
-            # Reconstruct csv_result with new headers using helper
-            csv_result, line_numbers = self._reconstruct_csv_with_new_headers(
-                new_headers,
-                current_headers,
-                all_data_rows,
-                1,  # First row gets line number 1 (original header line)
-                line_numbers
-            )
-        else:
-            logger.info("Valid headers detected, using existing headers")
-
-        # Get threshold from environment variable (default: 1000)
-        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
-
-        # Check if table exceeds threshold
-        use_llm_for_rows = len(csv_result) <= threshold
-        table_summary = await self.get_table_summary(llm, csv_result)
-
-        if use_llm_for_rows:
-            # Use LLM for row descriptions
-            # Create batches
-            batches = []
-            for i in range(0, len(csv_result), DEFAULT_BATCH_SIZE):
-                batch = csv_result[i : i + DEFAULT_BATCH_SIZE]
-                batches.append((i, batch))  # Store start index and batch data
-
-            # Process batches with controlled concurrency to avoid overwhelming the system
-            max_concurrent_batches = min(MAX_CONCURRENT_BATCHES, len(batches))
-            batch_results = []
-
-            for i in range(0, len(batches), max_concurrent_batches):
-                current_batches = batches[i:i + max_concurrent_batches]
-
-                # Process current batch group
-                batch_tasks = []
-                for start_idx, batch in current_batches:
-                    task = self.get_rows_text(llm, batch, table_summary)
-                    batch_tasks.append((start_idx, batch, task))
-
-                # Wait for current batch group to complete
-                task_results = await asyncio.gather(*[task for _, _, task in batch_tasks])
-
-                # Combine results with their metadata
-                for j, (start_idx, batch, _) in enumerate(batch_tasks):
-                    row_texts = task_results[j]
-                    batch_results.append((start_idx, batch, row_texts))
-
-            # Process results and create blocks
-            for start_idx, batch, row_texts in batch_results:
-
-                for idx, (row, row_text) in enumerate(
-                        zip(batch, row_texts), start=start_idx
-                    ):
-                    # Use actual line number from separate list
-                    actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
-                    blocks.append(
-                        Block(
-                            index=idx,
-                            type=BlockType.TABLE_ROW,
-                            format=DataFormat.JSON,
-                            data={
-                                "row_natural_language_text": row_text,
-                                "row_number": actual_row_number
-                            },
-                            parent_index=0,
-                        )
-                        )
-                    block_indices.append(idx)
-        else:
-            # Use simple format for rows (skip LLM)
-            for idx, row in enumerate(csv_result):
-                # Use actual line number from separate list
-                actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx+1
-                row_text = generate_simple_row_text(row)
-                blocks.append(
-                    Block(
-                        index=idx,
-                        type=BlockType.TABLE_ROW,
-                        format=DataFormat.JSON,
-                        data={
-                            "row_natural_language_text": row_text,
-                            "row_number": actual_row_number
-                        },
-                        parent_index=0,
-                    )
-                )
-                block_indices.append(idx)
-
-        column_headers = list(csv_result[0].keys())
-        num_of_rows = len(csv_result)
-        num_of_cols = len(column_headers)
-        num_of_cells = num_of_rows * num_of_cols
-        blockGroup = BlockGroup(
-            index=0,
-            type=GroupType.TABLE,
-            format=DataFormat.JSON,
-            table_metadata=TableMetadata(
-                num_of_rows=num_of_rows,
-                num_of_cols=num_of_cols,
-                num_of_cells=num_of_cells,
-            ),
-            data={
-                "table_summary": table_summary,
-                "column_headers": column_headers,
-            },
-            children=BlockGroupChildren.from_indices(block_indices=block_indices),
-        )
-        blocks_container = BlocksContainer(blocks=blocks, block_groups=[blockGroup])
-        return blocks_container
-
-def main() -> None:
-    """Test the CSV parser functionality"""
-    # Create sample data
-    test_data = [
-        {
-            "name": "John Doe",
-            "age": "30",
-            "active": "true",
-            "salary": "50000.50",
-            "notes": "Senior Developer",
-        },
-        {
-            "name": "Jane Smith",
-            "age": "25",
-            "active": "false",
-            "salary": "45000.75",
-            "notes": "Junior Developer",
-        },
-    ]
-
-    parser = CSVParser()
-    test_file = "test_output.csv"
-
-    try:
-        # Test writing
-        print("Writing test data to CSV...")
-        parser.write_file(test_file, test_data)
-        print(f"✅ Successfully wrote data to {test_file}")
-
-        # Test reading
-        print("\nReading test data from CSV...")
-        read_data, line_numbers = parser.read_file(test_file)
-        print("✅ Successfully read data from CSV")
-        print("\nParsed data:")
-        for row in read_data:
-            print(row)
-
-        # Verify data types
-        print("\nVerifying data types:")
-        first_row = read_data[0]
-        print(f"name (str): {first_row['name']} ({type(first_row['name'])})")
-        print(f"age (int): {first_row['age']} ({type(first_row['age'])})")
-        print(
-            f"""active (bool): {first_row['active']} ({
-              type(first_row['active'])})"""
-        )
-        print(
-            f"""salary (float): {
-              first_row['salary']} ({type(first_row['salary'])})"""
-        )
-
-    finally:
-        # Clean up test file
-        if os.path.exists(test_file):
-            os.remove(test_file)
-            print(f"\nℹ️ Cleaned up test file: {test_file}")
-
-
-if __name__ == "__main__":
-    main()
