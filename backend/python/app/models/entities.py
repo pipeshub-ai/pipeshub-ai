@@ -39,6 +39,7 @@ class RecordGroupType(str, Enum):
     MAILBOX = "MAILBOX"
     GROUP_MAILBOX = "GROUP_MAILBOX"
     WEB = "WEB"
+    SITE = "SITE"
     SHELF = "SHELF"
     BOOK = "BOOK"
     CHAPTER = "CHAPTER"
