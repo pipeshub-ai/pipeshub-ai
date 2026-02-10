@@ -321,7 +321,6 @@ def perform_oauth_flow(
             print("✅ Authorization Code Received. Exchanging for Token...")
             try:
                 token_response = client.exchange_code_for_token(code=server.auth_result["code"])
-                print("🎉 SUCCESS! Token obtained.", token_response)
                 return token_response
             except requests.exceptions.RequestException as e:
                 raise requests.exceptions.RequestException(

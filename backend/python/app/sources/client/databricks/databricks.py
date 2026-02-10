@@ -17,6 +17,7 @@ import logging
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
+from databricks.sdk.config import Config as _Config  # type: ignore
 from pydantic import BaseModel, Field, ValidationError  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
@@ -117,15 +118,20 @@ class DatabricksSDKClient:
             return self
 
         try:
-            kwargs: Dict[str, Any] = {"host": self.host}
+
+            config_kwargs: Dict[str, Any] = {
+                "host": self.host,
+                "http_timeout_seconds": self.timeout,
+            }
 
             if self._token:
-                kwargs["token"] = self._token
+                config_kwargs["token"] = self._token
             elif self._client_id and self._client_secret:
-                kwargs["client_id"] = self._client_id
-                kwargs["client_secret"] = self._client_secret
+                config_kwargs["client_id"] = self._client_id
+                config_kwargs["client_secret"] = self._client_secret
 
-            self._workspace_client = _WorkspaceClient(**kwargs)
+            cfg = _Config(**config_kwargs)
+            self._workspace_client = _WorkspaceClient(config=cfg)
             return self
 
         except Exception as e:
@@ -164,7 +170,8 @@ class DatabricksSDKClient:
         """
         if not self.is_connected():
             self.connect()
-        return self._workspace_client  # type: ignore
+        assert self._workspace_client is not None
+        return self._workspace_client
 
     def list_clusters(self) -> List[Dict[str, Any]]:
         """List all clusters in the workspace.
@@ -175,12 +182,10 @@ class DatabricksSDKClient:
         Raises:
             RuntimeError: If the operation fails
         """
-        if not self.is_connected():
-            self.connect()
-
+        client = self.get_workspace_client()
         try:
             clusters = []
-            for c in self._workspace_client.clusters.list():  # type: ignore
+            for c in client.clusters.list():
                 clusters.append(
                     {
                         "cluster_id": c.cluster_id,
@@ -202,12 +207,10 @@ class DatabricksSDKClient:
         Raises:
             RuntimeError: If the operation fails
         """
-        if not self.is_connected():
-            self.connect()
-
+        client = self.get_workspace_client()
         try:
             warehouses = []
-            for w in self._workspace_client.warehouses.list():  # type: ignore
+            for w in client.warehouses.list():
                 warehouses.append(
                     {
                         "id": w.id,
@@ -241,13 +244,11 @@ class DatabricksSDKClient:
         Raises:
             RuntimeError: If query execution fails
         """
-        if not self.is_connected():
-            self.connect()
-
+        client = self.get_workspace_client()
         try:
             from databricks.sdk.service.sql import StatementState  # type: ignore
 
-            response = self._workspace_client.statement_execution.execute_statement(  # type: ignore
+            response = client.statement_execution.execute_statement(
                 statement=statement,
                 warehouse_id=warehouse_id,
                 catalog=catalog,
@@ -518,36 +519,26 @@ class DatabricksClient(IClient):
         Raises:
             ValueError: If configuration cannot be retrieved
         """
+        instance_msg = (
+            f" for instance {connector_instance_id}"
+            if connector_instance_id
+            else ""
+        )
         try:
             config = await config_service.get_config(
                 f"/services/connectors/{connector_instance_id}/config"
             )
             if not config:
-                instance_msg = (
-                    f" for instance {connector_instance_id}"
-                    if connector_instance_id
-                    else ""
-                )
                 raise ValueError(
                     f"Failed to get Databricks connector configuration{instance_msg}"
                 )
             if not isinstance(config, dict):
-                instance_msg = (
-                    f" for instance {connector_instance_id}"
-                    if connector_instance_id
-                    else ""
-                )
                 raise ValueError(
                     f"Invalid Databricks connector configuration format{instance_msg}"
                 )
             return config
         except Exception as e:
             logger.error(f"Failed to get Databricks connector config: {e}")
-            instance_msg = (
-                f" for instance {connector_instance_id}"
-                if connector_instance_id
-                else ""
-            )
             raise ValueError(
                 f"Failed to get Databricks connector configuration{instance_msg}"
             ) from e

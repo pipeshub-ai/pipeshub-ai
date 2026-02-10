@@ -160,7 +160,6 @@ async def main() -> None:
                 port=REDIRECT_PORT,
                 timeout=300,  # 5 minutes for user to authenticate
             )
-            print(token_response)
             access_token = token_response.get("access_token")
             if not access_token:
                 raise Exception("No access_token found in OAuth response")
@@ -173,8 +172,8 @@ async def main() -> None:
 
             refresh_tok = token_response.get("refresh_token")
             if refresh_tok:
-                print(f"   Refresh token received (save for token renewal)")
-            print(f"   Expires in: {token_response.get('expires_in', 'N/A')} seconds")
+                print("   Refresh token received (save for token renewal)")
+            print(f"token expired")
 
         except Exception as e:
             print(f"  OAuth flow failed: {e}")
