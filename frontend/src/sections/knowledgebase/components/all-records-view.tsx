@@ -1389,7 +1389,7 @@ const AllRecordsView: React.FC<AllRecordsViewProps> = ({
             // For non-records with children, show "Open" option
             menuActions.push({
               label: 'Open',
-              icon: eyeIcon,
+              icon: folderOpenIcon,
               color: theme.palette.primary.main,
               onClick: () => {
                 handleRowClick(node);
