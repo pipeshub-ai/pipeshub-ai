@@ -15,9 +15,8 @@ from logging import Logger
 from typing import List, Optional, Set, Tuple
 from urllib.parse import ParseResult, urljoin, urlparse
 
-from bs4 import BeautifulSoup, Comment
-
 import aiohttp
+from bs4 import BeautifulSoup, Comment
 
 # URL-based crawl limits and HTTP configuration (kept here close to HTTP logic)
 MAX_CRAWL_PAGES = 500

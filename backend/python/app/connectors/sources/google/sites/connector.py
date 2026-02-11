@@ -45,15 +45,6 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleSitesApp
-from app.sources.external.google.sites.sites import (
-    GoogleSitesDataSource,
-    GoogleSitesPage,
-    HTTP_SUCCESS_MAX,
-    HTTP_SUCCESS_MIN,
-    LOG_URL_PREVIEW_LEN,
-    LOG_URL_SHORT_PREVIEW_LEN,
-    normalize_published_site_url,
-)
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -64,6 +55,13 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.external.google.sites.sites import (
+    LOG_URL_PREVIEW_LEN,
+    LOG_URL_SHORT_PREVIEW_LEN,
+    GoogleSitesDataSource,
+    GoogleSitesPage,
+    normalize_published_site_url,
+)
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
