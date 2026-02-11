@@ -37,7 +37,7 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text, generate_tab_separated_row
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
@@ -1299,6 +1299,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 num_of_rows = len(rows)
                 num_of_cols = len(headers) if headers else (len(rows[0]["raw_data"]) if rows else 0)
                 num_of_cells = num_of_rows * num_of_cols
+                headers_tab = "\t".join(headers)
                 table_group = BlockGroup(
                     index=table_group_index,
                     name=None,
@@ -1313,7 +1314,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     ),
                     data={
                         "table_summary": table.get("summary", ""),
-                        "column_headers": headers,
+                        "column_headers": headers_tab,
                         "sheet_number": sheet_idx,
                         "sheet_name": sheet_name,
                     },
@@ -1325,6 +1326,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
                     block_index = len(blocks)
+                    row_data_dict = row.get("raw_data", {})
+                    row_data_tab = generate_tab_separated_row(row_data_dict)
                     blocks.append(
                         Block(
                             index=block_index,
@@ -1332,6 +1335,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             format=DataFormat.JSON,
                             data={
                                 "row_natural_language_text": row.get("natural_language_text", ""),
+                                "row_data": row_data_tab,
                                 "row_number": int(row.get("row_num") or (i + 1)),
                                 "sheet_number": sheet_idx,
                                 "sheet_name": sheet_name,

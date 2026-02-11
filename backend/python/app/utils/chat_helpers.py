@@ -158,6 +158,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
                 table_summary = table_data.get("table_summary","")
+                column_headers = table_data.get("column_headers", [])
 
                 if not is_large_table:
                     child_results=[]
@@ -168,7 +169,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                         seen_chunks.add(child_id)
                         if child_block_index < len(blocks):
                             child_block = blocks[child_block_index]
-                            row_text = child_block.get("data", {}).get("row_natural_language_text", "")
+                            block_data = child_block.get("data", {})
+                            # Use new format if available, fall back to old format
+                            row_text = block_data.get("row_data") or block_data.get("row_natural_language_text", "")
 
                             # Create a result for the table row
                             child_result = {
@@ -183,7 +186,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                             child_results.append(child_result)
 
                     table_result = {
-                        "content":(table_summary,child_results),
+                        "content":(table_summary,column_headers,child_results),
                         "block_type": GroupType.TABLE.value,
                         "virtual_record_id": virtual_record_id,
                         "block_index": first_block_index,
@@ -232,12 +235,14 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_groups = block_container.get("block_groups",[])
         block_group = block_groups[block_group_index]
         table_summary = block_group.get("data",{}).get("table_summary","")
+        column_headers = block_group.get("data",{}).get("column_headers",[])
         child_results = []
         for row_index,row_score in sorted_rows_tuple:
             block = blocks[row_index]
             block_type = block.get("type")
             if block_type == BlockType.TABLE_ROW.value:
-                block_text = block.get("data",{}).get("row_natural_language_text","")
+                block_data = block.get("data",{})
+                block_text = block_data.get("row_data") or block_data.get("row_natural_language_text","")
                 enhanced_metadata = get_enhanced_metadata(record,block,{})
                 child_results.append({
                     "content": block_text,
@@ -260,7 +265,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             continue
 
         table_result = {
-            "content":(table_summary,child_results),
+            "content":(table_summary,column_headers,child_results),
             "block_type": GroupType.TABLE.value,
             "virtual_record_id": virtual_record_id,
             "block_index": first_child_block_index,
@@ -947,6 +952,13 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                 # Old format
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
 
+                        # Extract column headers from the block group
+                        column_headers = data.get("column_headers", [])
+                        if isinstance(column_headers, list):
+                            column_headers_joined = "\t".join(column_headers)
+                        else:
+                            column_headers_joined = column_headers
+
                         # Process table rows
                         child_results = []
                         for row_index in rows_to_be_included_list:
@@ -954,7 +966,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                 block = blocks[row_index]
                                 block_data = block.get("data", {})
                                 if isinstance(block_data, dict):
-                                    row_text = block_data.get("row_natural_language_text", "")
+                                    row_text = block_data.get("row_data") or block_data.get("row_natural_language_text", "")
                                 else:
                                     row_text = str(block_data)
 
@@ -967,8 +979,10 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                             template = Template(table_prompt)
                             rendered_form = template.render(
                                 block_group_index=block_group_index,
-                                table_summary=table_summary,
+                                table_summary="Not available",
                                 table_rows=child_results,
+                                table_row_count=len(child_results),
+                                column_headers_joined=column_headers_joined,
                                 record_number=record_number,
                             )
                             content.append({
@@ -1044,7 +1058,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
 
                 # Get content text
                 if block_type == GroupType.TABLE.value:
-                    table_summary, child_results = result.get("content")
+                    table_summary,_, _ = result.get("content")
                     content_text = f"Table: {table_summary}"
                 else:
                     content_text = result.get("content", "")
@@ -1136,13 +1150,20 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                             "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
                         })
                 elif block_type == GroupType.TABLE.value:
-                    table_summary,child_results = result.get("content")
+                    table_summary,column_headers,child_results = result.get("content")
                     if child_results:
+                        if isinstance(column_headers, list):
+                            column_headers_joined = "\t".join(column_headers)
+                        else:
+                            column_headers_joined = column_headers
+
                         template = Template(table_prompt)
                         rendered_form = template.render(
                             block_group_index=result.get("block_group_index"),
                             table_summary=table_summary,
                             table_rows=child_results,
+                            table_row_count=len(child_results),
+                            column_headers_joined=column_headers_joined,
                             record_number=record_number,
                         )
                         content.append({
@@ -1264,13 +1285,20 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
             #             "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
             #         })
             if block_type == GroupType.TABLE.value:
-                table_summary,child_results = result.get("content")
+                table_summary,column_headers,child_results = result.get("content")
                 if child_results:
+                    if isinstance(column_headers, list):
+                        column_headers_joined = "\t".join(column_headers)
+                    else:
+                        column_headers_joined = column_headers
+
                     template = Template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=result.get("block_group_index"),
-                        table_summary=table_summary,
+                        table_summary="Not available",
                         table_rows=child_results,
+                        table_row_count=len(child_results),
+                        column_headers_joined=column_headers_joined,
                         record_number=record_number,
                     )
                     content.append({
@@ -1317,66 +1345,6 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
     all_record_strings.append(record_string)
 
     return all_record_strings
-
-def block_group_to_message_content(tool_result: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    content = []
-    block_group = tool_result.get("block_group", {})
-    block_group_index = block_group.get("index", 0)
-    record_number = tool_result.get("record_number", 1)
-    record_id = tool_result.get("record_id", "")
-    record_name = tool_result.get("record_name", "")
-    content.append({
-            "type": "text",
-            "text": f"""<record>
-            * Record Id: {record_id}
-            * Record Name: {record_name}
-            * Block Group:
-            """
-        })
-
-    child_results = []
-    blocks = block_group.get("blocks",[])
-    table_summary = block_group.get("data",{}).get("table_summary","")
-    for block in blocks:
-        block_data = block.get("data", {})
-        if isinstance(block_data, dict):
-            row_text = block_data.get("row_natural_language_text", "")
-        else:
-            row_text = str(block_data)
-
-        child_results.append({
-            "content": row_text,
-            "block_index": block.get("index", 0),
-        })
-
-    if child_results:
-        template = Template(table_prompt)
-        rendered_form = template.render(
-            block_group_index=block_group_index,
-            table_summary=table_summary,
-            table_rows=child_results,
-            record_number=record_number,
-        )
-        content.append({
-            "type": "text",
-            "text": rendered_form
-        })
-    else:
-        content.append({
-            "type": "text",
-            "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}"
-        })
-    content.append({
-        "type": "text",
-        "text": """</record>
-        Now produce the final answer STRICTLY following the previously provided Output format.\n
-        CRITICAL REQUIREMENTS:\n
-        - Always include block citations (e.g., [R1-2]) wherever the answer is derived from blocks.\n
-        - Use only one citation per bracket pair and ensure the numbers correspond to the block numbers shown above.\n
-        - Return a single JSON object exactly as specified (answer, reason, confidence, answerMatchType, blockNumbers)."""
-    })
-    return content
-
 
 def count_tokens_in_messages(messages: List[Any],enc) -> int:
     """
