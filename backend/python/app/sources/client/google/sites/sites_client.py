@@ -6,7 +6,6 @@ from typing import Optional
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
-
 # Default headers for crawling published Google Sites over HTTP.
 # Kept close to the HTTP client so they can be shared between the
 # datasource and any other Google Sites HTTP consumers.
