@@ -39,14 +39,6 @@ class IndexingAppContainer(BaseAppContainer):
         kafka_service=kafka_service,
     )
 
-    # Keep arango_service for backward compatibility
-    # arango_service = providers.Resource(
-    #     container_utils.create_arango_service,
-    #     logger=logger,
-    #     arango_client=arango_client,
-    #     config_service=config_service,
-    #     kafka_service=kafka_service,
-    # )
     vector_db_service = providers.Resource(
         container_utils.get_vector_db_service,
         config_service=config_service,

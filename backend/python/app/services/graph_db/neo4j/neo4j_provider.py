@@ -9565,28 +9565,105 @@ class Neo4jProvider(IGraphDBProvider):
         new_role: str,
         transaction: Optional[str] = None
     ) -> Dict:
-        """Update permissions for users and teams on a knowledge base"""
+        """Optimistically update permissions for users and teams on a knowledge base"""
         try:
+            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
+
+            # Quick validation of inputs
+            if not user_ids and not team_ids:
+                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+
+            # Validate new role
+            valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
+            if new_role not in valid_roles:
+                return {
+                    "success": False,
+                    "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
+                    "code": "400"
+                }
+
             timestamp = get_epoch_timestamp_in_ms()
 
-            # Update user permissions
+            # First, verify requester has OWNER permission
+            requester_check_query = """
+            MATCH (u:User {id: $requester_id})-[r:PERMISSION {type: "USER"}]->(kb:RecordGroup {id: $kb_id})
+            RETURN r.role as role
+            """
+            requester_result = await self.client.execute_query(
+                requester_check_query,
+                parameters={"requester_id": requester_id, "kb_id": kb_id},
+                txn_id=transaction
+            )
+
+            requester_role = requester_result[0].get("role") if requester_result else None
+            if requester_role != "OWNER":
+                return {
+                    "success": False,
+                    "reason": "Only KB owners can update permissions",
+                    "code": "403"
+                }
+
+            # Update user permissions and collect details
+            updated_users = 0
+            updates_by_type = {"users": {}, "teams": {}}
+
             for user_id in user_ids:
-                query = """
+                # Get current role before update
+                get_current_query = """
                 MATCH (u:User {id: $user_id})-[r:PERMISSION {type: "USER"}]->(kb:RecordGroup {id: $kb_id})
-                SET r.role = $new_role, r.updatedAtTimestamp = $timestamp
-                RETURN r
+                RETURN r.role as old_role
                 """
-                await self.client.execute_query(
-                    query,
-                    parameters={"user_id": user_id, "kb_id": kb_id, "new_role": new_role, "timestamp": timestamp},
+                current_result = await self.client.execute_query(
+                    get_current_query,
+                    parameters={"user_id": user_id, "kb_id": kb_id},
                     txn_id=transaction
                 )
 
-            return {"success": True}
+                if current_result:
+                    old_role = current_result[0].get("old_role")
+
+                    # Update the permission
+                    update_query = """
+                    MATCH (u:User {id: $user_id})-[r:PERMISSION {type: "USER"}]->(kb:RecordGroup {id: $kb_id})
+                    SET r.role = $new_role, r.updatedAtTimestamp = $timestamp, r.lastUpdatedTimestampAtSource = $timestamp
+                    RETURN r
+                    """
+                    await self.client.execute_query(
+                        update_query,
+                        parameters={"user_id": user_id, "kb_id": kb_id, "new_role": new_role, "timestamp": timestamp},
+                        txn_id=transaction
+                    )
+
+                    updated_users += 1
+                    updates_by_type["users"][user_id] = {
+                        "old_role": old_role,
+                        "new_role": new_role
+                    }
+
+            # Teams don't have roles - they just have access or not
+            # So we don't update team permissions
+            updated_teams = 0
+
+            self.logger.info(f"✅ Optimistically updated {updated_users} user permissions for KB {kb_id}")
+
+            return {
+                "success": True,
+                "kb_id": kb_id,
+                "new_role": new_role,
+                "updated_permissions": updated_users + updated_teams,
+                "updated_users": updated_users,
+                "updated_teams": updated_teams,
+                "updates_detail": updates_by_type,
+                "requester_role": requester_role
+            }
 
         except Exception as e:
-            self.logger.error(f"❌ Update KB permission failed: {str(e)}")
-            return {"success": False, "reason": str(e)}
+            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            return {
+                "success": False,
+                "reason": str(e),
+                "code": "500"
+            }
 
     async def remove_kb_permission(
         self,
@@ -14991,6 +15068,127 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Error in delete_all_team_permissions: {str(e)}", exc_info=True)
+            raise
+
+    async def get_team_owner_removal_info(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get information about owners being removed and total owner count for a team.
+        """
+        try:
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # Get owners being removed
+            owners_query = f"""
+            MATCH (u:{user_label})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+            WHERE u.id IN $user_ids AND p.role = 'OWNER'
+            RETURN u.id as userId
+            """
+
+            owners_result = await self.client.execute_query(
+                owners_query,
+                parameters={"team_id": team_id, "user_ids": user_ids},
+                txn_id=transaction
+            )
+
+            owners_being_removed = [r.get("userId") for r in owners_result]
+
+            # Get total owner count
+            count_query = f"""
+            MATCH (u)-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+            WHERE p.role = 'OWNER'
+            RETURN count(p) as count
+            """
+
+            count_result = await self.client.execute_query(
+                count_query,
+                parameters={"team_id": team_id},
+                txn_id=transaction
+            )
+
+            total_owner_count = count_result[0].get("count", 0) if count_result else 0
+
+            return {
+                "owners_being_removed": owners_being_removed,
+                "total_owner_count": total_owner_count
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_owner_removal_info: {str(e)}", exc_info=True)
+            raise
+
+    async def get_team_permissions_and_owner_count(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get team info, current permissions for specific users, and total owner count.
+        """
+        try:
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # Get team info
+            team_query = f"""
+            MATCH (team:{team_label} {{id: $team_id}})
+            RETURN properties(team) as team
+            """
+
+            team_result = await self.client.execute_query(
+                team_query,
+                parameters={"team_id": team_id},
+                txn_id=transaction
+            )
+
+            team = team_result[0].get("team") if team_result else None
+
+            # Get current permissions for specific users
+            perms_query = f"""
+            MATCH (u:{user_label})-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+            WHERE u.id IN $user_ids
+            RETURN u.id as userId, p.role as role
+            """
+
+            perms_result = await self.client.execute_query(
+                perms_query,
+                parameters={"team_id": team_id, "user_ids": user_ids},
+                txn_id=transaction
+            )
+
+            permissions = {r.get("userId"): r.get("role") for r in perms_result}
+
+            # Get total owner count
+            count_query = f"""
+            MATCH (u)-[p:{permission_rel}]->(team:{team_label} {{id: $team_id}})
+            WHERE p.role = 'OWNER'
+            RETURN count(p) as count
+            """
+
+            count_result = await self.client.execute_query(
+                count_query,
+                parameters={"team_id": team_id},
+                txn_id=transaction
+            )
+
+            owner_count = count_result[0].get("count", 0) if count_result else 0
+
+            return {
+                "team": team,
+                "permissions": permissions,
+                "owner_count": owner_count
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_permissions_and_owner_count: {str(e)}", exc_info=True)
             raise
 
     # ==================== User Operations ====================

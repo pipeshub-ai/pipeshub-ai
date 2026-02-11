@@ -25,7 +25,7 @@ async def get_services(request: Request) -> Dict[str, Any]:
 
 
 async def _validate_owner_removal(
-    arango_service,
+    graph_provider,
     team_id: str,
     user_ids_to_remove: list,
     logger
@@ -37,37 +37,14 @@ async def _validate_owner_removal(
     if not user_ids_to_remove:
         return
 
-    # Single optimized query: Check Owners being removed and total owner count
-    removal_validation_query = f"""
-    LET owners_being_removed = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            FILTER permission.role == 'OWNER'
-            RETURN SPLIT(permission._from, '/')[1]
+    # Get owner removal info using graph provider
+    validation_data = await graph_provider.get_team_owner_removal_info(
+        team_id=team_id,
+        user_ids=user_ids_to_remove
     )
-    LET total_owner_count = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER permission.role == 'OWNER'
-            COLLECT WITH COUNT INTO count
-            RETURN count
-    )
-    RETURN {{
-        ownersBeingRemoved: owners_being_removed,
-        totalOwnerCount: LENGTH(total_owner_count) > 0 ? total_owner_count[0] : 0
-    }}
-    """
-    validation_result = arango_service.db.aql.execute(
-        removal_validation_query,
-        bind_vars={
-            "userIds": user_ids_to_remove,
-            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-        }
-    )
-    validation_data = next(validation_result, {})
-    owners_being_removed = validation_data.get("ownersBeingRemoved", [])
-    total_owner_count = validation_data.get("totalOwnerCount", 0)
+    
+    owners_being_removed = validation_data.get("owners_being_removed", [])
+    total_owner_count = validation_data.get("total_owner_count", 0)
 
     if owners_being_removed:
         remaining_owners = total_owner_count - len(owners_being_removed)
@@ -80,7 +57,7 @@ async def _validate_owner_removal(
 
 
 async def _validate_and_filter_owner_updates(
-    arango_service,
+    graph_provider,
     team_id: str,
     valid_user_roles: list,
     logger
@@ -90,46 +67,18 @@ async def _validate_and_filter_owner_updates(
     Returns (filtered_updates, total_owner_count).
     Raises HTTPException if validation fails.
     """
-    # Single optimized query: Get team info, current permissions, and owner count in one go
+    # Get team info, current permissions, and owner count using graph provider
     user_ids_to_check = [ur.get("userId") for ur in valid_user_roles]
-    team_and_permissions_query = f"""
-    LET team = DOCUMENT(@teamId)
-    LET current_perms = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            RETURN {{
-                userId: SPLIT(permission._from, '/')[1],
-                role: permission.role
-            }}
+    result_data = await graph_provider.get_team_permissions_and_owner_count(
+        team_id=team_id,
+        user_ids=user_ids_to_check
     )
-    LET owner_count = (
-        FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER permission.role == 'OWNER'
-            COLLECT WITH COUNT INTO count
-            RETURN count
-    )
-    RETURN {{
-        team: team,
-        permissions: current_perms,
-        ownerCount: LENGTH(owner_count) > 0 ? owner_count[0] : 0
-    }}
-    """
-    result_cursor = arango_service.db.aql.execute(
-        team_and_permissions_query,
-        bind_vars={
-            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-            "userIds": user_ids_to_check
-        }
-    )
-    result_data = next(result_cursor, None)
 
     if not result_data or not result_data.get("team"):
         raise HTTPException(status_code=404, detail="Team not found")
 
-    current_permissions = {perm["userId"]: perm["role"] for perm in result_data.get("permissions", [])}
-    total_owner_count = result_data.get("ownerCount", 0)
+    current_permissions = result_data.get("permissions", {})
+    total_owner_count = result_data.get("owner_count", 0)
 
     # Filter out unchanged Owners and validate
     filtered_updates = []
@@ -453,21 +402,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
 
         # Remove users if specified
         if remove_user_ids:
-            await _validate_owner_removal(arango_service, team_id, remove_user_ids, logger)
-
-            delete_query = f"""
-            FOR permission IN {CollectionNames.PERMISSION.value}
-            FILTER permission._to == @teamId
-            FILTER SPLIT(permission._from, '/')[1] IN @userIds
-            REMOVE permission IN {CollectionNames.PERMISSION.value}
-            RETURN OLD
-            """
-            deleted_list = await graph_provider.execute_query(
-                delete_query,
-                bind_vars={
-                    "userIds": remove_user_ids,
-                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-                }
+            await _validate_owner_removal(graph_provider, team_id, remove_user_ids, logger)
             deleted_list = await graph_provider.delete_team_member_edges(
                 team_id=team_id,
                 user_ids=remove_user_ids
@@ -489,48 +424,21 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
             else:
                 # Validate and filter owner updates using shared helper
                 filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
-                    arango_service, team_id, valid_user_roles, logger
+                    graph_provider, team_id, valid_user_roles, logger
                 )
 
                 # Process filtered updates
                 if filtered_updates:
-                    batch_update_query = f"""
-                    FOR user_role IN @update_user_roles
-                        LET user_id = user_role.userId
-                        LET new_role = user_role.role
-                        FOR permission IN {CollectionNames.PERMISSION.value}
-                            FILTER permission._to == @teamId
-                            FILTER SPLIT(permission._from, '/')[1] == user_id
-                            UPDATE permission WITH {{
-                                role: new_role,
-                                updatedAtTimestamp: @timestamp
-                            }} IN {CollectionNames.PERMISSION.value}
-                            RETURN NEW
-                    """
                     try:
-                        cursor = arango_service.db.aql.execute(
-                            batch_update_query,
-                            bind_vars={
-                                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-                                "update_user_roles": filtered_updates,
-                                "timestamp": get_epoch_timestamp_in_ms()
-                            }
+                        updated_permissions = await graph_provider.batch_update_team_member_roles(
+                            team_id=team_id,
+                            user_roles=filtered_updates,
+                            timestamp=get_epoch_timestamp_in_ms()
                         )
-                        updated_permissions = list(cursor)
                         logger.info(f"Updated {len(updated_permissions)} user roles in batch")
                     except Exception as e:
                         logger.error(f"Error updating user roles in batch: {str(e)}")
                         raise HTTPException(status_code=500, detail=f"Failed to update user roles: {str(e)}")
-            if valid_user_roles:
-                try:
-                    updated_permissions = await graph_provider.batch_update_team_member_roles(
-                        team_id=team_id,
-                        user_roles=valid_user_roles,
-                        timestamp=get_epoch_timestamp_in_ms()
-                    )
-                    logger.info(f"Updated {len(updated_permissions)} user roles in batch")
-                except Exception as e:
-                    logger.error(f"Error updating user roles in batch: {str(e)}")
 
         # Add users if specified (excluding creator to preserve OWNER role)
         if add_user_roles:
@@ -713,23 +621,8 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
 
     try:
         # Validate owner removal using shared helper
-        await _validate_owner_removal(arango_service, team_id, user_ids, logger)
+        await _validate_owner_removal(graph_provider, team_id, user_ids, logger)
 
-        # Delete permissions in a single atomic AQL operation
-        delete_query = f"""
-        FOR permission IN {CollectionNames.PERMISSION.value}
-        FILTER permission._to == @teamId
-        FILTER SPLIT(permission._from, '/')[1] IN @userIds
-        REMOVE permission IN {CollectionNames.PERMISSION.value}
-        RETURN OLD
-        """
-
-        deleted_list = await graph_provider.execute_query(
-            delete_query,
-            bind_vars={
-                "userIds": user_ids,
-                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
-            }
         # Delete permissions using interface method
         deleted_list = await graph_provider.delete_team_member_edges(
             team_id=team_id,
@@ -815,12 +708,13 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
 
         # Validate and filter owner updates using shared helper
         filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
-            arango_service, team_id, valid_user_roles, logger
+            graph_provider, team_id, valid_user_roles, logger
         )
 
         # Early exit if no updates needed
         if not filtered_updates:
-            updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+            updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+
             return JSONResponse(
                 status_code=200,
                 content={
@@ -830,37 +724,10 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
                 }
             )
 
-        # Batch update all user roles in a single query
-        batch_update_query = f"""
-        FOR user_role IN @user_roles
-            LET user_id = user_role.userId
-            LET new_role = user_role.role
-            FOR permission IN {CollectionNames.PERMISSION.value}
-                FILTER permission._to == @team_id
-                FILTER SPLIT(permission._from, '/')[1] == user_id
-                UPDATE permission WITH {{
-                    role: new_role,
-                    updatedAtTimestamp: @timestamp
-                }} IN {CollectionNames.PERMISSION.value}
-                RETURN {{
-                    _key: NEW._key,
-                    _from: NEW._from,
-                    role: NEW.role,
-                    updatedAt: NEW.updatedAtTimestamp
-                }}
-        """
-
-        updated_permissions = await graph_provider.execute_query(
-            batch_update_query,
-            bind_vars={
-                "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                "user_roles": filtered_updates,
-                "timestamp": timestamp
-            }
         # Batch update all user roles using interface method
         updated_permissions = await graph_provider.batch_update_team_member_roles(
             team_id=team_id,
-            user_roles=valid_user_roles,
+            user_roles=filtered_updates,
             timestamp=timestamp
         )
 
