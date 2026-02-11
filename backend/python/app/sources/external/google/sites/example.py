@@ -9,6 +9,8 @@ import logging
 from typing import Optional
 
 from app.sources.external.google.sites.sites import (
+    GoogleSitesClient,
+    GoogleSitesRESTClient,
     GoogleSitesDataSource,
     GoogleSitesPage,
     normalize_published_site_url,
@@ -38,7 +40,8 @@ async def crawl_published_site(
     # Normalize and validate the URL using the shared helper
     start_url = normalize_published_site_url(published_site_url)
 
-    datasource = GoogleSitesDataSource(logger)
+    client = GoogleSitesClient(GoogleSitesRESTClient())
+    datasource = GoogleSitesDataSource(client=client, logger=logger)
     pages: list[GoogleSitesPage] = await datasource.crawl_site(start_url)
 
     if max_pages is not None:

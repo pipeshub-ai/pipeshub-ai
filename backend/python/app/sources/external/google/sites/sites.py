@@ -15,21 +15,18 @@ from logging import Logger
 from typing import List, Optional, Set, Tuple
 from urllib.parse import ParseResult, urljoin, urlparse
 
-import aiohttp
 from bs4 import BeautifulSoup, Comment
+
+from app.sources.client.google.sites import (
+    GOOGLE_SITES_DEFAULT_HEADERS,
+    GoogleSitesClient,
+    GoogleSitesRESTClient,
+)
+from app.sources.client.http.http_request import HTTPRequest
 
 # URL-based crawl limits and HTTP configuration (kept here close to HTTP logic)
 MAX_CRAWL_PAGES = 500
 CRAWL_DELAY_SEC = 0.5
-
-HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
-HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-    "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/119.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
 
 # Logging helpers / HTTP status thresholds
 HTTP_ERROR_THRESHOLD = 400
@@ -161,7 +158,26 @@ class GoogleSitesDataSource:
     know anything about connector entities (RecordGroup, FileRecord, etc.).
     """
 
-    def __init__(self, logger: Logger) -> None:
+    def __init__(
+        self,
+        client: Optional[GoogleSitesClient] = None,
+        logger: Optional[Logger] = None,
+    ) -> None:
+        """
+        Initialize the datasource with a GoogleSitesClient.
+
+        The client is intentionally required for HTTP access so that we
+        reuse the shared HTTPClient abstraction (httpx-based) instead of
+        creating ad-hoc aiohttp sessions.
+
+        When no client is provided, a default anonymous GoogleSitesRESTClient
+        is constructed. This is primarily for convenience in tests and the
+        standalone example script.
+        """
+        if client is None:
+            client = GoogleSitesClient(GoogleSitesRESTClient())
+
+        self._client = client.get_client()
         self.logger = logger
 
     async def _fetch_page(
@@ -173,43 +189,41 @@ class GoogleSitesDataSource:
         On failure return (None, None, None).
         """
         try:
-            async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-                async with session.get(
-                    url,
-                    headers=HTTP_HEADERS,
-                    allow_redirects=True,
-                ) as response:
-                    status = response.status
-                    if status >= HTTP_ERROR_THRESHOLD:
-                        self.logger.warning(
-                            "[Google Sites] CRAWL:   HTTP %s for %s",
-                            status,
-                            url[:LOG_URL_PREVIEW_LEN],
-                        )
-                        return None, None, None
-
-                    content_type = (response.headers.get("Content-Type") or "").lower()
-                    if "text/html" not in content_type and "application/xhtml" not in content_type:
-                        return None, None, None
-
-                    html = await response.text()
-                    final_url = str(response.url)
-                    soup = BeautifulSoup(html, "html.parser")
-                    title_tag = soup.find("title")
-                    title = title_tag.get_text(strip=True) if title_tag else ""
-                    return html, title, final_url
-        except asyncio.TimeoutError:
-            self.logger.warning(
-                "[Google Sites] CRAWL:   Timeout %s",
-                url[:LOG_URL_PREVIEW_LEN],
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers=dict(GOOGLE_SITES_DEFAULT_HEADERS),
             )
-            return None, None, None
+            response = await self._client.execute(request)
+            status = response.status
+            if status >= HTTP_ERROR_THRESHOLD:
+                if self.logger:
+                    self.logger.warning(
+                        "[Google Sites] CRAWL:   HTTP %s for %s",
+                        status,
+                        url[:LOG_URL_PREVIEW_LEN],
+                    )
+                return None, None, None
+
+            # Use the HTTPResponse.content_type helper which already normalizes
+            # header casing and strips parameters like charset.
+            content_type = (response.content_type or "").lower()
+            if "text/html" not in content_type and "application/xhtml" not in content_type:
+                return None, None, None
+
+            html = response.text()
+            final_url = response.url
+            soup = BeautifulSoup(html, "html.parser")
+            title_tag = soup.find("title")
+            title = title_tag.get_text(strip=True) if title_tag else ""
+            return html, title, final_url
         except Exception as e:
-            self.logger.warning(
-                "[Google Sites] CRAWL:   Error %s: %s",
-                url[:LOG_URL_PREVIEW_LEN],
-                e,
-            )
+            if self.logger:
+                self.logger.warning(
+                    "[Google Sites] CRAWL:   Error %s: %s",
+                    url[:LOG_URL_PREVIEW_LEN],
+                    e,
+                )
             return None, None, None
 
     async def crawl_site(self, start_url: str) -> List[GoogleSitesPage]:
@@ -273,25 +287,26 @@ class GoogleSitesDataSource:
         status code.
         """
         try:
-            async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-                async with session.get(
-                    url,
-                    headers=HTTP_HEADERS,
-                    allow_redirects=True,
-                ) as response:
-                    status = response.status
-                    if status >= HTTP_ERROR_THRESHOLD:
-                        raise RuntimeError(f"Page returned HTTP {status}")
+            request = HTTPRequest(
+                url=url,
+                method="GET",
+                headers=dict(GOOGLE_SITES_DEFAULT_HEADERS),
+            )
+            response = await self._client.execute(request)
+            status = response.status
+            if status >= HTTP_ERROR_THRESHOLD:
+                raise RuntimeError(f"Page returned HTTP {status}")
 
-                    content_type = (response.headers.get("Content-Type") or "").lower()
-                    if "text/html" not in content_type and "application/xhtml" not in content_type:
-                        raise RuntimeError(
-                            f"Unsupported content type for Google Sites page: {content_type}"
-                        )
+            content_type = (response.content_type or "").lower()
+            if "text/html" not in content_type and "application/xhtml" not in content_type:
+                raise RuntimeError(
+                    f"Unsupported content type for Google Sites page: {content_type}"
+                )
 
-                    html = await response.text()
-        except aiohttp.ClientError as e:
-            self.logger.error("[Google Sites] STREAM:   ❌ HTTP error: %s", e)
+            html = response.text()
+        except Exception as e:
+            if self.logger:
+                self.logger.error("[Google Sites] STREAM:   ❌ HTTP error: %s", e)
             raise
 
         return _clean_html_for_indexing(html)
@@ -301,15 +316,16 @@ class GoogleSitesDataSource:
         Perform a lightweight HEAD request to check if a URL is reachable.
         """
         try:
-            async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-                async with session.head(
-                    url,
-                    headers=HTTP_HEADERS,
-                    allow_redirects=True,
-                ) as response:
-                    status = response.status
+            request = HTTPRequest(
+                url=url,
+                method="HEAD",
+                headers=dict(GOOGLE_SITES_DEFAULT_HEADERS),
+            )
+            response = await self._client.execute(request)
+            status = response.status
         except Exception as e:
-            self.logger.error("[Google Sites] TEST:   ❌ Failed to reach URL: %s", e)
+            if self.logger:
+                self.logger.error("[Google Sites] TEST:   ❌ Failed to reach URL: %s", e)
             return False
         return HTTP_SUCCESS_MIN <= status <= HTTP_SUCCESS_MAX
 

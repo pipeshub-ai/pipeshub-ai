@@ -55,6 +55,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.google.sites import GoogleSitesClient, GoogleSitesRESTClient
 from app.sources.external.google.sites.sites import (
     LOG_URL_PREVIEW_LEN,
     LOG_URL_SHORT_PREVIEW_LEN,
@@ -135,7 +136,11 @@ class GoogleSitesConnector(BaseConnector):
         self.batch_size = 100
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
-        self.sites_data_source = GoogleSitesDataSource(logger)
+        # Google Sites datasource now uses the shared HTTP client abstraction
+        # via GoogleSitesClient / GoogleSitesRESTClient.
+        http_client = GoogleSitesRESTClient()
+        sites_client = GoogleSitesClient(http_client)
+        self.sites_data_source = GoogleSitesDataSource(client=sites_client, logger=logger)
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
         return [
