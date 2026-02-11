@@ -5863,10 +5863,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 parent_doc_id = f"recordGroups/{parent_id}" if parent_type in ("kb", "recordGroup") else f"records/{parent_id}"
                 bind_vars["parent_doc_id"] = parent_doc_id
             elif parent_type == "app":
-                # App-level scope: use parent_id and parent_connector_id for scope filters
+                # App-level scope: use parent_id for scope filters
                 bind_vars["parent_id"] = parent_id
-                if parent_connector_id:
-                    bind_vars["parent_connector_id"] = parent_connector_id
 
         # Merge filter params
         bind_vars.update(filter_params)
