@@ -35,6 +35,7 @@ import { CONFIG } from 'src/config-global';
 import { ORIGIN } from 'src/sections/knowledgebase/constants/knowledge-search';
 import { useConnectors } from 'src/sections/accountdetails/connectors/context';
 import { KnowledgeBaseAPI } from 'src/sections/knowledgebase/services/api';
+import { getExtensionFromMimeType } from 'src/sections/knowledgebase/utils/utils';
 
 import { ConnectorApiService } from 'src/sections/accountdetails/connectors/services/api';
 import ChatInput from './components/chat-input';
@@ -1693,9 +1694,12 @@ const ChatInterface = () => {
       const { externalRecordId } = record;
       const fileName = record.recordName;
 
+      const extension = getExtensionFromMimeType(record.mimeType || '') || citationMeta?.extension || record.fileRecord?.extension || '';
       try {
         let params: any = {};
-        if (['pptx', 'ppt'].includes(citationMeta?.extension)) {
+        const isPowerPoint = ['pptx', 'ppt'].includes(extension);
+        const isGoogleSlides = record?.mimeType === 'application/vnd.google-apps.presentation';
+        if (isPowerPoint || isGoogleSlides) {
           params = {
             convertTo: 'application/pdf',
           };
@@ -1813,7 +1817,9 @@ const ChatInterface = () => {
     setIsTextFile(['txt'].includes(citationMeta?.extension));
     setIsImage(['jpg', 'jpeg', 'png', 'webp', 'svg'].includes(citationMeta?.extension));
     setIsExcel(isExcelOrCSV);
-    setIsPdf(['pptx', 'ppt', 'pdf'].includes(citationMeta?.extension));
+
+    const extension = getExtensionFromMimeType(citationMeta?.mimeType || '') || citationMeta?.extension || '';
+    setIsPdf(['pptx', 'ppt', 'pdf'].includes(extension));
 
     setTimeout(() => {
       setIsViewerReady(true);

@@ -821,11 +821,42 @@ async def stream_record(
                     detail=f"Connector '{connector_id}' not found"
                 )
 
-            # Pass user_id for google drive
+            # Get the buffer from connector (without passing convertTo)
             if connector_obj.get_app_name() == Connectors.GOOGLE_DRIVE_WORKSPACE or connector_obj.get_app_name() == Connectors.GOOGLE_MAIL_WORKSPACE:
                 buffer = await connector_obj.stream_record(record, user_id)
             else:
                 buffer = await connector_obj.stream_record(record)
+
+            # Handle conversion after getting the buffer
+            if convertTo == MimeTypes.PDF.value:
+                mime_type = get_mime_type_from_record(record)
+                record_name = getattr(record, 'record_name', None) or getattr(record, 'name', None) or 'file'
+
+                file_extension = None
+                if record_name and '.' in record_name:
+                    file_extension = record_name.split('.')[-1].lower()
+
+                # Check if this file type needs conversion (PPT, PPTX, Google Slides)
+                needs_conversion = (
+                    file_extension in ['ppt', 'pptx'] or
+                    mime_type in [
+                        MimeTypes.PPT.value,
+                        MimeTypes.PPTX.value,
+                        MimeTypes.GOOGLE_SLIDES.value
+                    ]
+                )
+
+                if needs_conversion:
+                    try:
+                        return await convert_buffer_to_pdf_stream(buffer, record_name, file_extension)
+                    except HTTPException:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Error converting file to PDF: {str(e)}", exc_info=True)
+                        raise HTTPException(
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                            detail="Failed to convert file to PDF"
+                        )
 
             return buffer
         except Exception as e:
@@ -1002,58 +1033,169 @@ async def handle_admin_webhook(request: Request, background_tasks: BackgroundTas
 
 
 async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
-    """Helper function to convert file to PDF"""
+    """
+    Convert a file to PDF using LibreOffice.
+
+    Args:
+        file_path: Path to the input file to convert
+        temp_dir: Temporary directory where the PDF will be created
+
+    Returns:
+        Path to the converted PDF file
+
+    Raises:
+        HTTPException: If conversion fails or output file is not found
+    """
     pdf_path = os.path.join(temp_dir, f"{Path(file_path).stem}.pdf")
 
+    conversion_cmd = [
+        "soffice",
+        "--headless",
+        "--convert-to",
+        "pdf",
+        "--outdir",
+        temp_dir,
+        file_path,
+    ]
+
     try:
-        conversion_cmd = [
-            "soffice",
-            "--headless",
-            "--convert-to",
-            "pdf",
-            "--outdir",
-            temp_dir,
-            file_path,
-        ]
         process = await asyncio.create_subprocess_exec(
             *conversion_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Add timeout to communicate
         try:
             conversion_output, conversion_error = await asyncio.wait_for(
                 process.communicate(), timeout=30.0
             )
         except asyncio.TimeoutError:
-            # Make sure to terminate the process if it times out
             process.terminate()
             try:
                 await asyncio.wait_for(process.wait(), timeout=5.0)
             except asyncio.TimeoutError:
-                process.kill()  # Force kill if termination takes too long
-            logger.error("LibreOffice conversion timed out after 30 seconds")
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
+                process.kill()
+            logger.error("PDF conversion timed out")
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="PDF conversion timed out"
+            )
 
         if process.returncode != 0:
-            error_msg = f"LibreOffice conversion failed: {conversion_error.decode('utf-8', errors='replace')}"
-            logger.error(error_msg)
-            raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to convert file to PDF")
-
-        if os.path.exists(pdf_path):
-            return pdf_path
-        else:
+            error_msg = conversion_error.decode('utf-8', errors='replace')
+            logger.error(f"PDF conversion failed: {error_msg}")
             raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion failed - output file not found"
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to convert file to PDF"
             )
-    except asyncio.TimeoutError:
-        # This catch is for any other timeout that might occur
-        logger.error("Timeout during PDF conversion")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="PDF conversion timed out")
-    except Exception as conv_error:
-        logger.error(f"Error during conversion: {str(conv_error)}")
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error converting file to PDF")
+
+        if not os.path.exists(pdf_path):
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="PDF conversion failed - output file not found"
+            )
+
+        return pdf_path
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during PDF conversion: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Error converting file to PDF"
+        )
+
+
+async def convert_buffer_to_pdf_stream(
+    buffer: Union[StreamingResponse, Response, bytes, io.IOBase],
+    record_name: str,
+    file_extension: Optional[str] = None
+) -> StreamingResponse:
+    """
+    Convert a file buffer to PDF and return as a streaming response.
+
+    Args:
+        buffer: The file buffer (StreamingResponse, Response, bytes, or file-like object)
+        record_name: Name of the record/file
+        file_extension: Optional file extension
+
+    Returns:
+        StreamingResponse containing the converted PDF
+
+    Raises:
+        HTTPException: If conversion fails
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_file_name = record_name if record_name else f"file.{file_extension or 'tmp'}"
+        temp_file_path = os.path.join(temp_dir, temp_file_name)
+
+        # Write buffer content to temporary file
+        with open(temp_file_path, "wb") as f:
+            if isinstance(buffer, StreamingResponse):
+                async for chunk in buffer.body_iterator:
+                    await asyncio.to_thread(f.write, chunk)
+            elif isinstance(buffer, Response):
+                body_content = buffer.body
+                if not body_content:
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail="Response object has no body content"
+                    )
+                if callable(body_content):
+                    body_content = body_content()
+                if not isinstance(body_content, bytes):
+                    raise HTTPException(
+                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                        detail=f"Response body is not bytes: {type(body_content)}"
+                    )
+                await asyncio.to_thread(f.write, body_content)
+            elif hasattr(buffer, 'read'):
+                while True:
+                    chunk = await asyncio.to_thread(buffer.read, 8192)
+                    if not chunk:
+                        break
+                    await asyncio.to_thread(f.write, chunk)
+            elif isinstance(buffer, bytes):
+                await asyncio.to_thread(f.write, buffer)
+            else:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail=f"Unsupported buffer type for conversion: {type(buffer)}"
+                )
+
+        # Convert to PDF
+        pdf_path = await convert_to_pdf(temp_file_path, temp_dir)
+
+        # Handle case where LibreOffice may have renamed the file
+        if not os.path.exists(pdf_path):
+            pdf_files = [f for f in os.listdir(temp_dir) if f.endswith('.pdf')]
+            if pdf_files:
+                pdf_path = os.path.join(temp_dir, pdf_files[0])
+            else:
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="PDF conversion failed - output file not found"
+                )
+
+        # Read PDF into memory before temp directory cleanup
+        with open(pdf_path, "rb") as pdf_file:
+            pdf_content = await asyncio.to_thread(pdf_file.read)
+
+        # Create streaming iterator
+        pdf_filename = f"{Path(record_name).stem}.pdf" if record_name else "converted_file.pdf"
+
+        async def pdf_file_iterator() -> AsyncGenerator[bytes, None]:
+            chunk_size = 8192
+            for i in range(0, len(pdf_content), chunk_size):
+                yield pdf_content[i:i + chunk_size]
+
+        return create_stream_record_response(
+            pdf_file_iterator(),
+            filename=pdf_filename,
+            mime_type="application/pdf",
+            fallback_filename="converted_file.pdf"
+        )
 
 
 async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
