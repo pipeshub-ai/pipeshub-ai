@@ -18,6 +18,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
     ToolsetBuilder,
 )
+from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.confluence.confluence import ConfluenceClient
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
@@ -102,10 +103,10 @@ tools: List[ToolDefinition] = [
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "read:confluence-content.all",
-                    "write:confluence-content",
-                    "read:confluence-space.summary"
+                agent=AtlassianScope.get_confluence_read_access() + [
+                    # Write scopes for creating/updating content
+                    AtlassianScope.CONFLUENCE_CONTENT_CREATE.value,  # For create_page
+                    AtlassianScope.CONFLUENCE_PAGE_WRITE.value,      # For update_page_title
                 ]
             ),
             fields=[
@@ -593,34 +594,3 @@ class Confluence:
             logger.error(f"Error getting page versions: {e}")
             return False, json.dumps({"error": str(e)})
 
-    @tool(
-        app_name="confluence",
-        tool_name="invite_user",
-        description="Invite a user to Confluence by email",
-        parameters=[
-            ToolParameter(
-                name="email",
-                type=ParameterType.STRING,
-                description="The email address to invite"
-            ),
-        ],
-        returns="JSON with invitation status"
-    )
-    def invite_user(self, email: str) -> Tuple[bool, str]:
-        """Invite a user by email.
-
-        Args:
-            email: The email address to invite
-
-        Returns:
-            Tuple of (success, json_response)
-        """
-        try:
-            response = self._run_async(
-                self.client.invite_by_email(body={"email": email})
-            )
-            return self._handle_response(response, "User invited successfully")
-
-        except Exception as e:
-            logger.error(f"Error inviting user: {e}")
-            return False, json.dumps({"error": str(e)})

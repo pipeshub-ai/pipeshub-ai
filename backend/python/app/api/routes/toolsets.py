@@ -880,32 +880,40 @@ async def handle_oauth_callback(
             await oauth_provider.close()
 
         if not token or not token.access_token:
+            logger.error(f"Invalid token received for toolset {toolset_type}")
             raise OAuthConfigError("Failed to exchange authorization code for access token")
 
-        if not token.refresh_token:
-            logger.warning(f"No refresh_token received for {toolset_type}. Token refresh may fail.")
+        # Log token information after OAuth callback completes
+        logger.info(
+            f"OAuth token exchange completed for toolset {toolset_type}. "
+            f"Token details - has_access_token: {bool(token.access_token)}, "
+            f"has_refresh_token: {bool(token.refresh_token)}, "
+            f"token_type: {token.token_type}, "
+            f"expires_in: {token.expires_in}"
+        )
 
-        # Update config with credentials
+        logger.info(f"OAuth tokens stored successfully for toolset {toolset_type}")
+
+        # ============================================================
+        # Post-Processing: Cache, Token Refresh, Status Update
+        # ============================================================
+        # Refresh configuration cache (same pattern as connectors)
         try:
             kv_store = container.key_value_store()
             updated_config = await kv_store.get_key(config_path)
-
             if isinstance(updated_config, dict):
-                updated_config["credentials"] = token.to_dict()
+                # Update metadata fields
                 updated_config["isAuthenticated"] = True
                 updated_config["updatedAt"] = get_epoch_timestamp_in_ms()
                 updated_config["updatedBy"] = toolset_user_id
 
                 await kv_store.create_key(config_path, updated_config)
                 await config_service.set_config(config_path, updated_config)
-        except Exception as e:
-            logger.error(f"Failed to save OAuth credentials: {e}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Authentication successful but failed to save credentials"
-            )
+                logger.info(f"Refreshed config cache for toolset {toolset_type}")
+        except Exception as cache_err:
+            logger.warning(f"Could not refresh config cache: {cache_err}")
 
-        # Schedule token refresh
+        # Schedule token refresh (same pattern as connectors)
         try:
             from app.connectors.core.base.token_service.startup_service import (
                 startup_service,
@@ -913,8 +921,14 @@ async def handle_oauth_callback(
             refresh_service = startup_service.get_toolset_token_refresh_service()
             if refresh_service:
                 await refresh_service.schedule_token_refresh(config_path, toolset_type, token)
-        except Exception as e:
-            logger.error(f"Failed to schedule token refresh: {e}")
+                logger.info(f"✅ Scheduled token refresh for toolset {toolset_type}")
+            else:
+                logger.warning("⚠️ Token refresh service not initialized for toolsets")
+        except Exception as sched_err:
+            logger.error(f"❌ Could not schedule token refresh for {toolset_type}: {sched_err}", exc_info=True)
+
+        if not token.refresh_token:
+            logger.warning(f"No refresh_token received for {toolset_type}. Token refresh may fail.")
 
         # Return JSON response with redirect_url (matches connector pattern)
         return {
@@ -923,7 +937,8 @@ async def handle_oauth_callback(
         }
 
     except (ToolsetError, OAuthConfigError, InvalidAuthConfigError) as e:
-        logger.error(f"OAuth callback error: {e.detail}")
+        error_detail = getattr(e, 'detail', str(e))
+        logger.error(f"OAuth callback error: {error_detail}")
         return {
             "success": False,
             "error": type(e).__name__,
@@ -937,7 +952,7 @@ async def handle_oauth_callback(
             "redirect_url": f"{base_url}/tools?oauth_error=auth_failed"
         }
     except Exception as e:
-        logger.error(f"Unexpected OAuth callback error: {e}")
+        logger.error(f"Error handling OAuth callback: {e}", exc_info=True)
         return {
             "success": False,
             "error": "server_error",

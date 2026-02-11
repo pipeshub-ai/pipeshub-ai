@@ -100,7 +100,7 @@ class DeleteOldAgentsTemplatesMigrationService:
         """
         try:
             self.logger.info(f"🔍 Checking {edge_collection} for edges connected to agents/templates...")
-            
+
             delete_query = f"""
             FOR edge IN {edge_collection}
                 FILTER STARTS_WITH(edge._to, '{CollectionNames.AGENT_INSTANCES.value}/')
@@ -110,16 +110,16 @@ class DeleteOldAgentsTemplatesMigrationService:
                 REMOVE edge IN {edge_collection}
                 RETURN OLD
             """
-            
+
             cursor = transaction.aql.execute(delete_query)
             deleted_edges = list(cursor)
             count = len(deleted_edges)
-            
+
             if count > 0:
                 self.logger.info(f"🗑️ Deleted {count} edges from {edge_collection}")
             else:
                 self.logger.debug(f"📝 No edges found in {edge_collection} connected to agents/templates")
-            
+
             return count
         except Exception as e:
             self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
@@ -153,15 +153,15 @@ class DeleteOldAgentsTemplatesMigrationService:
             CollectionNames.ENTITY_RELATIONS.value,
             CollectionNames.BELONGS_TO_RECORD_GROUP.value,
         ]
-        
+
         edge_deletion_counts = {}
         total_edges_deleted = 0
-        
+
         for edge_collection in edge_collections:
             count = await self._delete_edges_from_collection(edge_collection, transaction)
             edge_deletion_counts[edge_collection] = count
             total_edges_deleted += count
-        
+
         self.logger.info(f"✅ Total edges deleted: {total_edges_deleted}")
         return edge_deletion_counts
 

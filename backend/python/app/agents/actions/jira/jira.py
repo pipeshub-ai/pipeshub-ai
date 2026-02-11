@@ -20,6 +20,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolDefinition,
     ToolsetBuilder,
 )
+from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.http.exception.exception import HttpStatusCode
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.jira.jira import JiraClient
@@ -114,10 +115,9 @@ tools: List[ToolDefinition] = [
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "read:jira-work",
-                    "write:jira-work",
-                    "read:jira-user"
+                agent=AtlassianScope.get_jira_read_access() + [
+                    # Write scopes for creating/updating issues and comments
+                    AtlassianScope.JIRA_WORK_WRITE.value,  # For create_issue and add_comment
                 ]
             ),
             fields=[
