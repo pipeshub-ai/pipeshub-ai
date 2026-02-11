@@ -113,22 +113,23 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     }
   }, [loadedAgent, editingAgent, loading, setAgentName]);
 
+  // Templates disabled for v1
   // Load templates
-  useEffect(() => {
-    const loadTemplates = async () => {
-      try {
-        setTemplatesLoading(true);
-        const loadedTemplates = await AgentApiService.getTemplates();
-        setTemplates(loadedTemplates);
-      } catch (err) {
-        console.error('Failed to load templates:', err);
-      } finally {
-        setTemplatesLoading(false);
-      }
-    };
+  // useEffect(() => {
+  //   const loadTemplates = async () => {
+  //     try {
+  //       setTemplatesLoading(true);
+  //       const loadedTemplates = await AgentApiService.getTemplates();
+  //       setTemplates(loadedTemplates);
+  //     } catch (err) {
+  //       console.error('Failed to load templates:', err);
+  //     } finally {
+  //       setTemplatesLoading(false);
+  //     }
+  //   };
 
-    loadTemplates();
-  }, []);
+  //   loadTemplates();
+  // }, []);
 
   // Reset nodes when switching between different agents
   useEffect(() => {
@@ -695,8 +696,8 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         nodes={nodes}
       />
 
-      {/* Template Selector Dialog */}
-      <TemplateSelector
+      {/* Template Selector Dialog - Disabled for v1 */}
+      {/* <TemplateSelector
         open={templateDialogOpen}
         onClose={() => setTemplateDialogOpen(false)}
         onSelect={(template) => {
@@ -714,7 +715,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           setTemplateDialogOpen(false);
         }}
         templates={templates}
-      />
+      /> */}
     </Box>
   );
 };

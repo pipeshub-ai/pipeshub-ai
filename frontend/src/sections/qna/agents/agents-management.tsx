@@ -132,13 +132,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
       try {
         setLoading(true);
         // Load agents and templates in parallel
-        const [agentsResponse, templatesResponse] = await Promise.all([
-          AgentApiService.getAgents(),
-          AgentApiService.getTemplates(),
-        ]);
-        
+        const agentsResponse = await AgentApiService.getAgents();  
         setAgents(agentsResponse || []);
-        setTemplates(templatesResponse || []);
         setError(null);
         hasLoadedRef.current = true;
       } catch (err) {
@@ -781,7 +776,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
 
           {/* Action Buttons with better labels */}
           <Stack direction="row" spacing={1} sx={{ flexShrink: 0 }}>
-            <Button
+            {/* Template button disabled for v1 */}
+            {/* <Button
               variant="outlined"
               startIcon={<Icon icon={databaseIcon} fontSize={14} />}
               onClick={() => setShowTemplateBuilder(true)}
@@ -802,7 +798,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
               }}
             >
               <Box sx={{ display: { xs: 'none', sm: 'inline' } }}>New Template</Box>
-            </Button>
+            </Button> */}
 
             <Button
               variant="outlined"
@@ -1226,8 +1222,8 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         </DialogActions>
       </Dialog>
 
-      {/* Template Builder Dialog */}
-      <TemplateBuilder
+      {/* Template Builder Dialog - Disabled for v1 */}
+      {/* <TemplateBuilder
         open={showTemplateBuilder}
         onClose={() => {
           setShowTemplateBuilder(false);
@@ -1235,17 +1231,17 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         }}
         onSuccess={handleCreateTemplate}
         editingTemplate={editingTemplate}
-      />
+      /> */}
 
-      {/* Template Selector Dialog */}
-      <TemplateSelector
+      {/* Template Selector Dialog - Disabled for v1 */}
+      {/* <TemplateSelector
         open={showTemplateSelector}
         onClose={() => setShowTemplateSelector(false)}
         onSelect={handleTemplateSelect}
         onEdit={handleEditTemplate}
         onDelete={handleDeleteTemplate}
         templates={Array.isArray(templates) ? templates : []}
-      />
+      /> */}
 
       <AgentPermissionsDialog
         open={permissionsDialog.open}

@@ -30,6 +30,9 @@ from app.migrations.permission_edge_migration import (
 from app.migrations.record_group_app_edge_migration import (
     run_record_group_app_edge_migration,
 )
+from app.migrations.delete_old_agents_templates_migration import (
+    run_delete_old_agents_templates_migration,
+)
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -472,6 +475,25 @@ async def initialize_container(container) -> bool:
             else:
                 error_msg = result_rg_app_edge.get("message", "Unknown error")
                 logger.error(f"❌ Record Group -> App edge migration failed: {error_msg}")
+
+        if migration_completed(migration_state, "deleteOldAgentsTemplates"):
+            logger.info("⏭️ Delete Old Agents and Templates migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Delete Old Agents and Templates migration...")
+            result_delete_agents_templates = await run_delete_old_agents_templates_migration(container)
+            if result_delete_agents_templates.get("success"):
+                agents_deleted = result_delete_agents_templates.get("agents_deleted", 0)
+                templates_deleted = result_delete_agents_templates.get("templates_deleted", 0)
+                total_edges_deleted = result_delete_agents_templates.get("total_edges_deleted", 0)
+                logger.info(
+                    f"✅ Delete Old Agents and Templates migration completed: "
+                    f"{agents_deleted} agents, {templates_deleted} templates, "
+                    f"{total_edges_deleted} edges deleted"
+                )
+                await mark_migration_completed("deleteOldAgentsTemplates", result_delete_agents_templates)
+            else:
+                error_msg = result_delete_agents_templates.get("message", "Unknown error")
+                logger.error(f"❌ Delete Old Agents and Templates migration failed: {error_msg}")
 
         return True
 
