@@ -5,7 +5,18 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Dict,
+    List,
+    NoReturn,
+    Optional,
+    Tuple,
+    TypeVar,
+)
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -83,6 +94,8 @@ from app.sources.external.microsoft.users_groups.users_groups import (
 )
 from app.utils.streaming import create_stream_record_response
 
+T = TypeVar("T")
+
 
 class GapFillFailedException(Exception):
     """Exception raised when historical gap fill fails."""
@@ -92,6 +105,7 @@ class GapFillFailedException(Exception):
 # Thread detection constants
 THREAD_ROOT_EMAIL_CONVERSATION_INDEX_LENGTH = 22  # Length (in bytes) of conversation_index for root email in a thread
 FILTER_TIMESTAMP_BUFFER_SECONDS = 60  # Buffer to handle minor clock skew comparisons
+GAP_FILL_MEMORY_CAP = 5000
 
 # Standard Outlook folder names
 STANDARD_OUTLOOK_FOLDERS = [
@@ -925,7 +939,7 @@ class OutlookConnector(BaseConnector):
             self.logger.info(f"Syncing conversations for {len(user_groups)} groups")
 
             total_conversations = 0
-            total_conversations = 0
+
 
             for group in user_groups:
                 try:
@@ -3677,7 +3691,7 @@ class OutlookConnector(BaseConnector):
 
                              if mail_records_collector is not None:
                                  # Fix 1: Memory cap
-                                 if len(mail_records_collector) < 5000:
+                                 if len(mail_records_collector) < GAP_FILL_MEMORY_CAP:
                                      mail_records_collector.append(update.record)
 
                 if len(batch_records) >= self.BATCH_SIZE:
@@ -3816,7 +3830,7 @@ class OutlookConnector(BaseConnector):
             # Propagate the exception to trigger the safety mechanism in _process_single_folder_messages
             raise e
 
-    async def _retry_request(self, func, *args, **kwargs):
+    async def _retry_request(self, func: Callable[..., Awaitable[T]], *args, **kwargs) -> T:
         """Execute a function with retry logic for rate limiting."""
         retries = 0
         while True:
