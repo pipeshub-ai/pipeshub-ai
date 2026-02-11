@@ -120,9 +120,9 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
-    async def delete_parent_child_edges_to(self, to_key: str) -> int:
-        """Delete PARENT_CHILD edges pointing to a specific target record."""
-        return await self.graph_provider.delete_parent_child_edges_to(to_key, transaction=self.txn)
+    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        """Delete PARENT_CHILD edges pointing to a specific target record"""
+        return await self.graph_provider.delete_parent_child_edge_to_record(record_id, transaction=self.txn)
 
     async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)
@@ -297,6 +297,10 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_records_by_parent(
             connector_id, parent_external_record_id, record_type, transaction=self.txn
         )
+
+    async def get_record_path(self, record_id: str) -> Optional[str]:
+        """Get full hierarchical path for a record by traversing parent-child edges."""
+        return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
         """
