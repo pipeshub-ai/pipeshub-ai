@@ -5720,23 +5720,21 @@ class Neo4jProvider(IGraphDBProvider):
             WITH u, rec,
                  [x IN COLLECT({type: "DIRECT", source: u, role: directPerm.role}) WHERE x.role IS NOT NULL] AS directAccess
 
-            // Group access: User -> Group -> Record
-            OPTIONAL MATCH (u)-[userGroupPerm:PERMISSION {type: "USER"}]->(g:Group)-[groupRecPerm:PERMISSION]->(rec)
+            // Group/Role access: User -> Group or Role -> Record
+            OPTIONAL MATCH (u)-[userGroupPerm:PERMISSION {type: "USER"}]->(g)-[groupRecPerm:PERMISSION]->(rec)
+            WHERE (g:Group OR g:Role)
             WITH u, rec, directAccess,
                  [x IN COLLECT({type: "GROUP", source: g, role: groupRecPerm.role}) WHERE x.role IS NOT NULL] AS groupAccess
 
-            // Record Group access: User -> Group -> RecordGroup -> Record
-            // Combine into single pattern to ensure path exists
-            OPTIONAL MATCH (u)-[userGroupPerm2:PERMISSION {type: "USER"}]->(g2:Group)-[groupRgPerm:PERMISSION]->(rg:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec2:Record {id: $record_id})
-            WHERE groupRgPerm.type IN ["GROUP", "ROLE"] AND (rec2.origin <> "CONNECTOR" OR rec2.connectorId IN $user_apps_ids)
+            // Record Group access: User -> Group or Role -> RecordGroup <- Record (INHERIT_PERMISSIONS)
+            OPTIONAL MATCH (u)-[userGroupPerm2:PERMISSION {type: "USER"}]->(g2)-[groupRgPerm:PERMISSION]->(rg:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec2:Record {id: $record_id})
+            WHERE (g2:Group OR g2:Role) AND groupRgPerm.type IN ["GROUP", "ROLE"] AND (rec2.origin <> "CONNECTOR" OR rec2.connectorId IN $user_apps_ids)
             WITH u, rec, directAccess, groupAccess,
                  [x IN COLLECT({type: "RECORD_GROUP", source: rg, role: groupRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS recordGroupAccess
 
-            // Nested Record Group access: User -> Group -> RecordGroup -> (nested RGs 2-5 levels) -> Record
-            // Combine into single pattern to ensure path exists with variable-length path
-            // Note: Uses *2..5 (not *1..5) to avoid overlap with RECORD_GROUP which handles direct inheritance (1 hop)
-            OPTIONAL MATCH (u)-[userGroupPerm3:PERMISSION {type: "USER"}]->(g3:Group)-[groupParentRgPerm:PERMISSION]->(parentRg:RecordGroup)<-[:INHERIT_PERMISSIONS*2..5]-(rec3:Record {id: $record_id})
-            WHERE groupParentRgPerm.type IN ["GROUP", "ROLE"] AND (rec3.origin <> "CONNECTOR" OR rec3.connectorId IN $user_apps_ids)
+            // Nested Record Group access: User -> Group or Role -> RecordGroup -> (nested RGs 2-5 levels) -> Record
+            OPTIONAL MATCH (u)-[userGroupPerm3:PERMISSION {type: "USER"}]->(g3)-[groupParentRgPerm:PERMISSION]->(parentRg:RecordGroup)<-[:INHERIT_PERMISSIONS*2..5]-(rec3:Record {id: $record_id})
+            WHERE (g3:Group OR g3:Role) AND groupParentRgPerm.type IN ["GROUP", "ROLE"] AND (rec3.origin <> "CONNECTOR" OR rec3.connectorId IN $user_apps_ids)
             WITH u, rec, directAccess, groupAccess, recordGroupAccess,
                  [x IN COLLECT(DISTINCT {type: "NESTED_RECORD_GROUP", source: parentRg, role: groupParentRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS nestedRgAccess
 
@@ -5754,12 +5752,10 @@ class Neo4jProvider(IGraphDBProvider):
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess,
                  [x IN COLLECT({type: "INHERITED_RECORD_GROUP", source: inheritedRg, role: inheritedRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS inheritedRgAccess
 
-            // Group Inherited RecordGroup permission: Record -> RecordGroup hierarchy (OUTBOUND), then User -> Group -> RecordGroup
-            // Traverse UP from record to find ancestor RecordGroups (2-5 hops), then check if user's group has permission
-            // Note: Uses *2..5 (not *1..5) to avoid overlap with RECORD_GROUP which handles direct inheritance (1 hop)
+            // Group/Role Inherited RecordGroup permission: Record -> RecordGroup hierarchy (OUTBOUND), then User -> Group or Role -> RecordGroup
             OPTIONAL MATCH (rec)-[:INHERIT_PERMISSIONS*2..5]->(inheritedRg2:RecordGroup)
-            OPTIONAL MATCH (u)-[userGroupPerm4:PERMISSION {type: "USER"}]->(g4:Group)-[groupInheritedRgPerm:PERMISSION]->(inheritedRg2)
-            WHERE groupInheritedRgPerm.type IN ["GROUP", "ROLE"]
+            OPTIONAL MATCH (u)-[userGroupPerm4:PERMISSION {type: "USER"}]->(g4)-[groupInheritedRgPerm:PERMISSION]->(inheritedRg2)
+            WHERE (g4:Group OR g4:Role) AND groupInheritedRgPerm.type IN ["GROUP", "ROLE"]
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess,
                  [x IN COLLECT({type: "GROUP_INHERITED_RECORD_GROUP", source: inheritedRg2, role: groupInheritedRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS groupInheritedRgAccess
 
@@ -5776,18 +5772,20 @@ class Neo4jProvider(IGraphDBProvider):
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess,
                  [x IN COLLECT(DISTINCT {type: "ORG_RECORD_GROUP", source: rg3, role: orgRgPerm.role}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS orgRgAccess
 
-            // Knowledge Base access: Check if record belongs to KB and user has permission
+            // Knowledge Base access: Only for KB records (connectorName = KB), not connector records
             OPTIONAL MATCH (kb:RecordGroup)<-[:BELONGS_TO]-(rec7:Record {id: $record_id}),
                            (u)-[kbPerm:PERMISSION {type: "USER"}]->(kb)
+            WHERE rec7.connectorName = $kb_connector_name
             OPTIONAL MATCH (rec7)<-[:PARENT_CHILD]-(folder:File)
             WHERE folder.isFile = false
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess,
                  [x IN COLLECT({type: "KNOWLEDGE_BASE", source: kb, role: kbPerm.role, folder: folder}) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbDirectAccess
 
-            // KB Team access: User -> Team -> KB -> Record
+            // KB Team access: Only for KB records, not connector records
             OPTIONAL MATCH (kb2:RecordGroup)<-[:BELONGS_TO]-(rec8:Record {id: $record_id}),
                            (team:Teams)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2),
                            (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
+            WHERE rec8.connectorName = $kb_connector_name
             OPTIONAL MATCH (rec8)<-[:PARENT_CHILD]-(folder2:File)
             WHERE folder2.isFile = false
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess,
@@ -5816,7 +5814,8 @@ class Neo4jProvider(IGraphDBProvider):
                     "user_key": user_key,
                     "record_id": record_id,
                     "org_id": org_id,
-                    "user_apps_ids": user_apps_ids
+                    "user_apps_ids": user_apps_ids,
+                    "kb_connector_name": Connectors.KNOWLEDGE_BASE.value,
                 },
                 txn_id=transaction
             )
@@ -10919,7 +10918,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             query = f"""
             MATCH (source:{label} {{id: $key}})-[r:{rel_type}]->(target)
-            RETURN r, labels(target) AS target_labels, target.id AS target_id
+            RETURN properties(r) AS r, labels(target) AS target_labels, target.id AS target_id
             """
 
             results = await self.client.execute_query(
@@ -10930,7 +10929,8 @@ class Neo4jProvider(IGraphDBProvider):
 
             edges = []
             for result in results:
-                edge_dict = dict(result.get("r", {}))
+                edge_data = result.get("r", {})
+                edge_dict = dict(edge_data) if isinstance(edge_data, dict) else {}
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
 
@@ -11134,7 +11134,7 @@ class Neo4jProvider(IGraphDBProvider):
             rel_type = edge_collection_to_relationship(collection)
             from_label = collection_to_label(from_collection)
             query = f"""
-            MATCH (r:{from_label} {{id: $from_id}})-[rel:{rel_type}]-()
+            MATCH (r:{from_label} {{id: $from_id}})-[rel:{rel_type}]->()
             WHERE rel.relationshipType IN $relationship_types
             DELETE rel
             RETURN count(rel) as deleted_count
@@ -11144,7 +11144,8 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"from_id": from_id, "relationship_types": relationship_types},
                 txn_id=transaction
             )
-            return results[0].get("deleted_count", 0) if results else 0
+            total = sum(row.get("deleted_count", 0) for row in results) if results else 0
+            return total
         except Exception as e:
             self.logger.error(f"❌ Delete edges by relationship types failed: {str(e)}")
             return 0
@@ -13945,6 +13946,86 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get knowledge hub recursive search failed: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_search(
+        self,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
+        parent_id: Optional[str] = None,
+        parent_type: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Unified search for knowledge hub nodes with permission-first traversal.
+        When parent_id is set, delegates to get_knowledge_hub_children; otherwise
+        delegates to get_knowledge_hub_search_nodes for global search.
+        """
+        try:
+            if parent_id and parent_type:
+                return await self.get_knowledge_hub_children(
+                    parent_id=parent_id,
+                    parent_type=parent_type,
+                    org_id=org_id,
+                    user_key=user_key,
+                    skip=skip,
+                    limit=limit,
+                    sort_field=sort_field,
+                    sort_dir=sort_dir,
+                    search_query=search_query,
+                    node_types=node_types,
+                    record_types=record_types,
+                    origins=origins,
+                    connector_ids=connector_ids,
+                    kb_ids=kb_ids,
+                    indexing_status=indexing_status,
+                    created_at=created_at,
+                    updated_at=updated_at,
+                    size=size,
+                    only_containers=only_containers,
+                    transaction=transaction,
+                )
+            user_app_ids = await self._get_user_app_ids(user_key)
+            return await self.get_knowledge_hub_search_nodes(
+                user_key=user_key,
+                org_id=org_id,
+                user_app_ids=user_app_ids,
+                skip=skip,
+                limit=limit,
+                sort_field=sort_field,
+                sort_dir=sort_dir,
+                search_query=search_query,
+                node_types=node_types,
+                record_types=record_types,
+                only_containers=only_containers,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids,
+                indexing_status=indexing_status,
+                created_at=created_at,
+                updated_at=updated_at,
+                size=size,
+                transaction=transaction,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ get_knowledge_hub_search failed: {str(e)}")
             import traceback
             self.logger.error(traceback.format_exc())
             return {"nodes": [], "total": 0}
