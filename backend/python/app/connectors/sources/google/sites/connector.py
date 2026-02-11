@@ -6,15 +6,12 @@ connector crawls it over HTTP to discover all pages, creates one RecordGroup and
 FileRecords per page, and streams content for indexing via HTTP fetch.
 """
 
-import asyncio
 import os
 import uuid
 from logging import Logger
-from typing import AsyncIterator, Dict, List, Optional, Set, Tuple
-from urllib.parse import ParseResult, urljoin, urlparse
+from typing import AsyncIterator, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
-import aiohttp
-from bs4 import BeautifulSoup, Comment
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -48,6 +45,15 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleSitesApp
+from app.sources.external.google.sites.sites import (
+    GoogleSitesDataSource,
+    GoogleSitesPage,
+    HTTP_SUCCESS_MAX,
+    HTTP_SUCCESS_MIN,
+    LOG_URL_PREVIEW_LEN,
+    LOG_URL_SHORT_PREVIEW_LEN,
+    normalize_published_site_url,
+)
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -62,46 +68,6 @@ from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 DEFAULT_CONNECTOR_ENDPOINT = os.getenv("CONNECTOR_ENDPOINT", "http://localhost:8000")
-
-# URL-based crawl limits
-MAX_CRAWL_PAGES = 500
-CRAWL_DELAY_SEC = 0.5
-
-# Default HTTP timeout and headers for crawling published sites
-HTTP_TIMEOUT = aiohttp.ClientTimeout(total=30, connect=10)
-HTTP_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-# Logging helpers / HTTP status thresholds
-HTTP_ERROR_THRESHOLD = 400
-HTTP_SUCCESS_MIN = 200
-HTTP_SUCCESS_MAX = 399
-LOG_URL_PREVIEW_LEN = 80
-LOG_URL_SHORT_PREVIEW_LEN = 70
-
-
-def _normalize_published_site_url(url: Optional[str]) -> str:
-    """Normalize and validate published site URL. Raises ValueError if invalid."""
-    if not url or not isinstance(url, str):
-        raise ValueError("Published site URL is required")
-    url = url.strip()
-    if not url:
-        raise ValueError("Published site URL is required")
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("Published site URL must use http or https")
-    if not parsed.netloc:
-        raise ValueError("Published site URL must have a valid host")
-    # Prefer https
-    base = f"{parsed.scheme}://{parsed.netloc}"
-    path = (parsed.path or "/").rstrip("/") or "/"
-    normalized = f"{base}{path}"
-    if parsed.query:
-        normalized = f"{normalized}?{parsed.query}"
-    return normalized
 
 
 @ConnectorBuilder("Google Sites")\
@@ -171,6 +137,7 @@ class GoogleSitesConnector(BaseConnector):
         self.batch_size = 100
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+        self.sites_data_source = GoogleSitesDataSource(logger)
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
         return [
@@ -220,80 +187,6 @@ class GoogleSitesConnector(BaseConnector):
             )
         ]
 
-    def _normalize_crawl_url(self, url: str) -> str:
-        """Normalize URL for crawl deduplication (strip fragment, trailing slash)."""
-        url = url.rstrip("/") or "/"
-        if "#" in url:
-            url = url.split("#")[0]
-        return url
-
-    def _same_origin(self, page_url: str, base_parsed: ParseResult) -> bool:
-        """Return True if page_url has same scheme and netloc as base."""
-        try:
-            p = urlparse(page_url)
-            return p.scheme == base_parsed.scheme and p.netloc == base_parsed.netloc
-        except Exception:
-            return False
-
-    async def _fetch_page(
-        self, session: aiohttp.ClientSession, url: str
-    ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """Fetch URL; return (html, title, final_url). On failure return (None, None, None)."""
-        try:
-            async with session.get(url, headers=HTTP_HEADERS, allow_redirects=True) as response:
-                if response.status >= HTTP_ERROR_THRESHOLD:
-                    self.logger.warning(
-                        "[Google Sites] CRAWL:   HTTP %s for %s",
-                        response.status,
-                        url[:LOG_URL_PREVIEW_LEN],
-                    )
-                    return None, None, None
-                content_type = (response.headers.get("Content-Type") or "").lower()
-                if "text/html" not in content_type and "application/xhtml" not in content_type:
-                    return None, None, None
-                html = await response.text()
-                final_url = str(response.url)
-                soup = BeautifulSoup(html, "html.parser")
-                title_tag = soup.find("title")
-                title = title_tag.get_text(strip=True) if title_tag else None
-                return html, title or "", final_url
-        except asyncio.TimeoutError:
-            self.logger.warning(
-                "[Google Sites] CRAWL:   Timeout %s",
-                url[:LOG_URL_PREVIEW_LEN],
-            )
-            return None, None, None
-        except Exception as e:
-            self.logger.warning(
-                "[Google Sites] CRAWL:   Error %s: %s",
-                url[:LOG_URL_PREVIEW_LEN],
-                e,
-            )
-            return None, None, None
-
-    def _extract_same_origin_links(
-        self, html: str, current_url: str, base_parsed: ParseResult
-    ) -> List[str]:
-        """Extract same-origin links from HTML."""
-        links_set: Set[str] = set()
-        soup = BeautifulSoup(html, "html.parser")
-        for anchor in soup.find_all("a", href=True):
-            href = (anchor.get("href") or "").strip()
-            if not href or href.startswith("#") or href.startswith("javascript:"):
-                continue
-            if href.startswith("mailto:") or href.startswith("tel:"):
-                continue
-            if href.startswith("http://") or href.startswith("https://"):
-                absolute = href
-            else:
-                absolute = urljoin(current_url, href)
-            if not self._same_origin(absolute, base_parsed):
-                continue
-            normalized = self._normalize_crawl_url(absolute)
-            if normalized not in links_set:
-                links_set.add(normalized)
-        return list(links_set)
-
     async def run_sync(self) -> None:
         """Main sync: crawl published site URL over HTTP, discover pages, create RecordGroup + FileRecords."""
         try:
@@ -318,7 +211,7 @@ class GoogleSitesConnector(BaseConnector):
                 self.logger.error("[Google Sites] SYNC:   ❌ Published site URL is required")
                 raise ValueError("Published site URL is required. Set the 'Published site URL' filter and try again.")
             try:
-                start_url = _normalize_published_site_url(
+                start_url = normalize_published_site_url(
                     raw_url.strip() if isinstance(raw_url, str) else str(raw_url)
                 )
             except ValueError as e:
@@ -341,52 +234,22 @@ class GoogleSitesConnector(BaseConnector):
 
             base_parsed = urlparse(start_url)
             base_origin = f"{base_parsed.scheme}://{base_parsed.netloc}"
-            visited: Set[str] = set()
-            to_visit: List[str] = [self._normalize_crawl_url(start_url)]
-            pages_collected: List[Tuple[str, str, str]] = []  # (url, title, final_url)
-            collected_pages_set: Set[str] = set()
 
-            async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-                # Step 4: BFS crawl
-                self.logger.info("[Google Sites] SYNC: Step 4 — Crawl published site (max %s pages)", MAX_CRAWL_PAGES)
-                while to_visit and len(visited) < MAX_CRAWL_PAGES:
-                    url = to_visit.pop(0)
-                    url_norm = self._normalize_crawl_url(url)
-                    if url_norm in visited:
-                        continue
-                    visited.add(url_norm)
-                    self.logger.info(
-                        "[Google Sites] SYNC:   Fetch [%s/%s] %s",
-                        len(visited),
-                        MAX_CRAWL_PAGES,
-                        url_norm[:LOG_URL_SHORT_PREVIEW_LEN]
-                        + (
-                            "..."
-                            if len(url_norm) > LOG_URL_SHORT_PREVIEW_LEN
-                            else ""
-                        ),
-                    )
-                    html, title, final_url = await self._fetch_page(session, url_norm)
-                    if html is None:
-                        continue
-                    final_norm = self._normalize_crawl_url(final_url)
-                    if final_norm not in collected_pages_set:
-                        pages_collected.append((final_norm, title or "Page", final_url))
-                        collected_pages_set.add(final_norm)
-                    if len(visited) < MAX_CRAWL_PAGES:
-                        for link in self._extract_same_origin_links(html, final_url, base_parsed):
-                            if self._normalize_crawl_url(link) not in visited:
-                                to_visit.append(link)
-                    await asyncio.sleep(CRAWL_DELAY_SEC)
+            # Step 4: Crawl published site using datasource
+            self.logger.info(
+                "[Google Sites] SYNC: Step 4 — Crawl published site"
+            )
+            pages: List[GoogleSitesPage] = await self.sites_data_source.crawl_site(start_url)
 
-            if not pages_collected:
+            if not pages:
                 self.logger.warning("[Google Sites] SYNC:   ⚠ No pages discovered")
                 self.logger.info("=" * 80)
                 self.logger.info("")
                 return
 
             # Step 5: Create RecordGroup (one per site)
-            site_name = pages_collected[0][1] if pages_collected[0][1] != "Page" else base_parsed.netloc or "Google Site"
+            first_page = pages[0]
+            site_name = first_page.title if first_page.title != "Page" else base_parsed.netloc or "Google Site"
             record_group = RecordGroup(
                 name=site_name,
                 external_group_id=base_origin,
@@ -404,7 +267,9 @@ class GoogleSitesConnector(BaseConnector):
             # Step 6: Create FileRecords for each page
             timestamp_ms = get_epoch_timestamp_in_ms()
             batch_records: List[Tuple[FileRecord, List[Permission]]] = []
-            for page_url, page_title, _ in pages_collected:
+            for page in pages:
+                page_url = page.url
+                page_title = page.title
                 page_revision_id = f"{page_url}/{timestamp_ms}"
                 file_record = FileRecord(
                     id=str(uuid.uuid4()),
@@ -443,7 +308,7 @@ class GoogleSitesConnector(BaseConnector):
             self.logger.info("")
             self.logger.info("=" * 80)
             self.logger.info("[Google Sites] SYNC: ========== SYNC COMPLETED ==========")
-            self.logger.info("[Google Sites] SYNC: Pages discovered and indexed: %s", len(pages_collected))
+            self.logger.info("[Google Sites] SYNC: Pages discovered and indexed: %s", len(pages))
             self.logger.info("=" * 80)
             self.logger.info("")
 
@@ -484,65 +349,25 @@ class GoogleSitesConnector(BaseConnector):
                 )
 
             try:
-                start_url = _normalize_published_site_url(url_str)
+                start_url = normalize_published_site_url(url_str)
             except ValueError as e:
                 self.logger.error("[Google Sites] TEST:   ❌ Invalid published site URL: %s", e)
                 return False
 
-            try:
-                async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-                    async with session.head(start_url, headers=HTTP_HEADERS, allow_redirects=True) as response:
-                        if HTTP_SUCCESS_MIN <= response.status <= HTTP_SUCCESS_MAX:
-                            self.logger.info(
-                                "[Google Sites] TEST:   ✓ Published site URL reachable (HTTP %s)",
-                                response.status,
-                            )
-                            self.logger.info("")
-                            return True
-                        self.logger.warning(
-                            "[Google Sites] TEST:   Published URL returned HTTP %s",
-                            response.status,
-                        )
-                        return False
-            except Exception as e:
-                self.logger.error("[Google Sites] TEST:   ❌ Failed to reach URL: %s", e)
-                return False
+            reachable = await self.sites_data_source.check_url_reachable(start_url)
+            if reachable:
+                self.logger.info(
+                    "[Google Sites] TEST:   ✓ Published site URL reachable"
+                )
+                self.logger.info("")
+                return True
+            self.logger.warning(
+                "[Google Sites] TEST:   Published URL is not reachable or returned non-success status"
+            )
+            return False
         except Exception as e:
             self.logger.error("[Google Sites] TEST:   ❌ %s", e)
             return False
-
-    def _clean_html_for_indexing(self, html: str) -> str:
-        """Parse with BeautifulSoup and extract clean text content for indexing."""
-        soup = BeautifulSoup(html, "html.parser")
-
-        # Remove non-content elements
-        for tag in soup.find_all(["script", "style", "noscript", "iframe", "svg", "nav", "footer", "header", "aside"]):
-            tag.decompose()
-
-        # Remove comments
-        for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
-            comment.extract()
-
-        # Extract title
-        title = ""
-        title_tag = soup.find("title")
-        if title_tag:
-            title = title_tag.get_text(strip=True)
-
-        # Get main content area
-        main = soup.find("main") or soup.find("article") or soup.find("body")
-        content_element = main if main else soup
-
-        # Extract clean text using BeautifulSoup's get_text
-        text_content = content_element.get_text(separator="\n", strip=True)
-
-        # Prepend title if available
-        if title:
-            text_content = f"{title}\n\n{text_content}"
-
-        # Clean up whitespace
-        lines = [line.strip() for line in text_content.split("\n") if line.strip()]
-        return "\n".join(lines)
 
     def _is_url_based_record(self, record: Record) -> bool:
         """True if record was created from URL crawl (external_record_group_id is a URL)."""
@@ -584,21 +409,19 @@ class GoogleSitesConnector(BaseConnector):
                 )
             self.logger.info("[Google Sites] STREAM:   Fetching page over HTTP")
             try:
-                async with aiohttp.ClientSession(timeout=HTTP_TIMEOUT) as session:
-                    async with session.get(page_url, headers=HTTP_HEADERS, allow_redirects=True) as response:
-                        if response.status >= HTTP_ERROR_THRESHOLD:
-                            raise HTTPException(
-                                status_code=HttpStatusCode.NOT_FOUND.value,
-                                detail=f"Page returned HTTP {response.status}",
-                            )
-                        raw_html = await response.text()
-            except aiohttp.ClientError as e:
+                cleaned_text = await self.sites_data_source.fetch_and_clean_page(page_url)
+            except RuntimeError as e:
                 self.logger.error("[Google Sites] STREAM:   ❌ HTTP error: %s", e)
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=str(e),
+                ) from e
+            except Exception as e:
+                self.logger.error("[Google Sites] STREAM:   ❌ Failed to fetch page: %s", e)
                 raise HTTPException(
                     status_code=HttpStatusCode.BAD_GATEWAY.value,
                     detail=f"Failed to fetch page: {e}",
                 ) from e
-            cleaned_text = self._clean_html_for_indexing(raw_html)
             content_bytes = cleaned_text.encode("utf-8")
             self.logger.info("[Google Sites] STREAM:   ✓ Returning %s bytes", len(content_bytes))
             self.logger.info("")
