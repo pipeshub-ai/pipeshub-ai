@@ -34,7 +34,7 @@ dependencies = [
     "celery==5.4.0",
     "confluent-kafka==2.8.0",
     "cachetools==6.2.4",
-    "cryptography==44.0.1",
+    "cryptography==46.0.5",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
     "docling==2.60.0",
