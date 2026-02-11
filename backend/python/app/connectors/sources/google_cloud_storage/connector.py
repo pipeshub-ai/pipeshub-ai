@@ -21,7 +21,6 @@ from fastapi.responses import StreamingResponse
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
-    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,

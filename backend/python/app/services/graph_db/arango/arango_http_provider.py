@@ -5832,9 +5832,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 self.logger.warning(f"Failed to fetch parent record connectorId: {str(e)}")
                 parent_connector_id = None
 
-        scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline = self._build_scope_filters(
-            parent_id, parent_type, parent_connector_id
-        )
+        # For children-first approach (kb/recordGroup/record/folder), skip scope filters
+        # The intersection will handle scoping instead
+        if parent_id and parent_type in ("kb", "recordGroup", "record", "folder"):
+            # Don't apply scope filters - let children intersection handle it
+            scope_filter_rg = ""
+            scope_filter_record = ""
+            scope_filter_rg_inline = "true"
+            scope_filter_record_inline = "true"
+        else:
+            # For app-level scope or global search, apply scope filters as before
+            scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline = self._build_scope_filters(
+                parent_id, parent_type, parent_connector_id
+            )
 
         # Build bind variables
         bind_vars = {
@@ -5846,19 +5856,24 @@ class ArangoHTTPProvider(IGraphDBProvider):
             "sort_dir": sort_dir,
         }
 
-        # Add parent_id if specified and used in the query
-        # Note: when parent_type is "record" or "folder", scope filters use @parent_connector_id, not @parent_id
-        if parent_id and parent_type not in ("record", "folder"):
-            bind_vars["parent_id"] = parent_id
-        # Always add parent_connector_id when parent_type is "record" or "folder"
-        # (even if None) because _build_scope_filters references @parent_connector_id in the query
-        if parent_type in ("record", "folder"):
-            bind_vars["parent_connector_id"] = parent_connector_id
-        elif parent_connector_id:
-            bind_vars["parent_connector_id"] = parent_connector_id
+        # Add bind variables based on parent_type
+        if parent_id:
+            if parent_type in ("kb", "recordGroup", "record", "folder"):
+                # Children-first approach: only need parent_doc_id
+                parent_doc_id = f"recordGroups/{parent_id}" if parent_type in ("kb", "recordGroup") else f"records/{parent_id}"
+                bind_vars["parent_doc_id"] = parent_doc_id
+            elif parent_type == "app":
+                # App-level scope: use parent_id and parent_connector_id for scope filters
+                bind_vars["parent_id"] = parent_id
+                if parent_connector_id:
+                    bind_vars["parent_connector_id"] = parent_connector_id
 
         # Merge filter params
         bind_vars.update(filter_params)
+
+        # Build children intersection AQL (only for recordGroup/kb/record/folder parents)
+        children_intersection_aql = self._build_children_intersection_aql(parent_id, parent_type)
+
 
         query = f"""
         LET user_from = CONCAT("users/", @user_key)
@@ -6229,18 +6244,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
             user_org_records
         )
 
+        // ========== CHILDREN TRAVERSAL & INTERSECTION (for recordGroup/kb/record/folder parents) ==========
+        // If parent_type is recordGroup/kb/record/folder, traverse children and intersect with accessible nodes
+
+        {children_intersection_aql}
+
         // ========== BUILD RECORDGROUP NODES ==========
         LET rg_nodes = (
-            FOR rg IN accessible_rgs
-                // Calculate hasChildren
+            FOR rg IN final_accessible_rgs
+                // Calculate hasChildren (look within final accessible sets)
                 LET has_child_rgs = (LENGTH(
-                    FOR sub_rg IN accessible_rgs
+                    FOR sub_rg IN final_accessible_rgs
                         FILTER sub_rg.parentId == rg._key
                         RETURN 1
                 ) > 0)
 
                 LET has_records = (LENGTH(
-                    FOR record IN accessible_records
+                    FOR record IN final_accessible_records
                         FILTER LENGTH(
                             FOR ip IN inheritPermissions
                                 FILTER ip._from == record._id AND ip._to == rg._id
@@ -6277,16 +6297,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         // ========== BUILD RECORD NODES ==========
         LET record_nodes = (
-            FOR record IN accessible_records
+            FOR record IN final_accessible_records
                 LET file_info = FIRST(
                     FOR file_edge IN isOfType FILTER file_edge._from == record._id
                     LET file = DOCUMENT(file_edge._to) RETURN file
                 )
                 LET is_folder = file_info != null AND file_info.isFile == false
 
-                // Only check accessible_records for hasChildren (performance optimization)
+                // Check hasChildren within final accessible records
                 LET has_children = (LENGTH(
-                    FOR child IN accessible_records
+                    FOR child IN final_accessible_records
                         FILTER LENGTH(
                             FOR edge IN recordRelations
                                 FILTER edge._from == record._id AND edge._to == child._id
@@ -6317,7 +6337,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
                     updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
                     sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : (file_info ? file_info.fileSizeInBytes : null),
-                    mimeType: file_info ? file_info.mimeType : null,
+                    mimeType: record.mimeType,
                     extension: file_info ? file_info.extension : null,
                     webUrl: record.webUrl,
                     hasChildren: has_children,
@@ -8270,6 +8290,85 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
         else:
             return ("", "", "true", "true")
+
+    def _build_children_intersection_aql(
+        self,
+        parent_id: str,
+        parent_type: str,
+    ) -> str:
+        """
+        Build AQL to traverse children from parent and intersect with accessible nodes.
+
+        This ensures scoped search only returns nodes that are:
+        1. Within the parent's hierarchy (via belongsTo or recordRelations)
+        2. Accessible to the user (from permission traversal)
+
+        Returns:
+            AQL string that produces:
+            - final_accessible_rgs: Intersection of accessible_rgs and parent's descendant recordGroups
+            - final_accessible_records: Intersection of accessible_records and parent's descendant records
+        """
+        if parent_type in ("kb", "recordGroup"):
+            return """
+        // Traverse children of recordGroup/kb parent via belongsTo edge
+        LET parent_rg = DOCUMENT(@parent_doc_id)
+
+        LET parent_descendant_rg_ids = parent_rg != null ? (
+            FOR v, e, p IN 1..100 INBOUND parent_rg._id belongsTo
+                FILTER IS_SAME_COLLECTION("recordGroups", v)
+                FILTER v != null AND v.isDeleted != true
+                RETURN v._id
+        ) : []
+
+        LET parent_descendant_record_ids = parent_rg != null ? (
+            FOR rg_id IN APPEND([parent_rg._id], parent_descendant_rg_ids)
+                FOR v, e IN 1..1 INBOUND rg_id belongsTo
+                    FILTER IS_SAME_COLLECTION("records", v)
+                    FILTER v != null AND v.isDeleted != true
+                    RETURN v._id
+        ) : []
+
+        // Intersect with accessible nodes
+        LET final_accessible_rgs = (
+            FOR rg IN accessible_rgs
+                FILTER rg._id IN parent_descendant_rg_ids
+                RETURN rg
+        )
+
+        LET final_accessible_records = (
+            FOR record IN accessible_records
+                FILTER record._id IN parent_descendant_record_ids
+                RETURN record
+        )
+        """
+        elif parent_type in ("record", "folder"):
+            return """
+        // Traverse children of record/folder parent via recordRelations edge
+        LET parent_record = DOCUMENT(@parent_doc_id)
+
+        LET parent_descendant_record_ids = parent_record != null ? (
+            FOR v, e, p IN 1..100 OUTBOUND parent_record._id recordRelations
+                FILTER e.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                FILTER IS_SAME_COLLECTION("records", v)
+                FILTER v != null AND v.isDeleted != true
+                RETURN v._id
+        ) : []
+
+        // No recordGroups for record/folder parents
+        LET final_accessible_rgs = []
+
+        // Intersect records with accessible nodes
+        LET final_accessible_records = (
+            FOR record IN accessible_records
+                FILTER record._id IN parent_descendant_record_ids
+                RETURN record
+        )
+        """
+        else:
+            return """
+        LET final_accessible_rgs = accessible_rgs
+        LET final_accessible_records = accessible_records
+        """
 
     # ========================================================================
     # Move Record API Methods
