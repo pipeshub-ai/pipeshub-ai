@@ -396,16 +396,12 @@ export class Application {
     );
 
     // knowledge base routes
-    this.app.use(
-      '/api/v1/knowledgeBase',
-      createKnowledgeBaseRouter(this.knowledgeBaseContainer, this.notificationContainer),
-    );
     const dataStore = (process.env.DATA_STORE || 'neo4j').toLowerCase();
     if (dataStore === 'arangodb') {
       // Use direct ArangoDB routes
       this.app.use(
         '/api/v1/knowledgeBase',
-        createKnowledgeBaseRouter(this.knowledgeBaseContainer),
+        createKnowledgeBaseRouter(this.knowledgeBaseContainer, this.notificationContainer),
       );
     } else {
       // Use proxy routes that forward to Python connector service (supports Neo4j)

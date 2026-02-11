@@ -3670,6 +3670,51 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_team_owner_removal_info(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get information about owners being removed and total owner count for a team.
+
+        Args:
+            team_id (str): Team ID
+            user_ids (List[str]): List of user IDs to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict with keys:
+                - owners_being_removed (List[str]): User IDs of owners being removed
+                - total_owner_count (int): Total number of owners in the team
+        """
+        pass
+
+    @abstractmethod
+    async def get_team_permissions_and_owner_count(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get team info, current permissions for specific users, and total owner count.
+
+        Args:
+            team_id (str): Team ID
+            user_ids (List[str]): List of user IDs to get permissions for
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict with keys:
+                - team (Dict): Team document
+                - permissions (Dict[str, str]): Map of user_id -> role
+                - owner_count (int): Total number of owners in the team
+        """
+        pass
+
     # ==================== User Operations ====================
 
     @abstractmethod

@@ -67,9 +67,9 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
             CollectionNames.RECORDS.value,
             {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
         )
-        queued_records = await arango_service.get_documents_by_status(
+        queued_records = await graph_provider.get_nodes_by_filters(
             CollectionNames.RECORDS.value,
-            ProgressStatus.QUEUED.value
+            {"indexingStatus": ProgressStatus.QUEUED.value}
         )
 
         # Set queued records to AUTO_INDEX_OFF so they are not auto-processed
@@ -80,7 +80,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                     {"_key": record.get("_key"), "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value}
                     for record in queued_records
                 ]
-                await arango_service.batch_upsert_nodes(
+                await graph_provider.batch_upsert_nodes(
                     update_docs,
                     CollectionNames.RECORDS.value,
                 )
@@ -90,12 +90,6 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
 
         # Recover only in-progress records
         all_records_to_recover = in_progress_records
-        queued_records = await graph_provider.get_nodes_by_filters(
-            CollectionNames.RECORDS.value,
-            {"indexingStatus": ProgressStatus.QUEUED.value}
-        )
-        # Create combined list and store length for clarity and efficiency
-        all_records_to_recover = in_progress_records + queued_records
         total_records = len(all_records_to_recover)
 
         if not total_records:

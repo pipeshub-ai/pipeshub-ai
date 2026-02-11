@@ -10120,53 +10120,149 @@ class ArangoHTTPProvider(IGraphDBProvider):
         team_ids: List[str],
         new_role: str,
     ) -> Optional[Dict]:
-        """Update permissions for users/teams on a KB (only users; teams don't have roles)."""
+        """Optimistically update permissions for users and teams on a knowledge base"""
         try:
+            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
+
+            # Quick validation of inputs
             if not user_ids and not team_ids:
                 return {"success": False, "reason": "No users or teams provided", "code": "400"}
+
+            # Validate new role
             valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
             if new_role not in valid_roles:
-                return {"success": False, "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}", "code": "400"}
-            user = await self.get_user_by_user_id(requester_id)
-            if not user:
-                return {"success": False, "reason": "Requester not found", "code": 403}
-            requester_key = user.get("_key")
-            requester_perm = await self.get_user_kb_permission(kb_id, requester_key)
-            if requester_perm != "OWNER":
-                return {"success": False, "reason": "Only KB owners can update permissions", "code": "403"}
-            timestamp = get_epoch_timestamp_in_ms()
-            target_conditions = []
-            bind_vars: Dict[str, Any] = {
+                return {
+                    "success": False,
+                    "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
+                    "code": "400"
+                }
+
+            # Single atomic operation: check requester permission + get current permissions + update
+            bind_vars = {
                 "kb_id": kb_id,
+                "requester_id": requester_id,
                 "new_role": new_role,
-                "timestamp": timestamp,
-                "@permission": CollectionNames.PERMISSION.value,
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "@permissions_collection": CollectionNames.PERMISSION.value,
             }
+
+            # Build conditions for targets
+            target_conditions = []
             if user_ids:
-                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER' AND perm.role != 'OWNER')")
-                bind_vars["user_froms"] = [f"users/{uid}" for uid in user_ids]
-            if not target_conditions:
-                return {"success": True, "kb_id": kb_id, "new_role": new_role, "updated_permissions": 0, "updated_users": 0, "updated_teams": 0}
-            update_query = f"""
-            FOR perm IN @@permission
-                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
-                FILTER ({' OR '.join(target_conditions)})
-                UPDATE perm WITH {{ role: @new_role, updatedAtTimestamp: @timestamp, lastUpdatedTimestampAtSource: @timestamp }} IN @@permission
-                RETURN {{ _key: NEW._key, id: SPLIT(NEW._from, '/')[1], type: NEW.type, old_role: OLD.role, new_role: NEW.role }}
+                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            # Teams don't have roles - they just have access or not
+            # So we skip team updates in this method
+            # if team_ids:
+            #     target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+            #     bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            # Atomic query that does everything in one go
+            atomic_query = f"""
+            LET requester_perm = FIRST(
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', @requester_id)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == 'USER'
+                    RETURN perm.role
+            )
+
+            LET current_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER ({' OR '.join(target_conditions)})
+                    RETURN {{
+                        _key: perm._key,
+                        id: SPLIT(perm._from, '/')[1],
+                        type: perm.type,
+                        current_role: perm.role,
+                        _from: perm._from
+                    }}
+            )
+
+            LET validation_result = (
+                requester_perm != "OWNER" ? {{error: "Only KB owners can update permissions", code: "403"}} :
+                null
+            )
+
+            LET updated_perms = (
+                validation_result == null ? (
+                    FOR perm IN @@permissions_collection
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER ({' OR '.join(target_conditions)})
+                        UPDATE perm WITH {{
+                            role: @new_role,
+                            updatedAtTimestamp: @timestamp,
+                            lastUpdatedTimestampAtSource: @timestamp
+                        }} IN @@permissions_collection
+                        RETURN {{
+                            _key: NEW._key,
+                            id: SPLIT(NEW._from, '/')[1],
+                            type: NEW.type,
+                            old_role: OLD.role,
+                            new_role: NEW.role
+                        }}
+                ) : []
+            )
+            RETURN {{
+                validation_error: validation_result,
+                current_permissions: current_perms,
+                updated_permissions: updated_perms,
+                requester_role: requester_perm
+            }}
             """
-            results = await self.execute_query(update_query, bind_vars=bind_vars)
-            updated = results or []
+
+            cursor = self.db.aql.execute(atomic_query, bind_vars=bind_vars)
+            result = next(cursor, None)
+
+            if not result:
+                return {"success": False, "reason": "Query execution failed", "code": "500"}
+
+            # Log the raw result for debugging
+            self.logger.info(f"🔍 Update query result: {result}")
+
+            # Check for validation errors
+            if result["validation_error"]:
+                error = result["validation_error"]
+                return {"success": False, "reason": error["error"], "code": error["code"]}
+
+            updated_permissions = result["updated_permissions"]
+
+            # Count updates by type (only users can be updated, teams don't have roles)
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = 0  # Teams don't have roles to update
+
+            # Build detailed response
+            updates_by_type = {"users": {}, "teams": {}}
+            for perm in updated_permissions:
+                if perm["type"] == "USER":
+                    updates_by_type["users"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
+                # Teams don't have roles, so we don't update them
+
+            self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
+
             return {
                 "success": True,
                 "kb_id": kb_id,
                 "new_role": new_role,
-                "updated_permissions": len(updated),
-                "updated_users": len(updated),
-                "updated_teams": 0,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams,
+                "updates_detail": updates_by_type,
+                "requester_role": result["requester_role"]
             }
+
         except Exception as e:
-            self.logger.error(f"❌ Failed to update KB permission: {str(e)}")
-            return {"success": False, "reason": str(e), "code": "500"}
+            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            return {
+                "success": False,
+                "reason": str(e),
+                "code": "500"
+            }
 
     async def list_kb_permissions(
         self,
@@ -17005,6 +17101,117 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Error in delete_all_team_permissions: {str(e)}", exc_info=True)
+            raise
+
+    async def get_team_owner_removal_info(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get information about owners being removed and total owner count for a team.
+        """
+        try:
+            query = f"""
+            LET owners_being_removed = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER SPLIT(permission._from, '/')[1] IN @userIds
+                    FILTER permission.role == 'OWNER'
+                    RETURN SPLIT(permission._from, '/')[1]
+            )
+            LET total_owner_count = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER permission.role == 'OWNER'
+                    COLLECT WITH COUNT INTO count
+                    RETURN count
+            )
+            RETURN {{
+                ownersBeingRemoved: owners_being_removed,
+                totalOwnerCount: LENGTH(total_owner_count) > 0 ? total_owner_count[0] : 0
+            }}
+            """
+
+            result = await self.execute_query(
+                query,
+                bind_vars={
+                    "userIds": user_ids,
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+                },
+                transaction=transaction
+            )
+
+            if result:
+                return {
+                    "owners_being_removed": result[0].get("ownersBeingRemoved", []),
+                    "total_owner_count": result[0].get("totalOwnerCount", 0)
+                }
+            
+            return {"owners_being_removed": [], "total_owner_count": 0}
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_owner_removal_info: {str(e)}", exc_info=True)
+            raise
+
+    async def get_team_permissions_and_owner_count(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get team info, current permissions for specific users, and total owner count.
+        """
+        try:
+            query = f"""
+            LET team = DOCUMENT(@teamId)
+            LET current_perms = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER SPLIT(permission._from, '/')[1] IN @userIds
+                    RETURN {{
+                        userId: SPLIT(permission._from, '/')[1],
+                        role: permission.role
+                    }}
+            )
+            LET owner_count = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER permission.role == 'OWNER'
+                    COLLECT WITH COUNT INTO count
+                    RETURN count
+            )
+            RETURN {{
+                team: team,
+                permissions: current_perms,
+                ownerCount: LENGTH(owner_count) > 0 ? owner_count[0] : 0
+            }}
+            """
+
+            result = await self.execute_query(
+                query,
+                bind_vars={
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "userIds": user_ids
+                },
+                transaction=transaction
+            )
+
+            if result:
+                data = result[0]
+                permissions_dict = {perm["userId"]: perm["role"] for perm in data.get("permissions", [])}
+                return {
+                    "team": data.get("team"),
+                    "permissions": permissions_dict,
+                    "owner_count": data.get("ownerCount", 0)
+                }
+            
+            return {"team": None, "permissions": {}, "owner_count": 0}
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_permissions_and_owner_count: {str(e)}", exc_info=True)
             raise
 
     # ==================== User Operations ====================

@@ -1757,17 +1757,6 @@ export default function RecordDetails() {
             </Grid>
           </Grid>
         </Container>
-        {/* Edit Record Dialog */}
-        {recordData && recordData.record && recordData.knowledgeBase && (
-          <EditRecordDialog
-            open={isEditDialogOpen}
-            onClose={() => setIsEditDialogOpen(false)}
-            onRecordUpdated={refreshRecordData}
-            storageDocumentId={record.externalRecordId}
-            recordId={record.id}
-            record={record}
-          />
-        )}
         {recordData && recordData.record && (
           <DeleteRecordDialog
             open={isDeleteDialogOpen}
