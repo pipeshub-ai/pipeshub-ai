@@ -52,6 +52,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.nodes import (
     execute_node,
     planner_node,
+    prepare_continue_node,
     prepare_retry_node,
     reflect_node,
     respond_node,
@@ -116,6 +117,7 @@ def create_agent_graph() -> "CompiledStateGraph":
     workflow.add_node("execute", execute_node)
     workflow.add_node("reflect", reflect_node)
     workflow.add_node("prepare_retry", prepare_retry_node)
+    workflow.add_node("prepare_continue", prepare_continue_node)
     workflow.add_node("respond", respond_node)
 
     # Set entry point - planner is the first node
@@ -135,18 +137,22 @@ def create_agent_graph() -> "CompiledStateGraph":
     # From execute: go to reflect for analysis
     workflow.add_edge("execute", "reflect")
 
-    # From reflect: either retry or respond
+    # From reflect: either retry, continue, or respond
     workflow.add_conditional_edges(
         "reflect",
         route_after_reflect,
         {
             "prepare_retry": "prepare_retry",
+            "prepare_continue": "prepare_continue",
             "respond": "respond"
         }
     )
 
     # From prepare_retry: go back to planner
     workflow.add_edge("prepare_retry", "planner")
+
+    # From prepare_continue: go back to planner (for multi-step tasks)
+    workflow.add_edge("prepare_continue", "planner")
 
     # From respond: end the graph
     workflow.add_edge("respond", END)

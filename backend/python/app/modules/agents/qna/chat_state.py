@@ -123,11 +123,17 @@ class ChatState(TypedDict):
 
     # Reflection and retry fields (for intelligent error recovery)
     reflection: Optional[Dict[str, Any]]  # Reflection analysis result from reflect_node
-    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix
+    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix, continue_with_more_tools
     retry_count: int  # Current retry count (starts at 0)
     max_retries: int  # Maximum retries allowed (default 1 for speed)
     is_retry: bool  # Whether this is a retry iteration
     execution_errors: Optional[List[Dict[str, Any]]]  # Error details for retry context
+
+    # Multi-step iteration tracking (separate from error retries)
+    iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
+    max_iterations: int  # Maximum iterations allowed for multi-step tasks (default 3)
+    is_continue: bool  # Whether this is a continue iteration (multi-step task)
+    tool_validation_retry_count: int  # Retry count for tool validation in planner
 
 def _build_tool_to_toolset_map(toolsets: List[Dict[str, Any]]) -> Dict[str, str]:
     """
@@ -460,4 +466,10 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "max_retries": 1,
         "is_retry": False,
         "execution_errors": [],
+
+        # Multi-step iteration tracking
+        "iteration_count": 0,
+        "max_iterations": 3,
+        "is_continue": False,
+        "tool_validation_retry_count": 0,
     }

@@ -209,6 +209,22 @@ JIRA_GUIDANCE = r"""
 - "Unresolved in project": `project = "[KEY]" AND resolution IS EMPTY AND updated >= -30d`
 """
 
+CONFLUENCE_GUIDANCE = r"""
+## Confluence-Specific Guidance
+
+### Tool Selection
+- CREATE page → use `confluence.create_page` (NOT get_spaces or get_pages_in_space)
+- SEARCH/FIND page → use `confluence.search_pages`
+- GET/READ pages → use `confluence.get_pages_in_space` or `confluence.get_page_content`
+
+### Space ID Resolution for create_page
+1. **Check Reference Data first** - if `type: "confluence_space"` exists, use its `id` field
+2. **If not in Reference Data**: 
+   - If space_id is a key (non-numeric): Call `confluence.get_spaces`, find matching space, extract numeric `id`
+   - If space_id is numeric: Use directly
+3. **CRITICAL**: API requires numeric space IDs. Always use `id` field, never `key` field.
+"""
+
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant.
 
 ## Available Tools
@@ -231,7 +247,25 @@ Only use parameters listed above. DO NOT invent parameters.
 - "try again", "retry" → look at previous conversation
 - "that project", "the first one" → extract IDs/keys from Reference Data
 - Reuse data from previous responses
+
+## Reference Data Usage
+
+**Always check Reference Data from previous responses before calling tools:**
+- If needed ID/key exists in Reference Data → use it directly
+- Reference Data items have: `name`, `id`, `key` (optional), `type`
+- Use `id` for Confluence spaces, `key` for Jira projects/issues
+- **DO NOT** call tools to fetch data already in Reference Data
+
+## Tool Selection Rules
+
+Match tool to user intent:
+- "create"/"make"/"new" → CREATE tools
+- "get"/"find"/"search"/"list" → READ/SEARCH tools  
+- "update"/"modify"/"change" → UPDATE tools
+- "delete"/"remove" → DELETE tools
+
 {jira_guidance}
+{confluence_guidance}
 
 ## Slack-Specific Guidance
 - ✅ Use emails: `slack.get_user_info(user="user@company.com")`
@@ -275,6 +309,8 @@ If `needs_clarification: true`, set `tools: []` and provide `clarifying_question
 - "Q4 results" → retrieval.search_internal_knowledge with {{"query": "Q4 results"}}
 - "My Jira projects" → jira.get_projects with {{}}
 - "My tickets in PA" → jira.search_issues with {{"jql": "project = \\"PA\\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d"}}
+- "Create a Confluence page" → Check Reference Data for space_id, or call get_spaces first, then create_page with numeric ID
+- "Find a page" → confluence.search_pages with {{"title": "..."}}
 - "Hello!" → can_answer_directly: true, tools: []
 - "my name" (user info in prompt) → can_answer_directly: true, tools: []"""
 
@@ -302,11 +338,21 @@ REFLECT_PROMPT = """Analyze tool execution results and decide next action.
 ## Retry Status
 Attempt: {retry_count}/{max_retries}
 
+## Iteration Status
+Iteration: {iteration_count}/{max_iterations}
+
 ## Decision Options
-1. **respond_success** - Tools worked
+1. **respond_success** - Tools worked AND task is complete
 2. **respond_error** - Unrecoverable error
 3. **respond_clarify** - Need user clarification
-4. **retry_with_fix** - Fixable error
+4. **retry_with_fix** - Fixable error, retry with fix
+5. **continue_with_more_tools** - Tools worked but task needs more steps (e.g., got data but need to update/create)
+
+## Task Completion Check
+- If user asked to "edit/update/modify" but you only "got/read" data → continue_with_more_tools
+- If user asked to "create/make" but you only "searched/found" → continue_with_more_tools
+- If user asked to "get/list" and you got the data → respond_success
+- If all required actions are done → respond_success
 
 ## Common Fixes
 - "Unbounded JQL" → Add `updated >= -30d`
@@ -315,11 +361,13 @@ Attempt: {retry_count}/{max_retries}
 
 ## Output (JSON only)
 {{
-  "decision": "respond_success|respond_error|respond_clarify|retry_with_fix",
+  "decision": "respond_success|respond_error|respond_clarify|retry_with_fix|continue_with_more_tools",
   "reasoning": "Brief explanation",
   "fix_instruction": "For retry: what to change",
   "clarifying_question": "For clarify: what to ask",
-  "error_context": "For error: user-friendly explanation"
+  "error_context": "For error: user-friendly explanation",
+  "task_complete": true/false,
+  "needs_more_tools": "What tools are needed next (if continue_with_more_tools)"
 }}"""
 
 
@@ -333,6 +381,81 @@ def _has_jira_tools(state: ChatState) -> bool:
     for toolset in agent_toolsets:
         if isinstance(toolset, dict) and "jira" in toolset.get("name", "").lower():
             return True
+    return False
+
+
+def _has_confluence_tools(state: ChatState) -> bool:
+    """Check if Confluence tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    for toolset in agent_toolsets:
+        if isinstance(toolset, dict) and "confluence" in toolset.get("name", "").lower():
+            return True
+    return False
+
+
+def _check_if_task_needs_continue(
+    query: str,
+    executed_tools: List[str],
+    tool_results: List[Dict[str, Any]],
+    log: logging.Logger
+) -> bool:
+    """
+    Check if task needs more steps by comparing user intent vs what was done.
+    
+    Returns True if task is incomplete and needs more tools.
+    """
+    query_lower = query.lower()
+    executed_tools_lower = [t.lower() for t in executed_tools]
+
+    # Pattern matching for common incomplete scenarios
+    # User wants to edit/update but only got/read data
+    if any(word in query_lower for word in ["edit", "update", "modify", "change", "alter"]):
+        if any("get" in t or "read" in t or "fetch" in t or "search" in t or "find" in t
+               for t in executed_tools_lower):
+            if not any("update" in t or "edit" in t or "modify" in t or "change" in t or "send" in t
+                      for t in executed_tools_lower):
+                log.debug("Task incomplete: user wants to edit/update but only read data")
+                return True
+
+    # User wants to create/make but only searched/found
+    if any(word in query_lower for word in ["create", "make", "new", "add", "post", "send"]):
+        if any("search" in t or "find" in t or "get" in t or "fetch" in t
+               for t in executed_tools_lower):
+            if not any("create" in t or "make" in t or "add" in t or "post" in t or "send" in t
+                      for t in executed_tools_lower):
+                log.debug("Task incomplete: user wants to create but only searched")
+                return True
+
+    # User wants to delete/remove but only got data
+    if any(word in query_lower for word in ["delete", "remove", "clear"]):
+        if any("get" in t or "read" in t or "fetch" in t
+               for t in executed_tools_lower):
+            if not any("delete" in t or "remove" in t or "clear" in t
+                      for t in executed_tools_lower):
+                log.debug("Task incomplete: user wants to delete but only read data")
+                return True
+
+    # If query has multiple actions (e.g., "get and update"), check if all are done
+    action_words = ["get", "fetch", "find", "search", "read", "list",
+                   "create", "make", "add", "post", "send",
+                   "update", "edit", "modify", "change",
+                   "delete", "remove", "clear"]
+
+    query_actions = [word for word in action_words if word in query_lower]
+    executed_actions = []
+    for tool in executed_tools_lower:
+        for action in action_words:
+            if action in tool:
+                executed_actions.append(action)
+                break
+
+    # If query has multiple distinct actions and not all are executed
+    if len(query_actions) > 1:
+        missing_actions = set(query_actions) - set(executed_actions)
+        if missing_actions:
+            log.debug(f"Task incomplete: missing actions {missing_actions}")
+            return True
+
     return False
 
 
@@ -413,10 +536,12 @@ async def planner_node(
     # Build prompts
     tool_descriptions = _get_cached_tool_descriptions(state, log)
     jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
+    confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
-        jira_guidance=jira_guidance
+        jira_guidance=jira_guidance,
+        confluence_guidance=confluence_guidance
     )
 
     # User prompt with context
@@ -441,22 +566,83 @@ async def planner_node(
         state["is_retry"] = False
         log.info("Retry mode active")
 
+    # Add continue context if needed (tool results from previous iteration)
+    if state.get("is_continue") and state.get("all_tool_results"):
+        continue_context = _build_continue_context(state, log)
+        if continue_context:
+            user_prompt = continue_context + "\n\n" + user_prompt
+        state["is_continue"] = False
+        log.info("Continue mode active - using previous tool results")
+
+    # Tool validation retry loop
+    validation_retry_count = state.get("tool_validation_retry_count", 0)
+    max_validation_retries = 2
+    plan = None
+
     try:
         invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
-        response = await asyncio.wait_for(
-            llm.ainvoke(
-                [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
-                config=invoke_config
-            ),
-            timeout=20.0
-        )
+        while validation_retry_count <= max_validation_retries:
+            response = await asyncio.wait_for(
+                llm.ainvoke(
+                    [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+                    config=invoke_config
+                ),
+                timeout=20.0
+            )
 
-        plan = _parse_planner_response(
-            response.content if hasattr(response, 'content') else str(response),
-            log
-        )
-        log.info(f"Plan: {plan.get('intent', 'N/A')[:50]}, {len(plan.get('tools', []))} tools")
+            plan = _parse_planner_response(
+                response.content if hasattr(response, 'content') else str(response),
+                log
+            )
+
+            # Validate tool names against available tools
+            tools = plan.get('tools', [])
+            is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
+
+            if is_valid or validation_retry_count >= max_validation_retries:
+                # Valid or max retries reached
+                if not is_valid:
+                    log.error(f"⚠️ Invalid tools after {max_validation_retries} retries: {invalid_tools}. Removing invalid tools.")
+                    # Remove invalid tools from plan
+                    plan["tools"] = [t for t in tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
+                # Reset validation retry count on success or final attempt
+                state["tool_validation_retry_count"] = 0
+                break
+            else:
+                # Invalid tools found, retry with error message
+                validation_retry_count += 1
+                state["tool_validation_retry_count"] = validation_retry_count
+                log.warning(f"⚠️ Invalid tools planned: {invalid_tools}. Retrying with available tools list (attempt {validation_retry_count}/{max_validation_retries})")
+
+                # Build error message with available tools
+                available_tools_list = ", ".join(sorted(available_tool_names)[:20])  # Limit to first 20 for prompt size
+                if len(available_tool_names) > 20:
+                    available_tools_list += f" (and {len(available_tool_names) - 20} more)"
+
+                error_message = f"""ERROR: The following tools do not exist: {', '.join(invalid_tools)}
+
+Available tools: {available_tools_list}
+
+Please choose tools ONLY from the available tools list above. Do not invent tool names.
+
+Original query: {query}
+"""
+                user_prompt = error_message + "\n\n" + user_prompt
+
+        # Validate plan matches intent
+        intent = plan.get('intent', '').lower()
+        tool_names = [t.get('name', '') for t in tools if isinstance(t, dict)]
+
+        # Log validation warnings
+        if 'create' in intent or 'make' in intent or 'new' in intent:
+            if not any('create' in name.lower() for name in tool_names):
+                log.warning(f"⚠️ Intent suggests CREATE but no create tool planned. Intent: {intent[:50]}, Tools: {tool_names}")
+        elif 'search' in intent or 'find' in intent or 'get' in intent:
+            if any('create' in name.lower() for name in tool_names):
+                log.warning(f"⚠️ Intent suggests READ/SEARCH but create tool planned. Intent: {intent[:50]}, Tools: {tool_names}")
+
+        log.info(f"Plan: {plan.get('intent', 'N/A')[:50]}, {len(tools)} tools: {[t.get('name', '') for t in tools[:3]]}")
 
     except asyncio.TimeoutError:
         log.warning("Planner timeout")
@@ -491,6 +677,32 @@ async def planner_node(
     return state
 
 
+def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
+    """Build continue context from previous tool results"""
+    tool_results = state.get("all_tool_results", [])
+    if not tool_results:
+        return ""
+
+    # Format tool results for planner context
+    result_parts = []
+    for result in tool_results[-5:]:  # Last 5 results
+        tool_name = result.get("tool_name", "unknown")
+        status = result.get("status", "unknown")
+        result_data = result.get("result", "")
+
+        # Extract key information (IDs, timestamps, etc.)
+        result_str = str(result_data)[:500]  # Limit length
+
+        result_parts.append(f"- {tool_name} ({status}): {result_str}")
+
+    return f"""## Previous Tool Results (use this data for next steps)
+
+{chr(10).join(result_parts)}
+
+**IMPORTANT**: Use the data above to plan your next steps. Extract IDs, timestamps, and other key information from the results.
+"""
+
+
 def _build_retry_context(state: ChatState) -> str:
     """Build retry context from previous failure"""
     errors = state.get("execution_errors", [])
@@ -498,13 +710,32 @@ def _build_retry_context(state: ChatState) -> str:
     fix_instruction = reflection.get("fix_instruction", "")
 
     error_summary = errors[0] if errors else {}
+    failed_tool = error_summary.get('tool_name', 'unknown')
     failed_args = error_summary.get("args", {})
+    error_msg = error_summary.get('error', 'unknown')[:500]
     failed_args_str = json.dumps(failed_args, indent=2) if failed_args else "No args"
+
+    # Extract key information from error
+    error_lower = error_msg.lower()
+    needs_space_resolution = (
+        "spaceid" in error_lower or "space_id" in error_lower
+    ) and ("not the correct type" in error_lower or "expected type" in error_lower)
+
+    # Build specific guidance
+    specific_guidance = ""
+    if needs_space_resolution and "create_page" in failed_tool.lower():
+        specific_guidance = """
+**Space ID Resolution**:
+1. Check Reference Data for `type: "confluence_space"` - if found, use its `id` field
+2. If not in Reference Data: Call `confluence.get_spaces`, find matching space, extract numeric `id`
+3. Call `confluence.create_page` with numeric `id` (not key) in `space_id` parameter
+4. DO NOT switch to get_spaces as final tool - you still need to CREATE the page
+"""
 
     return f"""## 🔴 RETRY MODE - PREVIOUS ATTEMPT FAILED
 
-**Failed Tool**: {error_summary.get('tool_name', 'unknown')}
-**Error**: {error_summary.get('error', 'unknown')[:300]}
+**Failed Tool**: {failed_tool}
+**Error**: {error_msg}
 
 **Previous Args That Failed**:
 ```json
@@ -513,8 +744,12 @@ def _build_retry_context(state: ChatState) -> str:
 
 **FIX INSTRUCTION**:
 {fix_instruction}
+{specific_guidance}
 
-Apply the fix instruction! Don't repeat the same args.
+**IMPORTANT**: 
+- If the user asked to CREATE something, you MUST still use the CREATE tool after fixing the issue
+- Don't switch to a different tool type (READ/SEARCH) when the user wants to CREATE
+- Fix the parameters and retry the SAME tool with corrected values
 
 """
 
@@ -606,27 +841,76 @@ def _format_conversation_history(conversations: List[Dict], log: logging.Logger)
     result = "\n".join(lines)
 
     if all_reference_data:
-        result += "\n\n## Reference Data (IDs/Keys from previous responses):\n"
-        for item in all_reference_data[:15]:
-            name = item.get("name", "Unknown")
-            item_id = item.get("id", "")
-            item_key = item.get("key", "")
-            item_type = item.get("type", "")
-            account_id = item.get("accountId", "")
+        result += "\n\n## Reference Data (from previous responses - use these IDs/keys directly):\n"
 
-            if item_id or item_key:
-                ref_parts = [f"{name} ({item_type})"]
+        # Group by type
+        spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
+        projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
+        issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
+        others = [item for item in all_reference_data if item.get("type") not in ["confluence_space", "jira_project", "jira_issue"]]
+
+        if spaces:
+            result += "Confluence Spaces (use `id` for space_id): "
+            result += ", ".join([f"{item.get('name', '?')} (id={item.get('id', '?')})" for item in spaces[:5]])
+            result += "\n"
+
+        if projects:
+            result += "Jira Projects (use `key`): "
+            result += ", ".join([f"{item.get('name', '?')} (key={item.get('key', '?')})" for item in projects[:5]])
+            result += "\n"
+
+        if issues:
+            result += "Jira Issues (use `key`): "
+            result += ", ".join([f"{item.get('key', '?')}" for item in issues[:5]])
+            result += "\n"
+
+        if others:
+            for item in others[:5]:
+                name = item.get("name", "Unknown")
+                item_id = item.get("id", "")
+                item_key = item.get("key", "")
+                item_type = item.get("type", "")
+                parts = [f"{name} ({item_type})"]
                 if item_key:
-                    ref_parts.append(f"key=`{item_key}`")
+                    parts.append(f"key={item_key}")
                 if item_id:
-                    ref_parts.append(f"id=`{item_id}`")
-                if account_id:
-                    ref_parts.append(f"accountId=`{account_id}`")
-                result += f"- {' | '.join(ref_parts)}\n"
+                    parts.append(f"id={item_id}")
+                result += f"- {' | '.join(parts)}\n"
 
         log.debug(f"Included {len(all_reference_data)} reference items")
 
     return result
+
+
+def _validate_planned_tools(
+    planned_tools: List[Dict[str, Any]],
+    state: ChatState,
+    log: logging.Logger
+) -> tuple[bool, List[str], List[str]]:
+    """
+    Validate planned tool names against available tools.
+    
+    Returns:
+        (is_valid, invalid_tools, available_tool_names)
+    """
+    try:
+        from app.modules.agents.qna.tool_system import get_agent_tools
+        tools = get_agent_tools(state)
+        available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
+
+        invalid_tools = []
+        for tool_call in planned_tools:
+            if isinstance(tool_call, dict):
+                tool_name = tool_call.get('name', '')
+                if tool_name and tool_name not in available_tool_names:
+                    invalid_tools.append(tool_name)
+
+        is_valid = len(invalid_tools) == 0
+        return is_valid, invalid_tools, list(available_tool_names)
+    except Exception as e:
+        log.warning(f"Tool validation failed: {e}")
+        # If validation fails, assume valid to avoid blocking execution
+        return True, [], []
 
 
 def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]:
@@ -725,12 +1009,20 @@ async def execute_node(
 
     # Execute in parallel
     tasks = []
+    planned_tool_names = []
     for i, tool_call in enumerate(planned_tools[:NodeConfig.MAX_PARALLEL_TOOLS]):
         tool_name = tool_call.get("name", "")
         tool_args = tool_call.get("args", {})
         tool_id = f"call_{i}_{tool_name}"
+        planned_tool_names.append(tool_name)
 
         log.debug(f"Planning {tool_name} with {json.dumps(tool_args, default=str)[:100]}...")
+
+        # Validate tool exists
+        if tool_name not in tools_by_name:
+            log.warning(f"Tool not found: {tool_name}. Available tools: {list(tools_by_name.keys())[:10]}")
+            tasks.append(_create_error_result(tool_name, tool_id, f"Tool '{tool_name}' not found"))
+            continue
 
         if tool_name in tools_by_name:
             tasks.append(_execute_single_tool(
@@ -741,9 +1033,6 @@ async def execute_node(
                 state=state,
                 log=log
             ))
-        else:
-            log.warning(f"Tool not found: {tool_name}")
-            tasks.append(_create_error_result(tool_name, tool_id, f"Tool '{tool_name}' not found"))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -781,7 +1070,12 @@ async def execute_node(
     state["pending_tool_calls"] = False
 
     duration_ms = (time.perf_counter() - start_time) * 1000
+    executed_tool_names = [r.get("tool_name", "") for r in tool_results]
     log.info(f"✅ Executed {len(tool_results)} tools in {duration_ms:.0f}ms ({success_count} succeeded)")
+
+    # Validate executed tools match planned tools
+    if planned_tool_names != executed_tool_names:
+        log.warning(f"⚠️ Tool mismatch! Planned: {planned_tool_names}, Executed: {executed_tool_names}")
 
     return state
 
@@ -954,14 +1248,37 @@ async def reflect_node(
     retry_count = state.get("retry_count", 0)
     max_retries = state.get("max_retries", 1)
 
-    # Fast path: all succeeded
+    # Fast path: all succeeded - but check if task is complete
     failed = [r for r in tool_results if r.get("status") == "error"]
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", 3)
 
     if not failed:
-        state["reflection_decision"] = "respond_success"
-        state["reflection"] = {"decision": "respond_success", "reasoning": "All succeeded"}
-        log.info("Reflect: respond_success (fast path)")
-        return state
+        # All tools succeeded - check if task is complete
+        query = state.get("query", "").lower()
+        executed_tools = [r.get("tool_name", "") for r in tool_results]
+
+        # Fast path pattern matching for task completion
+        needs_continue = _check_if_task_needs_continue(query, executed_tools, tool_results, log)
+
+        if needs_continue and iteration_count < max_iterations:
+            state["reflection_decision"] = "continue_with_more_tools"
+            state["reflection"] = {
+                "decision": "continue_with_more_tools",
+                "reasoning": "Tools succeeded but task needs more steps",
+                "task_complete": False
+            }
+            log.info(f"Reflect: continue_with_more_tools (task incomplete, iteration {iteration_count + 1}/{max_iterations})")
+            return state
+        else:
+            state["reflection_decision"] = "respond_success"
+            state["reflection"] = {
+                "decision": "respond_success",
+                "reasoning": "All succeeded" if not needs_continue else "Max iterations reached",
+                "task_complete": not needs_continue
+            }
+            log.info("Reflect: respond_success (fast path)")
+            return state
 
     # Fast path: unrecoverable errors
     error_text = " ".join(str(r.get("result", "")) for r in failed).lower()
@@ -1022,6 +1339,41 @@ async def reflect_node(
             log.info("Reflect: retry_with_fix (syntax)")
             return state
 
+        # Handle parameter type errors (e.g., space_id should be numeric ID but got key)
+        if "not the correct type" in error_text or "expected type" in error_text or "expected type is long" in error_text.lower():
+            # Check if it's a Confluence space_id issue
+            if "spaceid" in error_text.lower() or "space_id" in error_text.lower() or ("space" in error_text.lower() and "long" in error_text.lower()):
+                # Check if the failed tool was create_page
+                failed_tool = failed[0].get("tool_name", "") if failed else ""
+                if "create_page" in failed_tool.lower():
+                    state["reflection_decision"] = "retry_with_fix"
+                    state["reflection"] = {
+                        "decision": "retry_with_fix",
+                        "reasoning": "Space ID type error - need to resolve space key to numeric ID",
+                        "fix_instruction": "The space_id is a key but API needs numeric ID. Check Reference Data for confluence_space with matching name/key and use its 'id' field. If not found, call get_spaces to get the numeric ID, then call create_page with that ID. DO NOT switch to get_spaces as final tool - you still need to CREATE the page."
+                    }
+                    log.info("Reflect: retry_with_fix (space_id resolution needed)")
+                    return state
+                elif "search_pages" in failed_tool.lower():
+                    state["reflection_decision"] = "retry_with_fix"
+                    state["reflection"] = {
+                        "decision": "retry_with_fix",
+                        "reasoning": "Space ID type error in search",
+                        "fix_instruction": "For confluence.search_pages, space_id is optional. Remove the space_id parameter and search without it, or first call confluence.get_spaces to get the numeric ID."
+                    }
+                    log.info("Reflect: retry_with_fix (search space_id)")
+                    return state
+
+            # Generic parameter type error
+            state["reflection_decision"] = "retry_with_fix"
+            state["reflection"] = {
+                "decision": "retry_with_fix",
+                "reasoning": "Parameter type error",
+                "fix_instruction": "Check parameter types. If API expects a different type, check tool documentation and adjust the parameter value accordingly."
+            }
+            log.info("Reflect: retry_with_fix (parameter type)")
+            return state
+
         if "user" in error_text and ("not found" in error_text or "no user" in error_text):
             state["reflection_decision"] = "retry_with_fix"
             state["reflection"] = {
@@ -1046,7 +1398,9 @@ async def reflect_node(
         execution_summary="\n".join(summary_parts),
         query=state.get("query", ""),
         retry_count=retry_count,
-        max_retries=max_retries
+        max_retries=max_retries,
+        iteration_count=iteration_count,
+        max_iterations=max_iterations
     )
 
     try:
@@ -1110,6 +1464,8 @@ def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, A
             reflection.setdefault("fix_instruction", "")
             reflection.setdefault("clarifying_question", "")
             reflection.setdefault("error_context", "")
+            reflection.setdefault("task_complete", True)
+            reflection.setdefault("needs_more_tools", "")
             return reflection
 
     except json.JSONDecodeError as e:
@@ -1164,14 +1520,49 @@ async def prepare_retry_node(
     return state
 
 
-def route_after_reflect(state: ChatState) -> Literal["prepare_retry", "respond"]:
+# ============================================================================
+# Node 5: Prepare Continue
+# ============================================================================
+
+async def prepare_continue_node(
+    state: ChatState,
+    config: RunnableConfig,
+    writer: StreamWriter
+) -> ChatState:
+    """Prepare for continue with more tools (multi-step task)"""
+    log = state.get("logger", logger)
+
+    # Increment iteration count (separate from retry_count)
+    state["iteration_count"] = state.get("iteration_count", 0) + 1
+    state["is_continue"] = True
+
+    # Keep tool results for next planning step (don't clear them)
+    # The planner will use these results to plan next steps
+
+    safe_stream_write(writer, {
+        "event": "status",
+        "data": {"status": "continuing", "message": "Continuing with next steps..."}
+    }, config)
+
+    max_iterations = state.get("max_iterations", 3)
+    log.info(f"Prepare continue {state['iteration_count']}/{max_iterations}: task needs more steps")
+
+    return state
+
+
+def route_after_reflect(state: ChatState) -> Literal["prepare_retry", "prepare_continue", "respond"]:
     """Route based on reflection"""
     decision = state.get("reflection_decision", "respond_success")
     retry_count = state.get("retry_count", 0)
     max_retries = state.get("max_retries", 1)
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", 3)
 
     if decision == "retry_with_fix" and retry_count < max_retries:
         return "prepare_retry"
+
+    if decision == "continue_with_more_tools" and iteration_count < max_iterations:
+        return "prepare_continue"
 
     return "respond"
 

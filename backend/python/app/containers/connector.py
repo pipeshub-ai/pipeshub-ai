@@ -15,6 +15,9 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.delete_old_agents_templates_migration import (
+    run_delete_old_agents_templates_migration,
+)
 from app.migrations.drive_to_drive_workspace_migration import (
     run_drive_to_drive_workspace_migration,
 )
