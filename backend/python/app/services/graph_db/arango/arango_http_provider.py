@@ -7957,7 +7957,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 : role_target_perm.role
             )
 
-            // Path 7: User -> Team -> target (MIN of user->team and team->target roles)
+            // Path 7: User -> Team -> target (uses user->team role only)
             LET path7_roles = (
                 FOR target_id IN permission_targets
                     FOR user_team_perm IN permission
@@ -7970,12 +7970,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER team_target_perm._from == user_team_perm._to
                             AND team_target_perm._to == target_id
                             AND team_target_perm.type == "TEAM"
-                            AND team_target_perm.role != null
-                            AND team_target_perm.role != ""
-                            // MIN of user->team and team->target roles
-                            RETURN (role_priority[user_team_perm.role] < role_priority[team_target_perm.role])
-                                ? user_team_perm.role
-                                : team_target_perm.role
+                            RETURN user_team_perm.role
             )
 
             // Path 9: User -> Org -> target (direct org permission)
