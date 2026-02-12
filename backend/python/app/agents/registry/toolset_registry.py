@@ -517,7 +517,8 @@ class ToolsetRegistry:
                     sanitized[auth_type] = asdict(oauth_config)
                 except Exception:
                     # Don't log exception details as they may contain sensitive OAuth config data
-                    logger.warning(f"Failed to convert OAuth config {auth_type} to dict")
+                    # Don't include auth_type in log message to avoid potential sensitive data exposure
+                    logger.warning("Failed to convert OAuth config dataclass to dict")
                     # Fallback: try to get attributes manually
                     sanitized[auth_type] = {
                         attr: getattr(oauth_config, attr, None)
