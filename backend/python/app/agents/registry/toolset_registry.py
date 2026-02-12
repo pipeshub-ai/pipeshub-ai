@@ -6,7 +6,10 @@ Similar to ConnectorRegistry but for toolsets (agent-focused tools)
 import importlib
 import inspect
 import logging
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type, Union
+
+if TYPE_CHECKING:
+    pass
 
 from app.connectors.core.registry.tool_builder import ToolCategory, ToolDefinition
 
@@ -99,13 +102,13 @@ class ToolsetRegistry:
 
     _instance = None
 
-    def __new__(cls):
+    def __new__(cls) -> 'ToolsetRegistry':
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
-    def __init__(self):
+    def __init__(self) -> None:
         if self._initialized:
             return
 
@@ -214,7 +217,7 @@ class ToolsetRegistry:
         """Normalize toolset name (lowercase, no spaces/underscores)"""
         return name.lower().replace(' ', '').replace('_', '')
 
-    def _normalize_auth_types(self, auth_types: Any) -> List[str]:
+    def _normalize_auth_types(self, auth_types: Union[str, List[str], None]) -> List[str]:
         """Normalize auth types to list"""
         if isinstance(auth_types, str):
             return [auth_types]
@@ -454,7 +457,7 @@ class ToolsetRegistry:
         }
         return serializable_metadata
 
-    def _sanitize_config(self, config: Any) -> Dict[str, Any]:
+    def _sanitize_config(self, config: Union[Dict[str, Any], object]) -> Dict[str, Any]:
         """Sanitize config dict to remove non-serializable objects"""
         if not isinstance(config, dict):
             return {}
@@ -512,8 +515,9 @@ class ToolsetRegistry:
                 # Convert dataclass to dict
                 try:
                     sanitized[auth_type] = asdict(oauth_config)
-                except Exception as e:
-                    logger.warning(f"Failed to convert OAuth config {auth_type} to dict: {e}")
+                except Exception:
+                    # Don't log exception details as they may contain sensitive OAuth config data
+                    logger.warning(f"Failed to convert OAuth config {auth_type} to dict")
                     # Fallback: try to get attributes manually
                     sanitized[auth_type] = {
                         attr: getattr(oauth_config, attr, None)

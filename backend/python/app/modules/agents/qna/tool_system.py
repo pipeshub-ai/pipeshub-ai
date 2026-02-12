@@ -13,7 +13,12 @@ Key features:
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Set
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agents.tools.models import Tool
 
 from app.agents.tools.registry import _global_tools_registry
 from app.agents.tools.wrapper import RegistryToolWrapper
@@ -26,6 +31,52 @@ MAX_TOOLS_LIMIT = 128
 MAX_RESULT_PREVIEW_LENGTH = 150
 FAILURE_LOOKBACK_WINDOW = 7
 FAILURE_THRESHOLD = 3
+
+
+# ============================================================================
+# LLM-Aware Tool Name Sanitization
+# ============================================================================
+
+def _requires_sanitized_tool_names(llm: Optional['BaseChatModel']) -> bool:
+    """
+    Check if the LLM requires sanitized tool names (dots replaced with underscores).
+    Only Anthropic models require sanitized names due to their tool name format restrictions.
+    Other LLMs (OpenAI, Gemini, etc.) support dots in tool names.
+
+    Args:
+        llm: The LLM instance to check (can be None)
+
+    Returns:
+        True if tool names should be sanitized, False otherwise
+    """
+    if not llm:
+        return False
+
+    try:
+        from langchain_anthropic import ChatAnthropic
+        return isinstance(llm, ChatAnthropic)
+    except ImportError:
+        # If langchain_anthropic is not available, assume no sanitization needed
+        return False
+    except Exception:
+        # If any error occurs, default to no sanitization (safer for other LLMs)
+        return False
+
+
+def _sanitize_tool_name_if_needed(tool_name: str, llm: Optional['BaseChatModel']) -> str:
+    """
+    Sanitize tool name only if the LLM requires it.
+
+    Args:
+        tool_name: Original tool name (may contain dots)
+        llm: LLM instance to check requirements (can be None)
+
+    Returns:
+        Sanitized name (dots replaced with underscores) if needed, original name otherwise
+    """
+    if _requires_sanitized_tool_names(llm):
+        return tool_name.replace('.', '_')
+    return tool_name
 
 
 # ============================================================================
@@ -186,8 +237,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
             if state_logger:
                 state_logger.error(f"Failed to load {full_name}: {e}")
 
-    # Combine: internal first (priority)
-    tools = internal_tools + user_tools
+    tools = user_tools + internal_tools
 
     # Apply tool limit
     if len(tools) > MAX_TOOLS_LIMIT:
@@ -244,7 +294,7 @@ def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Se
     return tool_names if tool_names else None
 
 
-def _is_internal_tool(full_name: str, registry_tool: Any) -> bool:
+def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     """
     Check if tool is internal (always included).
 
@@ -405,8 +455,12 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
 
     This function is used by the ReAct agent to get tools with proper
     schema validation for function calling.
+
+    Tool names are sanitized (dots -> underscores) only for LLMs that require it
+    (e.g., Anthropic). Other LLMs (OpenAI, Gemini, etc.) keep original names with dots.
+
     Args:
-        state: Chat state containing tool configuration
+        state: Chat state containing tool configuration and LLM instance
 
     Returns:
         List of LangChain StructuredTool objects with Pydantic schemas
@@ -418,44 +472,66 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
         registry_tools = get_agent_tools(state)
         structured_tools = []
 
+        # Get LLM from state to determine if sanitization is needed
+        llm = state.get("llm")
+
+        # Debug: Log tool count
+        state_logger = state.get("logger")
+        if state_logger:
+            state_logger.debug(f"get_agent_tools_with_schemas: received {len(registry_tools)} tools from get_agent_tools")
+
         for tool_wrapper in registry_tools:
-            registry_tool = tool_wrapper.registry_tool
+            try:
+                registry_tool = tool_wrapper.registry_tool
 
-            # Get Pydantic schema from Tool object (stored during registration from @tool decorator)
-            args_schema = getattr(registry_tool, 'args_schema', None)
+                # Get Pydantic schema from Tool object (stored during registration from @tool decorator)
+                args_schema = getattr(registry_tool, 'args_schema', None)
 
-            # Sanitize tool name for external API (e.g., Anthropic)
-            # Anthropic tool names must match '^[a-zA-Z0-9_-]{1,128}$' (no dots)
-            sanitized_tool_name = tool_wrapper.name.replace('.', '_')
+                # Sanitize tool name only if LLM requires it (e.g., Anthropic)
+                original_tool_name = tool_wrapper.name
+                sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm)
 
-            # Create a wrapper function that preserves the tool_wrapper binding
-            # This ensures the state is accessible when the tool is executed
-            # Use a closure to capture tool_wrapper correctly (avoiding Python loop closure issue)
-            def make_tool_func(wrapper):
-                def tool_func(**kwargs):
-                    return wrapper._run(**kwargs)
-                return tool_func
+                # Create a wrapper function that preserves the tool_wrapper binding
+                # This ensures the state is accessible when the tool is executed
+                # Use a closure to capture tool_wrapper correctly (avoiding Python loop closure issue)
+                def make_tool_func(wrapper: RegistryToolWrapper) -> Callable[..., object]:
+                    def tool_func(**kwargs: object) -> object:
+                        return wrapper._run(**kwargs)
+                    return tool_func
 
-            tool_func = make_tool_func(tool_wrapper)
+                tool_func = make_tool_func(tool_wrapper)
 
-            # Create StructuredTool with schema if available
-            if args_schema:
-                # Use schema for validation
-                structured_tool = StructuredTool.from_function(
-                    func=tool_func,
-                    name=sanitized_tool_name,  # Use sanitized name
-                    description=tool_wrapper.description,
-                    args_schema=args_schema,
-                )
-            else:
-                # Fallback: no schema (for legacy tools without Pydantic schemas)
-                structured_tool = StructuredTool.from_function(
-                    func=tool_func,
-                    name=sanitized_tool_name,  # Use sanitized name
-                    description=tool_wrapper.description,
-                )
+                # Create StructuredTool with schema if available
+                if args_schema:
+                    # Use schema for validation
+                    structured_tool = StructuredTool.from_function(
+                        func=tool_func,
+                        name=sanitized_tool_name,  # Use sanitized name if needed
+                        description=tool_wrapper.description,
+                        args_schema=args_schema,
+                    )
+                else:
+                    # Fallback: no schema (for legacy tools without Pydantic schemas)
+                    structured_tool = StructuredTool.from_function(
+                        func=tool_func,
+                        name=sanitized_tool_name,  # Use sanitized name if needed
+                        description=tool_wrapper.description,
+                    )
 
-            structured_tools.append(structured_tool)
+                # Store original name for reference (useful for backward compatibility)
+                setattr(structured_tool, '_original_name', original_tool_name)
+                structured_tools.append(structured_tool)
+            except Exception as tool_error:
+                # Log but continue processing other tools
+                if state_logger:
+                    state_logger.warning(f"Failed to create StructuredTool for {tool_wrapper.name}: {tool_error}")
+                continue
+
+        # Debug: Log final tool count
+        if state_logger:
+            state_logger.debug(f"get_agent_tools_with_schemas: returning {len(structured_tools)} structured tools")
+            tool_names = [getattr(t, 'name', str(t)) for t in structured_tools]
+            state_logger.debug(f"Structured tool names: {tool_names[:10]}")
 
         return structured_tools
     except ImportError:

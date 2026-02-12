@@ -7,15 +7,20 @@ import asyncio
 import base64
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import RedirectResponse
 
+from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.token_service.oauth_service import OAuthProvider
+from app.connectors.core.base.token_service.oauth_service import (
+    OAuthConfig,
+    OAuthProvider,
+)
 from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.connector import ConnectorAppContainer
@@ -25,6 +30,10 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/toolsets", tags=["toolsets"])
 
+# Constants
+MAX_AGENT_NAMES_DISPLAY = 3  # Maximum number of agent names to display in error messages
+SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path
+ENCRYPTED_KEY_PARTS_COUNT = 2  # Number of colons in encrypted format: "iv:ciphertext:authTag"
 
 # ============================================================================
 # Custom Exceptions
@@ -32,13 +41,13 @@ router = APIRouter(prefix="/api/v1/toolsets", tags=["toolsets"])
 
 class ToolsetError(HTTPException):
     """Base exception for toolset operations"""
-    def __init__(self, detail: str, status_code: int = 500):
+    def __init__(self, detail: str, status_code: int = 500) -> None:
         super().__init__(status_code=status_code, detail=detail)
 
 
 class ToolsetNotFoundError(ToolsetError):
     """Toolset not found in registry"""
-    def __init__(self, toolset_name: str):
+    def __init__(self, toolset_name: str) -> None:
         super().__init__(
             detail=f"Toolset '{toolset_name}' not found in registry",
             status_code=HttpStatusCode.NOT_FOUND.value
@@ -47,7 +56,7 @@ class ToolsetNotFoundError(ToolsetError):
 
 class ToolsetConfigNotFoundError(ToolsetError):
     """Toolset configuration not found"""
-    def __init__(self, toolset_name: str):
+    def __init__(self, toolset_name: str) -> None:
         super().__init__(
             detail=f"Toolset '{toolset_name}' is not configured. Please configure it first.",
             status_code=HttpStatusCode.NOT_FOUND.value
@@ -56,7 +65,7 @@ class ToolsetConfigNotFoundError(ToolsetError):
 
 class ToolsetAlreadyExistsError(ToolsetError):
     """Toolset configuration already exists"""
-    def __init__(self, toolset_name: str):
+    def __init__(self, toolset_name: str) -> None:
         super().__init__(
             detail=f"Toolset '{toolset_name}' is already configured. Update the existing configuration instead.",
             status_code=HttpStatusCode.CONFLICT.value
@@ -65,13 +74,13 @@ class ToolsetAlreadyExistsError(ToolsetError):
 
 class ToolsetInUseError(ToolsetError):
     """Toolset is in use and cannot be deleted"""
-    def __init__(self, toolset_name: str, agent_names: List[str]):
+    def __init__(self, toolset_name: str, agent_names: List[str]) -> None:
         if len(agent_names) == 1:
             detail = f"Cannot delete toolset '{toolset_name}': currently in use by agent '{agent_names[0]}'. Remove it from the agent first."
         else:
-            names_display = ", ".join(f"'{n}'" for n in agent_names[:3])
-            if len(agent_names) > 3:
-                names_display += f" and {len(agent_names) - 3} more"
+            names_display = ", ".join(f"'{n}'" for n in agent_names[:MAX_AGENT_NAMES_DISPLAY])
+            if len(agent_names) > MAX_AGENT_NAMES_DISPLAY:
+                names_display += f" and {len(agent_names) - MAX_AGENT_NAMES_DISPLAY} more"
             detail = f"Cannot delete toolset '{toolset_name}': currently in use by {len(agent_names)} agents ({names_display}). Remove it from all agents first."
 
         super().__init__(detail=detail, status_code=HttpStatusCode.CONFLICT.value)
@@ -79,7 +88,7 @@ class ToolsetInUseError(ToolsetError):
 
 class InvalidAuthConfigError(ToolsetError):
     """Invalid authentication configuration"""
-    def __init__(self, message: str):
+    def __init__(self, message: str) -> None:
         super().__init__(
             detail=f"Invalid authentication configuration: {message}",
             status_code=HttpStatusCode.BAD_REQUEST.value
@@ -88,7 +97,7 @@ class InvalidAuthConfigError(ToolsetError):
 
 class OAuthConfigError(ToolsetError):
     """OAuth configuration error"""
-    def __init__(self, message: str):
+    def __init__(self, message: str) -> None:
         super().__init__(
             detail=f"OAuth configuration error: {message}",
             status_code=HttpStatusCode.BAD_REQUEST.value
@@ -114,7 +123,7 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
     return {"user_id": user_id, "org_id": org_id}
 
 
-def _get_registry(request: Request):
+def _get_registry(request: Request) -> ToolsetRegistry:
     """Get and validate toolset registry from app state"""
     registry = getattr(request.app.state, "toolset_registry", None)
     if not registry:
@@ -125,7 +134,7 @@ def _get_registry(request: Request):
     return registry
 
 
-def _get_toolset_metadata(registry, toolset_type: str):
+def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> Dict[str, Any]:
     """Get and validate toolset metadata"""
     if not toolset_type or not toolset_type.strip():
         raise HTTPException(
@@ -220,7 +229,7 @@ def _validate_auth_config(auth_config: Dict[str, Any]) -> str:
     return auth_type
 
 
-def _get_oauth_config_from_registry(toolset_type: str, registry):
+def _get_oauth_config_from_registry(toolset_type: str, registry: ToolsetRegistry) -> OAuthConfig:
     """Get OAuth config from toolset registry (returns dataclass instance)"""
     # Get metadata without serialization to preserve dataclass instances
     metadata = registry.get_toolset_metadata(toolset_type, serialize=False)
@@ -291,7 +300,7 @@ async def _prepare_toolset_auth_config(
             base_url_clean = base_url.strip().rstrip('/')
             redirect_path_clean = redirect_path.lstrip('/')
             redirect_uri = f"{base_url_clean}/{redirect_path_clean}"
-            logger.debug(f"Constructed redirect URI from base_url '{base_url}': {redirect_uri}")
+            logger.debug("Constructed redirect URI from base_url")
         else:
             # Fallback to endpoints config or default
             try:
@@ -299,11 +308,11 @@ async def _prepare_toolset_auth_config(
                 fallback_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
                 redirect_path_clean = redirect_path.lstrip('/')
                 redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_path_clean}"
-                logger.debug(f"Constructed redirect URI from endpoints config: {redirect_uri}")
+                logger.debug("Constructed redirect URI from endpoints config")
             except Exception:
                 redirect_path_clean = redirect_path.lstrip('/')
                 redirect_uri = f"http://localhost:3001/{redirect_path_clean}"
-                logger.debug(f"Using default redirect URI: {redirect_uri}")
+                logger.debug("Using default redirect URI")
 
     # Get scopes from registry (always refresh to ensure latest scopes)
     from app.connectors.core.registry.auth_builder import OAuthScopeType
@@ -642,7 +651,7 @@ async def get_configured_toolsets(
         return {"status": "success", "toolsets": []}
 
     # Fetch configs in parallel
-    async def get_config_safe(path: str):
+    async def get_config_safe(path: str) -> Tuple[str, Optional[Dict[str, Any]]]:
         try:
             return path, await config_service.get_config(path)
         except Exception as e:
@@ -896,7 +905,7 @@ async def get_oauth_authorization_url(
         await oauth_provider.close()
 
 
-@router.get("/oauth/callback")
+@router.get("/oauth/callback", response_model=None)
 @inject
 async def handle_oauth_callback(
     request: Request,
@@ -905,7 +914,7 @@ async def handle_oauth_callback(
     error: Optional[str] = Query(None, description="OAuth error"),
     base_url: Optional[str] = Query(None, description="Base URL for redirect"),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
-):
+) -> Union[Dict[str, Any], RedirectResponse]:
     """Handle OAuth callback and exchange code for tokens"""
     base_url = base_url or "http://localhost:3001"
 
@@ -937,7 +946,7 @@ async def handle_oauth_callback(
 
         # Parse synthetic ID
         parts = synthetic_id.rsplit("_", 1)
-        if len(parts) != 2:
+        if len(parts) != SPLIT_PATH_EXPECTED_PARTS:
             raise OAuthConfigError("Invalid toolset ID format in OAuth state")
 
         toolset_user_id, toolset_type = parts
@@ -1140,25 +1149,24 @@ async def create_toolset(
         # Get base URL from request body (like connectors), fallback to endpoints config
         # Check both "baseUrl" and "base_url" for compatibility
         base_url = (body.get("baseUrl") or body.get("base_url") or "").strip()
-        logger.info(f"Base URL from body for create: '{base_url}'")
 
         if not base_url:
             try:
                 endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
                 base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
-                logger.info(f"Using base_url from endpoints config: {base_url}")
+                logger.info("Using base_url from endpoints config")
             except Exception:
                 base_url = "http://localhost:3001"
-                logger.warning(f"Failed to get endpoints config, using default: {base_url}")
+                logger.warning("Failed to get endpoints config, using default base_url")
 
-        logger.info(f"Creating toolset {normalized_name} with base_url: {base_url}")
+        logger.info(f"Creating toolset {normalized_name}")
 
         # Always refresh redirect URI when creating/updating
         auth_config = await _prepare_toolset_auth_config(
             auth_config, normalized_name, registry, config_service, base_url, request
         )
 
-        logger.info(f"Created redirect URI for toolset {normalized_name}: {auth_config.get('redirectUri', 'NOT SET')}")
+        logger.info(f"Created redirect URI for toolset {normalized_name}")
 
     # Create config
     config = {
@@ -1229,18 +1237,17 @@ async def update_toolset_config(
         # Get base URL from request body (like connectors), fallback to endpoints config
         # Check both "baseUrl" and "base_url" for compatibility
         base_url = (body.get("baseUrl") or body.get("base_url") or "").strip()
-        logger.info(f"Base URL from body: '{base_url}' (body keys: {list(body.keys())})")
 
         if not base_url:
             try:
                 endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
                 base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
-                logger.info(f"Using base_url from endpoints config: {base_url}")
+                logger.info("Using base_url from endpoints config")
             except Exception:
                 base_url = "http://localhost:3001"
-                logger.warning(f"Failed to get endpoints config, using default: {base_url}")
+                logger.warning("Failed to get endpoints config, using default base_url")
 
-        logger.info(f"Updating toolset {toolset_type} with base_url: {base_url}")
+        logger.info(f"Updating toolset {toolset_type}")
 
         # Always refresh redirect URI when updating config
         # This ensures redirect URI is updated if base_url changes
@@ -1248,7 +1255,7 @@ async def update_toolset_config(
             auth_config, toolset_type, registry, config_service, base_url, request
         )
 
-        logger.info(f"Updated redirect URI for toolset {toolset_type}: {auth_config.get('redirectUri', 'NOT SET')}")
+        logger.info(f"Updated redirect URI for toolset {toolset_type}")
 
     # Update config
     config = {

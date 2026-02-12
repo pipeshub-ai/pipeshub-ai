@@ -7,11 +7,17 @@ Separate from connector token refresh to avoid interference
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
+
+if TYPE_CHECKING:
+    from app.connectors.core.base.token_service.oauth_service import OAuthConfig
 
 from app.config.key_value_store import KeyValueStore
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.utils.oauth_config import get_oauth_config
+
+# Constants
+MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, user_id, toolset_type
 
 
 class ToolsetTokenRefreshService:
@@ -140,7 +146,7 @@ class ToolsetTokenRefreshService:
                         # Extract toolset_type from path
                         # Format: /services/toolsets/{user_id}/{toolset_type}
                         path_parts = config_path.strip("/").split("/")
-                        if len(path_parts) < 4:  # services, toolsets, user_id, toolset_type
+                        if len(path_parts) < MIN_PATH_PARTS_COUNT:  # services, toolsets, user_id, toolset_type
                             self.logger.info(f"⚠️ Skipping invalid path format: {config_path} (parts: {path_parts}, count: {len(path_parts)}, expected: 4)")
                             skipped_invalid_path += 1
                             continue
@@ -193,7 +199,7 @@ class ToolsetTokenRefreshService:
     def _get_toolset_oauth_config_from_registry(
         self,
         toolset_type: str
-    ) -> Optional[Any]:
+    ) -> Optional['OAuthConfig']:
         """
         Get OAuth config from toolset registry.
 

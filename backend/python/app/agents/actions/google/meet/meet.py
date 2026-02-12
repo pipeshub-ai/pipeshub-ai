@@ -199,7 +199,6 @@ class GetMeetingSummaryInput(BaseModel):
             additional_params={
                 "access_type": "offline",
                 "prompt": "consent",
-                "include_granted_scopes": "true"
             },
             fields=[
                 CommonFields.client_id("Google Cloud Console"),

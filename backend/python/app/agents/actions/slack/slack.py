@@ -23,10 +23,14 @@ from app.sources.external.slack.slack import SlackDataSource
 
 logger = logging.getLogger(__name__)
 
+# Constants
+MIN_SLACK_USER_ID_LENGTH = 9  # Minimum length for valid Slack user ID (starts with 'U')
+MIN_PARTIAL_MATCH_LENGTH = 3  # Minimum length for partial name matching
+
 
 class AmbiguousUserError(Exception):
     """Raised when multiple users match a given identifier"""
-    def __init__(self, identifier: str, matches: List[Dict[str, Any]]):
+    def __init__(self, identifier: str, matches: List[Dict[str, Any]]) -> None:
         self.identifier = identifier
         self.matches = matches
         super().__init__(f"Multiple users found matching '{identifier}'. Please use email or user ID for disambiguation.")
@@ -1839,7 +1843,7 @@ class Slack:
                 return None
 
             # If it's already a user ID (starts with U), return as is
-            if user_identifier.startswith('U') and len(user_identifier) >= 9:
+            if user_identifier.startswith('U') and len(user_identifier) >= MIN_SLACK_USER_ID_LENGTH:
                 return user_identifier
 
             # Normalize the identifier for comparison
@@ -1916,7 +1920,7 @@ class Slack:
 
                         # Partial match (for "Abhishek" matching "Abhishek Gupta")
                         elif target_identifier in name_normalized or name_normalized in target_identifier:
-                            if len(target_identifier) >= 3:
+                            if len(target_identifier) >= MIN_PARTIAL_MATCH_LENGTH:
                                 if not any(m[0] == user_id for m in partial_matches):
                                     partial_matches.append((user_id, name, user_info))
 

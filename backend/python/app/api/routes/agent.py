@@ -32,6 +32,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
 
+# Constants
+SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
+
 
 # ============================================================================
 # Request Models
@@ -57,13 +60,13 @@ class ChatQuery(BaseModel):
 
 class AgentError(HTTPException):
     """Base exception for agent operations"""
-    def __init__(self, detail: str, status_code: int = 500):
+    def __init__(self, detail: str, status_code: int = 500) -> None:
         super().__init__(status_code=status_code, detail=detail)
 
 
 class AgentNotFoundError(AgentError):
     """Agent not found"""
-    def __init__(self, agent_id: str):
+    def __init__(self, agent_id: str) -> None:
         super().__init__(
             detail=f"Agent '{agent_id}' not found or you don't have access to it",
             status_code=404
@@ -72,7 +75,7 @@ class AgentNotFoundError(AgentError):
 
 class AgentTemplateNotFoundError(AgentError):
     """Agent template not found"""
-    def __init__(self, template_id: str):
+    def __init__(self, template_id: str) -> None:
         super().__init__(
             detail=f"Agent template '{template_id}' not found or you don't have access to it",
             status_code=404
@@ -81,7 +84,7 @@ class AgentTemplateNotFoundError(AgentError):
 
 class PermissionDeniedError(AgentError):
     """Permission denied"""
-    def __init__(self, action: str):
+    def __init__(self, action: str) -> None:
         super().__init__(
             detail=f"You don't have permission to {action}",
             status_code=403
@@ -90,7 +93,7 @@ class PermissionDeniedError(AgentError):
 
 class InvalidRequestError(AgentError):
     """Invalid request data"""
-    def __init__(self, message: str):
+    def __init__(self, message: str) -> None:
         super().__init__(
             detail=f"Invalid request: {message}",
             status_code=400
@@ -99,7 +102,7 @@ class InvalidRequestError(AgentError):
 
 class LLMInitializationError(AgentError):
     """LLM initialization failed"""
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__(
             detail="Failed to initialize LLM service. LLM configuration is missing.",
             status_code=500
@@ -1409,7 +1412,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     if toolset_full_id:
                         toolset_full_ids.append(toolset_full_id)
                         parts = toolset_full_id.split("/", 1)
-                        if len(parts) == 2:
+                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
                             toolset_keys.append(parts[1])
 
                 logger.debug(f"Found {len(toolset_keys)} toolset(s) connected to agent {agent_id}")
@@ -1429,7 +1432,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                         if tool_full_id:
                             all_tool_full_ids.append(tool_full_id)
                             parts = tool_full_id.split("/", 1)
-                            if len(parts) == 2:
+                            if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
                                 all_tool_keys.append(parts[1])
 
                 logger.debug(f"Found {len(all_tool_keys)} tool(s) connected to toolsets")
@@ -1568,7 +1571,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                     if knowledge_full_id:
                         knowledge_full_ids.append(knowledge_full_id)
                         parts = knowledge_full_id.split("/", 1)
-                        if len(parts) == 2:
+                        if len(parts) == SPLIT_PATH_EXPECTED_PARTS:
                             knowledge_keys.append(parts[1])
 
                 logger.debug(f"Found {len(knowledge_keys)} knowledge node(s) connected to agent {agent_id}")

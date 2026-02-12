@@ -14,6 +14,9 @@ from app.utils.encryption.encryption_service import EncryptionService
 
 dotenv.load_dotenv()
 
+# Constants
+ENCRYPTED_KEY_PARTS_COUNT = 2  # Number of colons in encrypted format: "iv:ciphertext:authTag"
+
 T = TypeVar("T")
 
 
@@ -323,7 +326,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     else:
                         # Try to decrypt the key
                         # Encrypted format: "iv:ciphertext:authTag" (3 parts)
-                        if encrypted_key.count(":") == 2:
+                        if encrypted_key.count(":") == ENCRYPTED_KEY_PARTS_COUNT:
                             try:
                                 decrypted_key = self.encryption_service.decrypt(encrypted_key)
                             except Exception:

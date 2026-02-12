@@ -212,7 +212,6 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("🔄 Executing get_all operation")
             keys = await asyncio.to_thread(lambda: list(client.get_all()))
             decoded_keys = [key[1].key.decode("utf-8") for key in keys]
-            logger.debug("✅ Found %d keys: %s", len(decoded_keys), decoded_keys)
             return decoded_keys
         except Exception as e:
             logger.error("❌ Failed to get all keys: %s", str(e))

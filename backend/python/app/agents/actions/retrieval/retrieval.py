@@ -16,10 +16,8 @@ from pydantic import BaseModel, Field
 from app.agents.actions.utils import run_async
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
 from app.connectors.core.registry.auth_builder import AuthBuilder
-from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetBuilder
+from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import get_flattened_results
@@ -37,22 +35,13 @@ class RetrievalToolOutput(BaseModel):
     virtual_record_id_to_result: Dict[str, Dict[str, Any]] = Field(description="Mapping for citation normalization")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
 
-
-# Define tools
-tools: List[ToolDefinition] = [
-    ToolDefinition(
-        name="search_internal_knowledge",
-        description="Search and retrieve information from internal knowledge bases, documents, and connectors",
-        parameters=[
-            {"name": "query", "type": "string", "description": "The search query to find relevant information", "required": True},
-            {"name": "limit", "type": "integer", "description": "Maximum number of results to return (default: 50, max: 100)", "required": False},
-            {"name": "filters", "type": "object", "description": "Optional filters to narrow search (apps, kb, etc.)", "required": False}
-        ],
-        tags=["search", "knowledge", "internal"]
-    )
-]
-
-
+class SearchInternalKnowledgeInput(BaseModel):
+    """Input schema for the search_internal_knowledge tool"""
+    query: str = Field(description="The search query to find relevant information")
+    limit: Optional[int] = Field(default=50, description="Maximum number of results to return (default: 50, max: 100)")
+    filters: Optional[Dict[str, Any]] = Field(default=None, description="Optional filters to narrow search (apps, kb, etc.)")
+    text: Optional[str] = Field(default=None, description="Alternative parameter name for query (LLM sometimes uses 'text' instead)")
+    top_k: Optional[int] = Field(default=None, description="Alias for limit (LLM sometimes uses 'top_k' instead)")
 # Register Retrieval toolset (internal - always available, no auth required, backend-only)
 @ToolsetBuilder("Retrieval")\
     .in_group("Internal Tools")\
@@ -61,7 +50,6 @@ tools: List[ToolDefinition] = [
     .with_auth([
         AuthBuilder.type("NONE").fields([])
     ])\
-    .with_tools(tools)\
     .as_internal()\
     .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/retrieval.svg"))\
     .build_decorator()
@@ -84,32 +72,16 @@ class Retrieval:
         app_name="retrieval",
         tool_name="search_internal_knowledge",
         description=(
-            "Search and retrieve information from internal knowledge bases, documents, "
+            "Search and retrieve information from internal collections and indexed applications"
+        ),
+        args_schema=SearchInternalKnowledgeInput,
+        llm_description=(
+            "Search and retrieve information from internal collections and indexed applications"
             "and connectors. Use this tool when you need to find information from "
             "company documents, knowledge bases, or connected data sources. "
             "This tool searches across all configured knowledge sources and returns "
             "relevant chunks with proper citations."
         ),
-        parameters=[
-            ToolParameter(
-                name="query",
-                type=ParameterType.STRING,
-                description="The search query to find relevant information",
-                required=True
-            ),
-            ToolParameter(
-                name="limit",
-                type=ParameterType.NUMBER,
-                description="Maximum number of results to return (default: 50, max: 100)",
-                required=False
-            ),
-            ToolParameter(
-                name="filters",
-                type=ParameterType.OBJECT,
-                description="Optional filters to narrow search (apps, kb, etc.)",
-                required=False
-            )
-        ],
         category=ToolCategory.SEARCH,  # Search category for retrieval tool
         is_essential=True,
         requires_auth=False

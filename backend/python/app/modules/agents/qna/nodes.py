@@ -34,6 +34,8 @@ TOOL_RESULT_TUPLE_LENGTH = 2
 DESCRIPTION_MAX_LENGTH = 80
 USER_QUERY_MAX_LENGTH = 300
 BOT_RESPONSE_MAX_LENGTH = 800
+MAX_AVAILABLE_TOOLS_DISPLAY = 20  # Maximum number of tools to display in error messages
+MAX_TOOL_RESULT_PREVIEW_LENGTH = 500  # Maximum length for tool result preview
 
 logger = logging.getLogger(__name__)
 
@@ -237,10 +239,16 @@ Only use parameters listed above. DO NOT invent parameters.
 - NEVER add unlisted parameters
 
 ## Planning Rules
-1. **Internal Knowledge**: Company data, documents, policies → `retrieval.search_internal_knowledge`
-2. **API Tools**: Project management, tickets → use appropriate tools (jira.*, slack.*, etc.)
+1. **Internal Knowledge Search**: ONLY for searching company knowledge bases, indexed documents, policies, or internal documentation → `retrieval.search_internal_knowledge`
+   - ❌ DO NOT use for: accessing external APIs (Drive, Jira, Slack, etc.), getting files from cloud storage, managing tickets, sending messages
+   - ✅ Use for: "find information about X", "search company docs", "what's our policy on Y"
+2. **API/External Tools**: For accessing external services and managing data in those services
+   - **Drive/Cloud Storage**: Getting files, folders, permissions → use `drive.*` tools (drive.get_files_list, drive.get_file_details, drive.search_files, etc.)
+   - **Project Management**: Tickets, projects → use `jira.*` tools
+   - **Communication**: Messages, users → use `slack.*` tools
+   - **Other Services**: Use the appropriate service-specific tools
 3. **Direct Answer**: Greetings, simple math, general knowledge, user info queries → `can_answer_directly: true`
-4. **Query Understanding**: Extract key entities, dates, context
+4. **Query Understanding**: Extract key entities, dates, context, and service names (Drive, Jira, Slack, etc.)
 5. **Conversation Context**: Use previous messages, reuse data (IDs, keys, etc.)
 
 ## IMPORTANT - Context Awareness
@@ -258,11 +266,25 @@ Only use parameters listed above. DO NOT invent parameters.
 
 ## Tool Selection Rules
 
-Match tool to user intent:
-- "create"/"make"/"new" → CREATE tools
-- "get"/"find"/"search"/"list" → READ/SEARCH tools
-- "update"/"modify"/"change" → UPDATE tools
-- "delete"/"remove" → DELETE tools
+**CRITICAL: Choose the RIGHT tool category first, THEN match intent:**
+
+1. **Service Detection**: Identify which service the user is asking about
+   - "Drive files", "Google Drive", "files in Drive" → `drive.*` tools
+   - "Jira tickets", "issues", "projects" → `jira.*` tools
+   - "Slack messages", "channels", "users" → `slack.*` tools
+   - Generic "search", "find info", "company docs" → `retrieval.search_internal_knowledge`
+
+2. **Intent Matching** (within the correct service):
+   - "create"/"make"/"new" → CREATE tools
+   - "get"/"find"/"search"/"list" → READ/SEARCH tools
+   - "update"/"modify"/"change" → UPDATE tools
+   - "delete"/"remove" → DELETE tools
+
+**Examples of CORRECT tool selection:**
+- "Get my Drive files" → `drive.get_files_list` (NOT retrieval)
+- "Search for files in Drive" → `drive.search_files` (NOT retrieval)
+- "Find information about Q4 results" → `retrieval.search_internal_knowledge` (no specific service mentioned)
+- "List my Jira tickets" → `jira.search_issues` (NOT retrieval)
 
 {jira_guidance}
 {confluence_guidance}
@@ -306,13 +328,17 @@ If query is ambiguous or missing critical info, set `needs_clarification: true`.
 If `needs_clarification: true`, set `tools: []` and provide `clarifying_question`.
 
 ## Examples
-- "Q4 results" → retrieval.search_internal_knowledge with {{"query": "Q4 results"}}
+- "Q4 results" (no service mentioned) → retrieval.search_internal_knowledge with {{"query": "Q4 results"}}
+- "Get my Drive files" → drive.get_files_list with {{}}
+- "Search for files in Drive" → drive.search_files with {{"query": "..."}}
 - "My Jira projects" → jira.get_projects with {{}}
 - "My tickets in PA" → jira.search_issues with {{"jql": "project = \\"PA\\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d"}}
 - "Create a Confluence page" → Check Reference Data for space_id, or call get_spaces first, then create_page with numeric ID
 - "Find a page" → confluence.search_pages with {{"title": "..."}}
 - "Hello!" → can_answer_directly: true, tools: []
-- "my name" (user info in prompt) → can_answer_directly: true, tools: []"""
+- "my name" (user info in prompt) → can_answer_directly: true, tools: []
+
+**IMPORTANT**: When user mentions a specific service (Drive, Jira, Slack, etc.), use that service's tools, NOT retrieval.search_internal_knowledge."""
 
 PLANNER_USER_TEMPLATE = """Query: {query}
 
@@ -616,9 +642,9 @@ async def planner_node(
                 log.warning(f"⚠️ Invalid tools planned: {invalid_tools}. Retrying with available tools list (attempt {validation_retry_count}/{max_validation_retries})")
 
                 # Build error message with available tools
-                available_tools_list = ", ".join(sorted(available_tool_names)[:20])  # Limit to first 20 for prompt size
-                if len(available_tool_names) > 20:
-                    available_tools_list += f" (and {len(available_tool_names) - 20} more)"
+                available_tools_list = ", ".join(sorted(available_tool_names)[:MAX_AVAILABLE_TOOLS_DISPLAY])  # Limit to first 20 for prompt size
+                if len(available_tool_names) > MAX_AVAILABLE_TOOLS_DISPLAY:
+                    available_tools_list += f" (and {len(available_tool_names) - MAX_AVAILABLE_TOOLS_DISPLAY} more)"
 
                 error_message = f"""ERROR: The following tools do not exist: {', '.join(invalid_tools)}
 
@@ -762,19 +788,28 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
     org_id = state.get("org_id", "default")
     agent_toolsets = state.get("agent_toolsets", [])
 
-    # Build cache key from toolsets
+    # Get LLM to determine sanitization requirements for cache key
+    llm = state.get("llm")
+    from app.modules.agents.qna.tool_system import (
+        _requires_sanitized_tool_names,
+        get_agent_tools_with_schemas,
+    )
+    llm_type = "anthropic" if llm and _requires_sanitized_tool_names(llm) else "other"
+
+    # Build cache key from toolsets and LLM type (for sanitization)
     toolset_names = sorted([ts.get("name", "") for ts in agent_toolsets if isinstance(ts, dict)])
-    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_internal"
+    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{llm_type}_internal"
 
     if cache_key in _tool_description_cache:
         return _tool_description_cache[cache_key]
 
     try:
-        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
         tools = get_agent_tools_with_schemas(state)
 
         if not tools:
-            return "- retrieval.search_internal_knowledge: Search internal knowledge base\n  Parameters: query (string, required)"
+            # Use sanitized name in fallback if needed
+            fallback_name = "retrieval_search_internal_knowledge" if (llm and _requires_sanitized_tool_names(llm)) else "retrieval.search_internal_knowledge"
+            return f"- {fallback_name}: Search internal knowledge base\n  Parameters: query (string, required)"
 
         descriptions = []
         for tool in tools[:20]:
@@ -855,7 +890,9 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
 
     except Exception as e:
         log.warning(f"Tool load failed: {e}")
-        return "- retrieval.search_internal_knowledge: Search internal knowledge base\n  Parameters: query (string, required)"
+        # Use sanitized name in fallback if needed (llm already retrieved above)
+        fallback_name = "retrieval_search_internal_knowledge" if (llm and _requires_sanitized_tool_names(llm)) else "retrieval.search_internal_knowledge"
+        return f"- {fallback_name}: Search internal knowledge base\n  Parameters: query (string, required)"
 
 
 def _format_conversation_history(conversations: List[Dict], log: logging.Logger) -> str:
@@ -934,19 +971,39 @@ def _validate_planned_tools(
     """
     Validate planned tool names against available tools.
 
+    Handles both sanitized (underscores) and original (dots) tool names for compatibility.
+
     Returns:
         (is_valid, invalid_tools, available_tool_names)
     """
     try:
-        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        from app.modules.agents.qna.tool_system import (
+            _sanitize_tool_name_if_needed,
+            get_agent_tools_with_schemas,
+        )
         tools = get_agent_tools_with_schemas(state)
+        llm = state.get("llm")
+
+        # Get available tool names (already sanitized if needed by get_agent_tools_with_schemas)
         available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
+
+        # Also create a mapping from original to sanitized names for lookup
+        original_to_sanitized = {}
+        for tool in tools:
+            sanitized_name = getattr(tool, 'name', str(tool))
+            original_name = getattr(tool, '_original_name', sanitized_name)
+            if original_name != sanitized_name:
+                original_to_sanitized[original_name] = sanitized_name
 
         invalid_tools = []
         for tool_call in planned_tools:
             if isinstance(tool_call, dict):
                 tool_name = tool_call.get('name', '')
-                if tool_name and tool_name not in available_tool_names:
+                # Normalize planned tool name to match available tools
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+
+                # Check both sanitized and original name
+                if normalized_name not in available_tool_names and tool_name not in available_tool_names:
                     invalid_tools.append(tool_name)
 
         is_valid = len(invalid_tools) == 0
@@ -1044,9 +1101,22 @@ async def execute_node(
 
     # Get tools
     try:
-        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        from app.modules.agents.qna.tool_system import (
+            _sanitize_tool_name_if_needed,
+            get_agent_tools_with_schemas,
+        )
         tools = get_agent_tools_with_schemas(state)
-        tools_by_name = {t.name: t for t in tools}
+        llm = state.get("llm")
+
+        # Build mapping - tools already have sanitized names if needed
+        tools_by_name = {}
+        for t in tools:
+            sanitized_name = getattr(t, 'name', str(t))
+            tools_by_name[sanitized_name] = t
+            # Also map original name if different (for backward compatibility)
+            original_name = getattr(t, '_original_name', sanitized_name)
+            if original_name != sanitized_name:
+                tools_by_name[original_name] = t
     except Exception as e:
         log.error(f"Failed to get tools: {e}")
         tools_by_name = {}
@@ -1056,27 +1126,30 @@ async def execute_node(
     planned_tool_names = []
     for i, tool_call in enumerate(planned_tools[:NodeConfig.MAX_PARALLEL_TOOLS]):
         tool_name = tool_call.get("name", "")
-        tool_args = tool_call.get("args", {})
-        tool_id = f"call_{i}_{tool_name}"
-        planned_tool_names.append(tool_name)
+        # Normalize tool name to match available tools
+        normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
 
-        log.debug(f"Planning {tool_name} with {json.dumps(tool_args, default=str)[:100]}...")
-
-        # Validate tool exists
-        if tool_name not in tools_by_name:
-            log.warning(f"Tool not found: {tool_name}. Available tools: {list(tools_by_name.keys())[:10]}")
-            tasks.append(_create_error_result(tool_name, tool_id, f"Tool '{tool_name}' not found"))
+        # Try normalized name first, then original
+        actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+        if actual_tool_name not in tools_by_name:
+            log.warning(f"Tool not found: {tool_name} (normalized: {normalized_name}). Available tools: {list(tools_by_name.keys())[:10]}")
+            tasks.append(_create_error_result(tool_name, f"call_{i}_{tool_name}", f"Tool '{tool_name}' not found"))
             continue
 
-        if tool_name in tools_by_name:
-            tasks.append(_execute_single_tool(
-                tool=tools_by_name[tool_name],
-                tool_name=tool_name,
-                tool_args=tool_args,
-                tool_id=tool_id,
-                state=state,
-                log=log
-            ))
+        tool_args = tool_call.get("args", {})
+        tool_id = f"call_{i}_{actual_tool_name}"
+        planned_tool_names.append(actual_tool_name)
+
+        log.debug(f"Planning {actual_tool_name} with {json.dumps(tool_args, default=str)[:100]}...")
+
+        tasks.append(_execute_single_tool(
+            tool=tools_by_name[actual_tool_name],
+            tool_name=actual_tool_name,
+            tool_args=tool_args,
+            tool_id=tool_id,
+            state=state,
+            log=log
+        ))
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -2536,7 +2609,7 @@ def _process_react_chunk(
                     "event": "tool_result",
                     "data": {
                         "tool": getattr(msg, 'name', 'unknown'),
-                        "result": msg.content[:500] if len(msg.content) > 500 else msg.content,
+                        "result": msg.content[:MAX_TOOL_RESULT_PREVIEW_LENGTH] if len(msg.content) > MAX_TOOL_RESULT_PREVIEW_LENGTH else msg.content,
                         "status": "success"
                     }
                 }, config)
@@ -2673,49 +2746,67 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                 if isinstance(issues, list):
                     for issue in issues:
                         if isinstance(issue, dict):
-                            ref_data = {
-                                "name": issue.get("summary", ""),
-                                "key": issue.get("key", ""),
-                                "id": issue.get("id", ""),
-                                "type": "jira_issue"
-                            }
-                            if ref_data.get("key"):
+                            issue_id = issue.get("id", "")
+                            issue_key = issue.get("key", "")
+                            # Only add if we have at least key or id
+                            if issue_key or issue_id:
+                                ref_data = {
+                                    "name": issue.get("summary", ""),
+                                    "key": issue_key,
+                                    "type": "jira_issue"
+                                }
+                                # Only add id if it exists and is not empty
+                                if issue_id:
+                                    ref_data["id"] = issue_id
                                 reference_data.append(ref_data)
 
             # Jira projects
             if "data" in result and isinstance(result["data"], list):
                 for project in result["data"]:
                     if isinstance(project, dict):
-                        ref_data = {
-                            "name": project.get("name", ""),
-                            "key": project.get("key", ""),
-                            "id": project.get("id", ""),
-                            "type": "jira_project"
-                        }
-                        if ref_data.get("key"):
+                        project_id = project.get("id", "")
+                        project_key = project.get("key", "")
+                        # Only add if we have at least key or id
+                        if project_key or project_id:
+                            ref_data = {
+                                "name": project.get("name", ""),
+                                "key": project_key,
+                                "type": "jira_project"
+                            }
+                            # Only add id if it exists and is not empty
+                            if project_id:
+                                ref_data["id"] = project_id
                             reference_data.append(ref_data)
 
             # Direct issue/project
             if "key" in result:
-                ref_data = {
-                    "name": result.get("summary") or result.get("name", ""),
-                    "key": result.get("key", ""),
-                    "id": result.get("id", ""),
-                    "type": "jira_issue" if "summary" in result else "jira_project"
-                }
-                if ref_data.get("key"):
+                item_id = result.get("id", "")
+                item_key = result.get("key", "")
+                if item_key or item_id:
+                    ref_data = {
+                        "name": result.get("summary") or result.get("name", ""),
+                        "key": item_key,
+                        "type": "jira_issue" if "summary" in result else "jira_project"
+                    }
+                    # Only add id if it exists and is not empty
+                    if item_id:
+                        ref_data["id"] = item_id
                     reference_data.append(ref_data)
 
         elif isinstance(result, list):
             for item in result:
                 if isinstance(item, dict) and "key" in item:
-                    ref_data = {
-                        "name": item.get("summary") or item.get("name", ""),
-                        "key": item.get("key", ""),
-                        "id": item.get("id", ""),
-                        "type": "jira_issue" if "summary" in item else "jira_project"
-                    }
-                    if ref_data.get("key"):
+                    item_id = item.get("id", "")
+                    item_key = item.get("key", "")
+                    if item_key or item_id:
+                        ref_data = {
+                            "name": item.get("summary") or item.get("name", ""),
+                            "key": item_key,
+                            "type": "jira_issue" if "summary" in item else "jira_project"
+                        }
+                        # Only add id if it exists and is not empty
+                        if item_id:
+                            ref_data["id"] = item_id
                         reference_data.append(ref_data)
 
     except Exception as e:

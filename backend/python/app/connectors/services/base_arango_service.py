@@ -16705,19 +16705,50 @@ class BaseArangoService:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
 
-            # Handle models specially - convert model objects to model keys
+            # Handle models specially - convert model objects to model keys and deduplicate
             if "models" in agent_updates:
                 raw_models = agent_updates["models"]
                 if isinstance(raw_models, list):
-                    model_keys = []
+                    model_entries = []
+                    seen_entries = set()  # Track seen full entries to prevent duplicates
+
                     for model in raw_models:
+                        model_key = None
+                        model_name = None
+
+                        # Extract model key and name from different input formats
                         if isinstance(model, dict):
                             model_key = model.get("modelKey")
-                            if model_key:
-                                model_keys.append(model_key)
+                            model_name = model.get("modelName", "")
                         elif isinstance(model, str):
-                            model_keys.append(model)
-                    update_data["models"] = model_keys
+                            # Handle both "modelKey" and "modelKey_modelName" formats
+                            if "_" in model:
+                                parts = model.split("_", 1)
+                                model_key = parts[0]
+                                model_name = parts[1] if len(parts) > 1 else ""
+                            else:
+                                model_key = model
+                                model_name = ""
+
+                        # Build the entry string
+                        if model_key:
+                            # Store in same format as create: "modelKey_modelName" or just "modelKey"
+                            if model_name:
+                                entry = f"{model_key}_{model_name}"
+                            else:
+                                entry = model_key
+
+                            # Only add if we haven't seen this exact entry before
+                            # This allows same modelKey with different modelNames
+                            if entry not in seen_entries:
+                                model_entries.append(entry)
+                                seen_entries.add(entry)
+
+                    # Always set models array (even if empty) to completely replace existing one
+                    update_data["models"] = model_entries
+                elif raw_models is None:
+                    # Explicitly set to empty array if None is provided
+                    update_data["models"] = []
 
             # Update the agent using AQL UPDATE statement - Fixed to use proper collection name
             update_query = f"""
