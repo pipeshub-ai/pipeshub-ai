@@ -3045,81 +3045,7 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def get_knowledge_hub_search_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        user_app_ids: List[str],
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        search_query: Optional[str],
-        node_types: Optional[List[str]],
-        record_types: Optional[List[str]],
-        only_containers: bool,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Search across all nodes with filters.
-
-        Args:
-            user_key: User's internal key
-            org_id: Organization ID
-            user_app_ids: List of app IDs user has access to
-            skip: Number of items to skip
-            limit: Maximum items to return
-            sort_field: Field to sort by
-            sort_dir: Sort direction (ASC/DESC)
-            search_query: Full-text search query
-            node_types: Filter by node types
-            record_types: Filter by record types
-            sources: Filter by sources (KB/CONNECTOR)
-            connector_ids: Filter by connector IDs
-            kb_ids: Filter by KB IDs
-            indexing_status: Filter by indexing status
-            created_at: Created date range filter
-            updated_at: Updated date range filter
-            size: Size range filter
-            only_containers: Only return nodes with children
-            transaction: Optional transaction context
-
-        Returns:
-            Dict with 'nodes' list and 'total' count
-        """
-        pass
-
     # ==================== Knowledge Base Operations ====================
-
-    @abstractmethod
-    async def get_knowledge_hub_node_permissions(
-        self,
-        user_key: str,
-        node_ids: List[str],
-        node_types: List[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Get user permissions for multiple nodes in batch.
-
-        Args:
-            user_key: User's internal key
-            node_ids: List of node IDs
-            node_types: List of corresponding node types
-            transaction: Optional transaction context
-
-        Returns:
-            Dict mapping node_id to permission info (role, canEdit, canDelete)
-        """
-        pass
 
     @abstractmethod
     async def get_knowledge_hub_breadcrumbs(
@@ -3180,25 +3106,6 @@ class IGraphDBProvider(ABC):
             Dict with 'kbs' and 'apps' lists containing {id, name}
         """
         pass
-
-    @abstractmethod
-    async def is_knowledge_hub_folder(
-        self,
-        record_id: str,
-        folder_mime_types: List[str],
-        transaction: Optional[str] = None
-    ) -> bool:
-        """
-        Check if a record is a folder.
-
-        Args:
-            record_id: Record ID to check
-            folder_mime_types: List of MIME types that indicate folders
-            transaction: Optional transaction context
-
-        Returns:
-            True if record is a folder, False otherwise
-        """
 
     @abstractmethod
     async def get_knowledge_hub_node_info(
