@@ -55,7 +55,8 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.sites import GoogleSitesClient, GoogleSitesRESTClient
+from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.sites import GoogleSitesRESTClient
 from app.sources.external.google.sites.sites import (
     LOG_URL_PREVIEW_LEN,
     LOG_URL_SHORT_PREVIEW_LEN,
@@ -136,11 +137,10 @@ class GoogleSitesConnector(BaseConnector):
         self.batch_size = 100
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
-        # Google Sites datasource now uses the shared HTTP client abstraction
-        # via GoogleSitesClient / GoogleSitesRESTClient.
-        http_client = GoogleSitesRESTClient()
-        sites_client = GoogleSitesClient(http_client)
-        self.sites_data_source = GoogleSitesDataSource(client=sites_client, logger=logger)
+        # Use GoogleClient like other Google connectors (Drive, Gmail, etc.).
+        # Underlying HTTP for published-site crawl is wrapped via build_with_client.
+        self.google_client = GoogleClient.build_with_client(GoogleSitesRESTClient())
+        self.sites_data_source = GoogleSitesDataSource(client=self.google_client, logger=logger)
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
         return [

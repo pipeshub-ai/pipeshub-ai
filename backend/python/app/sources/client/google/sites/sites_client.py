@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Optional
 
 from app.sources.client.http.http_client import HTTPClient
-from app.sources.client.iclient import IClient
 
 # Default headers for crawling published Google Sites over HTTP.
 # Kept close to the HTTP client so they can be shared between the
@@ -28,6 +26,9 @@ class GoogleSitesRESTClient(HTTPClient):
     infrastructure (httpx-based) but does not perform authentication,
     since URL-based crawling of published sites typically relies on
     public HTTP access.
+
+    Used as the underlying client wrapped by GoogleClient (see other Google
+    connectors: Drive, Gmail, etc.) via GoogleClient.build_with_client().
     """
 
     def __init__(
@@ -47,49 +48,4 @@ class GoogleSitesRESTClient(HTTPClient):
     def get_base_url(self) -> str:
         """Return the configured base URL (may be empty for absolute URLs)."""
         return self.base_url
-
-
-@dataclass
-class GoogleSitesConfig:
-    """
-    Optional configuration for Google Sites REST client.
-
-    Args:
-        base_url: Optional base URL for the published site. When provided,
-                  relative paths can be resolved against this base.
-        timeout: Request timeout in seconds.
-        follow_redirects: Whether to follow HTTP redirects.
-    """
-
-    base_url: Optional[str] = None
-    timeout: float = 30.0
-    follow_redirects: bool = True
-
-    def create_client(self) -> GoogleSitesRESTClient:
-        return GoogleSitesRESTClient(
-            base_url=self.base_url,
-            timeout=self.timeout,
-            follow_redirects=self.follow_redirects,
-        )
-
-
-class GoogleSitesClient(IClient):
-    """
-    Wrapper client for Google Sites HTTP access.
-
-    Mirrors the pattern used by JiraClient, ConfluenceClient, TrelloClient, etc.
-    The datasource depends on this client via dependency injection and calls
-    get_client() to obtain the underlying GoogleSitesRESTClient.
-    """
-
-    def __init__(self, client: GoogleSitesRESTClient) -> None:
-        self.client = client
-
-    def get_client(self) -> GoogleSitesRESTClient:
-        return self.client
-
-    @classmethod
-    def build_with_config(cls, config: GoogleSitesConfig) -> "GoogleSitesClient":
-        """Convenience constructor using a simple config dataclass."""
-        return cls(config.create_client())
 

@@ -10,6 +10,7 @@ entities, while this module focuses on fetching and parsing content.
 from __future__ import annotations
 
 import asyncio
+import base64
 from dataclasses import dataclass
 from logging import Logger
 from typing import List, Optional, Set, Tuple
@@ -17,9 +18,9 @@ from urllib.parse import ParseResult, urljoin, urlparse
 
 from bs4 import BeautifulSoup, Comment
 
+from app.sources.client.google.google import GoogleClient
 from app.sources.client.google.sites import (
     GOOGLE_SITES_DEFAULT_HEADERS,
-    GoogleSitesClient,
     GoogleSitesRESTClient,
 )
 from app.sources.client.http.http_request import HTTPRequest
@@ -160,22 +161,22 @@ class GoogleSitesDataSource:
 
     def __init__(
         self,
-        client: Optional[GoogleSitesClient] = None,
+        client: Optional[GoogleClient] = None,
         logger: Optional[Logger] = None,
     ) -> None:
         """
-        Initialize the datasource with a GoogleSitesClient.
+        Initialize the datasource with a GoogleClient.
 
-        The client is intentionally required for HTTP access so that we
-        reuse the shared HTTPClient abstraction (httpx-based) instead of
-        creating ad-hoc aiohttp sessions.
+        Uses the same pattern as other Google connectors (Drive, Gmail, etc.):
+        the client is a GoogleClient; get_client() returns the underlying
+        HTTP client (GoogleSitesRESTClient) used for crawling published sites.
 
-        When no client is provided, a default anonymous GoogleSitesRESTClient
-        is constructed. This is primarily for convenience in tests and the
-        standalone example script.
+        When no client is provided, a default is built via
+        GoogleClient.build_with_client(GoogleSitesRESTClient()) for tests
+        and the standalone example script.
         """
         if client is None:
-            client = GoogleSitesClient(GoogleSitesRESTClient())
+            client = GoogleClient.build_with_client(GoogleSitesRESTClient())
 
         self._client = client.get_client()
         self.logger = logger
