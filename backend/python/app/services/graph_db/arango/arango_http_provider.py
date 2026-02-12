@@ -7,8 +7,6 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 All operations are non-blocking and use aiohttp for async I/O.
 """
 import time
-import asyncio
-from collections import defaultdict
 import unicodedata
 import uuid
 from collections import defaultdict
@@ -16973,7 +16971,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "owners_being_removed": result[0].get("ownersBeingRemoved", []),
                     "total_owner_count": result[0].get("totalOwnerCount", 0)
                 }
-            
+
             return {"owners_being_removed": [], "total_owner_count": 0}
 
         except Exception as e:
@@ -17032,7 +17030,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "permissions": permissions_dict,
                     "owner_count": data.get("ownerCount", 0)
                 }
-            
+
             return {"team": None, "permissions": {}, "owner_count": 0}
 
         except Exception as e:

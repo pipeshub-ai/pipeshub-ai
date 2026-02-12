@@ -664,7 +664,7 @@ class BlobStorage(Transformer):
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            
+
             # Try to find by virtualRecordId field first
             nodes = await self.graph_provider.get_nodes_by_filters(
                 collection_name,
@@ -684,7 +684,7 @@ class BlobStorage(Transformer):
                 # Return documentId and fileSizeBytes from the first matching node
                 document_id = nodes[0].get("documentId")
                 file_size_bytes = nodes[0].get("fileSizeBytes")
-                
+
                 if document_id:
                     return document_id, file_size_bytes
                 else:

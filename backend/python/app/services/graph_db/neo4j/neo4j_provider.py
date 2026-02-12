@@ -4734,13 +4734,13 @@ class Neo4jProvider(IGraphDBProvider):
                 if payload:
                     connector_name = record.get("connectorName", "")
                     origin = record.get("origin", "")
-                    
+
                     # Set connector and origin info
                     if connector_name:
                         payload["connectorName"] = connector_name
                     if origin:
                         payload["origin"] = origin
-                    
+
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
@@ -7869,29 +7869,29 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters={"folder_id": folder_id},
                 txn_id=transaction
             )
-            
+
             if not nodes_check:
                 self.logger.warning(f"⚠️ File node not found for folder {folder_id}")
                 return False
 
             # Get existing File name to preserve if not in updates (required by Neo4j constraint)
             file_name = nodes_check[0].get("file_name") if nodes_check else None
-            
+
             # Step 1: Update FILES collection with updates (matching Arango: UPDATE folder WITH @updates)
             # Build SET clause dynamically based on what's in updates
             set_clauses = []
             params = {"folder_id": folder_id}
-            
+
             for key, value in updates.items():
                 set_clauses.append(f"file.{key} = ${key}")
                 params[key] = value
-            
+
             # If name is not in updates, preserve existing name (required by Neo4j constraint)
             # This ensures the constraint is satisfied even when name is not being updated
             if "name" not in updates and file_name:
                 set_clauses.append("file.name = $existing_name")
                 params["existing_name"] = file_name
-            
+
             # Only update if there are changes or if we need to preserve name
             if set_clauses:
                 query_file = """
@@ -7904,7 +7904,7 @@ class Neo4jProvider(IGraphDBProvider):
                     parameters=params,
                     txn_id=transaction
                 )
-                
+
                 if not file_result:
                     self.logger.warning(f"⚠️ Failed to update File node for folder {folder_id}")
                     return False
@@ -7912,7 +7912,7 @@ class Neo4jProvider(IGraphDBProvider):
             # Step 2: Update RECORDS collection (matching Arango behavior)
             # Arango does: recordName = updates.get("name") - can be None if name not in updates
             updated_at_timestamp = get_epoch_timestamp_in_ms()
-            
+
             if "name" in updates:
                 # Update both recordName and updatedAtTimestamp (matching Arango: updates.get("name"))
                 query_record = """
@@ -8077,7 +8077,7 @@ class Neo4jProvider(IGraphDBProvider):
                         parameters={"all_ids": all_ids},
                         txn_id=txn_id
                     )
-                    
+
                     edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
                     self.logger.info(f"✅ Deleted {edges_deleted} relationships")
 
@@ -9376,7 +9376,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                     edges_deleted = edge_results[0]["edges_deleted"] if edge_results else 0
                     self.logger.info(f"✅ Deleted {edges_deleted} edges for records")
-                    
+
                     # Also delete KB-related edges
                     kb_edges_query = """
                     MATCH (kb:RecordGroup {id: $kb_id})
@@ -9387,13 +9387,13 @@ class Neo4jProvider(IGraphDBProvider):
                     DELETE edge
                     RETURN count(edge) AS kb_edges_deleted
                     """
-                    
+
                     kb_edge_results = await self.client.execute_query(
                         kb_edges_query,
                         parameters={"kb_id": kb_id},
                         txn_id=transaction
                     )
-                    
+
                     kb_edges_deleted = kb_edge_results[0]["kb_edges_deleted"] if kb_edge_results else 0
                     self.logger.info(f"✅ Deleted {kb_edges_deleted} edges for KB {kb_id}")
 
@@ -9702,7 +9702,7 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Remove KB permission failed: {str(e)}")
             return {"success": False, "reason": str(e)}
-    
+
     async def list_kb_permissions(
         self,
         kb_id: str,
@@ -9712,7 +9712,7 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             query = """
             MATCH (entity)-[r:PERMISSION]->(kb:RecordGroup {id: $kb_id})
-            RETURN 
+            RETURN
                 properties(entity) as entity_props,
                 labels(entity) as entity_labels,
                 properties(r) as rel_props,
@@ -9730,11 +9730,11 @@ class Neo4jProvider(IGraphDBProvider):
                 entity_props = r.get("entity_props", {})
                 entity_labels = r.get("entity_labels", [])
                 rel_props = r.get("rel_props", {})
-                rel_id = r.get("rel_id")
+                r.get("rel_id")
 
                 entity_type = "USER" if "User" in entity_labels else "TEAM"
                 is_user = entity_type == "USER"
-                
+
                 # Build permission object matching the response model
                 permission = {
                     "id": entity_props.get("_key") or entity_props.get("id"),
@@ -9742,14 +9742,14 @@ class Neo4jProvider(IGraphDBProvider):
                     "createdAtTimestamp": rel_props.get("createdAtTimestamp", 0),
                     "updatedAtTimestamp": rel_props.get("updatedAtTimestamp", 0),
                 }
-                
+
                 # Add user-specific fields
                 if is_user:
                     permission["userId"] = entity_props.get("userId")
                     permission["email"] = entity_props.get("email")
                     permission["name"] = (
-                        entity_props.get("fullName") or 
-                        entity_props.get("name") or 
+                        entity_props.get("fullName") or
+                        entity_props.get("name") or
                         entity_props.get("userName")
                     )
                     permission["role"] = rel_props.get("role")
@@ -14426,7 +14426,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
             WHERE member_user IS NOT NULL
-            WITH team, 
+            WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT {{
                      id: member_user.id,
