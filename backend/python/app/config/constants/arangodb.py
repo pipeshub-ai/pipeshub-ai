@@ -54,7 +54,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
-
+    GITHUB = "GITHUB"
     SERVICENOW = "SERVICENOW"
     S3 = "S3"
     MINIO = "MINIO"
@@ -77,6 +77,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    GITHUB  = "Github"
     S3 = "S3"
     MINIO = "MinIO"
     GOOGLE_CLOUD = "Google Cloud"
@@ -129,6 +130,7 @@ class CollectionNames(Enum):
     TICKETS = "tickets"
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
+    PULLREQUESTS = "prs"
 
     # Users and groups
     PEOPLE = "people"
@@ -276,6 +278,7 @@ class RecordTypes(Enum):
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
+    PULL_REQUEST = "PULL_REQUEST"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
@@ -333,5 +336,6 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "PROJECT": CollectionNames.PROJECTS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
+    "PULL_REQUEST":CollectionNames.PULLREQUESTS.value
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

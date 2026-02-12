@@ -61,6 +61,7 @@ from app.schema.arango.documents import (
     orgs_schema,
     people_schema,
     project_record_schema,
+    pull_request_record_schema,
     record_group_schema,
     record_schema,
     team_schema,
@@ -116,6 +117,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
     (CollectionNames.TICKETS.value, ticket_record_schema),
     (CollectionNames.PROJECTS.value, project_record_schema),
+    (CollectionNames.PULLREQUESTS.value,pull_request_record_schema),
     (CollectionNames.SYNC_POINTS.value, None),
     (CollectionNames.TEAMS.value, team_schema),
     (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
