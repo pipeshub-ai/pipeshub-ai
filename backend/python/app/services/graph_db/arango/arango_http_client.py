@@ -838,6 +838,57 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating collection: {str(e)}")
             return False
 
+    async def update_collection_schema(
+        self,
+        name: str,
+        schema: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Update the schema validation for an existing collection.
+
+        Args:
+            name: Collection name
+            schema: JSON schema for validation (optional)
+
+        Returns:
+            bool: True if successful
+        """
+        if not schema:
+            return True  # Nothing to update
+
+        url = f"{self.base_url}/_db/{self.database}/_api/collection/{name}/properties"
+
+        payload = {
+            "schema": schema
+        }
+
+        try:
+            session = await self._get_session()
+            async with session.put(url, json=payload) as resp:
+                if resp.status == HttpStatusCode.OK.value:
+                    self.logger.info(f"✅ Schema updated for collection '{name}'")
+                    return True
+                else:
+                    error_data = await resp.json()
+                    error_msg = error_data.get("errorMessage", await resp.text())
+                    
+                    # Check if schema is already configured (error code 1207 or duplicate message)
+                    error_num = error_data.get("errorNum", 0)
+                    if error_num == 1207 or "duplicate" in error_msg.lower():
+                        self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
+                        return True
+                    
+                    self.logger.warning(f"Failed to update schema for '{name}': {error_msg}")
+                    return False
+
+        except Exception as e:
+            error_msg = str(e)
+            if "1207" in error_msg or "duplicate" in error_msg.lower():
+                self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
+                return True
+            self.logger.error(f"❌ Error updating collection schema: {error_msg}")
+            return False
+
     # ==================== Graph Operations ====================
 
     async def has_collection(self, name: str) -> bool:

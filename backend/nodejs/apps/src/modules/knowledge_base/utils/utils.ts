@@ -374,7 +374,7 @@ export const processUploadsInBackground = async (
         sourceLastModifiedTimestamp: validLastModified,
         isDeleted: false,
         isArchived: false,
-        indexingStatus: INDEXING_STATUS.NOT_STARTED,
+        indexingStatus: INDEXING_STATUS.QUEUED,
         version: 1,
         webUrl: webUrl,
         mimeType: correctMimeType,

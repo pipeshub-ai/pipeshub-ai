@@ -87,19 +87,17 @@ class ConnectorAppContainer(BaseAppContainer):
 
     # Graph Database Provider via Factory (HTTP mode - fully async)
     @staticmethod
-    async def _create_graphDB_provider(logger, config_service, kafka_service) -> IGraphDBProvider:
+    async def _create_graphDB_provider(logger, config_service) -> IGraphDBProvider:
         """Async factory to create graph database provider"""
         return await GraphDBProviderFactory.create_provider(
             logger=logger,
             config_service=config_service,
-            kafka_service=kafka_service,
         )
 
     graph_provider = providers.Resource(
         _create_graphDB_provider,
         logger=logger,
         config_service=config_service,
-        kafka_service=kafka_service,
     )
 
     # Graph Data Store - Transaction-based data access layer
@@ -116,7 +114,7 @@ class ConnectorAppContainer(BaseAppContainer):
 
     # Note: KnowledgeBaseService is created in the router's get_kb_service() using
     # request.app.state.graph_provider and container.kafka_service (async Resource
-    # does not inject well into Singleton).
+    # does not inject well into Singleton). graph_provider no longer depends on kafka_service.
     # Note: KnowledgeHubService is created manually in the router's get_knowledge_hub_service()
     # helper function because it depends on async graph_provider which doesn't work well
     # with dependency_injector's Factory/Resource providers.

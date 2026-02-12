@@ -30,7 +30,6 @@ class QueryAppContainer(BaseAppContainer):
         container_utils.create_graph_provider,
         logger=logger,
         config_service=config_service,
-        kafka_service=kafka_service,
     )
 
     # Keep arango_service for backward compatibility with agent routes
