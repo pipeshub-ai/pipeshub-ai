@@ -552,21 +552,6 @@ class S3CompatibleBaseConnector(BaseConnector):
 
         return True
 
-    async def _get_signed_url_route(self, record_id: str) -> str:
-        """Generate the signed URL route for a record.
-
-        Args:
-            record_id: The record ID
-
-        Returns:
-            The signed URL route string
-        """
-        endpoints = await self.config_service.get_config(
-            config_node_constants.ENDPOINTS.value
-        )
-        connector_endpoint = endpoints.get("connectors", {}).get("endpoint", DEFAULT_CONNECTOR_ENDPOINT)
-        return f"{connector_endpoint}/api/v1/internal/stream/record/{record_id}"
-
     async def _get_bucket_region(self, bucket_name: str) -> str:
         """Get the region for a bucket, using cache if available."""
         if bucket_name in self.bucket_regions:
@@ -844,7 +829,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
-                fetch_signed_url=None,
                 hide_weburl=True,
                 is_internal=True,
                 parent_external_record_id=parent_external_id,
@@ -972,8 +956,6 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
 
-            signed_url_route = await self._get_signed_url_route(record_id)
-
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
             # For moves/renames, remove old parent relationship before processing
@@ -1002,7 +984,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
-                fetch_signed_url=signed_url_route,
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,
@@ -1409,8 +1390,6 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             web_url = self._generate_web_url(bucket_name, normalized_key)
 
-            signed_url_route = await self._get_signed_url_route(record.id)
-
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
             updated_external_record_id = f"{bucket_name}/{normalized_key}"
@@ -1432,7 +1411,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 source_updated_at=timestamp_ms,
                 weburl=web_url,
                 signed_url=None,
-                fetch_signed_url=signed_url_route,
                 hide_weburl=True,
                 is_internal=True if is_folder else False,
                 parent_external_record_id=parent_external_id,

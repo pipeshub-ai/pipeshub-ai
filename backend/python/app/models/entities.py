@@ -193,7 +193,6 @@ class Record(BaseModel):
     # Source information
     weburl: Optional[str] = None
     signed_url: Optional[str] = None
-    fetch_signed_url: Optional[str] = None
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
     is_shared_with_me: Optional[bool] = False
@@ -395,7 +394,6 @@ class FileRecord(Record):
             "extension": self.extension,
             "sizeInBytes": self.size_in_bytes,
             "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
             "externalRevisionId": self.external_revision_id,
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
@@ -518,7 +516,6 @@ class WebpageRecord(Record):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
         }
 
     def to_arango_record(self) -> Dict:
@@ -588,7 +585,6 @@ class LinkRecord(Record):
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
             "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
             "webUrl": self.weburl,
         }
 
@@ -831,7 +827,6 @@ class TicketRecord(Record):
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
@@ -908,7 +903,6 @@ class ProjectRecord(Record):
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,
-            "signedUrlRoute": self.fetch_signed_url,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,
