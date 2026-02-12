@@ -27,6 +27,7 @@ from github.Label import Label  # type: ignore
 from github.NamedUser import NamedUser  # type: ignore
 from github.Organization import Organization  # type: ignore
 from github.PullRequest import PullRequest  # type: ignore
+from github.PullRequestComment import PullRequestComment  # type: ignore
 from github.RateLimit import RateLimit  # type: ignore
 from github.Repository import Repository  # type: ignore
 from github.Tag import Tag  # type: ignore
@@ -250,7 +251,7 @@ class GitHubDataSource:
         except Exception as e:
             return GitHubResponse(success=False, error=str(e))
 
-    def get_pull_review_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[IssueComment]]:
+    def get_pull_review_comments(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestComment]]:
         """Get review comments of a PR."""
         try:
             r = self._repo(owner, repo)

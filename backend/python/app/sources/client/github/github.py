@@ -34,7 +34,7 @@ class GitHubClientViaToken:
         self.timeout = timeout
         self.per_page = per_page
 
-    def create_client(self) -> Github:
+    def create_client(self) -> None:
         # Build kwargs dynamically to exclude None values
         kwargs = {"auth": Auth.Token(self.token)}
 

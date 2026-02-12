@@ -170,7 +170,7 @@ class GithubConnector(BaseConnector):
             config_service,
             connector_id,
         )
-        self.connector_name = Connectors.GITHUB
+        self.connector_name = Connectors.GITHUB.value
         self.connector_id = connector_id
         self.data_source: Optional[GitHubDataSource] = None
         self.external_client: Optional[GitHubClient] = None
@@ -571,7 +571,7 @@ class GithubConnector(BaseConnector):
             parent_external_id = None
             parent_record_type = None
             issue_type = "issue"
-            parent_issue_ul: Dict = getattr(issue, "raw_data", None)
+            parent_issue_ul: Dict = getattr(issue, "raw_data", {})
             parent_issue_url = parent_issue_ul.get("parent_issue_url", None)
             if parent_issue_url:
                 parent_external_id = parent_issue_url
@@ -657,7 +657,7 @@ class GithubConnector(BaseConnector):
         issue = issue_res.data
 
         # getting modi. markdown  content with images as base64
-        markdown_content_raw: str = issue.body
+        markdown_content_raw: str = issue.body or ""
         markdown_content_with_images_base64 = await self.embed_images_as_base64(
             markdown_content_raw
         )
@@ -980,9 +980,7 @@ class GithubConnector(BaseConnector):
             sub_type=GroupSubType.CONTENT.value,
             requires_processing=True,
             table_row_metadata=table_row_metadata,
-            source_modified_date=str(
-                self.datetime_to_epoch_ms(pull_request.updated_at)
-            ),
+            source_modified_date= datetime.fromisoformat(pull_request.updated_at.replace("Z", "+00:00")),
         )
         self.logger.info(f"bg for title and desc created for pr{pr_number}")
         block_groups.append(bg_0)

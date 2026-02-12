@@ -4,4 +4,4 @@ from app.connectors.core.interfaces.connector.apps import App
 
 class GithubApp(App):
     def __init__(self,connector_id:str) -> None:
-        super().__init__(Connectors.GITHUB.value, AppGroups.GITHUB.value, connector_id)
+        super().__init__(Connectors.GITHUB, AppGroups.GITHUB, connector_id)
