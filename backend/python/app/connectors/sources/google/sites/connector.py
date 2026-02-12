@@ -434,8 +434,8 @@ class GoogleSitesConnector(BaseConnector):
 
             return create_stream_record_response(
                 content_gen(),
-                filename=record.record_name or "page.txt",
-                mime_type="text/plain",
+                filename=record.record_name or "page.html",
+                mime_type="text/html",
                 fallback_filename=f"record_{record.id}",
             )
         self.logger.error(

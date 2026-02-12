@@ -10,7 +10,6 @@ entities, while this module focuses on fetching and parsing content.
 from __future__ import annotations
 
 import asyncio
-import base64
 from dataclasses import dataclass
 from logging import Logger
 from typing import List, Optional, Set, Tuple
@@ -106,11 +105,47 @@ def _extract_same_origin_links(
     return list(links_set)
 
 
+def _determine_image_type_from_bytes(image_bytes: bytes, url: str) -> str:
+    """Determine image type from bytes or URL."""
+    # Try to detect from content first (most reliable)
+    if image_bytes.startswith(b'\x89PNG'):
+        return "png"
+    elif image_bytes.startswith(b'\xff\xd8\xff'):
+        return "jpeg"
+    elif image_bytes.startswith(b'GIF'):
+        return "gif"
+    elif image_bytes.startswith(b'<svg') or image_bytes.startswith(b'<?xml'):
+        return "svg"
+    elif image_bytes.startswith(b'RIFF') and b'WEBP' in image_bytes[:12]:
+        return "webp"
+    
+    # Fallback to URL extension
+    url_lower = url.lower()
+    if ".jpg" in url_lower or ".jpeg" in url_lower:
+        return "jpeg"
+    elif ".gif" in url_lower:
+        return "gif"
+    elif ".webp" in url_lower:
+        return "webp"
+    elif ".svg" in url_lower:
+        return "svg"
+    elif ".png" in url_lower:
+        return "png"
+    
+    # Default to png if unknown
+    return "png"
+
+
 def _clean_html_for_indexing(html: str) -> str:
-    """Parse with BeautifulSoup and extract clean text content for indexing."""
+    """
+    Parse with BeautifulSoup and return clean HTML content for indexing.
+    
+    Preserves images (which should already be converted to base64 data URIs)
+    and returns HTML format suitable for multimodal indexing.
+    """
     soup = BeautifulSoup(html, "html.parser")
 
-    # Remove non-content elements
+    # Remove non-content elements (but keep img tags - they contain base64 images)
     for tag in soup.find_all(
         ["script", "style", "noscript", "iframe", "svg", "nav", "footer", "header", "aside"]
     ):
@@ -120,26 +155,12 @@ def _clean_html_for_indexing(html: str) -> str:
     for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
         comment.extract()
 
-    # Extract title
-    title = ""
-    title_tag = soup.find("title")
-    if title_tag:
-        title = title_tag.get_text(strip=True)
-
     # Get main content area
     main = soup.find("main") or soup.find("article") or soup.find("body")
     content_element = main if main else soup
 
-    # Extract clean text using BeautifulSoup's get_text
-    text_content = content_element.get_text(separator="\n", strip=True)
-
-    # Prepend title if available
-    if title:
-        text_content = f"{title}\n\n{text_content}"
-
-    # Clean up whitespace
-    lines = [line.strip() for line in text_content.split("\n") if line.strip()]
-    return "\n".join(lines)
+    # Return clean HTML with images preserved
+    return str(content_element)
 
 
 @dataclass
@@ -280,6 +301,121 @@ class GoogleSitesDataSource:
 
         return pages_collected
 
+    async def _convert_images_to_base64(self, html: str, base_url: str) -> str:
+        """
+        Convert embedded images in HTML content to base64 data URIs.
+        
+        Finds all <img> tags and downloads their images, converting them to
+        base64 data URIs for proper indexing.
+        
+        Args:
+            html: HTML content that may contain embedded images
+            base_url: Base URL for resolving relative image URLs
+            
+        Returns:
+            HTML content with images converted to base64 data URIs
+        """
+        if not html:
+            return html
+        
+        soup = BeautifulSoup(html, "html.parser")
+        img_tags = soup.find_all("img")
+        
+        if not img_tags:
+            return html
+        
+        # Process each image tag
+        for img_tag in img_tags:
+            src = img_tag.get("src", "")
+            if not src:
+                continue
+            
+            # Skip data URIs (already converted)
+            if src.startswith("data:"):
+                continue
+            
+            # Skip invalid URLs
+            if src.startswith("javascript:") or src.startswith("#"):
+                continue
+            
+            try:
+                # Resolve relative URLs
+                if src.startswith("http://") or src.startswith("https://"):
+                    absolute_url = src
+                else:
+                    absolute_url = urljoin(base_url, src)
+                
+                # Download image using HTTP client
+                img_request = HTTPRequest(
+                    url=absolute_url,
+                    method="GET",
+                    headers=dict(GOOGLE_SITES_DEFAULT_HEADERS),
+                )
+                img_response = await self._client.execute(img_request)
+                
+                if img_response.status >= HTTP_ERROR_THRESHOLD:
+                    if self.logger:
+                        self.logger.debug(
+                            "[Google Sites] IMAGE:   HTTP %s for %s",
+                            img_response.status,
+                            absolute_url[:LOG_URL_PREVIEW_LEN],
+                        )
+                    continue  # Skip failed images
+                
+                # Check content type
+                content_type = (img_response.content_type or "").lower()
+                if not content_type.startswith("image/"):
+                    if self.logger:
+                        self.logger.debug(
+                            "[Google Sites] IMAGE:   Non-image content type %s for %s",
+                            content_type,
+                            absolute_url[:LOG_URL_PREVIEW_LEN],
+                        )
+                    continue
+                
+                # Get image bytes
+                image_bytes = img_response.content
+                if not image_bytes:
+                    if self.logger:
+                        self.logger.debug(
+                            "[Google Sites] IMAGE:   Empty content for %s",
+                            absolute_url[:LOG_URL_PREVIEW_LEN],
+                        )
+                    continue
+                
+                # Determine image type
+                image_type = _determine_image_type_from_bytes(image_bytes, absolute_url)
+                
+                # Convert to base64
+                base64_encoded = base64.b64encode(image_bytes).decode("utf-8")
+                
+                # Create data URI
+                if image_type == "svg":
+                    data_uri = f"data:image/svg+xml;base64,{base64_encoded}"
+                else:
+                    data_uri = f"data:image/{image_type};base64,{base64_encoded}"
+                
+                # Replace the src attribute with the data URI
+                img_tag["src"] = data_uri
+                
+                if self.logger:
+                    self.logger.debug(
+                        "[Google Sites] IMAGE:   ✓ Converted %s to base64 (%s)",
+                        absolute_url[:LOG_URL_SHORT_PREVIEW_LEN],
+                        image_type,
+                    )
+                    
+            except Exception as e:
+                if self.logger:
+                    self.logger.debug(
+                        "[Google Sites] IMAGE:   ⚠ Failed to convert image %s: %s",
+                        src[:LOG_URL_SHORT_PREVIEW_LEN] if src else "(no src)",
+                        e,
+                    )
+                continue  # Skip on error
+        
+        return str(soup)
+
     async def fetch_and_clean_page(self, url: str) -> str:
         """
         Fetch a single page over HTTP and return cleaned text for indexing.
@@ -305,6 +441,10 @@ class GoogleSitesDataSource:
                 )
 
             html = response.text()
+            
+            # Convert images to base64 before cleaning
+            html = await self._convert_images_to_base64(html, url)
+            
         except Exception as e:
             if self.logger:
                 self.logger.error("[Google Sites] STREAM:   ❌ HTTP error: %s", e)
