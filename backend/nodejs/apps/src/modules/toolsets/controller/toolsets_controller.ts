@@ -15,29 +15,11 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
-import { UserGroups } from '../../user_management/schema/userGroup.schema';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
 
 const logger = Logger.getInstance({
   service: 'ToolsetsController',
 });
-
-/**
- * Helper function to check if user is admin
- */
-const isUserAdmin = async (req: AuthenticatedUserRequest): Promise<boolean> => {
-  const { userId, orgId } = req.user || {};
-  if (!userId) {
-    throw new UnauthorizedError('User authentication required');
-  }
-  const groups = await UserGroups.find({
-    orgId,
-    users: { $in: [userId] },
-    isDeleted: false,
-  }).select('type');
-  const isAdmin = groups.find((userGroup: any) => userGroup.type === 'admin');
-  return !!isAdmin;
-};
 
 // ============================================================================
 // Registry Controllers
@@ -68,10 +50,8 @@ export const getRegistryToolsets =
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -118,10 +98,8 @@ export const getConfiguredToolsets =
 
       logger.info(`Getting configured toolsets for user ${userId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -165,10 +143,8 @@ export const getToolsetSchema =
 
       logger.info(`Getting toolset schema for ${toolsetType}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -219,10 +195,8 @@ export const createToolset =
 
       logger.info(`Creating toolset ${toolsetData.name}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -268,10 +242,8 @@ export const checkToolsetStatus =
 
       logger.info(`Checking toolset status for ${toolsetId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -315,10 +287,8 @@ export const getToolsetConfig =
 
       logger.info(`Getting toolset config for ${toolsetId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -363,10 +333,8 @@ export const saveToolsetConfig =
 
       logger.info(`Saving toolset config for ${toolsetId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -412,10 +380,8 @@ export const updateToolsetConfig =
 
       logger.info(`Updating toolset config for ${toolsetId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -460,10 +426,8 @@ export const deleteToolsetConfig =
 
       logger.info(`Deleting toolset config for ${toolsetId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const connectorResponse = await executeConnectorCommand(
@@ -512,10 +476,8 @@ export const getOAuthAuthorizationUrl =
 
       logger.info(`Getting OAuth authorization URL for toolset ${toolsetId}`);
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const queryParams = new URLSearchParams();
@@ -560,10 +522,8 @@ export const handleOAuthCallback =
 
       logger.info('Handling OAuth callback for toolset');
 
-      const isAdmin = await isUserAdmin(req);
       const headers: Record<string, string> = {
         ...(req.headers as Record<string, string>),
-        'X-Is-Admin': isAdmin ? 'true' : 'false',
       };
 
       const queryParams = new URLSearchParams();
