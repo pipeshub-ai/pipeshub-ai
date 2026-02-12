@@ -35,7 +35,6 @@ from app.config.constants.neo4j import (
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -76,7 +75,6 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        kafka_service: Optional[KafkaService] = None,
     ) -> None:
         """
         Initialize Neo4j provider.
@@ -84,11 +82,9 @@ class Neo4jProvider(IGraphDBProvider):
         Args:
             logger: Logger instance
             config_service: Configuration service for database credentials
-            kafka_service: Optional Kafka service for event publishing
         """
         self.logger = logger
         self.config_service = config_service
-        self.kafka_service = kafka_service
         self.client: Optional[Neo4jClient] = None
         self.validator = NodeSchemaValidator()
 
@@ -8348,6 +8344,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "failedFiles": result["failed_files"],
                     "kbId": kb_id,
                     "parentFolderId": parent_folder_id,
+                    "eventData": result.get("eventData"),
                 }
             else:
                 return result
@@ -8529,20 +8526,22 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             if creation_result["total_created"] > 0 or len(folder_map) > 0:
-                # Commit transaction BEFORE event publishing
+                # Commit transaction; event publishing is done by the router
                 await self.commit_transaction(transaction)
                 self.logger.info("✅ Upload transaction committed successfully")
 
-                # Publish events AFTER successful commit
-                try:
-                    await self._publish_upload_events(kb_id, {
-                        "created_files_data": creation_result["created_files_data"],
-                        "total_created": creation_result["total_created"]
-                    })
-                    self.logger.info(f"✅ Published events for {creation_result['total_created']} records")
-                except Exception as event_error:
-                    self.logger.error(f"❌ Event publishing failed (records still created): {str(event_error)}")
-                    # Don't fail the main operation - records were successfully created
+                # Build event payloads for router to publish (no publishing here)
+                event_payloads = await self._build_upload_event_payloads(kb_id, {
+                    "created_files_data": creation_result["created_files_data"],
+                    "total_created": creation_result["total_created"]
+                })
+                event_data = None
+                if event_payloads:
+                    event_data = {
+                        "topic": "record-events",
+                        "eventType": "newRecord",
+                        "payloads": event_payloads,
+                    }
 
                 return {
                     "success": True,
@@ -8553,6 +8552,7 @@ class Neo4jProvider(IGraphDBProvider):
                         for folder_id in folder_map.values()
                     ],
                     "failed_files": creation_result["failed_files"],
+                    "eventData": event_data,
                 }
             else:
                 # Nothing created - rollback
@@ -8783,20 +8783,17 @@ class Neo4jProvider(IGraphDBProvider):
 
         return message + "."
 
-    async def _publish_upload_events(self, kb_id: str, result: Dict) -> None:
+    async def _build_upload_event_payloads(self, kb_id: str, result: Dict) -> List[Dict]:
         """
-        Publish Kafka events for uploaded records.
-        Enhanced event publishing with better error handling.
+        Build event payloads for uploaded records. Does NOT publish; caller (router) publishes.
+        Returns list of payloads for eventData.payloads (topic=record-events, eventType=newRecord).
         """
         try:
-            self.logger.info(f"This is the result passed to publish record events {result}")
             created_files_data = result.get("created_files_data", [])
 
             if not created_files_data:
-                self.logger.info("No new records were created, skipping event publishing.")
-                return
-
-            self.logger.info(f"🚀 Publishing creation events for {len(created_files_data)} new records.")
+                self.logger.debug("No new records were created, no event payloads.")
+                return []
 
             # Get storage endpoint
             try:
@@ -8810,39 +8807,29 @@ class Neo4jProvider(IGraphDBProvider):
                 self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
                 storage_url = "http://localhost:3000"  # Fallback
 
-            # Create events with enhanced error handling
-            successful_events = 0
-            failed_events = 0
-
+            payloads: List[Dict] = []
             for file_data in created_files_data:
                 try:
                     record_doc = file_data.get("record")
                     file_doc = file_data.get("fileRecord")
 
                     if record_doc and file_doc:
-                        # Create payload with error handling
                         create_payload = await self._create_new_record_event_payload(
                             record_doc, file_doc, storage_url
                         )
-
-                        if create_payload:  # Only publish if payload creation succeeded
-                            await self._publish_record_event("newRecord", create_payload)
-                            successful_events += 1
+                        if create_payload:
+                            payloads.append(create_payload)
                         else:
-                            self.logger.warning(f"⚠️ Skipping event for record {record_doc.get('_key')} - payload creation failed")
-                            failed_events += 1
+                            self.logger.warning(f"⚠️ Skipping payload for record {record_doc.get('_key')} - payload creation failed")
                     else:
-                        self.logger.warning(f"⚠️ Incomplete file data found, cannot publish event: {file_data}")
-                        failed_events += 1
+                        self.logger.warning(f"⚠️ Incomplete file data, skipping payload: {file_data}")
+                except Exception as payload_error:
+                    self.logger.error(f"❌ Failed to build event payload for record: {str(payload_error)}")
 
-                except Exception as event_error:
-                    self.logger.error(f"❌ Failed to publish event for record: {str(event_error)}")
-                    failed_events += 1
-
-            self.logger.info(f"📊 Event publishing summary: {successful_events} successful, {failed_events} failed")
-
+            return payloads
         except Exception as e:
-            self.logger.error(f"❌ Critical error in event publishing for KB {kb_id}: {str(e)}", exc_info=True)
+            self.logger.error(f"❌ Critical error building upload event payloads for KB {kb_id}: {str(e)}", exc_info=True)
+            return []
 
     async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Dict:
         """
@@ -8881,45 +8868,7 @@ class Neo4jProvider(IGraphDBProvider):
             )
             return {}
 
-    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
-        """Publish record event to Kafka"""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
 
-            event = {
-                "eventType": event_type,
-                "timestamp": timestamp,
-                "payload": payload
-            }
-
-            if self.kafka_service:
-                await self.kafka_service.publish_event("record-events", event)
-                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
-            else:
-                self.logger.debug("Skipping Kafka publish for record-events: kafka_service is not configured")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
-
-    async def _publish_sync_event(self, event_type: str, payload: Dict) -> None:
-        """Publish sync event to Kafka"""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
-
-            event = {
-                "eventType": event_type,
-                "timestamp": timestamp,
-                "payload": payload
-            }
-
-            if self.kafka_service:
-                await self.kafka_service.publish_event("sync-events", event)
-                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
-            else:
-                self.logger.debug("Skipping Kafka publish for sync-events: kafka_service is not configured")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
 
     async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
         """

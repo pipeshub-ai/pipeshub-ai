@@ -14,7 +14,6 @@ from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.services.kafka_service import KafkaService
 
 if TYPE_CHECKING:
     from fastapi import Request
@@ -48,6 +47,37 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
+from app.schema.arango.documents import (
+    agent_schema,
+    agent_template_schema,
+    app_role_schema,
+    app_schema,
+    comment_record_schema,
+    department_schema,
+    file_record_schema,
+    link_record_schema,
+    mail_record_schema,
+    orgs_schema,
+    people_schema,
+    project_record_schema,
+    record_group_schema,
+    record_schema,
+    team_schema,
+    ticket_record_schema,
+    user_schema,
+    webpage_record_schema,
+)
+from app.schema.arango.edges import (
+    basic_edge_schema,
+    belongs_to_schema,
+    entity_relations_schema,
+    inherit_permissions_schema,
+    is_of_type_schema,
+    permissions_schema,
+    record_relations_schema,
+    user_app_relation_schema,
+    user_drive_relation_schema,
+)
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -56,6 +86,61 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
 MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
+
+# Collection definitions with their schemas
+NODE_COLLECTIONS = [
+    (CollectionNames.RECORDS.value, record_schema),
+    (CollectionNames.DRIVES.value, None),
+    (CollectionNames.FILES.value, file_record_schema),
+    (CollectionNames.LINKS.value, link_record_schema),
+    (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.WEBPAGES.value, webpage_record_schema),
+    (CollectionNames.COMMENTS.value, comment_record_schema),
+    (CollectionNames.PEOPLE.value, people_schema),
+    (CollectionNames.USERS.value, user_schema),
+    (CollectionNames.GROUPS.value, None),
+    (CollectionNames.ROLES.value, app_role_schema),
+    (CollectionNames.ORGS.value, orgs_schema),
+    (CollectionNames.ANYONE.value, None),
+    (CollectionNames.CHANNEL_HISTORY.value, None),
+    (CollectionNames.PAGE_TOKENS.value, None),
+    (CollectionNames.APPS.value, app_schema),
+    (CollectionNames.DEPARTMENTS.value, department_schema),
+    (CollectionNames.CATEGORIES.value, None),
+    (CollectionNames.LANGUAGES.value, None),
+    (CollectionNames.TOPICS.value, None),
+    (CollectionNames.SUBCATEGORIES1.value, None),
+    (CollectionNames.SUBCATEGORIES2.value, None),
+    (CollectionNames.SUBCATEGORIES3.value, None),
+    (CollectionNames.BLOCKS.value, None),
+    (CollectionNames.RECORD_GROUPS.value, record_group_schema),
+    (CollectionNames.AGENT_INSTANCES.value, agent_schema),
+    (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
+    (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.PROJECTS.value, project_record_schema),
+    (CollectionNames.SYNC_POINTS.value, None),
+    (CollectionNames.TEAMS.value, team_schema),
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
+]
+
+EDGE_COLLECTIONS = [
+    (CollectionNames.IS_OF_TYPE.value, is_of_type_schema),
+    (CollectionNames.RECORD_RELATIONS.value, record_relations_schema),
+    (CollectionNames.ENTITY_RELATIONS.value, entity_relations_schema),
+    (CollectionNames.USER_DRIVE_RELATION.value, user_drive_relation_schema),
+    (CollectionNames.BELONGS_TO_DEPARTMENT.value, basic_edge_schema),
+    (CollectionNames.ORG_DEPARTMENT_RELATION.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO.value, belongs_to_schema),
+    (CollectionNames.INHERIT_PERMISSIONS.value, inherit_permissions_schema),
+    (CollectionNames.ORG_APP_RELATION.value, basic_edge_schema),
+    (CollectionNames.USER_APP_RELATION.value, user_app_relation_schema),
+    (CollectionNames.BELONGS_TO_CATEGORY.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
+    (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
+    (CollectionNames.PERMISSION.value, permissions_schema),
+]
 
 
 class ArangoHTTPProvider(IGraphDBProvider):
@@ -70,7 +155,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         logger: Logger,
         config_service: ConfigurationService,
-        kafka_service: Optional[KafkaService] = None,
     ) -> None:
         """
         Initialize ArangoDB HTTP provider.
@@ -78,11 +162,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             logger: Logger instance
             config_service: Configuration service for database credentials
-            kafka_service: Optional Kafka service for event publishing
         """
         self.logger = logger
         self.config_service = config_service
-        self.kafka_service = kafka_service
         self.http_client: Optional[ArangoHTTPClient] = None
 
         # Connector-specific delete permissions
@@ -8893,25 +8975,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Event Publishing Methods ====================
 
-    async def _publish_record_event(self, event_type: str, payload: Dict) -> None:
-        """Publish record event to Kafka"""
-        try:
-            timestamp = get_epoch_timestamp_in_ms()
-
-            event = {
-                "eventType": event_type,
-                "timestamp": timestamp,
-                "payload": payload
-            }
-
-            if self.kafka_service:
-                await self.kafka_service.publish_event("record-events", event)
-                self.logger.info(f"✅ Published {event_type} event for record {payload.get('recordId')}")
-            else:
-                self.logger.debug("Skipping Kafka publish for record-events: kafka_service is not configured")
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to publish {event_type} event: {str(e)}")
 
     async def _create_deleted_record_event_payload(
         self,

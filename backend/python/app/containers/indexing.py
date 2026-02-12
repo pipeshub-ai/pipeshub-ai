@@ -36,7 +36,6 @@ class IndexingAppContainer(BaseAppContainer):
         container_utils.create_graph_provider,
         logger=logger,
         config_service=config_service,
-        kafka_service=kafka_service,
     )
 
     vector_db_service = providers.Resource(
