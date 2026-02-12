@@ -481,19 +481,44 @@ class BlobStorage(Transformer):
                 self.logger.error("❌ Failed to get endpoint configuration: %s", str(e))
                 raise e
 
+            # Compress record for both local and S3 storage
+            try:
+                start_time = time.time()
+                compressed_data, _ = self._compress_record(record)
+                compression_time_ms = (time.time() - start_time) * 1000
+                self.logger.info("⏱️ Compression completed in %.0fms", compression_time_ms)
+
+                compressed_record = compressed_data
+                use_compression = True
+            except Exception as e:
+                self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
+                compressed_record = None
+                use_compression = False
+
+            self.logger.info("Used compression: %s", use_compression)
+
             if storage_type == "local":
                 try:
                     async with aiohttp.ClientSession() as session:
-                        upload_data = {
-                            "record": record,
-                            "virtualRecordId": virtual_record_id
-                        }
-                        json_data = json.dumps(upload_data).encode('utf-8')
+                        # Use compressed data if available
+                        if use_compression:
+                            upload_data = {
+                                "isCompressed": True,
+                                "record": compressed_record,
+                                "virtualRecordId": virtual_record_id
+                            }
+                        else:
+                            # Fallback to uncompressed
+                            upload_data = {
+                                "isCompressed": False,
+                                "record": record,
+                                "virtualRecordId": virtual_record_id
+                            }
 
-                        # Calculate file size
+                        json_data = json.dumps(upload_data).encode('utf-8')
                         file_size_bytes = len(json_data)
-                        self.logger.info("📏 Calculated local storage file size: %d bytes (%.2f MB)",
-                                        file_size_bytes, file_size_bytes / (1024 * 1024))
+
+                        self.logger.info("📏 Calculated local storage file size: %d bytes (%.2f MB)",file_size_bytes, file_size_bytes / (1024 * 1024))
 
                         # Create form data
                         form_data = aiohttp.FormData()
@@ -542,13 +567,8 @@ class BlobStorage(Transformer):
                     self.logger.exception("Detailed error trace:")
                     raise e
             else:
-                # Compress record first for S3 storage
-                try:
-                    start_time = time.time()
-                    compressed_data, compressed_size = self._compress_record(record)
-                    compression_time_ms = (time.time() - start_time) * 1000
-                    self.logger.info("⏱️ Compression completed in %.0fms", compression_time_ms)
-
+                # Prepare placeholder for S3 storage
+                if use_compression:
                     # Prepare placeholder with compression metadata for MongoDB
                     placeholder_data = {
                         "documentName": f"record_{record_id}",
@@ -569,11 +589,8 @@ class BlobStorage(Transformer):
                             },
                         ]
                     }
-                    compressed_record = compressed_data
-                    file_size_bytes = compressed_size
-                except Exception as e:
-                    self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-                    # Fallback to uncompressed
+                else:
+                    # Fallback to uncompressed placeholder
                     placeholder_data = {
                         "documentName": f"record_{record_id}",
                         "documentPath": f"records/{virtual_record_id}",
@@ -581,7 +598,6 @@ class BlobStorage(Transformer):
                         "isVersionedFile": False,
                         "recordId": record_id,
                     }
-                    compressed_record = None
 
                 try:
                     async with aiohttp.ClientSession() as session:
@@ -625,8 +641,7 @@ class BlobStorage(Transformer):
                                 "isCompressed": False,
                             }
 
-                            upload_data_json = json.dumps(upload_data)
-                            file_size_bytes = len(upload_data_json.encode('utf-8'))
+                        file_size_bytes = len(json.dumps(upload_data).encode('utf-8'))
 
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
