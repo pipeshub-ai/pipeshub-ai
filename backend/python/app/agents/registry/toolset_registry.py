@@ -363,7 +363,7 @@ class ToolsetRegistry:
             'app.agents.actions.google.drive.drive',
             'app.agents.actions.google.calendar.calendar',
             'app.agents.actions.google.gmail.gmail',
-            'app.agents.actions.google.meet.meet',
+            # 'app.agents.actions.google.meet.meet',
             # 'app.agents.actions.google.slides.slides',
             # 'app.agents.actions.google.forms.forms',
             # 'app.agents.actions.google.docs.docs',
