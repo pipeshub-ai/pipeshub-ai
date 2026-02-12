@@ -5265,7 +5265,8 @@ class BaseArangoService:
                 )
             file_content = ""
             if record.get("origin") == OriginTypes.UPLOAD.value:
-                
+                pass
+            else:
 
                 if record.get("recordType") == "MAIL":
                     mime_type = "text/gmail_content"
