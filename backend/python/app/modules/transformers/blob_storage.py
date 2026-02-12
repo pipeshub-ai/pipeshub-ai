@@ -25,7 +25,7 @@ class BlobStorage(Transformer):
         self.config_service = config_service
         self.arango_service = arango_service
 
-    def _compress_record(self, record: dict) -> tuple[str, int]:
+    def _compress_record(self, record: dict) -> str:
         """
         Compress record data using msgspec (C-based) + zstd.
         Returns: base64_encoded_compressed_data
@@ -48,7 +48,7 @@ class BlobStorage(Transformer):
         self.logger.info("📦 Compressed record (msgspec): %d -> %d bytes (%.1f%% reduction)",
                         original_size, compressed_size, ratio)
 
-        return base64.b64encode(compressed).decode('utf-8'), compressed_size
+        return base64.b64encode(compressed).decode('utf-8')
 
 
 
@@ -484,11 +484,10 @@ class BlobStorage(Transformer):
             # Compress record for both local and S3 storage
             try:
                 start_time = time.time()
-                compressed_data, _ = self._compress_record(record)
+                compressed_record = self._compress_record(record)
                 compression_time_ms = (time.time() - start_time) * 1000
                 self.logger.info("⏱️ Compression completed in %.0fms", compression_time_ms)
 
-                compressed_record = compressed_data
                 use_compression = True
             except Exception as e:
                 self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
@@ -501,19 +500,11 @@ class BlobStorage(Transformer):
                 try:
                     async with aiohttp.ClientSession() as session:
                         # Use compressed data if available
-                        if use_compression:
-                            upload_data = {
-                                "isCompressed": True,
-                                "record": compressed_record,
-                                "virtualRecordId": virtual_record_id
-                            }
-                        else:
-                            # Fallback to uncompressed
-                            upload_data = {
-                                "isCompressed": False,
-                                "record": record,
-                                "virtualRecordId": virtual_record_id
-                            }
+                        upload_data = {
+                            "isCompressed": use_compression,
+                            "record": compressed_record if use_compression else record,
+                            "virtualRecordId": virtual_record_id
+                        }
 
                         json_data = json.dumps(upload_data).encode('utf-8')
                         file_size_bytes = len(json_data)
