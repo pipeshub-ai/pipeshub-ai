@@ -3,9 +3,9 @@ import json
 import logging
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -14,7 +14,6 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
-    ToolDefinition,
     ToolsetBuilder,
 )
 from app.sources.client.google.google import GoogleClient
@@ -24,61 +23,57 @@ from app.utils.time_conversion import prepare_iso_timestamps
 
 logger = logging.getLogger(__name__)
 
-# Define tools
-tools: List[ToolDefinition] = [
-    ToolDefinition(
-        name="create_event",
-        description="Create a new calendar event",
-        parameters=[
-            {"name": "summary", "type": "string", "description": "Event title", "required": True},
-            {"name": "start_time", "type": "string", "description": "Start time (ISO format)", "required": True},
-            {"name": "end_time", "type": "string", "description": "End time (ISO format)", "required": True},
-            {"name": "description", "type": "string", "description": "Event description", "required": False}
-        ],
-        tags=["events", "create"]
-    ),
-    ToolDefinition(
-        name="get_calendar_events",
-        description="Get upcoming calendar events",
-        parameters=[
-            {"name": "max_results", "type": "integer", "description": "Max events to return", "required": False},
-            {"name": "time_min", "type": "string", "description": "Start time filter (ISO format)", "required": False}
-        ],
-        tags=["events", "list"]
-    ),
-    ToolDefinition(
-        name="get_event",
-        description="Get details of a specific event",
-        parameters=[
-            {"name": "event_id", "type": "string", "description": "Event ID", "required": True}
-        ],
-        tags=["events", "info"]
-    ),
-    ToolDefinition(
-        name="update_event",
-        description="Update a calendar event",
-        parameters=[
-            {"name": "event_id", "type": "string", "description": "Event ID", "required": True},
-            {"name": "summary", "type": "string", "description": "New title", "required": False},
-            {"name": "description", "type": "string", "description": "New description", "required": False}
-        ],
-        tags=["events", "update"]
-    ),
-    ToolDefinition(
-        name="delete_event",
-        description="Delete a calendar event",
-        parameters=[
-            {"name": "event_id", "type": "string", "description": "Event ID", "required": True}
-        ],
-        tags=["events", "delete"]
-    ),
-    ToolDefinition(
-        name="list_calendars",
-        description="List all calendars",
-        parameters=[],
-        tags=["calendars", "list"]
-    ),
-]
+# Pydantic schemas for Google Calendar tools
+class GetCalendarEventsInput(BaseModel):
+    """Schema for getting calendar events"""
+    calendar_id: Optional[str] = Field(default=None, description="The ID of the calendar to use (default: 'primary')")
+    max_results: Optional[int] = Field(default=None, description="Maximum number of events to return")
+    time_min: Optional[str] = Field(default=None, description="Lower bound for event start time (RFC3339 format)")
+    time_max: Optional[str] = Field(default=None, description="Upper bound for event start time (RFC3339 format)")
+    order_by: Optional[str] = Field(default=None, description="Order by (e.g., 'startTime' or 'updated')")
+    single_events: Optional[bool] = Field(default=None, description="Whether to expand recurring events into instances")
+    query: Optional[str] = Field(default=None, description="Free text search terms to find events")
+    show_deleted: Optional[bool] = Field(default=None, description="Include deleted events")
+    time_zone: Optional[str] = Field(default=None, description="Time zone used in the response")
+
+
+class CreateCalendarEventInput(BaseModel):
+    """Schema for creating a calendar event"""
+    event_start_time: str = Field(description="The start time of the event (ISO format or timestamp)")
+    event_end_time: str = Field(description="The end time of the event (ISO format or timestamp)")
+    event_title: Optional[str] = Field(default=None, description="The title/summary of the event")
+    event_description: Optional[str] = Field(default=None, description="The description of the event")
+    event_location: Optional[str] = Field(default=None, description="The location of the event")
+    event_organizer: Optional[str] = Field(default=None, description="The email of the event organizer")
+    event_attendees_emails: Optional[List[str]] = Field(default=None, description="List of email addresses for event attendees")
+    event_meeting_link: Optional[str] = Field(default=None, description="The meeting link/URL for the event")
+    event_timezone: Optional[str] = Field(default="UTC", description="The timezone for the event")
+    event_all_day: Optional[bool] = Field(default=False, description="Whether the event is an all-day event")
+
+
+class UpdateCalendarEventInput(BaseModel):
+    """Schema for updating a calendar event"""
+    event_id: str = Field(description="The actual event ID from Google Calendar")
+    event_title: Optional[str] = Field(default=None, description="The new title/summary for the event")
+    event_description: Optional[str] = Field(default=None, description="The new description for the event")
+    event_start_time: Optional[str] = Field(default=None, description="The new start time for the event (ISO format or timestamp)")
+    event_end_time: Optional[str] = Field(default=None, description="The new end time for the event (ISO format or timestamp)")
+    event_location: Optional[str] = Field(default=None, description="The new location for the event")
+    event_organizer: Optional[str] = Field(default=None, description="The new organizer email for the event")
+    event_attendees_emails: Optional[List[str]] = Field(default=None, description="The new list of attendee emails for the event")
+    event_meeting_link: Optional[str] = Field(default=None, description="The new meeting link/URL for the event")
+    event_timezone: Optional[str] = Field(default="UTC", description="The new timezone for the event")
+    event_all_day: Optional[bool] = Field(default=False, description="Whether the event should be an all-day event")
+
+
+class DeleteCalendarEventInput(BaseModel):
+    """Schema for deleting a calendar event"""
+    event_id: str = Field(description="The actual event ID from Google Calendar")
+
+
+class GetCalendarListByIdInput(BaseModel):
+    """Schema for getting a calendar by ID"""
+    calendar_id: Optional[str] = Field(default=None, description="The ID of the calendar to get (default: 'primary')")
 
 
 # Register Google Calendar toolset
@@ -115,7 +110,6 @@ tools: List[ToolDefinition] = [
             app_description="Calendar OAuth application for agent integration"
         )
     ])\
-    .with_tools(tools)\
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/calendar.svg"))\
     .build_decorator()
 class GoogleCalendar:
@@ -146,62 +140,8 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="get_calendar_events",
-        parameters=[
-            ToolParameter(
-                name="calendar_id",
-                type=ParameterType.STRING,
-                description="The ID of the calendar to use (default: 'primary')",
-                required=False
-            ),
-            ToolParameter(
-                name="max_results",
-                type=ParameterType.INTEGER,
-                description="Maximum number of events to return",
-                required=False
-            ),
-            ToolParameter(
-                name="time_min",
-                type=ParameterType.STRING,
-                description="Lower bound for event start time (RFC3339 format)",
-                required=False
-            ),
-            ToolParameter(
-                name="time_max",
-                type=ParameterType.STRING,
-                description="Upper bound for event start time (RFC3339 format)",
-                required=False
-            ),
-            ToolParameter(
-                name="order_by",
-                type=ParameterType.STRING,
-                description="Order by (e.g., 'startTime' or 'updated')",
-                required=False
-            ),
-            ToolParameter(
-                name="single_events",
-                type=ParameterType.BOOLEAN,
-                description="Whether to expand recurring events into instances",
-                required=False
-            ),
-            ToolParameter(
-                name="query",
-                type=ParameterType.STRING,
-                description="Free text search terms to find events",
-                required=False
-            ),
-            ToolParameter(
-                name="show_deleted",
-                type=ParameterType.BOOLEAN,
-                description="Include deleted events",
-                required=False
-            ),
-            ToolParameter(
-                name="time_zone",
-                type=ParameterType.STRING,
-                description="Time zone used in the response",
-                required=False
-            ),
-        ]
+        description="Get upcoming calendar events",
+        args_schema=GetCalendarEventsInput,
     )
     def get_calendar_events(
         self,
@@ -252,69 +192,8 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="create_calendar_event",
-        parameters=[
-            ToolParameter(
-                name="event_start_time",
-                type=ParameterType.STRING,
-                description="The start time of the event (ISO format or timestamp)",
-                required=True
-            ),
-            ToolParameter(
-                name="event_end_time",
-                type=ParameterType.STRING,
-                description="The end time of the event (ISO format or timestamp)",
-                required=True
-            ),
-            ToolParameter(
-                name="event_title",
-                type=ParameterType.STRING,
-                description="The title/summary of the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_description",
-                type=ParameterType.STRING,
-                description="The description of the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_location",
-                type=ParameterType.STRING,
-                description="The location of the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_organizer",
-                type=ParameterType.STRING,
-                description="The email of the event organizer",
-                required=False
-            ),
-            ToolParameter(
-                name="event_attendees_emails",
-                type=ParameterType.ARRAY,
-                description="List of email addresses for event attendees",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="event_meeting_link",
-                type=ParameterType.STRING,
-                description="The meeting link/URL for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_timezone",
-                type=ParameterType.STRING,
-                description="The timezone for the event (default: UTC)",
-                required=False
-            ),
-            ToolParameter(
-                name="event_all_day",
-                type=ParameterType.BOOLEAN,
-                description="Whether the event is an all-day event",
-                required=False
-            )
-        ]
+        description="Create a new calendar event",
+        args_schema=CreateCalendarEventInput,
     )
     def create_calendar_event(
         self,
@@ -409,75 +288,8 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="update_calendar_event",
-        parameters=[
-            ToolParameter(
-                name="event_id",
-                type=ParameterType.STRING,
-                description="The actual event ID from Google Calendar (NOT a placeholder). This must be the real event ID returned when the event was created (e.g., 'abc123xyz'). If you don't have the event ID, you must first create or list events to get it.",
-                required=True
-            ),
-            ToolParameter(
-                name="event_title",
-                type=ParameterType.STRING,
-                description="The new title/summary for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_description",
-                type=ParameterType.STRING,
-                description="The new description for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_start_time",
-                type=ParameterType.STRING,
-                description="The new start time for the event (ISO format or timestamp)",
-                required=False
-            ),
-            ToolParameter(
-                name="event_end_time",
-                type=ParameterType.STRING,
-                description="The new end time for the event (ISO format or timestamp)",
-                required=False
-            ),
-            ToolParameter(
-                name="event_location",
-                type=ParameterType.STRING,
-                description="The new location for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_organizer",
-                type=ParameterType.STRING,
-                description="The new organizer email for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_attendees_emails",
-                type=ParameterType.ARRAY,
-                description="The new list of attendee emails for the event",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="event_meeting_link",
-                type=ParameterType.STRING,
-                description="The new meeting link/URL for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_timezone",
-                type=ParameterType.STRING,
-                description="The new timezone for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_all_day",
-                type=ParameterType.BOOLEAN,
-                description="Whether the event should be an all-day event",
-                required=False
-            )
-        ]
+        description="Update a calendar event",
+        args_schema=UpdateCalendarEventInput,
     )
     def update_calendar_event(
         self,
@@ -576,14 +388,8 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="delete_calendar_event",
-        parameters=[
-            ToolParameter(
-                name="event_id",
-                type=ParameterType.STRING,
-                description="The actual event ID from Google Calendar (NOT a placeholder). This must be the real event ID (e.g., 'abc123xyz'). If you don't have the event ID, you must first list events to get it.",
-                required=True
-            )
-        ]
+        description="Delete a calendar event",
+        args_schema=DeleteCalendarEventInput,
     )
     def delete_calendar_event(
         self,
@@ -612,7 +418,9 @@ class GoogleCalendar:
 
     @tool(
         app_name="calendar",
-        tool_name="get_calendar_list"
+        tool_name="get_calendar_list",
+        description="List all calendars"
+        # No args_schema needed (no parameters)
     )
     def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
@@ -631,14 +439,8 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="get_calendar_list_by_id",
-        parameters=[
-            ToolParameter(
-                name="calendar_id",
-                type=ParameterType.STRING,
-                description="The ID of the calendar to get (default: 'primary')",
-                required=False
-            )
-        ]
+        description="Get a specific calendar by ID",
+        args_schema=GetCalendarListByIdInput,
     )
     def get_calendar_list_by_id(
         self,

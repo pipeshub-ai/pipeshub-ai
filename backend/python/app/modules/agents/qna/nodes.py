@@ -17,9 +17,9 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
 
@@ -219,7 +219,7 @@ CONFLUENCE_GUIDANCE = r"""
 
 ### Space ID Resolution for create_page
 1. **Check Reference Data first** - if `type: "confluence_space"` exists, use its `id` field
-2. **If not in Reference Data**: 
+2. **If not in Reference Data**:
    - If space_id is a key (non-numeric): Call `confluence.get_spaces`, find matching space, extract numeric `id`
    - If space_id is numeric: Use directly
 3. **CRITICAL**: API requires numeric space IDs. Always use `id` field, never `key` field.
@@ -260,7 +260,7 @@ Only use parameters listed above. DO NOT invent parameters.
 
 Match tool to user intent:
 - "create"/"make"/"new" → CREATE tools
-- "get"/"find"/"search"/"list" → READ/SEARCH tools  
+- "get"/"find"/"search"/"list" → READ/SEARCH tools
 - "update"/"modify"/"change" → UPDATE tools
 - "delete"/"remove" → DELETE tools
 
@@ -401,7 +401,7 @@ def _check_if_task_needs_continue(
 ) -> bool:
     """
     Check if task needs more steps by comparing user intent vs what was done.
-    
+
     Returns True if task is incomplete and needs more tools.
     """
     query_lower = query.lower()
@@ -746,7 +746,7 @@ def _build_retry_context(state: ChatState) -> str:
 {fix_instruction}
 {specific_guidance}
 
-**IMPORTANT**: 
+**IMPORTANT**:
 - If the user asked to CREATE something, you MUST still use the CREATE tool after fixing the issue
 - Don't switch to a different tool type (READ/SEARCH) when the user wants to CREATE
 - Fix the parameters and retry the SAME tool with corrected values
@@ -770,8 +770,8 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
         return _tool_description_cache[cache_key]
 
     try:
-        from app.modules.agents.qna.tool_system import get_agent_tools
-        tools = get_agent_tools(state)
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        tools = get_agent_tools_with_schemas(state)
 
         if not tools:
             return "- retrieval.search_internal_knowledge: Search internal knowledge base\n  Parameters: query (string, required)"
@@ -787,16 +787,58 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
             if short_desc:
                 tool_entry += f": {short_desc}"
 
-            # Extract parameters
+            # Extract parameters - check Pydantic schema first, then legacy parameters
             params = []
-            registry_tool = getattr(tool, 'registry_tool', None)
-            if registry_tool and hasattr(registry_tool, 'parameters') and registry_tool.parameters:
-                for param in registry_tool.parameters:
-                    param_name = getattr(param, 'name', 'unknown')
-                    param_type = getattr(getattr(param, 'type', None), 'name', 'string')
-                    param_required = getattr(param, 'required', False)
+            # Check for Pydantic schema (preferred - used by modern tools)
+            args_schema = getattr(tool, 'args_schema', None)
+            if args_schema and hasattr(args_schema, 'model_fields'):
+                # Extract from Pydantic schema
+                from typing import Union, get_args, get_origin
+                for field_name, field_info in args_schema.model_fields.items():
+                    # Get field description
+                    # description = field_info.description or field_name
+
+                    # Determine type - handle Optional, Union, etc.
+                    field_type = field_info.annotation
+                    param_type = "string"  # default
+
+                    # Handle Optional types (Union[T, None])
+                    origin = get_origin(field_type) if hasattr(field_type, '__origin__') or hasattr(field_type, '__args__') else None
+                    if origin is Union:
+                        args = get_args(field_type)
+                        # Filter out None type
+                        non_none_args = [arg for arg in args if arg is not type(None)]
+                        if non_none_args:
+                            field_type = non_none_args[0]
+                            origin = get_origin(field_type) if hasattr(field_type, '__origin__') else None
+
+                    # Determine base type
+                    if field_type is int:
+                        param_type = "integer"
+                    elif field_type is float:
+                        param_type = "number"
+                    elif field_type is bool:
+                        param_type = "boolean"
+                    elif origin is list:
+                        param_type = "array"
+                    elif origin is dict:
+                        param_type = "object"
+
+                    # Check if required (not Optional and no default)
+                    param_required = field_info.is_required() and field_info.default is ...
                     req_str = "required" if param_required else "optional"
-                    params.append(f"{param_name} ({param_type}, {req_str})")
+                    params.append(f"{field_name} ({param_type}, {req_str})")
+
+            # Fallback to legacy ToolParameter list if no schema found
+            if not params:
+                registry_tool = getattr(tool, 'registry_tool', None)
+                if registry_tool and hasattr(registry_tool, 'parameters') and registry_tool.parameters:
+                    for param in registry_tool.parameters:
+                        param_name = getattr(param, 'name', 'unknown')
+                        param_type = getattr(getattr(param, 'type', None), 'name', 'string')
+                        param_required = getattr(param, 'required', False)
+                        req_str = "required" if param_required else "optional"
+                        params.append(f"{param_name} ({param_type}, {req_str})")
 
             if params:
                 tool_entry += f"\n  Parameters: {', '.join(params)}"
@@ -889,13 +931,13 @@ def _validate_planned_tools(
 ) -> tuple[bool, List[str], List[str]]:
     """
     Validate planned tool names against available tools.
-    
+
     Returns:
         (is_valid, invalid_tools, available_tool_names)
     """
     try:
-        from app.modules.agents.qna.tool_system import get_agent_tools
-        tools = get_agent_tools(state)
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        tools = get_agent_tools_with_schemas(state)
         available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
 
         invalid_tools = []
@@ -1000,8 +1042,8 @@ async def execute_node(
 
     # Get tools
     try:
-        from app.modules.agents.qna.tool_system import get_agent_tools
-        tools = get_agent_tools(state)
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+        tools = get_agent_tools_with_schemas(state)
         tools_by_name = {t.name: t for t in tools}
     except Exception as e:
         log.error(f"Failed to get tools: {e}")
@@ -2099,6 +2141,541 @@ def check_for_error(state: ChatState) -> Literal["error", "continue"]:
 
 
 # ============================================================================
+# Modern ReAct Agent Node (with Cascading Tool Support)
+# ============================================================================
+
+async def react_agent_node(
+    state: ChatState,
+    config: RunnableConfig,
+    writer: StreamWriter
+) -> ChatState:
+    """
+    ReAct agent node with cascading tool execution support.
+
+    This node uses LangGraph's create_react_agent which naturally handles
+    cascading tool calls - one tool's output can be used as input to the next.
+
+    The ReAct agent automatically:
+    - Observes tool results
+    - Decides if more tools are needed
+    - Uses results as inputs to next tool
+    - Repeats until task complete
+    """
+    start_time = time.perf_counter()
+    log = state.get("logger", logger)
+    llm = state.get("llm")
+    query = state.get("query", "")
+
+    try:
+        from langchain.agents import create_agent
+        from langchain_core.messages import HumanMessage, ToolMessage
+
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
+        safe_stream_write(writer, {
+            "event": "status",
+            "data": {"status": "thinking", "message": "Thinking..."}
+        }, config)
+
+        # Get tools with Pydantic schemas
+        tools = get_agent_tools_with_schemas(state)
+        log.info(f"ReAct agent loaded {len(tools)} tools with schemas")
+
+        # Build system prompt
+        system_prompt = _build_react_system_prompt(state, log)
+
+        # Create ReAct agent - automatically handles cascading tool calls
+        agent = create_agent(
+            model=llm,
+            tools=tools,
+        )
+
+        # Build messages with system prompt
+        from langchain_core.messages import SystemMessage
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=query)
+        ]
+
+        # Execute agent - handles cascading automatically
+        final_messages = []
+        tool_results = []
+
+        async for chunk in agent.astream(
+            {"messages": messages},
+            config=config
+        ):
+            # Process chunk for streaming
+            chunk_messages = chunk.get("messages", [])
+            final_messages = chunk_messages
+
+            # Stream tool calls and responses
+            _process_react_chunk(chunk, writer, config, state, log)
+
+            # Extract tool results as we go
+            for msg in chunk_messages:
+                if isinstance(msg, ToolMessage):
+                    tool_name = msg.name if hasattr(msg, 'name') else "unknown"
+                    result_content = msg.content
+
+                    # Process retrieval tool results to extract final_results
+                    # Retrieval tool returns JSON string with RetrievalToolOutput structure
+                    if "retrieval" in tool_name.lower():
+                        try:
+                            # Parse JSON string to dict
+                            if isinstance(result_content, str):
+                                parsed = json.loads(result_content)
+                                _process_retrieval_output(parsed, state, log)
+                            elif isinstance(result_content, dict):
+                                _process_retrieval_output(result_content, state, log)
+                            else:
+                                # Try to convert to string and parse
+                                _process_retrieval_output(str(result_content), state, log)
+                        except Exception as e:
+                            log.warning(f"Failed to process retrieval output: {e}")
+                            # Try direct processing as fallback
+                            _process_retrieval_output(result_content, state, log)
+
+                    tool_results.append({
+                        "tool_name": tool_name,
+                        "status": "success",
+                        "result": result_content,
+                        "tool_call_id": msg.tool_call_id if hasattr(msg, 'tool_call_id') else None
+                    })
+
+        # Get retrieval results (internal knowledge) - may have been populated by retrieval tool
+        final_results = state.get("final_results", [])
+        virtual_record_map = state.get("virtual_record_id_to_result", {})
+        tool_records = state.get("tool_records", [])
+        has_retrieval = bool(final_results)
+
+        # Separate retrieval tools from API tools
+        # retrieval_tools = [r for r in tool_results if "retrieval" in r.get("tool_name", "").lower()]
+        api_tools = [r for r in tool_results if "retrieval" not in r.get("tool_name", "").lower()]
+
+        # Extract final response from messages
+        response = _extract_final_response(final_messages, log)
+
+        # If we have retrieval results, we need to use stream_llm_response for proper citation handling
+        # This matches how the old system (respond_node) handles responses with citations
+        # The ReAct agent may have generated a response, but we need to ensure citations are properly formatted
+        if final_results or tool_results:
+            # Build messages for response generation (similar to respond_node)
+            # This ensures proper citation formatting like the old system
+            messages = create_response_messages(state)
+
+            # Add tool results context (same as old system)
+            if tool_results or final_results:
+                context = _build_tool_results_context(tool_results, final_results)
+                if context.strip():
+                    if messages and isinstance(messages[-1], HumanMessage):
+                        messages[-1].content += context
+                    else:
+                        messages.append(HumanMessage(content=context))
+
+            # Use stream_llm_response for proper citation handling (same as old system)
+            # This ensures citations are properly extracted and formatted
+            try:
+                answer_text = ""
+                citations = []
+                reason = None
+                confidence = None
+                reference_data = []
+                block_numbers = []
+
+                async for stream_event in stream_llm_response(
+                    llm=llm,
+                    messages=messages,
+                    final_results=final_results,
+                    logger=log,
+                    target_words_per_chunk=1,
+                    mode="json",
+                    virtual_record_id_to_result=virtual_record_map,
+                    records=tool_records,
+                ):
+                    event_type = stream_event.get("event")
+                    event_data = stream_event.get("data", {})
+
+                    # Stream events to writer
+                    safe_stream_write(writer, {"event": event_type, "data": event_data}, config)
+
+                    if event_type == "complete":
+                        answer_text = event_data.get("answer", "")
+                        citations = event_data.get("citations", [])
+                        reason = event_data.get("reason")
+                        confidence = event_data.get("confidence")
+                        reference_data = event_data.get("referenceData", [])
+                        block_numbers = event_data.get("blockNumbers", [])
+
+                # Use the response from stream_llm_response (has proper citations)
+                # Fallback to ReAct agent response if stream_llm_response didn't provide one
+                if answer_text:
+                    response = answer_text
+                elif not response:
+                    # If ReAct agent didn't generate a response either, use fallback
+                    response = "I completed the task, but couldn't generate a response."
+
+                # Determine answerMatchType
+                if has_retrieval and api_tools:
+                    answer_match_type = "Derived From Blocks"  # Mixed: retrieval + API
+                elif has_retrieval:
+                    answer_match_type = "Derived From Blocks"  # Only retrieval
+                elif api_tools:
+                    answer_match_type = "Derived From Tool Execution"  # Only API tools
+                else:
+                    answer_match_type = "Direct Answer"  # No tools used
+
+                # Build completion data with proper response type (same format as old system)
+                completion_data = {
+                    "answer": response,
+                    "citations": citations,
+                    "confidence": confidence or "High",
+                    "answerMatchType": answer_match_type
+                }
+
+                if block_numbers:
+                    completion_data["blockNumbers"] = block_numbers
+                if reference_data:
+                    completion_data["referenceData"] = reference_data
+                if reason:
+                    completion_data["reason"] = reason
+
+                state["completion_data"] = completion_data
+
+            except Exception as e:
+                log.error(f"Response generation with citations failed: {e}", exc_info=True)
+                # Fallback: extract citations from ReAct agent response
+                citations, block_numbers, reference_data, answer_match_type = _extract_citations_and_metadata(
+                    tool_results, final_results, has_retrieval, api_tools, response, log, virtual_record_map
+                )
+                state["completion_data"] = {
+                    "answer": response,
+                    "citations": citations,
+                    "blockNumbers": block_numbers,
+                    "referenceData": reference_data,
+                    "confidence": "High",
+                    "answerMatchType": answer_match_type
+                }
+        else:
+            # No tool results or retrieval - use extracted response directly
+            citations, block_numbers, reference_data, answer_match_type = _extract_citations_and_metadata(
+                tool_results, final_results, has_retrieval, api_tools, response, log, virtual_record_map
+            )
+            state["completion_data"] = {
+                "answer": response,
+                "citations": citations,
+                "blockNumbers": block_numbers,
+                "referenceData": reference_data,
+                "confidence": "High",
+                "answerMatchType": answer_match_type
+            }
+
+        # Update state
+        state["response"] = response
+        state["tool_results"] = tool_results
+        state["all_tool_results"] = tool_results
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.info(f"⚡ ReAct Agent: {duration_ms:.0f}ms, {len(tool_results)} tool calls")
+
+    except ImportError as e:
+        log.error(f"ReAct agent dependencies not available: {e}")
+        # Fallback to direct response
+        state["response"] = "ReAct agent is not available. Please use the standard agent."
+        state["completion_data"] = {
+            "answer": state["response"],
+            "confidence": "Low",
+            "answerMatchType": "Error"
+        }
+    except Exception as e:
+        log.error(f"ReAct agent error: {e}", exc_info=True)
+        state["response"] = f"I encountered an error: {str(e)}"
+        state["completion_data"] = {
+            "answer": state["response"],
+            "confidence": "Low",
+            "answerMatchType": "Error"
+        }
+
+    return state
+
+
+def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
+    """Build system prompt for ReAct agent with citation support"""
+    base_prompt = """You are an intelligent AI assistant that can use tools to help users.
+
+## Tool Usage Guidelines
+
+1. **Cascading Tool Calls**: You can call multiple tools in sequence. Use results from one tool as inputs to the next.
+   - Example: First call `confluence.get_spaces()` to find a space ID, then use that ID in `confluence.create_page()`
+
+2. **Tool Selection**: Choose the right tool based on user intent:
+   - "create"/"make"/"new" → CREATE tools
+   - "get"/"find"/"search"/"list" → READ/SEARCH tools
+   - "update"/"modify"/"change" → UPDATE tools
+   - "delete"/"remove" → DELETE tools
+
+3. **Parameter Validation**: All tool parameters are validated by Pydantic schemas. Use exact parameter names and types.
+
+4. **Error Handling**: If a tool fails, analyze the error and try a different approach or ask for clarification.
+
+5. **Task Completion**: Continue calling tools until the user's request is fully satisfied.
+
+6. **Response Format**: When you have tool results, format your response clearly:
+   - For API tool results: Transform data into professional markdown
+   - For retrieval/internal knowledge: Include inline citations like [R1-1] after facts
+   - Store technical IDs in referenceData for follow-up queries
+"""
+
+    # Check for retrieval results and API tools
+    final_results = state.get("final_results", [])
+    has_retrieval = bool(final_results)
+
+    # Add citation instructions if retrieval results exist
+    if has_retrieval:
+        base_prompt += """
+## Citation Rules (CRITICAL)
+
+When you have internal knowledge from retrieval tools:
+1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [R1-1]."
+2. One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]
+3. Include ALL cited blocks in your response
+4. Do NOT put citations at end of paragraph - inline after each fact
+"""
+
+    # Add tool-specific guidance
+    if _has_jira_tools(state):
+        base_prompt += "\n" + JIRA_GUIDANCE
+
+    if _has_confluence_tools(state):
+        base_prompt += "\n" + CONFLUENCE_GUIDANCE
+
+    # Add user context
+    user_context = _format_user_context(state)
+    if user_context:
+        base_prompt += "\n\n" + user_context
+
+    return base_prompt
+
+
+def _process_react_chunk(
+    chunk: Dict,
+    writer: StreamWriter,
+    config: RunnableConfig,
+    state: ChatState,
+    log: logging.Logger
+) -> None:
+    """Process ReAct agent chunk for streaming"""
+    try:
+        messages = chunk.get("messages", [])
+
+        for msg in messages:
+            # Stream tool calls
+            if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    safe_stream_write(writer, {
+                        "event": "tool_call",
+                        "data": {
+                            "tool": tool_call.get("name", "unknown"),
+                            "args": tool_call.get("args", {}),
+                            "id": tool_call.get("id", "")
+                        }
+                    }, config)
+
+            # Stream tool results
+            if isinstance(msg, ToolMessage):
+                safe_stream_write(writer, {
+                    "event": "tool_result",
+                    "data": {
+                        "tool": getattr(msg, 'name', 'unknown'),
+                        "result": msg.content[:500] if len(msg.content) > 500 else msg.content,
+                        "status": "success"
+                    }
+                }, config)
+
+            # Stream AI responses
+            if isinstance(msg, AIMessage) and msg.content:
+                # Stream content in chunks
+                content = msg.content
+                chunk_size = 10
+                for i in range(0, len(content), chunk_size):
+                    chunk_text = content[i:i + chunk_size]
+                    safe_stream_write(writer, {
+                        "event": "content",
+                        "data": {"text": chunk_text}
+                    }, config)
+    except Exception as e:
+        log.warning(f"Error processing ReAct chunk: {e}")
+
+
+def _extract_final_response(messages: List, log: logging.Logger) -> str:
+    """Extract final response from agent messages"""
+    # Find last AIMessage with content
+    for msg in reversed(messages):
+        if hasattr(msg, 'content') and msg.content and not hasattr(msg, 'tool_calls'):
+            return str(msg.content)
+
+    # Fallback: find any message with content
+    for msg in reversed(messages):
+        if hasattr(msg, 'content') and msg.content:
+            return str(msg.content)
+
+    log.warning("No response found in ReAct agent messages")
+    return "I completed the task, but couldn't generate a response."
+
+
+def _extract_citations_and_metadata(
+    tool_results: List[Dict],
+    final_results: List[Dict],
+    has_retrieval: bool,
+    api_tools: List[Dict],
+    response: str,
+    log: logging.Logger,
+    virtual_record_map: Optional[Dict[str, Dict[str, Any]]] = None
+) -> tuple[List[Dict], List[str], List[Dict], str]:
+    """
+    Extract citations, block numbers, reference data, and determine answerMatchType.
+
+    Returns:
+        Tuple of (citations, block_numbers, reference_data, answer_match_type)
+    """
+    citations = []
+    block_numbers = []
+    reference_data = []
+
+    # Extract block numbers from response (e.g., [R1-1], [R2-3])
+    import re
+    block_pattern = re.compile(r'\[R(\d+)-(\d+)\]')
+    matches = block_pattern.findall(response)
+    for match in matches:
+        block_num = f"R{match[0]}-{match[1]}"
+        if block_num not in block_numbers:
+            block_numbers.append(block_num)
+
+    # Extract citations from retrieval results (same as old system)
+    if has_retrieval and final_results:
+        # Use block_number from results if available (set by retrieval tool)
+        for result in final_results:
+            block_num = result.get("block_number")
+            if not block_num:
+                # Fallback: generate block number from virtual_record_id
+                virtual_id = result.get("virtual_record_id", "")
+                if virtual_id and virtual_record_map:
+                    # Try to get record number from virtual_record_map
+                    record_data = virtual_record_map.get(virtual_id, {})
+                    record_num = record_data.get("record_number", 1)
+                    block_index = result.get("block_index", 0)
+                    block_num = f"R{record_num}-{block_index}"
+                else:
+                    # Last resort: use index
+                    idx = final_results.index(result) if result in final_results else 0
+                    block_num = f"R1-{idx+1}"
+
+            citations.append({
+                "source": result.get("source", "internal_knowledge"),
+                "type": "retrieval",
+                "content": str(result.get("content", ""))[:200],
+                "virtual_id": result.get("virtual_record_id", ""),
+                "block_id": block_num
+            })
+
+            # Add to block_numbers if not already there
+            if block_num and block_num not in block_numbers:
+                block_numbers.append(block_num)
+
+    # Extract reference data from API tool results
+    for tool_result in api_tools:
+        if tool_result.get("status") == "success":
+            result = tool_result.get("result", "")
+            ref_data = _extract_reference_data_from_result(result, tool_result.get("tool_name", ""))
+            if ref_data:
+                reference_data.extend(ref_data)
+
+    # Determine answerMatchType
+    if has_retrieval and api_tools:
+        answer_match_type = "Derived From Blocks"  # Mixed: retrieval + API
+    elif has_retrieval:
+        answer_match_type = "Derived From Blocks"  # Only retrieval
+    elif api_tools:
+        answer_match_type = "Derived From Tool Execution"  # Only API tools
+    else:
+        answer_match_type = "Direct Answer"  # No tools used
+
+    return citations, block_numbers, reference_data, answer_match_type
+
+
+def _extract_reference_data_from_result(result: object, tool_name: str) -> List[Dict]:
+    """Extract reference data (IDs, keys) from tool results for follow-up queries"""
+    reference_data = []
+
+    try:
+        # Parse result if it's a string
+        if isinstance(result, str):
+            import json
+            try:
+                result = json.loads(result)
+            except (json.JSONDecodeError, ValueError):
+                return reference_data
+
+        # Extract from common structures
+        if isinstance(result, dict):
+            # Jira issues
+            if "data" in result and isinstance(result["data"], dict):
+                issues = result["data"].get("issues", [])
+                if isinstance(issues, list):
+                    for issue in issues:
+                        if isinstance(issue, dict):
+                            ref_data = {
+                                "name": issue.get("summary", ""),
+                                "key": issue.get("key", ""),
+                                "id": issue.get("id", ""),
+                                "type": "jira_issue"
+                            }
+                            if ref_data.get("key"):
+                                reference_data.append(ref_data)
+
+            # Jira projects
+            if "data" in result and isinstance(result["data"], list):
+                for project in result["data"]:
+                    if isinstance(project, dict):
+                        ref_data = {
+                            "name": project.get("name", ""),
+                            "key": project.get("key", ""),
+                            "id": project.get("id", ""),
+                            "type": "jira_project"
+                        }
+                        if ref_data.get("key"):
+                            reference_data.append(ref_data)
+
+            # Direct issue/project
+            if "key" in result:
+                ref_data = {
+                    "name": result.get("summary") or result.get("name", ""),
+                    "key": result.get("key", ""),
+                    "id": result.get("id", ""),
+                    "type": "jira_issue" if "summary" in result else "jira_project"
+                }
+                if ref_data.get("key"):
+                    reference_data.append(ref_data)
+
+        elif isinstance(result, list):
+            for item in result:
+                if isinstance(item, dict) and "key" in item:
+                    ref_data = {
+                        "name": item.get("summary") or item.get("name", ""),
+                        "key": item.get("key", ""),
+                        "id": item.get("id", ""),
+                        "type": "jira_issue" if "summary" in item else "jira_project"
+                    }
+                    if ref_data.get("key"):
+                        reference_data.append(ref_data)
+
+    except Exception as e:
+        logger.debug(f"Error extracting reference data: {e}")
+
+    return reference_data
+
+
+# ============================================================================
 # Exports
 # ============================================================================
 
@@ -2108,6 +2685,7 @@ __all__ = [
     "respond_node",
     "reflect_node",
     "prepare_retry_node",
+    "react_agent_node",  # NEW: ReAct agent node
     "should_execute_tools",
     "route_after_reflect",
     "check_for_error",

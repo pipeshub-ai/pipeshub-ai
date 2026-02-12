@@ -322,7 +322,7 @@ class ToolsetTokenRefreshService:
             "clientSecret": client_secret,
         }
 
-        # Get URLs - prefer auth_config, fallback to registry
+        # Get URLs - prefer stored auth_config values, fallback to registry
         if auth_config.get("authorizeUrl"):
             oauth_flow_config["authorizeUrl"] = auth_config["authorizeUrl"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'authorize_url'):
@@ -337,13 +337,24 @@ class ToolsetTokenRefreshService:
         else:
             oauth_flow_config["tokenUrl"] = ""
 
-        # Redirect URI - prefer auth_config, fallback to registry
+        # Redirect URI - prefer stored auth_config value (full URL), fallback to registry
         if auth_config.get("redirectUri"):
             oauth_flow_config["redirectUri"] = auth_config["redirectUri"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'redirect_uri'):
-            # Registry redirect_uri is a path, we need full URL
-            # For refresh, we don't need the full redirect URI, but we'll use what's in config
-            oauth_flow_config["redirectUri"] = auth_config.get("redirectUri", "")
+            # Registry redirect_uri is a path, try to construct full URL
+            # For refresh, we can use the path-only version if needed
+            redirect_path = oauth_config_obj.redirect_uri
+            # Try to get base URL from endpoints config
+            try:
+                endpoints = await self.key_value_store.get_key("/services/endpoints")
+                if isinstance(endpoints, dict):
+                    fallback_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
+                    oauth_flow_config["redirectUri"] = f"{fallback_url.rstrip('/')}/{redirect_path}"
+                else:
+                    oauth_flow_config["redirectUri"] = f"http://localhost:3001/{redirect_path}"
+            except Exception:
+                # If we can't get base URL, use path-only (some providers accept this)
+                oauth_flow_config["redirectUri"] = redirect_path
         else:
             oauth_flow_config["redirectUri"] = ""
 
@@ -359,11 +370,17 @@ class ToolsetTokenRefreshService:
         else:
             oauth_flow_config["scopes"] = []
 
-        # Add optional fields if present in auth_config
+        # Add optional fields - prefer stored auth_config values
         if "tokenAccessType" in auth_config:
             oauth_flow_config["tokenAccessType"] = auth_config["tokenAccessType"]
+        elif oauth_config_obj and hasattr(oauth_config_obj, 'token_access_type') and oauth_config_obj.token_access_type:
+            oauth_flow_config["tokenAccessType"] = oauth_config_obj.token_access_type
+
         if "additionalParams" in auth_config:
             oauth_flow_config["additionalParams"] = auth_config["additionalParams"]
+        elif oauth_config_obj and hasattr(oauth_config_obj, 'additional_params') and oauth_config_obj.additional_params:
+            oauth_flow_config["additionalParams"] = oauth_config_obj.additional_params
+
         if "scopeParameterName" in auth_config:
             oauth_flow_config["scopeParameterName"] = auth_config["scopeParameterName"]
         elif oauth_config_obj and hasattr(oauth_config_obj, 'scope_parameter_name') and oauth_config_obj.scope_parameter_name != "scope":

@@ -2,7 +2,9 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Dict, List, Optional, Tuple
+from typing import Coroutine, Dict, Optional, Tuple
+
+from pydantic import BaseModel, Field
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -15,7 +17,6 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
-    ToolDefinition,
     ToolsetBuilder,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
@@ -26,67 +27,39 @@ from app.sources.external.confluence.confluence import ConfluenceDataSource
 
 logger = logging.getLogger(__name__)
 
-# Define tools
-tools: List[ToolDefinition] = [
-    ToolDefinition(
-        name="create_page",
-        description="Create a new page in Confluence",
-        parameters=[
-            {"name": "space_id", "type": "string", "description": "Space ID or key", "required": True},
-            {"name": "page_title", "type": "string", "description": "Page title", "required": True},
-            {"name": "page_content", "type": "string", "description": "Page content", "required": True}
-        ],
-        tags=["pages", "create"]
-    ),
-    ToolDefinition(
-        name="get_page_content",
-        description="Get the content of a Confluence page",
-        parameters=[
-            {"name": "page_id", "type": "string", "description": "Page ID", "required": True}
-        ],
-        tags=["pages", "read"]
-    ),
-    ToolDefinition(
-        name="get_pages_in_space",
-        description="Get all pages in a Confluence space",
-        parameters=[
-            {"name": "space_id", "type": "string", "description": "Space ID or key", "required": True}
-        ],
-        tags=["pages", "list"]
-    ),
-    ToolDefinition(
-        name="update_page_title",
-        description="Update the title of a Confluence page",
-        parameters=[
-            {"name": "page_id", "type": "string", "description": "Page ID", "required": True},
-            {"name": "new_title", "type": "string", "description": "New title", "required": True}
-        ],
-        tags=["pages", "update"]
-    ),
-    ToolDefinition(
-        name="search_pages",
-        description="Search for pages by title",
-        parameters=[
-            {"name": "title", "type": "string", "description": "Page title to search", "required": True},
-            {"name": "space_id", "type": "string", "description": "Space ID to limit search", "required": False}
-        ],
-        tags=["pages", "search"]
-    ),
-    ToolDefinition(
-        name="get_spaces",
-        description="Get all spaces in Confluence",
-        parameters=[],
-        tags=["spaces", "list"]
-    ),
-    ToolDefinition(
-        name="get_space",
-        description="Get details of a specific Confluence space",
-        parameters=[
-            {"name": "space_id", "type": "string", "description": "Space ID", "required": True}
-        ],
-        tags=["spaces", "info"]
-    ),
-]
+# Pydantic schemas for Confluence tools
+class CreatePageInput(BaseModel):
+    """Schema for creating Confluence pages"""
+    space_id: str = Field(description="Space ID or key")
+    page_title: str = Field(description="Page title")
+    page_content: str = Field(description="Page content in storage format")
+
+
+class GetPageContentInput(BaseModel):
+    """Schema for getting page content"""
+    page_id: str = Field(description="Page ID")
+
+
+class GetPagesInSpaceInput(BaseModel):
+    """Schema for getting pages in space"""
+    space_id: str = Field(description="Space ID or key")
+
+
+class UpdatePageTitleInput(BaseModel):
+    """Schema for updating page title"""
+    page_id: str = Field(description="Page ID")
+    new_title: str = Field(description="New title")
+
+
+class SearchPagesInput(BaseModel):
+    """Schema for searching pages"""
+    title: str = Field(description="Page title to search")
+    space_id: Optional[str] = Field(default=None, description="Space ID to limit search")
+
+
+class GetSpaceInput(BaseModel):
+    """Schema for getting space"""
+    space_id: str = Field(description="Space ID")
 
 
 # Register Confluence toolset
@@ -118,7 +91,6 @@ tools: List[ToolDefinition] = [
             app_description="Confluence OAuth application for agent integration"
         )
     ])\
-    .with_tools(tools)\
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/confluence.svg"))\
     .build_decorator()
 class Confluence:
@@ -235,23 +207,7 @@ class Confluence:
         app_name="confluence",
         tool_name="create_page",
         description="Create a page in Confluence",
-        parameters=[
-            ToolParameter(
-                name="space_id",
-                type=ParameterType.STRING,
-                description="The ID or key of the space to create the page in"
-            ),
-            ToolParameter(
-                name="page_title",
-                type=ParameterType.STRING,
-                description="The title of the page to create"
-            ),
-            ToolParameter(
-                name="page_content",
-                type=ParameterType.STRING,
-                description="The content of the page in storage format"
-            ),
-        ],
+        args_schema=CreatePageInput,  # NEW: Pydantic schema
         returns="JSON with success status and page details"
     )
     def create_page(
@@ -295,13 +251,7 @@ class Confluence:
         app_name="confluence",
         tool_name="get_page_content",
         description="Get the content of a page in Confluence",
-        parameters=[
-            ToolParameter(
-                name="page_id",
-                type=ParameterType.STRING,
-                description="The ID of the page to get"
-            ),
-        ],
+        args_schema=GetPageContentInput,  # NEW: Pydantic schema
         returns="JSON with page content and metadata"
     )
     def get_page_content(self, page_id: str) -> Tuple[bool, str]:
@@ -336,13 +286,7 @@ class Confluence:
         app_name="confluence",
         tool_name="get_pages_in_space",
         description="Get all pages in a Confluence space",
-        parameters=[
-            ToolParameter(
-                name="space_id",
-                type=ParameterType.STRING,
-                description="The ID or key of the space"
-            ),
-        ],
+        args_schema=GetPagesInSpaceInput,  # NEW: Pydantic schema
         returns="JSON with list of pages"
     )
     def get_pages_in_space(self, space_id: str) -> Tuple[bool, str]:
@@ -369,18 +313,7 @@ class Confluence:
         app_name="confluence",
         tool_name="update_page_title",
         description="Update the title of a Confluence page",
-        parameters=[
-            ToolParameter(
-                name="page_id",
-                type=ParameterType.STRING,
-                description="The ID of the page"
-            ),
-            ToolParameter(
-                name="new_title",
-                type=ParameterType.STRING,
-                description="The new title for the page"
-            ),
-        ],
+        args_schema=UpdatePageTitleInput,  # NEW: Pydantic schema
         returns="JSON with success status"
     )
     def update_page_title(self, page_id: str, new_title: str) -> Tuple[bool, str]:
@@ -454,19 +387,7 @@ class Confluence:
         app_name="confluence",
         tool_name="search_pages",
         description="Search pages by title in Confluence",
-        parameters=[
-            ToolParameter(
-                name="title",
-                type=ParameterType.STRING,
-                description="Page title to search for"
-            ),
-            ToolParameter(
-                name="space_id",
-                type=ParameterType.STRING,
-                description="Optional space ID to limit search",
-                required=False
-            ),
-        ],
+        args_schema=SearchPagesInput,  # NEW: Pydantic schema
         returns="JSON with search results"
     )
     def search_pages(
@@ -501,7 +422,7 @@ class Confluence:
         app_name="confluence",
         tool_name="get_spaces",
         description="Get all spaces with permissions in Confluence",
-        parameters=[],
+        # No args_schema needed (no parameters)
         returns="JSON with list of spaces"
     )
     def get_spaces(self) -> Tuple[bool, str]:
@@ -522,13 +443,7 @@ class Confluence:
         app_name="confluence",
         tool_name="get_space",
         description="Get details of a Confluence space by ID",
-        parameters=[
-            ToolParameter(
-                name="space_id",
-                type=ParameterType.STRING,
-                description="The ID of the space"
-            )
-        ],
+        args_schema=GetSpaceInput,  # NEW: Pydantic schema
         returns="JSON with space details"
     )
     def get_space(self, space_id: str) -> Tuple[bool, str]:

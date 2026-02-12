@@ -221,8 +221,9 @@ def _validate_auth_config(auth_config: Dict[str, Any]) -> str:
 
 
 def _get_oauth_config_from_registry(toolset_type: str, registry):
-    """Get OAuth config from toolset registry"""
-    metadata = registry.get_toolset_metadata(toolset_type)
+    """Get OAuth config from toolset registry (returns dataclass instance)"""
+    # Get metadata without serialization to preserve dataclass instances
+    metadata = registry.get_toolset_metadata(toolset_type, serialize=False)
     if not metadata:
         raise ToolsetNotFoundError(toolset_type)
 
@@ -235,12 +236,103 @@ def _get_oauth_config_from_registry(toolset_type: str, registry):
             f"Supported auth types: {', '.join(metadata.get('supported_auth_types', ['NONE']))}"
         )
 
+    # Validate OAuth config has required attributes
     if not hasattr(oauth_config, 'authorize_url') or not hasattr(oauth_config, 'token_url'):
         raise OAuthConfigError(
             f"Toolset '{toolset_type}' has incomplete OAuth configuration"
         )
 
     return oauth_config
+
+
+async def _prepare_toolset_auth_config(
+    auth_config: Dict[str, Any],
+    toolset_type: str,
+    registry,
+    config_service: ConfigurationService,
+    base_url: Optional[str] = None,
+    request: Optional[Request] = None
+) -> Dict[str, Any]:
+    """
+    Prepare and enrich toolset auth config with OAuth infrastructure fields.
+    Similar to _prepare_connector_config for connectors.
+    This ensures OAuth URLs, redirect URI, and scopes are stored in the config
+    for use during token refresh.
+
+    IMPORTANT: This function ALWAYS refreshes the redirect URI based on the provided
+    base_url or endpoints config. This ensures the redirect URI is always up-to-date
+    when configs are created or updated.
+    Args:
+        auth_config: Existing auth configuration dictionary
+        toolset_type: Type of toolset
+        registry: Toolset registry instance
+        config_service: Configuration service for endpoints
+        base_url: Base URL for OAuth redirects (from frontend, preferred)
+        request: FastAPI request object (optional, for fallback)
+    """
+    auth_type = auth_config.get("type", "").upper()
+
+    # Only enrich OAUTH configs
+    if auth_type != "OAUTH":
+        return auth_config
+
+    # Get OAuth config from registry
+    oauth_config = _get_oauth_config_from_registry(toolset_type, registry)
+
+    # ALWAYS refresh redirect URI - construct new one based on current base_url
+    # This ensures redirect URI is updated when config is updated (e.g., when base_url changes)
+    redirect_path = oauth_config.redirect_uri
+    redirect_uri = ""
+
+    if redirect_path:
+        if base_url and base_url.strip():
+            # Use provided base_url (from frontend) - this is the preferred source
+            # Remove trailing slash from base_url and leading slash from redirect_path
+            base_url_clean = base_url.strip().rstrip('/')
+            redirect_path_clean = redirect_path.lstrip('/')
+            redirect_uri = f"{base_url_clean}/{redirect_path_clean}"
+            logger.debug(f"Constructed redirect URI from base_url '{base_url}': {redirect_uri}")
+        else:
+            # Fallback to endpoints config or default
+            try:
+                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+                fallback_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
+                redirect_path_clean = redirect_path.lstrip('/')
+                redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_path_clean}"
+                logger.debug(f"Constructed redirect URI from endpoints config: {redirect_uri}")
+            except Exception:
+                redirect_path_clean = redirect_path.lstrip('/')
+                redirect_uri = f"http://localhost:3001/{redirect_path_clean}"
+                logger.debug(f"Using default redirect URI: {redirect_uri}")
+
+    # Get scopes from registry (always refresh to ensure latest scopes)
+    from app.connectors.core.registry.auth_builder import OAuthScopeType
+    scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
+
+    # Enrich auth_config with OAuth infrastructure fields
+    # Always update these fields to ensure they're current
+    enriched_auth = {
+        **auth_config,
+        "authorizeUrl": oauth_config.authorize_url,
+        "tokenUrl": oauth_config.token_url,
+        "redirectUri": redirect_uri,  # Always refreshed based on current base_url
+        "scopes": scopes,
+    }
+
+    # Add optional fields if present in registry
+    if hasattr(oauth_config, 'additional_params') and oauth_config.additional_params:
+        enriched_auth["additionalParams"] = oauth_config.additional_params
+
+    if hasattr(oauth_config, 'token_access_type') and oauth_config.token_access_type:
+        enriched_auth["tokenAccessType"] = oauth_config.token_access_type
+
+    if hasattr(oauth_config, 'scope_parameter_name') and oauth_config.scope_parameter_name != "scope":
+        enriched_auth["scopeParameterName"] = oauth_config.scope_parameter_name
+
+    if hasattr(oauth_config, 'token_response_path') and oauth_config.token_response_path:
+        enriched_auth["tokenResponsePath"] = oauth_config.token_response_path
+
+    return enriched_auth
 
 
 async def _build_oauth_config(
@@ -259,43 +351,53 @@ async def _build_oauth_config(
 
     oauth_config = _get_oauth_config_from_registry(toolset_type, registry)
 
-    # Build redirect URI
-    redirect_path = oauth_config.redirect_uri
-    if base_url:
-        full_redirect_uri = f"{base_url.rstrip('/')}/{redirect_path}"
-    elif request:
-        full_redirect_uri = f"{request.url.scheme}://{request.url.netloc}/{redirect_path}"
-    else:
-        full_redirect_uri = f"http://localhost:3001/{redirect_path}"
+    # Build redirect URI - prefer stored value, otherwise build from registry
+    redirect_uri = auth_config.get("redirectUri", "")
+    if not redirect_uri:
+        redirect_path = oauth_config.redirect_uri
+        if base_url:
+            redirect_uri = f"{base_url.rstrip('/')}/{redirect_path}"
+        else:
+            redirect_uri = f"http://localhost:3001/{redirect_path}"
 
-    # Get scopes
-    scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
+    # Get scopes - prefer stored value, otherwise get from registry
+    scopes = auth_config.get("scopes", [])
+    if not scopes:
+        scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
-    # Build config
+    # Build config - prefer stored values from auth_config
     config = {
         "clientId": client_id,
         "clientSecret": client_secret,
-        "redirectUri": full_redirect_uri,
+        "redirectUri": redirect_uri,
         "scopes": scopes,
-        "authorizeUrl": oauth_config.authorize_url,
-        "tokenUrl": oauth_config.token_url,
+        "authorizeUrl": auth_config.get("authorizeUrl") or oauth_config.authorize_url,
+        "tokenUrl": auth_config.get("tokenUrl") or oauth_config.token_url,
         "name": toolset_type,
     }
 
-    # Add optional parameters
-    if hasattr(oauth_config, 'additional_params') and oauth_config.additional_params:
+    # Add optional parameters - prefer stored values
+    if "additionalParams" in auth_config:
+        config["additionalParams"] = auth_config["additionalParams"]
+    elif hasattr(oauth_config, 'additional_params') and oauth_config.additional_params:
         config["additionalParams"] = oauth_config.additional_params
 
-    if hasattr(oauth_config, 'token_access_type') and oauth_config.token_access_type:
+    if "tokenAccessType" in auth_config:
+        config["tokenAccessType"] = auth_config["tokenAccessType"]
+    elif hasattr(oauth_config, 'token_access_type') and oauth_config.token_access_type:
         if "access_type" not in config.get("additionalParams", {}):
             config["tokenAccessType"] = oauth_config.token_access_type
 
     # Add scope_parameter_name if specified (defaults to "scope" if not provided)
-    if hasattr(oauth_config, 'scope_parameter_name') and oauth_config.scope_parameter_name != "scope":
+    if "scopeParameterName" in auth_config:
+        config["scopeParameterName"] = auth_config["scopeParameterName"]
+    elif hasattr(oauth_config, 'scope_parameter_name') and oauth_config.scope_parameter_name != "scope":
         config["scopeParameterName"] = oauth_config.scope_parameter_name
 
     # Add token_response_path if specified (optional, for providers with nested token responses)
-    if hasattr(oauth_config, 'token_response_path') and oauth_config.token_response_path:
+    if "tokenResponsePath" in auth_config:
+        config["tokenResponsePath"] = auth_config["tokenResponsePath"]
+    elif hasattr(oauth_config, 'token_response_path') and oauth_config.token_response_path:
         config["tokenResponsePath"] = oauth_config.token_response_path
 
     return config
@@ -907,6 +1009,29 @@ async def handle_oauth_callback(
                 updated_config["updatedAt"] = get_epoch_timestamp_in_ms()
                 updated_config["updatedBy"] = toolset_user_id
 
+                # IMPORTANT: Persist OAuth infrastructure fields to auth config
+                # This ensures token refresh can find tokenUrl, authorizeUrl, redirectUri
+                if "auth" not in updated_config:
+                    updated_config["auth"] = {}
+
+                # Update auth config with OAuth infrastructure fields from oauth_flow_config
+                updated_config["auth"].update({
+                    "authorizeUrl": oauth_flow_config.get("authorizeUrl", ""),
+                    "tokenUrl": oauth_flow_config.get("tokenUrl", ""),
+                    "redirectUri": oauth_flow_config.get("redirectUri", ""),
+                    "scopes": oauth_flow_config.get("scopes", []),
+                })
+
+                # Add optional fields if present
+                if "tokenAccessType" in oauth_flow_config:
+                    updated_config["auth"]["tokenAccessType"] = oauth_flow_config["tokenAccessType"]
+                if "additionalParams" in oauth_flow_config:
+                    updated_config["auth"]["additionalParams"] = oauth_flow_config["additionalParams"]
+                if "scopeParameterName" in oauth_flow_config:
+                    updated_config["auth"]["scopeParameterName"] = oauth_flow_config["scopeParameterName"]
+                if "tokenResponsePath" in oauth_flow_config:
+                    updated_config["auth"]["tokenResponsePath"] = oauth_flow_config["tokenResponsePath"]
+
                 await kv_store.create_key(config_path, updated_config)
                 await config_service.set_config(config_path, updated_config)
                 logger.info(f"Refreshed config cache for toolset {toolset_type}")
@@ -1010,6 +1135,31 @@ async def create_toolset(
             detail="Failed to check existing configuration"
         )
 
+    # Prepare auth config with OAuth infrastructure fields if OAUTH
+    if auth_type == "OAUTH":
+        # Get base URL from request body (like connectors), fallback to endpoints config
+        # Check both "baseUrl" and "base_url" for compatibility
+        base_url = (body.get("baseUrl") or body.get("base_url") or "").strip()
+        logger.info(f"Base URL from body for create: '{base_url}'")
+
+        if not base_url:
+            try:
+                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+                base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
+                logger.info(f"Using base_url from endpoints config: {base_url}")
+            except Exception:
+                base_url = "http://localhost:3001"
+                logger.warning(f"Failed to get endpoints config, using default: {base_url}")
+
+        logger.info(f"Creating toolset {normalized_name} with base_url: {base_url}")
+
+        # Always refresh redirect URI when creating/updating
+        auth_config = await _prepare_toolset_auth_config(
+            auth_config, normalized_name, registry, config_service, base_url, request
+        )
+
+        logger.info(f"Created redirect URI for toolset {normalized_name}: {auth_config.get('redirectUri', 'NOT SET')}")
+
     # Create config
     config = {
         "auth": auth_config,
@@ -1073,6 +1223,32 @@ async def update_toolset_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to retrieve existing configuration"
         )
+
+    # Prepare auth config with OAuth infrastructure fields if OAUTH
+    if auth_type == "OAUTH":
+        # Get base URL from request body (like connectors), fallback to endpoints config
+        # Check both "baseUrl" and "base_url" for compatibility
+        base_url = (body.get("baseUrl") or body.get("base_url") or "").strip()
+        logger.info(f"Base URL from body: '{base_url}' (body keys: {list(body.keys())})")
+
+        if not base_url:
+            try:
+                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
+                base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
+                logger.info(f"Using base_url from endpoints config: {base_url}")
+            except Exception:
+                base_url = "http://localhost:3001"
+                logger.warning(f"Failed to get endpoints config, using default: {base_url}")
+
+        logger.info(f"Updating toolset {toolset_type} with base_url: {base_url}")
+
+        # Always refresh redirect URI when updating config
+        # This ensures redirect URI is updated if base_url changes
+        auth_config = await _prepare_toolset_auth_config(
+            auth_config, toolset_type, registry, config_service, base_url, request
+        )
+
+        logger.info(f"Updated redirect URI for toolset {toolset_type}: {auth_config.get('redirectUri', 'NOT SET')}")
 
     # Update config
     config = {

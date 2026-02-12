@@ -1,5 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Type
+
+from pydantic import BaseModel
 
 from app.agents.tools.enums import ParameterType
 
@@ -64,6 +66,7 @@ class Tool:
     description: str
     function: Callable[[Any], Any]
     parameters: List[ToolParameter] = field(default_factory=list)
+    args_schema: Optional[Type[BaseModel]] = None  # NEW: Pydantic schema for validation
     returns: Optional[str] = None
     examples: List[Dict] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)

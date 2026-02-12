@@ -436,7 +436,6 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
         # Loop detection and graceful handling
         "force_final_response": False,
-        "max_iterations": 30,
         "loop_detected": False,
         "loop_reason": None,
 

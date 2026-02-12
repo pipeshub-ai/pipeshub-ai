@@ -1,24 +1,22 @@
 """
-Tool System - Corrected and Improved
+Tool System - Clean and Maintainable
 
 Clean, maintainable interface for tool loading and execution.
-Maintains all working logic while improving code quality.
+Uses RegistryToolWrapper for consistent tool execution.
 
-Key improvements:
+Key features:
 1. Clearer separation: internal tools (always) + user toolsets (configured)
 2. Better caching with proper invalidation
-3. Simplified instance creation logic
+3. Simplified tool loading logic
 4. Better error handling and logging
-5. SECURITY FIX: Strictly respects filtered tools - no toolset-level matching
+5. SECURITY: Strictly respects filtered tools - no toolset-level matching
 """
 
 import logging
 from typing import Any, Dict, List, Optional, Set
 
-from langchain.tools import BaseTool
-from pydantic import ConfigDict, Field
-
 from app.agents.tools.registry import _global_tools_registry
+from app.agents.tools.wrapper import RegistryToolWrapper
 from app.modules.agents.qna.chat_state import ChatState
 
 logger = logging.getLogger(__name__)
@@ -31,287 +29,14 @@ FAILURE_THRESHOLD = 3
 
 
 # ============================================================================
-# Tool Wrapper - Maintains Working Logic
-# ============================================================================
-
-class ToolWrapper(BaseTool):
-    """Wrapper for registry tools with proper instance caching"""
-
-    model_config = ConfigDict(
-        arbitrary_types_allowed=True,
-        extra='allow',
-        validate_assignment=False
-    )
-
-    app_name: str = Field(description="Application name (e.g., 'slack', 'jira')")
-    tool_name: str = Field(description="Tool name (e.g., 'send_message')")
-    registry_tool: Any = Field(description="Original registry tool")
-    _state: Optional[Dict[str, Any]] = None
-
-    def __init__(self, app_name: str, tool_name: str, registry_tool: Any, state: ChatState, **kwargs) -> None:
-        """Initialize tool wrapper"""
-        description = self._build_description(registry_tool, app_name, tool_name)
-
-        super().__init__(
-            name=f"{app_name}.{tool_name}",
-            description=description,
-            app_name=app_name,
-            tool_name=tool_name,
-            registry_tool=registry_tool,
-            **kwargs
-        )
-
-        self._state = state
-
-    @staticmethod
-    def _build_description(registry_tool: Any, app_name: str, tool_name: str) -> str:
-        """Build tool description with parameters"""
-        base_desc = getattr(registry_tool, 'description', f"{app_name}.{tool_name}")
-
-        parameters = getattr(registry_tool, 'parameters', None)
-        if not parameters:
-            return base_desc
-
-        param_docs = []
-        for param in parameters:
-            param_name = getattr(param, 'name', 'unknown')
-            param_type = getattr(getattr(param, 'type', None), 'name', 'any')
-            required = " (required)" if getattr(param, 'required', False) else " (optional)"
-            param_docs.append(f"  - {param_name}: {param_type}{required}")
-
-        return f"{base_desc}\n\nParameters:\n" + "\n".join(param_docs) if param_docs else base_desc
-
-    @property
-    def state(self) -> ChatState:
-        """Get chat state"""
-        return self._state
-
-    def _run(self, **kwargs) -> Any:
-        """Execute the tool"""
-        try:
-            tool_function = self.registry_tool.function
-
-            if self._is_class_method(tool_function):
-                result = self._execute_class_method(tool_function, kwargs)
-            else:
-                result = tool_function(**kwargs)
-
-            return self._format_result(result)
-
-        except Exception as e:
-            logger.error(f"Error executing tool {self.app_name}.{self.tool_name}: {e}", exc_info=True)
-            import json
-            return json.dumps({
-                "status": "error",
-                "message": str(e),
-                "tool": f"{self.app_name}.{self.tool_name}",
-                "args": kwargs
-            }, indent=2)
-
-    async def _arun(self, **kwargs) -> Any:
-        """Async execution"""
-        return self._run(**kwargs)
-
-    @staticmethod
-    def _is_class_method(func) -> bool:
-        """Check if function is a class method"""
-        return hasattr(func, '__qualname__') and '.' in func.__qualname__
-
-    def _execute_class_method(self, func, arguments: Dict) -> Any:
-        """Execute class method with instance caching"""
-        class_name = func.__qualname__.split('.')[0]
-        module_name = func.__module__
-        cache_key = f"{module_name}.{class_name}_{self.app_name}"
-
-        instance = self._get_cached_instance(module_name, class_name, cache_key)
-        method = getattr(instance, self.tool_name)
-        return method(**arguments)
-
-    def _get_cached_instance(self, module_name: str, class_name: str, cache_key: str) -> Any:
-        """Get or create cached tool instance"""
-        instance_cache = self.state.setdefault("_tool_instance_cache", {})
-
-        if cache_key in instance_cache:
-            logger.debug(f"Using cached instance for {cache_key}")
-            instance = instance_cache[cache_key]
-            self._update_instance_state(instance)
-            return instance
-
-        logger.debug(f"Creating new instance for {cache_key}")
-        instance = self._create_instance(module_name, class_name)
-        instance_cache[cache_key] = instance
-
-        logger.info(f"Cached instance for {cache_key} (total: {len(instance_cache)})")
-        return instance
-
-    def _update_instance_state(self, instance: Any) -> None:
-        """Update instance with current state"""
-        if hasattr(instance, 'set_state'):
-            instance.set_state(self.state)
-        elif hasattr(instance, 'state'):
-            try:
-                instance.state = self.state
-            except (AttributeError, TypeError):
-                pass
-
-    def _create_instance(self, module_name: str, class_name: str) -> Any:
-        """Create tool instance using factory or fallback"""
-        action_module = __import__(module_name, fromlist=[class_name])
-        action_class = getattr(action_module, class_name)
-
-        # Try factory first
-        instance = self._try_factory_creation(action_class)
-        if instance:
-            return instance
-
-        # Fallback to direct creation
-        return self._try_direct_creation(action_class)
-
-    def _try_factory_creation(self, action_class: type) -> Optional[Any]:
-        """Try to create instance using factory pattern"""
-        from app.agents.tools.factories.registry import ClientFactoryRegistry
-
-        factory = ClientFactoryRegistry.get_factory(self.app_name)
-        if not factory:
-            return None
-
-        try:
-            retrieval_service = self.state.get("retrieval_service")
-            if not retrieval_service or not hasattr(retrieval_service, 'config_service'):
-                return None
-
-            config_service = retrieval_service.config_service
-            state_logger = self.state.get("logger")
-
-            # Get toolset configuration
-            toolset_id = self._get_toolset_id()
-            toolset_config = self._get_toolset_config(toolset_id)
-
-            if not toolset_config:
-                if state_logger:
-                    if toolset_id:
-                        state_logger.warning(
-                            f"No toolset config found for {self.app_name} "
-                            f"(toolset ID: {toolset_id}). Tool may not be authenticated. "
-                            f"Falling back to direct creation."
-                        )
-                    else:
-                        state_logger.debug(
-                            f"No toolset ID found for {self.app_name}. "
-                            f"This may be an internal tool."
-                        )
-                return None
-
-            # Validate toolset config has required fields
-            if not toolset_config.get("isAuthenticated", False):
-                if state_logger:
-                    state_logger.warning(
-                        f"Toolset config for {self.app_name} (ID: {toolset_id}) "
-                        f"is not authenticated. Tool may fail."
-                    )
-
-            if state_logger:
-                state_logger.info(f"Using toolset config for {self.app_name} (ID: {toolset_id})")
-
-            tool_state = dict(self.state) if isinstance(self.state, dict) else self.state
-            client = factory.create_client_sync(
-                config_service=config_service,
-                logger=state_logger,
-                toolset_config=toolset_config,
-                state=tool_state
-            )
-
-            return action_class(client)
-
-        except Exception as e:
-            state_logger = self.state.get("logger")
-            if state_logger:
-                state_logger.warning(f"Factory creation failed for {self.app_name}: {e}")
-            return None
-
-    def _try_direct_creation(self, action_class: type) -> Any:
-        """Try direct instance creation for tools that don't need factories"""
-        state_logger = self.state.get("logger")
-
-        # Try with state first (most tools need this)
-        try:
-            instance = action_class(state=self.state)
-            if state_logger:
-                state_logger.debug(f"Created {action_class.__name__} with state")
-            return instance
-        except TypeError:
-            pass
-
-        # Try no arguments
-        try:
-            instance = action_class()
-            if state_logger:
-                state_logger.debug(f"Created {action_class.__name__} with no args")
-            return instance
-        except TypeError:
-            pass
-
-        # Try empty dict
-        try:
-            instance = action_class({})
-            if state_logger:
-                state_logger.debug(f"Created {action_class.__name__} with empty dict")
-            return instance
-        except Exception:
-            pass
-
-        # Try None
-        try:
-            instance = action_class(None)
-            if state_logger:
-                state_logger.debug(f"Created {action_class.__name__} with None")
-            return instance
-        except Exception:
-            pass
-
-        raise ValueError(
-            f"Could not instantiate {action_class.__name__} - "
-            f"tried: (state=...), (), ({{}}), (None)"
-        )
-
-    def _get_toolset_id(self) -> Optional[str]:
-        """Get toolset ID for this tool"""
-        tool_to_toolset_map = self.state.get("tool_to_toolset_map", {})
-        toolset_id = tool_to_toolset_map.get(self.name)
-
-        if toolset_id:
-            state_logger = self.state.get("logger")
-            if state_logger:
-                state_logger.debug(f"Found toolset ID {toolset_id} for {self.name}")
-
-        return toolset_id
-
-    def _get_toolset_config(self, toolset_id: Optional[str]) -> Optional[Dict[str, Any]]:
-        """Get toolset configuration from state"""
-        if not toolset_id:
-            return None
-
-        toolset_configs = self.state.get("toolset_configs", {})
-        return toolset_configs.get(toolset_id)
-
-    @staticmethod
-    def _format_result(result: Any) -> str:
-        """Format tool result for LLM"""
-        if isinstance(result, (tuple, list)) and len(result) == 2:
-            success, data = result
-            return str(data)
-        return str(result)
-
-
-# ============================================================================
-# Tool Loading - Corrected Logic
+# Tool Loading - Clean and Simple
 # ============================================================================
 
 class ToolLoader:
     """Clean tool loader with smart caching"""
 
     @staticmethod
-    def load_tools(state: ChatState) -> List[ToolWrapper]:
+    def load_tools(state: ChatState) -> List[RegistryToolWrapper]:
         """
         Load tools with intelligent caching.
 
@@ -364,20 +89,20 @@ class ToolLoader:
         return all_tools
 
     @staticmethod
-    def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[ToolWrapper]:
+    def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
         """Get specific tool by name"""
         registry_tools = _global_tools_registry.get_all_tools()
 
         # Direct match
         if tool_name in registry_tools:
             app_name, name = tool_name.split('.', 1)
-            return ToolWrapper(app_name, name, registry_tools[tool_name], state)
+            return RegistryToolWrapper(app_name, name, registry_tools[tool_name], state)
 
         # Search by suffix
         for full_name, registry_tool in registry_tools.items():
             if full_name.endswith(f".{tool_name}"):
                 app_name, name = full_name.split('.', 1)
-                return ToolWrapper(app_name, name, registry_tool, state)
+                return RegistryToolWrapper(app_name, name, registry_tool, state)
 
         return None
 
@@ -386,7 +111,7 @@ class ToolLoader:
 # Helper Functions
 # ============================================================================
 
-def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[ToolWrapper]:
+def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[RegistryToolWrapper]:
     """
     Load all tools (internal + user toolsets).
 
@@ -447,12 +172,12 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Too
 
             # Load tool if internal OR user-enabled
             if is_internal:
-                wrapper = ToolWrapper(app_name, tool_name, registry_tool, state)
+                wrapper = RegistryToolWrapper(app_name, tool_name, registry_tool, state)
                 internal_tools.append(wrapper)
                 if state_logger:
                     state_logger.debug(f"Loaded internal: {full_name}")
             elif is_user_enabled:
-                wrapper = ToolWrapper(app_name, tool_name, registry_tool, state)
+                wrapper = RegistryToolWrapper(app_name, tool_name, registry_tool, state)
                 user_tools.append(wrapper)
                 if state_logger:
                     state_logger.debug(f"Loaded user tool: {full_name}")
@@ -591,7 +316,7 @@ def _initialize_tool_state(state: ChatState) -> None:
 # Public API
 # ============================================================================
 
-def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
+def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     """
     Get all agent tools (cached).
 
@@ -619,7 +344,7 @@ def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
     return tools
 
 
-def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[ToolWrapper]:
+def get_tool_by_name(tool_name: str, state: ChatState) -> Optional[RegistryToolWrapper]:
     """Get specific tool by name"""
     return ToolLoader.get_tool_by_name(tool_name, state)
 
@@ -668,3 +393,76 @@ def get_tool_results_summary(state: ChatState) -> str:
             lines.append(f"  - {tool_name}: {tool_stats['success']} ✓, {tool_stats['error']} ✗")
 
     return "\n".join(lines)
+
+
+# ============================================================================
+# Modern Tool System with Pydantic Schemas (for ReAct Agent)
+# ============================================================================
+
+def get_agent_tools_with_schemas(state: ChatState) -> List:
+    """
+    Convert registry tools to StructuredTools with Pydantic schemas.
+
+    This function is used by the ReAct agent to get tools with proper
+    schema validation for function calling.
+    Args:
+        state: Chat state containing tool configuration
+
+    Returns:
+        List of LangChain StructuredTool objects with Pydantic schemas
+    """
+    try:
+        from langchain_core.tools import StructuredTool
+
+        # Get tools from registry (RegistryToolWrapper objects)
+        registry_tools = get_agent_tools(state)
+        structured_tools = []
+
+        for tool_wrapper in registry_tools:
+            registry_tool = tool_wrapper.registry_tool
+
+            # Get Pydantic schema from Tool object (stored during registration from @tool decorator)
+            args_schema = getattr(registry_tool, 'args_schema', None)
+
+            # Sanitize tool name for external API (e.g., Anthropic)
+            # Anthropic tool names must match '^[a-zA-Z0-9_-]{1,128}$' (no dots)
+            sanitized_tool_name = tool_wrapper.name.replace('.', '_')
+
+            # Create a wrapper function that preserves the tool_wrapper binding
+            # This ensures the state is accessible when the tool is executed
+            # Use a closure to capture tool_wrapper correctly (avoiding Python loop closure issue)
+            def make_tool_func(wrapper):
+                def tool_func(**kwargs):
+                    return wrapper._run(**kwargs)
+                return tool_func
+
+            tool_func = make_tool_func(tool_wrapper)
+
+            # Create StructuredTool with schema if available
+            if args_schema:
+                # Use schema for validation
+                structured_tool = StructuredTool.from_function(
+                    func=tool_func,
+                    name=sanitized_tool_name,  # Use sanitized name
+                    description=tool_wrapper.description,
+                    args_schema=args_schema,
+                )
+            else:
+                # Fallback: no schema (for legacy tools without Pydantic schemas)
+                structured_tool = StructuredTool.from_function(
+                    func=tool_func,
+                    name=sanitized_tool_name,  # Use sanitized name
+                    description=tool_wrapper.description,
+                )
+
+            structured_tools.append(structured_tool)
+
+        return structured_tools
+    except ImportError:
+        # Fallback if langchain_core not available
+        logger.warning("langchain_core.tools not available, returning regular tools")
+        return get_agent_tools(state)
+    except Exception as e:
+        logger.error(f"Error converting tools to StructuredTools: {e}", exc_info=True)
+        # Fallback to regular tools
+        return get_agent_tools(state)

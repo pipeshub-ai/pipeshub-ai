@@ -3,10 +3,10 @@ import json
 import logging
 from typing import List, Optional
 
+from pydantic import BaseModel, Field
+
 from app.agents.actions.google.gmail.utils import GmailUtils
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -15,7 +15,6 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
-    ToolDefinition,
     ToolsetBuilder,
 )
 from app.sources.client.google.google import GoogleClient
@@ -24,62 +23,67 @@ from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
 
-# Define tools
-tools: List[ToolDefinition] = [
-    ToolDefinition(
-        name="send_message",
-        description="Send an email via Gmail",
-        parameters=[
-            {"name": "to", "type": "string", "description": "Recipient email address", "required": True},
-            {"name": "subject", "type": "string", "description": "Email subject", "required": True},
-            {"name": "message", "type": "string", "description": "Email body", "required": True}
-        ],
-        tags=["email", "send"]
-    ),
-    ToolDefinition(
-        name="get_messages",
-        description="Get messages from Gmail inbox",
-        parameters=[
-            {"name": "max_results", "type": "integer", "description": "Max messages to return", "required": False},
-            {"name": "query", "type": "string", "description": "Search query", "required": False}
-        ],
-        tags=["email", "list"]
-    ),
-    ToolDefinition(
-        name="get_message",
-        description="Get a specific email message",
-        parameters=[
-            {"name": "message_id", "type": "string", "description": "Message ID", "required": True}
-        ],
-        tags=["email", "info"]
-    ),
-    ToolDefinition(
-        name="search_messages",
-        description="Search for email messages",
-        parameters=[
-            {"name": "query", "type": "string", "description": "Search query", "required": True}
-        ],
-        tags=["email", "search"]
-    ),
-    ToolDefinition(
-        name="delete_message",
-        description="Delete an email message",
-        parameters=[
-            {"name": "message_id", "type": "string", "description": "Message ID", "required": True}
-        ],
-        tags=["email", "delete"]
-    ),
-    ToolDefinition(
-        name="create_draft",
-        description="Create a draft email",
-        parameters=[
-            {"name": "to", "type": "string", "description": "Recipient email address", "required": True},
-            {"name": "subject", "type": "string", "description": "Email subject", "required": True},
-            {"name": "message", "type": "string", "description": "Email body", "required": True}
-        ],
-        tags=["email", "draft"]
-    ),
-]
+# Pydantic schemas for Gmail tools
+class SendEmailInput(BaseModel):
+    """Schema for sending an email"""
+    mail_to: List[str] = Field(description="List of email addresses to send the email to")
+    mail_subject: str = Field(description="The subject of the email")
+    mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
+    mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
+    mail_body: Optional[str] = Field(default=None, description="The body content of the email")
+    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
+    thread_id: Optional[str] = Field(default=None, description="The thread ID to maintain conversation context")
+    message_id: Optional[str] = Field(default=None, description="The message ID for threading")
+
+
+class ReplyInput(BaseModel):
+    """Schema for replying to an email"""
+    message_id: str = Field(description="The ID of the email to reply to")
+    mail_to: List[str] = Field(description="List of email addresses to send the reply to")
+    mail_subject: str = Field(description="The subject of the reply email")
+    mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
+    mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
+    mail_body: Optional[str] = Field(default=None, description="The body content of the reply email")
+    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
+    thread_id: Optional[str] = Field(default=None, description="The thread ID to maintain conversation context")
+
+
+class DraftEmailInput(BaseModel):
+    """Schema for creating a draft email"""
+    mail_to: List[str] = Field(description="List of email addresses to send the email to")
+    mail_subject: str = Field(description="The subject of the email")
+    mail_cc: Optional[List[str]] = Field(default=None, description="List of email addresses to CC")
+    mail_bcc: Optional[List[str]] = Field(default=None, description="List of email addresses to BCC")
+    mail_body: Optional[str] = Field(default=None, description="The body content of the email")
+    mail_attachments: Optional[List[str]] = Field(default=None, description="List of file paths to attach")
+
+
+class SearchEmailsInput(BaseModel):
+    """Schema for searching emails"""
+    query: str = Field(description="The search query to find emails (Gmail search syntax)")
+    max_results: Optional[int] = Field(default=10, description="Maximum number of emails to return")
+    page_token: Optional[str] = Field(default=None, description="Token for pagination")
+
+
+class GetEmailDetailsInput(BaseModel):
+    """Schema for getting email details"""
+    message_id: str = Field(description="The ID of the email to get details for")
+
+
+class GetEmailAttachmentsInput(BaseModel):
+    """Schema for getting email attachments"""
+    message_id: str = Field(description="The ID of the email to get attachments for")
+
+
+class DownloadEmailAttachmentInput(BaseModel):
+    """Schema for downloading an email attachment"""
+    message_id: str = Field(description="The ID of the email to download the attachment for")
+    attachment_id: str = Field(description="The ID of the attachment to download")
+
+
+class GetUserProfileInput(BaseModel):
+    """Schema for getting user profile"""
+    user_id: Optional[str] = Field(default="me", description="The user ID (use 'me' for authenticated user)")
 
 
 # Register Gmail toolset
@@ -117,7 +121,6 @@ tools: List[ToolDefinition] = [
             app_description="Gmail OAuth application for agent integration"
         )
     ])\
-    .with_tools(tools)\
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/gmail.svg"))\
     .build_decorator()
 class Gmail:
@@ -148,60 +151,8 @@ class Gmail:
     @tool(
         app_name="gmail",
         tool_name="reply",
-        parameters=[
-            ToolParameter(
-                name="message_id",
-                type=ParameterType.STRING,
-                description="The ID of the email to reply to",
-                required=True
-            ),
-            ToolParameter(
-                name="mail_to",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to send the reply to",
-                required=True,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_subject",
-                type=ParameterType.STRING,
-                description="The subject of the reply email",
-                required=True
-            ),
-            ToolParameter(
-                name="mail_cc",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to CC",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_bcc",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to BCC",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_body",
-                type=ParameterType.STRING,
-                description="The body content of the reply email",
-                required=False
-            ),
-            ToolParameter(
-                name="mail_attachments",
-                type=ParameterType.ARRAY,
-                description="List of file paths to attach",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="thread_id",
-                type=ParameterType.STRING,
-                description="The thread ID to maintain conversation context",
-                required=False
-            )
-        ]
+        description="Reply to an email message",
+        args_schema=ReplyInput,
     )
     def reply(
         self,
@@ -256,48 +207,8 @@ class Gmail:
     @tool(
         app_name="gmail",
         tool_name="draft_email",
-        parameters=[
-            ToolParameter(
-                name="mail_to",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to send the email to",
-                required=True,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_subject",
-                type=ParameterType.STRING,
-                description="The subject of the email",
-                required=True
-            ),
-            ToolParameter(
-                name="mail_cc",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to CC",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_bcc",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to BCC",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_body",
-                type=ParameterType.STRING,
-                description="The body content of the email",
-                required=False
-            ),
-            ToolParameter(
-                name="mail_attachments",
-                type=ParameterType.ARRAY,
-                description="List of file paths to attach",
-                required=False,
-                items={"type": "string"}
-            )
-        ]
+        description="Create a draft email",
+        args_schema=DraftEmailInput,
     )
     def draft_email(
         self,
@@ -346,60 +257,8 @@ class Gmail:
     @tool(
         app_name="gmail",
         tool_name="send_email",
-        parameters=[
-            ToolParameter(
-                name="mail_to",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to send the email to",
-                required=True,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_subject",
-                type=ParameterType.STRING,
-                description="The subject of the email",
-                required=True
-            ),
-            ToolParameter(
-                name="mail_cc",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to CC",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_bcc",
-                type=ParameterType.ARRAY,
-                description="List of email addresses to BCC",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="mail_body",
-                type=ParameterType.STRING,
-                description="The body content of the email",
-                required=False
-            ),
-            ToolParameter(
-                name="mail_attachments",
-                type=ParameterType.ARRAY,
-                description="List of file paths to attach",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="thread_id",
-                type=ParameterType.STRING,
-                description="The thread ID to maintain conversation context",
-                required=False
-            ),
-            ToolParameter(
-                name="message_id",
-                type=ParameterType.STRING,
-                description="The message ID for threading",
-                required=False
-            )
-        ]
+        description="Send an email via Gmail",
+        args_schema=SendEmailInput,
     )
     def send_email(
         self,
@@ -454,26 +313,8 @@ class Gmail:
     @tool(
         app_name="gmail",
         tool_name="search_emails",
-        parameters=[
-            ToolParameter(
-                name="query",
-                type=ParameterType.STRING,
-                description="The search query to find emails (Gmail search syntax)",
-                required=True
-            ),
-            ToolParameter(
-                name="max_results",
-                type=ParameterType.INTEGER,
-                description="Maximum number of emails to return",
-                required=False
-            ),
-            ToolParameter(
-                name="page_token",
-                type=ParameterType.STRING,
-                description="Token for pagination to get next page of results",
-                required=False
-            )
-        ]
+        description="Search for email messages using Gmail search syntax",
+        args_schema=SearchEmailsInput,
     )
     def search_emails(
         self,
@@ -506,14 +347,8 @@ class Gmail:
     @tool(
         app_name="gmail",
         tool_name="get_email_details",
-        parameters=[
-            ToolParameter(
-                name="message_id",
-                type=ParameterType.STRING,
-                description="The ID of the email to get details for",
-                required=True
-            )
-        ]
+        description="Get a specific email message",
+        args_schema=GetEmailDetailsInput,
     )
     def get_email_details(
         self,
@@ -541,14 +376,8 @@ class Gmail:
     @tool(
         app_name="gmail",
         tool_name="get_email_attachments",
-        parameters=[
-            ToolParameter(
-                name="message_id",
-                type=ParameterType.STRING,
-                description="The ID of the email to get attachments for",
-                required=True
-            )
-        ]
+        description="Get attachments for a specific email",
+        args_schema=GetEmailAttachmentsInput,
     )
     def get_email_attachments(
         self,
@@ -587,57 +416,9 @@ class Gmail:
 
     @tool(
         app_name="gmail",
-        tool_name="download_email_attachment",
-        parameters=[
-            ToolParameter(
-                name="message_id",
-                type=ParameterType.STRING,
-                description="The ID of the email to download the attachment for",
-                required=True
-            ),
-            ToolParameter(
-                name="attachment_id",
-                type=ParameterType.STRING,
-                description="The ID of the attachment to download",
-                required=True
-            )
-        ]
-    )
-    def download_email_attachment(
-        self,
-        message_id: str,
-        attachment_id: str,
-    ) -> tuple[bool, str]:
-        """Download an email attachment
-        Args:
-            message_id: The ID of the email
-            attachment_id: The ID of the attachment
-        Returns:
-            tuple[bool, str]: True if the attachment is downloaded, False otherwise
-        """
-        try:
-            # Use GoogleGmailDataSource method
-            attachment = self._run_async(self.client.users_messages_attachments_get(
-                userId="me",
-                messageId=message_id,
-                id=attachment_id,
-            ))
-            return True, json.dumps(attachment)
-        except Exception as e:
-            logger.error(f"Failed to download attachment {attachment_id} from message {message_id}: {e}")
-            return False, json.dumps({"error": str(e)})
-
-    @tool(
-        app_name="gmail",
         tool_name="get_user_profile",
-        parameters=[
-            ToolParameter(
-                name="user_id",
-                type=ParameterType.STRING,
-                description="The user ID (use 'me' for authenticated user)",
-                required=False
-            )
-        ]
+        description="Get the authenticated user's Gmail profile",
+        args_schema=GetUserProfileInput,
     )
     def get_user_profile(
         self,
@@ -664,3 +445,33 @@ class Gmail:
         except Exception as e:
             logger.error(f"Failed to get user profile: {e}")
             return False, json.dumps({"error": str(e)})
+
+    # @tool(
+    #     app_name="gmail",
+    #     tool_name="download_email_attachment",
+    #     description="Download an attachment from an email",
+    #     args_schema=DownloadEmailAttachmentInput,
+    # )
+    # def download_email_attachment(
+    #     self,
+    #     message_id: str,
+    #     attachment_id: str,
+    # ) -> tuple[bool, str]:
+    #     """Download an email attachment
+    #     Args:
+    #         message_id: The ID of the email
+    #         attachment_id: The ID of the attachment
+    #     Returns:
+    #         tuple[bool, str]: True if the attachment is downloaded, False otherwise
+    #     """
+    #     try:
+    #         # Use GoogleGmailDataSource method
+    #         attachment = self._run_async(self.client.users_messages_attachments_get(
+    #             userId="me",
+    #             messageId=message_id,
+    #             id=attachment_id,
+    #         ))
+    #         return True, json.dumps(attachment)
+    #     except Exception as e:
+    #         logger.error(f"Failed to download attachment {attachment_id} from message {message_id}: {e}")
+    #         return False, json.dumps({"error": str(e)})

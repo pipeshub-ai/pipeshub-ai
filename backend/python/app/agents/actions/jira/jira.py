@@ -5,6 +5,8 @@ import re
 import threading
 from typing import Coroutine, Dict, List, Optional, Tuple
 
+from pydantic import BaseModel, Field
+
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
@@ -17,7 +19,6 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolCategory,
-    ToolDefinition,
     ToolsetBuilder,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
@@ -28,78 +29,65 @@ from app.sources.external.jira.jira import JiraDataSource
 
 logger = logging.getLogger(__name__)
 
-# Define tools
-tools: List[ToolDefinition] = [
-    ToolDefinition(
-        name="create_issue",
-        description="Create a new issue in JIRA",
-        parameters=[
-            {"name": "project_key", "type": "string", "description": "Project key", "required": True},
-            {"name": "summary", "type": "string", "description": "Issue summary", "required": True},
-            {"name": "issue_type_name", "type": "string", "description": "Issue type", "required": True},
-            {"name": "description", "type": "string", "description": "Issue description", "required": False}
-        ],
-        tags=["issues", "create"]
-    ),
-    ToolDefinition(
-        name="get_projects",
-        description="Get all JIRA projects",
-        parameters=[],
-        tags=["projects", "list"]
-    ),
-    ToolDefinition(
-        name="get_issues",
-        description="Get issues from a JIRA project",
-        parameters=[
-            {"name": "project_key", "type": "string", "description": "Project key", "required": True},
-            {"name": "days", "type": "integer", "description": "Days to look back", "required": False},
-            {"name": "max_results", "type": "integer", "description": "Max results", "required": False}
-        ],
-        tags=["issues", "list"]
-    ),
-    ToolDefinition(
-        name="get_issue",
-        description="Get a specific JIRA issue",
-        parameters=[
-            {"name": "issue_key", "type": "string", "description": "Issue key", "required": True}
-        ],
-        tags=["issues", "info"]
-    ),
-    ToolDefinition(
-        name="search_issues",
-        description="Search for issues using JQL",
-        parameters=[
-            {"name": "jql", "type": "string", "description": "JQL query", "required": True},
-            {"name": "maxResults", "type": "integer", "description": "Max results", "required": False}
-        ],
-        tags=["issues", "search"]
-    ),
-    ToolDefinition(
-        name="add_comment",
-        description="Add a comment to a JIRA issue",
-        parameters=[
-            {"name": "issue_key", "type": "string", "description": "Issue key", "required": True},
-            {"name": "comment", "type": "string", "description": "Comment text", "required": True}
-        ],
-        tags=["issues", "comments"]
-    ),
-    ToolDefinition(
-        name="search_users",
-        description="Search JIRA users",
-        parameters=[
-            {"name": "query", "type": "string", "description": "Search query", "required": True},
-            {"name": "max_results", "type": "integer", "description": "Max results", "required": False}
-        ],
-        tags=["users", "search"]
-    ),
-    ToolDefinition(
-        name="get_current_user",
-        description="Get the current authenticated user's details",
-        parameters=[],
-        tags=["users", "info"]
-    ),
-]
+# Pydantic schemas for Jira tools
+class CreateIssueInput(BaseModel):
+    """Schema for creating JIRA issues"""
+    project_key: str = Field(description="JIRA project key")
+    summary: str = Field(description="Issue summary")
+    issue_type_name: str = Field(description="Issue type")
+    description: Optional[str] = Field(default=None, description="Issue description")
+    assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
+    assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
+    priority_name: Optional[str] = Field(default=None, description="Priority")
+    labels: Optional[List[str]] = Field(default=None, description="List of labels")
+    components: Optional[List[str]] = Field(default=None, description="List of component names")
 
+
+class GetIssuesInput(BaseModel):
+    """Schema for getting issues from a project"""
+    project_key: str = Field(description="Project key")
+    days: Optional[int] = Field(default=None, description="Days to look back")
+    max_results: Optional[int] = Field(default=None, description="Max results")
+
+
+class GetIssueInput(BaseModel):
+    """Schema for getting a specific issue"""
+    issue_key: str = Field(description="Issue key")
+
+
+class SearchIssuesInput(BaseModel):
+    """Schema for searching issues using JQL"""
+    jql: str = Field(description="JQL query with time filter")
+    maxResults: Optional[int] = Field(default=50, description="Max results")
+
+
+class AddCommentInput(BaseModel):
+    """Schema for adding a comment"""
+    issue_key: str = Field(description="Issue key")
+    comment: str = Field(description="Comment text")
+
+
+class SearchUsersInput(BaseModel):
+    """Schema for searching users"""
+    query: str = Field(description="Search query (name or email)")
+    max_results: Optional[int] = Field(default=50, description="Max results")
+
+
+class UpdateIssueInput(BaseModel):
+    """Schema for updating a JIRA issue"""
+    issue_key: str = Field(description="Issue key (e.g., 'PA-123')")
+    summary: Optional[str] = Field(default=None, description="Issue summary")
+    description: Optional[str] = Field(default=None, description="Issue description")
+    assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
+    assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
+    priority_name: Optional[str] = Field(default=None, description="Priority")
+    labels: Optional[List[str]] = Field(default=None, description="List of labels")
+    components: Optional[List[str]] = Field(default=None, description="List of component names")
+    status: Optional[str] = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
+
+class GetProjectMetadataInput(BaseModel):
+    """Schema for getting project metadata"""
+    project_key: str = Field(description="Project key")
 
 # Register JIRA toolset
 @ToolsetBuilder("Jira")\
@@ -129,7 +117,6 @@ tools: List[ToolDefinition] = [
             app_description="JIRA OAuth application for agent integration"
         )
     ])\
-    .with_tools(tools)\
     .configure(lambda builder: builder.with_icon("/assets/icons/connectors/jira.svg"))\
     .build_decorator()
 class Jira:
@@ -653,64 +640,7 @@ class Jira:
         app_name="jira",
         tool_name="create_issue",
         description="Create a new issue in JIRA",
-        parameters=[
-            ToolParameter(
-                name="project_key",
-                type=ParameterType.STRING,
-                description="JIRA project key (e.g., 'SP', 'PROJ', 'TEST'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
-                required=True
-            ),
-            ToolParameter(
-                name="summary",
-                type=ParameterType.STRING,
-                description="Issue summary/title",
-                required=True
-            ),
-            ToolParameter(
-                name="issue_type_name",
-                type=ParameterType.STRING,
-                description="Issue type (e.g., 'Task', 'Bug', 'Story')",
-                required=True
-            ),
-            ToolParameter(
-                name="description",
-                type=ParameterType.STRING,
-                description="Issue description",
-                required=False
-            ),
-            ToolParameter(
-                name="assignee_account_id",
-                type=ParameterType.STRING,
-                description="Assignee account ID",
-                required=False
-            ),
-            ToolParameter(
-                name="assignee_query",
-                type=ParameterType.STRING,
-                description="Name or email to resolve assignee",
-                required=False
-            ),
-            ToolParameter(
-                name="priority_name",
-                type=ParameterType.STRING,
-                description="Priority (e.g., 'High', 'Medium', 'Low')",
-                required=False
-            ),
-            ToolParameter(
-                name="labels",
-                type=ParameterType.LIST,
-                description="List of labels",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="components",
-                type=ParameterType.LIST,
-                description="List of component names",
-                required=False,
-                items={"type": "string"}
-            ),
-        ],
+        args_schema=CreateIssueInput,  # NEW: Pydantic schema
         returns="Created issue details"
     )
     def create_issue(
@@ -816,6 +746,147 @@ class Jira:
 
     @tool(
         app_name="jira",
+        tool_name="update_issue",
+        description="Update an existing JIRA issue. Can update summary, description, assignee, priority, labels, components, and status.",
+        args_schema=UpdateIssueInput,  # NEW: Pydantic schema
+        returns="Updated issue details"
+    )
+    def update_issue(
+        self,
+        issue_key: str,
+        summary: Optional[str] = None,
+        description: Optional[str] = None,
+        assignee_account_id: Optional[str] = None,
+        assignee_query: Optional[str] = None,
+        priority_name: Optional[str] = None,
+        labels: Optional[List[str]] = None,
+        components: Optional[List[str]] = None,
+        status: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Update an existing JIRA issue"""
+        try:
+            # Build fields dictionary with only provided values
+            fields: Dict[str, object] = {}
+
+            if summary:
+                fields["summary"] = summary
+
+            if description:
+                # Convert plain text description to ADF format if it's a string
+                if isinstance(description, str):
+                    fields["description"] = self._convert_text_to_adf(description)
+                elif isinstance(description, dict):
+                    # Already in ADF format
+                    fields["description"] = description
+                else:
+                    return False, json.dumps({
+                        "error": "Description must be a string or ADF document",
+                        "guidance": "Provide description as plain text (string) or ADF format (dict)"
+                    })
+
+            # Resolve assignee
+            if assignee_query and not assignee_account_id:
+                # Get project key from issue to resolve assignee
+                issue_response = self._run_async(
+                    self.client.get_issue(issueIdOrKey=issue_key)
+                )
+                if issue_response.status == HttpStatusCode.SUCCESS.value:
+                    issue_data = issue_response.json()
+                    project_key = issue_data.get("fields", {}).get("project", {}).get("key")
+                    if project_key:
+                        assignee_account_id = self._resolve_user_to_account_id(
+                            project_key,
+                            assignee_query
+                        )
+
+            if assignee_account_id:
+                fields["assignee"] = {"accountId": assignee_account_id}
+
+            if priority_name:
+                fields["priority"] = {"name": priority_name}
+
+            if labels:
+                fields["labels"] = labels
+
+            if components:
+                fields["components"] = [{"name": comp} for comp in components]
+
+            # Handle status transition if provided
+            # Note: Status changes in JIRA must be done via transitions, not directly in fields
+            transition = None
+            if status:
+                try:
+                    # Get available transitions for the issue
+                    transitions_response = self._run_async(
+                        self.client.get_transitions(issueIdOrKey=issue_key)
+                    )
+                    if transitions_response.status == HttpStatusCode.SUCCESS.value:
+                        transitions_data = transitions_response.json()
+                        transitions = transitions_data.get("transitions", [])
+                        # Find transition matching the status name (case-insensitive)
+                        for trans in transitions:
+                            if trans.get("to", {}).get("name", "").lower() == status.lower():
+                                transition = {"id": trans.get("id")}
+                                break
+                        if not transition:
+                            logger.warning(f"Status transition '{status}' not found. Available transitions: {[t.get('to', {}).get('name') for t in transitions]}")
+                            # Don't fail, just log warning - fields update will still work
+                except Exception as e:
+                    logger.warning(f"Could not get transitions for issue {issue_key}: {e}. Status update will be skipped.")
+
+            # Update issue
+            response = self._run_async(
+                self.client.edit_issue(
+                    issueIdOrKey=issue_key,
+                    fields=fields if fields else None,
+                    transition=transition
+                )
+            )
+
+            if response.status == HttpStatusCode.SUCCESS.value or response.status == HttpStatusCode.NO_CONTENT.value:
+                # If returnIssue was not set, fetch the updated issue
+                if response.status == HttpStatusCode.NO_CONTENT.value:
+                    issue_response = self._run_async(
+                        self.client.get_issue(issueIdOrKey=issue_key)
+                    )
+                    if issue_response.status == HttpStatusCode.SUCCESS.value:
+                        data = issue_response.json()
+                    else:
+                        return True, json.dumps({
+                            "message": "Issue updated successfully",
+                            "data": {"key": issue_key}
+                        })
+                else:
+                    data = response.json()
+
+                # Clean response: remove redundant fields
+                cleaned_data = (
+                    ResponseTransformer(data)
+                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                            "*.properties", "*._links")
+                    .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
+                          "issuetype", "created", "updated", "description", "fields")
+                    .clean()
+                )
+                return True, json.dumps({
+                    "message": "Issue updated successfully",
+                    "data": cleaned_data
+                })
+            else:
+                return self._handle_response(
+                    response,
+                    "Issue updated successfully",
+                    include_guidance=True
+                )
+
+        except Exception as e:
+            logger.error(f"Error updating issue: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="jira",
         tool_name="get_projects",
         description="Get all JIRA projects",
         parameters=[],
@@ -900,26 +971,7 @@ class Jira:
         app_name="jira",
         tool_name="get_issues",
         description="Get issues from a JIRA project. For more specific queries, use search_issues with custom JQL.",
-        parameters=[
-            ToolParameter(
-                name="project_key",
-                type=ParameterType.STRING,
-                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
-                required=True
-            ),
-            ToolParameter(
-                name="days",
-                type=ParameterType.INTEGER,
-                description="Number of days to look back (default 30). Use larger values for older issues.",
-                required=False
-            ),
-            ToolParameter(
-                name="max_results",
-                type=ParameterType.INTEGER,
-                description="Maximum number of results to return (default 50)",
-                required=False
-            ),
-        ],
+        args_schema=GetIssuesInput,  # NEW: Pydantic schema
         returns="List of issues from the project"
     )
     def get_issues(
@@ -977,14 +1029,7 @@ class Jira:
         app_name="jira",
         tool_name="get_issue",
         description="Get a specific JIRA issue",
-        parameters=[
-            ToolParameter(
-                name="issue_key",
-                type=ParameterType.STRING,
-                description="Issue key",
-                required=True
-            ),
-        ],
+        args_schema=GetIssueInput,  # NEW: Pydantic schema
         returns="Issue details"
     )
     def get_issue(self, issue_key: str) -> Tuple[bool, str]:
@@ -1025,42 +1070,8 @@ class Jira:
         tool_name="search_issues",
         description=(
             "Search for JIRA issues using JQL (JIRA Query Language). "
-            "For 'my tickets' or 'assigned to me': Use `assignee = currentUser()` - NO need to look up accountId! "
-            "MUST include a time filter (e.g., `updated >= -30d`) to avoid 'unbounded query' errors."
         ),
-        parameters=[
-            ToolParameter(
-                name="jql",
-                type=ParameterType.STRING,
-                description=(
-                    "JQL query string.\n"
-                    "\n"
-                    "CURRENT USER QUERIES:\n"
-                    "- Use `assignee = currentUser()` for 'my tickets' or 'assigned to me'\n"
-                    "- Do NOT call search_users first - currentUser() auto-resolves\n"
-                    "\n"
-                    "REQUIRED TIME FILTER (prevents unbounded query errors):\n"
-                    "- Always include: `AND updated >= -30d` or `AND created >= -7d`\n"
-                    "\n"
-                    "JQL SYNTAX RULES:\n"
-                    "- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)\n"
-                    "- Current user: `currentUser()` with parentheses\n"
-                    "- Status values: `status = \"Open\"` with quotes\n"
-                    "\n"
-                    "EXAMPLES:\n"
-                    "- `project = \"PA\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`\n"
-                    "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
-                    "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
-                ),
-                required=True
-            ),
-            ToolParameter(
-                name="maxResults",
-                type=ParameterType.INTEGER,
-                description="Maximum number of results to return (default 50)",
-                required=False
-            ),
-        ],
+        args_schema=SearchIssuesInput,  # NEW: Pydantic schema
         returns="List of matching issues with key, summary, status, assignee, etc."
     )
     def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
@@ -1152,29 +1163,36 @@ class Jira:
         app_name="jira",
         tool_name="add_comment",
         description="Add a comment to a JIRA issue",
-        parameters=[
-            ToolParameter(
-                name="issue_key",
-                type=ParameterType.STRING,
-                description="Issue key",
-                required=True
-            ),
-            ToolParameter(
-                name="comment",
-                type=ParameterType.STRING,
-                description="Comment text",
-                required=True
-            ),
-        ],
+        args_schema=AddCommentInput,  # NEW: Pydantic schema
         returns="Comment details"
     )
     def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
-        """Add a comment to an issue"""
+
         try:
+            # Convert plain text comment to ADF format if it's a string
+            # Jira API requires comments in ADF (Atlassian Document Format) - a dict structure
+            if isinstance(comment, str):
+                comment_adf = self._convert_text_to_adf(comment)
+                if not comment_adf:
+                    return False, json.dumps({
+                        "error": "Failed to convert comment to ADF format",
+                        "guidance": "Comment text is required and cannot be empty"
+                    })
+                # Pass ADF dict directly (even though parameter is typed as str, it accepts dict at runtime)
+                comment_body = comment_adf
+            elif isinstance(comment, dict):
+                # Already in ADF format (dict) - use directly
+                comment_body = comment
+            else:
+                return False, json.dumps({
+                    "error": f"Invalid comment type: {type(comment).__name__}",
+                    "guidance": "Comment must be a string (plain text) or dict (ADF format)"
+                })
+
             response = self._run_async(
                 self.client.add_comment(
                     issueIdOrKey=issue_key,
-                    body_body=comment
+                    body_body=comment_body  # Pass ADF dict directly
                 )
             )
 
@@ -1254,26 +1272,8 @@ class Jira:
         tool_name="search_users",
         description=(
             "Search JIRA users by name or email. Returns user accountId needed for JQL queries. "
-            "NOTE: For searching issues assigned to the CURRENT user (self), use `assignee = currentUser()` "
-            "in JQL instead of calling this tool - it's faster and more reliable."
         ),
-        parameters=[
-            ToolParameter(
-                name="query",
-                type=ParameterType.STRING,
-                description=(
-                    "Search query - can be part of a user's name, email, or display name. "
-                    "Must be at least 1 character. Example: 'john', 'john.doe@company.com'"
-                ),
-                required=True
-            ),
-            ToolParameter(
-                name="max_results",
-                type=ParameterType.INTEGER,
-                description="Maximum results (default 20)",
-                required=False
-            ),
-        ],
+        args_schema=SearchUsersInput,  # NEW: Pydantic schema
         returns="List of users with account IDs (accountId, displayName, emailAddress)"
     )
     def search_users(
@@ -1342,85 +1342,11 @@ class Jira:
         except Exception as e:
             logger.error(f"Error searching users: {e}")
             return False, json.dumps({"error": str(e)})
-
-    @tool(
-        app_name="jira",
-        tool_name="get_assignable_users",
-        description="Get assignable users for a project",
-        parameters=[
-            ToolParameter(
-                name="project_key",
-                type=ParameterType.STRING,
-                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
-                required=True
-            ),
-            ToolParameter(
-                name="query",
-                type=ParameterType.STRING,
-                description="Optional search query",
-                required=False
-            ),
-            ToolParameter(
-                name="max_results",
-                type=ParameterType.INTEGER,
-                description="Maximum results (default 20)",
-                required=False
-            ),
-        ],
-        returns="List of assignable users"
-    )
-    def get_assignable_users(
-        self,
-        project_key: str,
-        query: Optional[str] = None,
-        max_results: Optional[int] = None
-    ) -> Tuple[bool, str]:
-        """Get assignable users for a project"""
-        try:
-            response = self._run_async(
-                self.client.find_assignable_users(
-                    project=project_key,
-                    query=query,
-                    maxResults=max_results
-                )
-            )
-
-            if response.status == HttpStatusCode.SUCCESS.value:
-                data = response.json()
-                # Clean response: remove redundant fields, keep essential user info
-                cleaned_data = (
-                    ResponseTransformer(data)
-                    .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links")
-                    .keep("accountId", "displayName", "emailAddress")
-                    .clean()
-                )
-                return True, json.dumps({
-                    "message": "Assignable users fetched successfully",
-                    "data": cleaned_data
-                })
-            else:
-                return self._handle_response(
-                    response,
-                    "Assignable users fetched successfully"
-                )
-        except Exception as e:
-            logger.error(f"Error fetching assignable users: {e}")
-            return False, json.dumps({"error": str(e)})
-
     @tool(
         app_name="jira",
         tool_name="get_project_metadata",
         description="Get project metadata including issue types and components",
-        parameters=[
-            ToolParameter(
-                name="project_key",
-                type=ParameterType.STRING,
-                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
-                required=True
-            ),
-        ],
+        args_schema=GetProjectMetadataInput,
         returns="Project metadata"
     )
     def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
@@ -1479,3 +1405,69 @@ class Jira:
         except Exception as e:
             logger.error(f"Error getting project metadata: {e}")
             return False, json.dumps({"error": str(e)})
+
+    # @tool(
+    #     app_name="jira",
+    #     tool_name="get_assignable_users",
+    #     description="Get assignable users for a project",
+    #     parameters=[
+    #         ToolParameter(
+    #             name="project_key",
+    #             type=ParameterType.STRING,
+    #             description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
+    #             required=True
+    #         ),
+    #         ToolParameter(
+    #             name="query",
+    #             type=ParameterType.STRING,
+    #             description="Optional search query",
+    #             required=False
+    #         ),
+    #         ToolParameter(
+    #             name="max_results",
+    #             type=ParameterType.INTEGER,
+    #             description="Maximum results (default 20)",
+    #             required=False
+    #         ),
+    #     ],
+    #     returns="List of assignable users"
+    # )
+    # def get_assignable_users(
+    #     self,
+    #     project_key: str,
+    #     query: Optional[str] = None,
+    #     max_results: Optional[int] = None
+    # ) -> Tuple[bool, str]:
+    #     """Get assignable users for a project"""
+    #     try:
+    #         response = self._run_async(
+    #             self.client.find_assignable_users(
+    #                 project=project_key,
+    #                 query=query,
+    #                 maxResults=max_results
+    #             )
+    #         )
+
+    #         if response.status == HttpStatusCode.SUCCESS.value:
+    #             data = response.json()
+    #             # Clean response: remove redundant fields, keep essential user info
+    #             cleaned_data = (
+    #                 ResponseTransformer(data)
+    #                 .remove("self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+    #                         "*.active", "*.timeZone", "*.locale", "*.accountType",
+    #                         "*.properties", "*._links")
+    #                 .keep("accountId", "displayName", "emailAddress")
+    #                 .clean()
+    #             )
+    #             return True, json.dumps({
+    #                 "message": "Assignable users fetched successfully",
+    #                 "data": cleaned_data
+    #             })
+    #         else:
+    #             return self._handle_response(
+    #                 response,
+    #                 "Assignable users fetched successfully"
+    #             )
+    #     except Exception as e:
+    #         logger.error(f"Error fetching assignable users: {e}")
+    #         return False, json.dumps({"error": str(e)})

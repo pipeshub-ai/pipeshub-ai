@@ -85,6 +85,7 @@ const createToolsetSchema = z.object({
       oauthAppId: z.string().optional(),
       scopes: z.array(z.string()).optional(),
     }),
+    baseUrl: z.string().optional(),
   }),
 });
 
@@ -101,6 +102,7 @@ const saveToolsetConfigSchema = z.object({
       oauthAppId: z.string().optional(),
       scopes: z.array(z.string()).optional(),
     }),
+    baseUrl: z.string().optional()
   }),
   params: z.object({
     toolsetId: z.string().min(1, 'Toolset ID is required'),

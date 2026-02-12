@@ -388,6 +388,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
             displayName: toolset.displayName || toolsetName,
             type: (toolset as any).category || toolset.category || 'app',
             auth: authConfig,
+            baseUrl: window.location.origin,
           });
           
           // Store the created ID for subsequent operations
@@ -402,6 +403,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
         try {
           await ToolsetApiService.updateToolsetConfig(currentToolsetId, {
             auth: authConfig,
+            baseUrl: window.location.origin,
           });
         } catch (err: any) {
           console.error('Failed to update toolset config:', err);

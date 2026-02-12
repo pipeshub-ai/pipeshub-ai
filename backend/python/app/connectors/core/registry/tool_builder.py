@@ -5,7 +5,17 @@ Tool Builder and Registry
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Type,
+    Union,
+)
+
+from pydantic import BaseModel
 
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -38,10 +48,85 @@ class ToolDefinition:
     name: str
     description: str
     function: Optional[Callable] = None
-    parameters: List[Dict[str, Any]] = field(default_factory=list)
+    args_schema: Optional[Type[BaseModel]] = None  # NEW: Pydantic schema for validation
+    parameters: List[Dict[str, Any]] = field(default_factory=list)  # DEPRECATED: Use args_schema instead
     returns: Optional[str] = None
     examples: List[Dict] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict, converting schema to parameters for frontend compatibility"""
+        result = {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self._schema_to_parameters() if self.args_schema else self.parameters,
+            "returns": self.returns,
+            "examples": self.examples,
+            "tags": self.tags
+        }
+        return result
+
+    def _schema_to_parameters(self) -> List[Dict[str, Any]]:
+        """Convert Pydantic schema to parameter dict format for frontend API compatibility"""
+        if not self.args_schema:
+            return self.parameters
+
+        try:
+            from typing import get_args, get_origin
+
+            parameters = []
+            schema_fields = self.args_schema.model_fields
+
+            for field_name, field_info in schema_fields.items():
+                # Get field description
+                description = field_info.description or f"Parameter {field_name}"
+
+                # Determine type - handle Optional, Union, etc.
+                field_type = field_info.annotation
+                param_type = "string"  # default
+
+                # Handle Optional types (Union[T, None])
+                origin = get_origin(field_type) if hasattr(field_type, '__origin__') or hasattr(field_type, '__args__') else None
+                if origin is Union:
+                    args = get_args(field_type)
+                    # Filter out None type
+                    non_none_args = [arg for arg in args if arg is not type(None)]
+                    if non_none_args:
+                        field_type = non_none_args[0]
+                        origin = get_origin(field_type) if hasattr(field_type, '__origin__') else None
+
+                # Determine base type
+                if field_type is int:
+                    param_type = "integer"
+                elif field_type is float:
+                    param_type = "number"
+                elif field_type is bool:
+                    param_type = "boolean"
+                elif origin is list:
+                    param_type = "array"
+                elif origin is dict:
+                    param_type = "object"
+
+                # Check if required (not Optional and no default)
+                required = field_info.is_required() and field_info.default is ...
+
+                param_dict = {
+                    "name": field_name,
+                    "type": param_type,
+                    "description": description,
+                    "required": required
+                }
+
+                # Add default if present
+                if field_info.default is not ...:
+                    param_dict["default"] = field_info.default
+
+                parameters.append(param_dict)
+
+            return parameters
+        except Exception:
+            # Fallback to legacy parameters if conversion fails
+            return self.parameters
 
 
 class ToolsetConfigBuilder:
@@ -357,10 +442,17 @@ class ToolsetBuilder:
         return self
 
     def with_tools(self, tools: List[ToolDefinition]) -> 'ToolsetBuilder':
-        """Set the tools for this toolset"""
+        """
+        Set the tools for this toolset (optional).
+
+        DEPRECATED: Tools will be auto-discovered from @tool decorators if not provided.
+        This method is kept for backward compatibility during migration.
+        """
         self.tools = tools
-        for tool in tools:
-            self.config_builder.add_tool(tool)
+        # Only add to config if provided (for backward compat)
+        if tools:
+            for tool in tools:
+                self.config_builder.add_tool(tool)
         return self
 
     def with_oauth_config(
@@ -394,7 +486,7 @@ class ToolsetBuilder:
 
     def build_decorator(self) -> Callable[[Type], Type]:
         """Build the final toolset decorator"""
-        from app.connectors.core.registry.tool_registry import Toolset
+        from app.agents.registry.toolset_registry import Toolset
 
         config = self.config_builder.build()
 

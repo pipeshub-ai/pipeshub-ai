@@ -4,12 +4,14 @@ Enhanced tool decorator with automatic parameter extraction and metadata support
 
 import functools
 import inspect
-from typing import Callable, Dict, List, Optional, get_origin
+from typing import Callable, Dict, List, Optional, Type, get_origin
 
 try:
     from typing import get_type_hints
 except ImportError:
     from typing_extensions import get_type_hints
+
+from pydantic import BaseModel
 
 from app.agents.tools.config import ToolCategory, ToolMetadata
 from app.agents.tools.enums import ParameterType
@@ -21,7 +23,8 @@ def tool(
     app_name: str,
     tool_name: str,
     description: Optional[str] = None,
-    parameters: Optional[List[ToolParameter]] = None,
+    parameters: Optional[List[ToolParameter]] = None,  # DEPRECATED: Use args_schema instead
+    args_schema: Optional[Type[BaseModel]] = None,  # NEW: Pydantic schema for validation
     returns: Optional[str] = None,
     examples: Optional[List[Dict]] = None,
     tags: Optional[List[str]] = None,
@@ -36,7 +39,8 @@ def tool(
         app_name: Tool app name (required)
         tool_name: Tool name (required)
         description: Tool description (defaults to docstring)
-        parameters: List of ToolParameter objects (auto-generated if not provided)
+        parameters: List of ToolParameter objects (DEPRECATED: use args_schema instead)
+        args_schema: Pydantic BaseModel schema for tool arguments (NEW: preferred)
         returns: Description of return value
         examples: List of example invocations
         tags: Tags for categorization
@@ -49,12 +53,18 @@ def tool(
 
     Example:
         ```python
+        from pydantic import BaseModel, Field
+
+        class ProcessDataInput(BaseModel):
+            input_text: str = Field(description="Text to process")
+            count: int = Field(default=1, description="Number of times")
+
         @tool(
             app_name="myapp",
             tool_name="process_data",
             description="Process data and return result",
+            args_schema=ProcessDataInput,  # NEW: Pydantic schema
             category=ToolCategory.UTILITY,
-            is_essential=False,
             tags=["data", "processing"]
         )
         def process_data(input_text: str, count: int = 1) -> str:
@@ -71,8 +81,13 @@ def tool(
         # Extract metadata
         tool_description = description or (func.__doc__ or "").strip()
 
-        # Auto-generate parameters if not provided
-        tool_parameters = parameters or _extract_parameters(func)
+        # Validate args_schema if provided
+        if args_schema is not None:
+            if not issubclass(args_schema, BaseModel):
+                raise ValueError(f"args_schema must be a Pydantic BaseModel subclass, got {type(args_schema)}")
+
+        # Auto-generate parameters if not provided and no schema
+        tool_parameters = parameters or (None if args_schema else _extract_parameters(func))
 
         # Create tool object
         tool_obj = Tool(
@@ -80,7 +95,8 @@ def tool(
             tool_name=tool_name,
             description=tool_description,
             function=func,
-            parameters=tool_parameters,
+            parameters=tool_parameters or [],
+            args_schema=args_schema,  # NEW: Store Pydantic schema
             returns=returns,
             examples=examples or [],
             tags=tags or []

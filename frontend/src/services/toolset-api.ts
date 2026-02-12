@@ -301,6 +301,7 @@ class ToolsetApiService {
       scopes?: string[];
       [key: string]: any;
     };
+    baseUrl?: string;
   }): Promise<string> {
     try {
       const response = await axios.post(
@@ -329,6 +330,7 @@ class ToolsetApiService {
         scopes?: string[];
         [key: string]: any;
       };
+      baseUrl?: string;
     }
   ): Promise<void> {
     try {
