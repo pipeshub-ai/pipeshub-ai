@@ -42,7 +42,7 @@ async def _validate_owner_removal(
         team_id=team_id,
         user_ids=user_ids_to_remove
     )
-    
+
     owners_being_removed = validation_data.get("owners_being_removed", [])
     total_owner_count = validation_data.get("total_owner_count", 0)
 
