@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import time
 import uuid
 from datetime import datetime
 from logging import Logger
@@ -363,7 +364,7 @@ class Neo4jProvider(IGraphDBProvider):
         constraints = []
 
         # Iterate through ALL collections (even those without schemas need unique id)
-        for collection in NODE_SCHEMA_REGISTRY.keys():
+        for collection in NODE_SCHEMA_REGISTRY:
             # Get the Neo4j label for this collection
             label = collection_to_label(collection)
 
@@ -7765,6 +7766,18 @@ class Neo4jProvider(IGraphDBProvider):
             }
             await self.batch_create_edges([kb_relationship_edge], CollectionNames.BELONGS_TO.value, transaction)
 
+            # Record -> KB inheritPermission edge
+            # KB records inherit permissions from KB by default
+            inherit_permission_edge = {
+                "from_id": folder_id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": kb_id,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            }
+            await self.batch_create_edges([inherit_permission_edge], CollectionNames.INHERIT_PERMISSIONS.value, transaction)
+
             # Create parent-child relationship ONLY for nested folders (NOT for root folders)
             # Root folders are identified by BELONGS_TO edge + absence of RECORD_RELATIONS edge
             if parent_folder_id:
@@ -8498,6 +8511,7 @@ class Neo4jProvider(IGraphDBProvider):
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.BELONGS_TO.value,
                     CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.INHERIT_PERMISSIONS.value,
                 ]
             )
             timestamp = get_epoch_timestamp_in_ms()
@@ -8725,6 +8739,17 @@ class Neo4jProvider(IGraphDBProvider):
                     "updatedAtTimestamp": timestamp,
                 })
 
+                # Record -> KB inheritPermission edge
+                # KB records inherit permissions from KB by default
+                edges.append({
+                    "from_id": record_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+
                 # RECORD_RELATIONS edge (if has parent)
                 if parent_folder_id:
                     edges.append({
@@ -8739,13 +8764,18 @@ class Neo4jProvider(IGraphDBProvider):
 
                 # Create edges by type
                 is_of_type_edges = [e for e in edges if e.get("to_collection") == CollectionNames.FILES.value]
+                # belongsTo edges have entityType set (e.g., Connectors.KNOWLEDGE_BASE.value)
                 belongs_to_edges = [e for e in edges if e.get("entityType") == Connectors.KNOWLEDGE_BASE.value]
+                # inheritPermission edges point to recordGroups but don't have entityType
+                inherit_permission_edges = [e for e in edges if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and not e.get("entityType")]
                 parent_child_edges = [e for e in edges if e.get("relationshipType") == "PARENT_CHILD"]
 
                 if is_of_type_edges:
                     await self.batch_create_edges(is_of_type_edges, CollectionNames.IS_OF_TYPE.value, transaction)
                 if belongs_to_edges:
                     await self.batch_create_edges(belongs_to_edges, CollectionNames.BELONGS_TO.value, transaction)
+                if inherit_permission_edges:
+                    await self.batch_create_edges(inherit_permission_edges, CollectionNames.INHERIT_PERMISSIONS.value, transaction)
                 if parent_child_edges:
                     await self.batch_create_edges(parent_child_edges, CollectionNames.RECORD_RELATIONS.value, transaction)
 
@@ -10878,8 +10908,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             edges = []
             for result in results:
-                edge_data = result.get("r", {})
-                edge_dict = dict(edge_data) if isinstance(edge_data, dict) else {}
+                edge_dict = result.get("r", {})  # properties(r) already returns a dict
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
 
@@ -11558,6 +11587,924 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Knowledge Hub API Methods ====================
 
+    async def get_knowledge_hub_root_nodes(
+        self,
+        user_key: str,
+        org_id: str,
+        user_app_ids: List[str],
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        include_kbs: bool,
+        include_apps: bool,
+        only_containers: bool,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Get root level nodes (KBs and Apps) for Knowledge Hub."""
+        try:
+            query = """
+            MATCH (user_doc:User {id: $user_key})
+            WITH user_doc, user_doc.userId AS user_id
+
+            // ==================== Get Knowledge Bases ====================
+            // Get KBs only if include_kbs is true
+            OPTIONAL MATCH (kb:RecordGroup)
+            WHERE $include_kbs = true
+              AND kb.orgId = $org_id
+              AND kb.connectorName = 'KB'
+
+            // Check direct user permission
+            OPTIONAL MATCH (user_doc)-[direct_perm:PERMISSION {type: 'USER'}]->(kb)
+
+            // Check team permission
+            OPTIONAL MATCH (user_doc)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:PERMISSION {type: 'TEAM'}]->(kb)
+
+            WITH kb, user_doc, user_id,
+                 (direct_perm IS NOT NULL OR team IS NOT NULL) AS has_permission
+            WHERE kb IS NULL OR has_permission
+
+            // Check for children via BELONGS_TO edges (only records, not nested RecordGroups)
+            OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(kb)
+            WHERE record.externalParentId IS NULL
+
+            WITH kb, user_doc, user_id,
+                 count(DISTINCT record) > 0 AS has_children
+
+            // Determine sharing status - collect permissions
+            OPTIONAL MATCH (user_perm_user:User)-[user_perm:PERMISSION {type: 'USER'}]->(kb)
+
+            OPTIONAL MATCH ()-[team_perm:PERMISSION {type: 'TEAM'}]->(kb)
+
+            WITH kb, has_children, user_doc, user_id,
+                 (kb.createdBy = $user_key OR kb.createdBy = user_id) AS is_creator,
+                 collect(DISTINCT user_perm) AS user_perms,
+                 collect(DISTINCT team_perm) AS team_perms
+
+            WITH kb, has_children, user_doc, user_id, is_creator,
+                 (size(user_perms) > (CASE WHEN is_creator THEN 1 ELSE 0 END) OR size(team_perms) > 0) AS has_other_users
+
+            WITH user_doc, user_id,
+                 CASE WHEN kb IS NOT NULL
+                      THEN {
+                          id: kb.id,
+                          name: kb.groupName,
+                          nodeType: 'kb',
+                          parentId: null,
+                          origin: 'KB',
+                          connector: 'KB',
+                          createdAt: kb.createdAtTimestamp,
+                          updatedAt: kb.updatedAtTimestamp,
+                          webUrl: '/kb/' + kb.id,
+                          hasChildren: has_children,
+                          sharingStatus: CASE WHEN is_creator AND NOT has_other_users
+                                              THEN 'private' ELSE 'shared' END
+                      }
+                      ELSE null
+                 END AS kb_node
+
+            WITH collect(kb_node) AS kb_nodes_raw
+            WITH [n IN kb_nodes_raw WHERE n IS NOT NULL] AS kb_nodes
+
+            // ==================== Get Apps ====================
+            // Get apps only if include_apps is true
+            OPTIONAL MATCH (app:App)
+            WHERE $include_apps = true
+              AND app.id IN $user_app_ids
+              AND app.type <> 'KB'
+
+            // Check for children (record groups)
+            OPTIONAL MATCH (rg:RecordGroup)
+            WHERE rg.connectorId = app.id
+
+            WITH kb_nodes, app, count(rg) > 0 AS has_children
+
+            WITH kb_nodes,
+                 CASE WHEN app IS NOT NULL
+                      THEN {
+                          id: app.id,
+                          name: app.name,
+                          nodeType: 'app',
+                          parentId: null,
+                          origin: 'CONNECTOR',
+                          connector: app.type,
+                          createdAt: coalesce(app.createdAtTimestamp, 0),
+                          updatedAt: coalesce(app.updatedAtTimestamp, 0),
+                          webUrl: '/app/' + app.id,
+                          hasChildren: has_children,
+                          sharingStatus: coalesce(app.scope, 'personal')
+                      }
+                      ELSE null
+                 END AS app_node
+
+            WITH kb_nodes, collect(app_node) AS app_nodes_raw
+            WITH kb_nodes, [n IN app_nodes_raw WHERE n IS NOT NULL] AS app_nodes
+            WITH kb_nodes + app_nodes AS all_nodes
+
+            // Apply sorting with explicit field mapping (Neo4j doesn't support dynamic property access)
+            UNWIND all_nodes AS node
+            WITH node,
+                 CASE $sort_field
+                     WHEN 'name' THEN node.name
+                     WHEN 'createdAt' THEN node.createdAt
+                     WHEN 'updatedAt' THEN node.updatedAt
+                     WHEN 'nodeType' THEN node.nodeType
+                     WHEN 'origin' THEN node.origin
+                     WHEN 'connector' THEN node.connector
+                     ELSE node.name
+                 END AS sort_value
+            ORDER BY
+                CASE WHEN $sort_dir = 'ASC' THEN sort_value ELSE null END ASC,
+                CASE WHEN $sort_dir = 'DESC' THEN sort_value ELSE null END DESC
+
+            WITH collect(node) AS sorted_nodes
+
+            RETURN {
+                nodes: sorted_nodes[$skip..$skip + $limit],
+                total: size(sorted_nodes)
+            } AS result
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={
+                    "user_key": user_key,
+                    "org_id": org_id,
+                    "user_app_ids": user_app_ids,
+                    "include_kbs": include_kbs,
+                    "include_apps": include_apps,
+                    "skip": skip,
+                    "limit": limit,
+                    "sort_field": sort_field,
+                    "sort_dir": sort_dir.upper(),
+                },
+                txn_id=transaction
+            )
+
+            if results and results[0].get("result"):
+                return results[0]["result"]
+            return {"nodes": [], "total": 0}
+
+        except Exception as e:
+            self.logger.error(f"❌ Get knowledge hub root nodes failed: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_children(
+        self,
+        parent_id: str,
+        parent_type: str,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        only_containers: bool = False,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get direct children of a node for tree navigation (browse mode).
+
+        For filtered/searched results, use get_knowledge_hub_search with parent_id instead.
+
+        Args:
+            parent_id: The ID of the parent node.
+            parent_type: The type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'.
+            org_id: The organization ID.
+            user_key: The user's key for permission filtering.
+            skip: Number of items to skip for pagination.
+            limit: Maximum number of items to return.
+            sort_field: Field to sort by.
+            sort_dir: Sort direction ('ASC' or 'DESC').
+            only_containers: If True, only return nodes that can have children.
+            transaction: Optional transaction ID.
+        """
+        start = time.perf_counter()
+
+        # Generate query based on parent type
+        if parent_type == "app":
+            sub_query = self._get_app_children_cypher()
+            params = {
+                "parent_id": parent_id,
+                "org_id": org_id,
+                "user_key": user_key,
+                "skip": skip,
+                "limit": limit,
+                "sort_field": sort_field,
+                "sort_dir": sort_dir.upper(),
+                "only_containers": only_containers,
+                "source": "CONNECTOR",
+            }
+        elif parent_type in ("kb", "recordGroup"):
+            sub_query = self._get_record_group_children_cypher(parent_type)
+            params = {
+                "parent_id": parent_id,
+                "org_id": org_id,
+                "user_key": user_key,
+                "skip": skip,
+                "limit": limit,
+                "sort_field": sort_field,
+                "sort_dir": sort_dir.upper(),
+                "only_containers": only_containers,
+                "source": "KB" if parent_type == "kb" else "CONNECTOR",
+            }
+        elif parent_type in ("folder", "record"):
+            sub_query = self._get_record_children_cypher()
+            params = {
+                "parent_id": parent_id,
+                "org_id": org_id,
+                "user_key": user_key,
+                "skip": skip,
+                "limit": limit,
+                "sort_field": sort_field,
+                "sort_dir": sort_dir.upper(),
+                "only_containers": only_containers,
+            }
+        else:
+            return {"nodes": [], "total": 0}
+
+        # Simple query for direct children with sorting and pagination (no filters)
+        query = f"""
+        CALL {{
+            {sub_query}
+        }}
+
+        // Apply only_containers filter
+        UNWIND raw_children AS node
+        WITH node WHERE
+            ($only_containers IN [false, 'False', 'false'] OR $only_containers = false)
+            OR node.hasChildren = true
+            OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
+
+        // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
+        WITH node,
+             CASE $sort_field
+                 WHEN 'name' THEN node.name
+                 WHEN 'createdAt' THEN node.createdAt
+                 WHEN 'updatedAt' THEN node.updatedAt
+                 WHEN 'nodeType' THEN node.nodeType
+                 WHEN 'source' THEN node.source
+                 WHEN 'connector' THEN node.connector
+                 WHEN 'recordType' THEN node.recordType
+                 WHEN 'sizeInBytes' THEN node.sizeInBytes
+                 WHEN 'indexingStatus' THEN node.indexingStatus
+                 ELSE node.name
+             END AS sort_value
+        ORDER BY
+            CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
+            CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
+
+        // Collect after sorting preserves order in Neo4j 5.x+
+        WITH collect(node) AS sorted_nodes
+
+        RETURN {{
+            nodes: sorted_nodes[$skip..($skip + $limit)],
+            total: size(sorted_nodes)
+        }} AS result
+        """
+
+        result = await self.client.execute_query(query, parameters=params, txn_id=transaction)
+        elapsed = time.perf_counter() - start
+        self.logger.info(f"get_knowledge_hub_children finished in {elapsed * 1000} ms")
+        if result and result[0].get("result"):
+            return result[0]["result"]
+        return {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_search(
+        self,
+        org_id: str,
+        user_key: str,
+        skip: int,
+        limit: int,
+        sort_field: str,
+        sort_dir: str,
+        search_query: Optional[str] = None,
+        node_types: Optional[List[str]] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connector_ids: Optional[List[str]] = None,
+        kb_ids: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        created_at: Optional[Dict[str, Optional[int]]] = None,
+        updated_at: Optional[Dict[str, Optional[int]]] = None,
+        size: Optional[Dict[str, Optional[int]]] = None,
+        only_containers: bool = False,
+        parent_id: Optional[str] = None,
+        parent_type: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Unified search for knowledge hub nodes with permission-first traversal.
+
+        Supports both:
+        - Global search (parent_id=None): Search across all accessible nodes
+        - Scoped search (parent_id set): Search within a specific parent's hierarchy
+
+        Includes:
+        - RecordGroups with direct permissions
+        - Nested recordGroups via INHERIT_PERMISSIONS edges (recursive)
+        - Records via INHERIT_PERMISSIONS from accessible recordGroups
+        - Direct user/group/org permissions on records
+        """
+        start = time.perf_counter()
+
+        try:
+            self.logger.info(f"🔍 Starting knowledge hub search with parent_id={parent_id}, parent_type={parent_type}, only_containers={only_containers}, search_query={search_query}, node_types={node_types}, record_types={record_types}, origins={origins}, connector_ids={connector_ids}, kb_ids={kb_ids}, indexing_status={indexing_status}, created_at={created_at}, updated_at={updated_at}, size={size}")
+            # Build filter conditions using helper
+            filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
+                search_query=search_query,
+                node_types=node_types,
+                record_types=record_types,
+                indexing_status=indexing_status,
+                created_at=created_at,
+                updated_at=updated_at,
+                size=size,
+                origins=origins,
+                connector_ids=connector_ids,
+                kb_ids=kb_ids,
+                only_containers=only_containers,
+            )
+
+            # Build scope filters
+            parent_connector_id = None
+            # Determine parent_connector_id when parent_type is "record" or "folder"
+            if parent_id and parent_type in ("record", "folder"):
+                try:
+                    query = "MATCH (record:Record {id: $parent_id}) RETURN record.connectorId AS connectorId"
+                    result = await self.client.execute_query(query, parameters={"parent_id": parent_id}, txn_id=transaction)
+                    if result and result[0].get("connectorId"):
+                        parent_connector_id = result[0]["connectorId"]
+                except Exception as e:
+                    self.logger.warning(f"Failed to fetch parent record connectorId: {str(e)}")
+                    parent_connector_id = None
+
+            # For children-first approach (kb/recordGroup/record/folder), skip scope filters
+            # The intersection will handle scoping instead
+            if parent_id and parent_type in ("kb", "recordGroup", "record", "folder"):
+                # Don't apply scope filters - let children intersection handle it
+                scope_filter_rg = ""
+                scope_filter_record = ""
+                scope_filter_rg_inline = "true"
+                scope_filter_record_inline = "true"
+            else:
+                # For app-level scope or global search, apply scope filters as before
+                scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline = self._build_scope_filters_cypher(
+                    parent_id, parent_type, parent_connector_id
+                )
+
+            # Build bind variables
+            params = {
+                "org_id": org_id,
+                "user_key": user_key,
+                "skip": skip,
+                "limit": limit,
+                "sort_field": sort_field,
+                "sort_dir": sort_dir.upper(),
+                "only_containers": only_containers,
+            }
+
+            # Add bind variables based on parent_type
+            if parent_id:
+                if parent_type in ("kb", "recordGroup"):
+                    # Children-first approach: need parent_doc_id (RecordGroup ID)
+                    params["parent_doc_id"] = parent_id
+                elif parent_type in ("record", "folder"):
+                    # Children-first approach: need parent_doc_id (Record ID)
+                    params["parent_doc_id"] = parent_id
+                elif parent_type == "app":
+                    # App-level scope: use parent_id for scope filters
+                    params["parent_id"] = parent_id
+                    if parent_connector_id:
+                        params["parent_connector_id"] = parent_connector_id
+
+            # Merge filter params
+            params.update(filter_params)
+
+            # Build filter clause
+            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
+
+            # Get user accessible apps
+            user_apps_query = """
+            MATCH (u:User {id: $user_key})-[:USER_APP_RELATION]->(app:App)
+            RETURN collect(app.id) AS app_ids
+            """
+            user_apps_result = await self.client.execute_query(user_apps_query, parameters={"user_key": user_key}, txn_id=transaction)
+            user_accessible_app_ids = user_apps_result[0].get("app_ids", []) if user_apps_result else []
+            params["user_accessible_app_ids"] = user_accessible_app_ids
+
+            # Build children intersection cypher (only for kb/recordGroup/record/folder parents)
+            children_intersection_cypher = self._build_children_intersection_cypher(parent_id, parent_type)
+
+            # Build the unified query with 7 permission paths
+            # Note: filter_clause and children_intersection_cypher will be inserted via string replacement
+            query_template = """
+            MATCH (u:User {id: $user_key})
+            WITH u
+
+            // Get user's accessible apps (already in params)
+            WITH u, $user_accessible_app_ids AS user_accessible_app_ids
+
+            // ========== RECORDGROUP-BASED ACCESS (Paths 1-4) ==========
+            // Strategy: Find accessible RecordGroups, recursively find nested RecordGroups,
+            // then find all Records that inherit from any of those RecordGroups
+
+            // Path 1: User -> RecordGroup
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
+                  {scope_filter_rg}
+                RETURN collect(rg) AS path1_rgs
+            }
+
+            // Path 2: User -> Group/Role -> RecordGroup
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+                WHERE grp:Group OR grp:Role
+                MATCH (grp)-[:PERMISSION]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
+                  {scope_filter_rg}
+                RETURN collect(rg) AS path2_rgs
+            }
+
+            // Path 3: User -> Org -> RecordGroup
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+                MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
+                  {scope_filter_rg}
+                RETURN collect(rg) AS path3_rgs
+            }
+
+            // Path 4: User -> Team -> RecordGroup
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)
+                MATCH (team)-[:PERMISSION {type: 'TEAM'}]->(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
+                  {scope_filter_rg}
+                RETURN collect(rg) AS path4_rgs
+            }
+
+            // Combine all accessible RecordGroups (parent level)
+            WITH u, user_accessible_app_ids,
+                 path1_rgs + path2_rgs + path3_rgs + path4_rgs AS all_parent_rgs
+
+            // Recursively find nested RecordGroups via INHERIT_PERMISSIONS (if parent RecordGroups exist)
+            WITH u, user_accessible_app_ids, all_parent_rgs
+
+            // Find all nested RecordGroups that inherit from parent RecordGroups via INHERIT_PERMISSIONS
+            // This handles multiple levels of nesting (RecordGroup -> RecordGroup -> RecordGroup...)
+            CALL {
+                WITH all_parent_rgs, user_accessible_app_ids
+                UNWIND all_parent_rgs AS parent_rg
+                MATCH (parent_rg)<-[:INHERIT_PERMISSIONS*1..5]-(rg:RecordGroup)
+                WHERE rg.orgId = $org_id
+                  AND (rg.connectorName = 'KB' OR rg.connectorId IN user_accessible_app_ids)
+                  {scope_filter_rg}
+                RETURN collect(DISTINCT rg) AS nested_rgs
+            }
+
+            // Combine parent and nested RecordGroups
+            WITH u, user_accessible_app_ids,
+                 all_parent_rgs + (CASE WHEN nested_rgs IS NOT NULL THEN nested_rgs ELSE [] END) AS all_accessible_rgs
+
+            // Find all Records that inherit from both parent AND nested RecordGroups
+            WITH u, user_accessible_app_ids, all_accessible_rgs,
+                 [rg IN all_accessible_rgs |
+                   [(record:Record)-[:INHERIT_PERMISSIONS]->(rg)
+                    WHERE record.orgId = $org_id
+                   | record]
+                 ] AS records_lists
+
+            // Flatten and deduplicate records from RecordGroups
+            WITH u, user_accessible_app_ids,
+                 all_accessible_rgs AS accessible_rgs,
+                 reduce(acc = [], list IN records_lists | acc + list) AS rg_inherited_records
+
+            // ========== DIRECT RECORD ACCESS (not via recordGroup) ==========
+
+            // Path 5: User -> Record (direct, no recordGroup)
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(record:Record)
+                WHERE record.orgId = $org_id
+                  {scope_filter_record}
+
+                // Check if record's connectorId points to accessible app or accessible recordGroup
+                OPTIONAL MATCH (record_app:App {id: record.connectorId})
+                OPTIONAL MATCH (record_rg:RecordGroup {id: record.connectorId})
+                WITH record, record_app, record_rg, user_accessible_app_ids
+                WHERE (record_app IS NOT NULL AND record_app.id IN user_accessible_app_ids)
+                   OR (record_rg IS NOT NULL AND (record_rg.connectorName = 'KB' OR record_rg.connectorId IN user_accessible_app_ids))
+
+                RETURN collect(record) AS user_direct_records
+            }
+
+            // Path 6: User -> Group/Role -> Record (direct, no recordGroup)
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
+                WHERE grp:Group OR grp:Role
+                MATCH (grp)-[:PERMISSION]->(record:Record)
+                WHERE record.orgId = $org_id
+                  {scope_filter_record}
+
+                OPTIONAL MATCH (record_app:App {id: record.connectorId})
+                OPTIONAL MATCH (record_rg:RecordGroup {id: record.connectorId})
+                WITH record, record_app, record_rg, user_accessible_app_ids
+                WHERE (record_app IS NOT NULL AND record_app.id IN user_accessible_app_ids)
+                   OR (record_rg IS NOT NULL AND (record_rg.connectorName = 'KB' OR record_rg.connectorId IN user_accessible_app_ids))
+
+                RETURN collect(record) AS user_group_records
+            }
+
+            // Path 7: User -> Org -> Record (direct, no recordGroup)
+            CALL {
+                WITH u, user_accessible_app_ids
+                MATCH (u)-[:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
+                MATCH (org)-[:PERMISSION {type: 'ORG'}]->(record:Record)
+                WHERE record.orgId = $org_id
+                  {scope_filter_record}
+
+                OPTIONAL MATCH (record_app:App {id: record.connectorId})
+                OPTIONAL MATCH (record_rg:RecordGroup {id: record.connectorId})
+                WITH record, record_app, record_rg, user_accessible_app_ids
+                WHERE (record_app IS NOT NULL AND record_app.id IN user_accessible_app_ids)
+                   OR (record_rg IS NOT NULL AND (record_rg.connectorName = 'KB' OR record_rg.connectorId IN user_accessible_app_ids))
+
+                RETURN collect(record) AS user_org_records
+            }
+
+            // Combine all record sources and deduplicate
+            WITH accessible_rgs, rg_inherited_records,
+                 user_direct_records, user_group_records, user_org_records
+
+            WITH accessible_rgs,
+                 rg_inherited_records +
+                 (CASE WHEN user_direct_records IS NOT NULL THEN user_direct_records ELSE [] END) +
+                 (CASE WHEN user_group_records IS NOT NULL THEN user_group_records ELSE [] END) +
+                 (CASE WHEN user_org_records IS NOT NULL THEN user_org_records ELSE [] END) AS all_records_raw
+
+            WITH accessible_rgs, [r IN all_records_raw WHERE r IS NOT NULL] AS all_records_raw_filtered
+            // Deduplicate records (matching Arango's UNION_DISTINCT) - SAFE approach without UNWIND
+            WITH accessible_rgs, all_records_raw_filtered AS accessible_records
+
+            // ========== CHILDREN TRAVERSAL & INTERSECTION (for recordGroup/kb/record/folder parents) ==========
+            // If parent_type is recordGroup/kb/record/folder, traverse children and intersect with accessible nodes
+            {children_intersection_cypher}
+
+            // ========== BUILD NODES (using list comprehensions to handle empty lists) ==========
+            // This approach handles empty lists gracefully without UNWIND issues
+            WITH final_accessible_rgs, final_accessible_records,
+                 CASE WHEN size(final_accessible_rgs) > 0 THEN final_accessible_rgs ELSE [null] END AS rgs_with_fallback,
+                 CASE WHEN size(final_accessible_records) > 0 THEN final_accessible_records ELSE [null] END AS records_with_fallback
+
+            UNWIND rgs_with_fallback AS rg_data
+            WITH rg_data, final_accessible_rgs, final_accessible_records, records_with_fallback
+
+            // Re-match the actual RecordGroup node by ID (OPTIONAL to preserve row even if rg_data is null)
+            OPTIONAL MATCH (rg:RecordGroup)
+            WHERE rg_data IS NOT NULL AND rg.id = rg_data.id
+
+            WITH final_accessible_rgs, final_accessible_records, records_with_fallback,
+                 collect(
+                   CASE WHEN rg IS NOT NULL THEN
+                     {
+                       id: rg.id,
+                       name: rg.groupName,
+                       nodeType: 'recordGroup',
+                       parentId: null,
+                       origin: CASE WHEN rg.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                       connector: rg.connectorName,
+                       connectorId: CASE WHEN rg.connectorName <> 'KB' THEN rg.connectorId ELSE null END,
+                       kbId: CASE WHEN rg.connectorName = 'KB' THEN rg.id ELSE null END,
+                       externalGroupId: rg.externalGroupId,
+                       recordType: null,
+                       recordGroupType: rg.groupType,
+                       indexingStatus: null,
+                       createdAt: COALESCE(rg.sourceCreatedAtTimestamp, 0),
+                       updatedAt: COALESCE(rg.sourceLastModifiedTimestamp, 0),
+                       sizeInBytes: null,
+                       mimeType: null,
+                       extension: null,
+                       webUrl: rg.webUrl,
+                       hasChildren: EXISTS((rg)<-[:BELONGS_TO]-(:RecordGroup)) OR EXISTS((rg)<-[:BELONGS_TO]-(:Record)),
+                       previewRenderable: true
+                     }
+                   ELSE null END
+                 ) AS rg_nodes_with_nulls
+
+            WITH final_accessible_records, records_with_fallback,
+                 [n IN rg_nodes_with_nulls WHERE n IS NOT NULL] AS rg_nodes
+
+            // Build record nodes
+            UNWIND records_with_fallback AS rec_data
+            WITH rec_data, final_accessible_records, rg_nodes
+
+            // Re-match the actual Record node by ID (OPTIONAL to preserve row even if rec_data is null)
+            OPTIONAL MATCH (record:Record)
+            WHERE rec_data IS NOT NULL AND record.id = rec_data.id
+
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file_info:File)
+            WITH record, final_accessible_records, rg_nodes, file_info
+
+            OPTIONAL MATCH (record)-[rr:RECORD_RELATION]->(child:Record)
+            WHERE record IS NOT NULL
+              AND rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+            WITH record, rg_nodes, file_info,
+                 count(DISTINCT child) > 0 AS has_children
+
+            OPTIONAL MATCH (record_connector:RecordGroup {id: record.connectorId})
+            WHERE record IS NOT NULL
+            OPTIONAL MATCH (record_app:App {id: record.connectorId})
+            WHERE record IS NOT NULL
+            WITH record, rg_nodes, file_info, has_children, record_connector, record_app,
+                 CASE
+                   WHEN record IS NOT NULL AND record_connector IS NOT NULL AND record_connector.connectorName = 'KB' THEN 'KB'
+                   WHEN record IS NOT NULL AND record_app IS NOT NULL THEN 'CONNECTOR'
+                   WHEN record IS NOT NULL THEN 'CONNECTOR'
+                   ELSE null
+                 END AS source
+
+            WITH rg_nodes,
+                 collect(
+                   CASE WHEN record IS NOT NULL THEN
+         {
+           id: record.id,
+           name: record.recordName,
+           nodeType: CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN 'folder' ELSE 'record' END,
+           parentId: null,
+           origin: source,
+           connector: record.connectorName,
+           connectorId: CASE WHEN source = 'CONNECTOR' THEN record.connectorId ELSE null END,
+           kbId: CASE WHEN source = 'KB' THEN record.externalGroupId ELSE null END,
+           externalGroupId: record.externalGroupId,
+           recordType: record.recordType,
+           recordGroupType: null,
+           indexingStatus: record.indexingStatus,
+           createdAt: COALESCE(record.sourceCreatedAtTimestamp, 0),
+           updatedAt: COALESCE(record.sourceLastModifiedTimestamp, 0),
+           sizeInBytes: COALESCE(record.sizeInBytes,
+                                 CASE WHEN file_info IS NOT NULL THEN file_info.sizeInBytes ELSE null END),
+           mimeType: record.mimeType,
+           extension: CASE WHEN file_info IS NOT NULL THEN file_info.extension ELSE null END,
+           webUrl: record.webUrl,
+           hasChildren: has_children,
+           previewRenderable: COALESCE(record.previewRenderable, true)
+         }
+                   ELSE null END
+                 ) AS record_nodes_with_nulls
+
+            WITH rg_nodes,
+                 [n IN record_nodes_with_nulls WHERE n IS NOT NULL] AS record_nodes
+
+            // Combine RG and record nodes
+            WITH rg_nodes + record_nodes AS all_nodes
+
+            // Apply search and filter conditions
+            WITH CASE WHEN size(all_nodes) > 0 THEN all_nodes ELSE [null] END AS all_nodes_safe
+            UNWIND all_nodes_safe AS node
+            WITH node
+            WHERE node IS NOT NULL AND ({filter_clause})
+
+            // Apply only_containers filter
+            WITH node
+            WHERE (toBoolean($only_containers) = false)
+               OR node.hasChildren = true
+               OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
+
+            // Deduplicate by node.id
+            WITH node.id AS node_id, collect(node)[0] AS node
+
+            // Sort with explicit field mapping
+            WITH node,
+                 CASE $sort_field
+                     WHEN 'name' THEN node.name
+                     WHEN 'createdAt' THEN node.createdAt
+                     WHEN 'updatedAt' THEN node.updatedAt
+                     WHEN 'nodeType' THEN node.nodeType
+                     WHEN 'source' THEN node.origin
+                     WHEN 'origin' THEN node.origin
+                     WHEN 'connector' THEN node.connector
+                     WHEN 'recordType' THEN node.recordType
+                     WHEN 'sizeInBytes' THEN node.sizeInBytes
+                     WHEN 'indexingStatus' THEN node.indexingStatus
+                     ELSE node.name
+                 END AS sort_value
+            ORDER BY
+                CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
+                CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
+
+            WITH collect(node) AS sorted_nodes
+
+            RETURN {
+                nodes: sorted_nodes[$skip..($skip + $limit)],
+                total: size(sorted_nodes)
+            } AS result
+            """
+
+            # Replace all placeholders
+            query = query_template.replace("{filter_clause}", filter_clause)
+            query = query.replace("{scope_filter_rg}", scope_filter_rg)
+            query = query.replace("{scope_filter_record}", scope_filter_record)
+            query = query.replace("{scope_filter_rg_inline}", scope_filter_rg_inline)
+            query = query.replace("{scope_filter_record_inline}", scope_filter_record_inline)
+            query = query.replace("{children_intersection_cypher}", children_intersection_cypher)
+
+            result = await self.client.execute_query(query, parameters=params, txn_id=transaction)
+            elapsed = time.perf_counter() - start
+            self.logger.info(f"get_knowledge_hub_search finished in {elapsed * 1000:.2f} ms")
+
+            if result and result[0].get("result"):
+                return result[0]["result"]
+            return {"nodes": [], "total": 0}
+
+        except Exception as e:
+            elapsed = time.perf_counter() - start
+            self.logger.error(f"Error in get_knowledge_hub_search: {str(e)}")
+            self.logger.error(f"Query execution time: {elapsed * 1000:.2f} ms")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return {"nodes": [], "total": 0}
+
+    async def get_knowledge_hub_breadcrumbs(
+        self,
+        node_id: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get breadcrumb trail for a node using iterative parent lookup.
+
+        NOTE(N+1 Queries): Uses iterative parent lookup (one query per level) because a single
+        graph traversal isn't feasible here. Parent relationships are stored via multiple
+        edge types: RECORD_RELATION (record->record) and BELONGS_TO (record->recordGroup,
+        recordGroup->recordGroup, recordGroup->app).
+
+        Traversal logic:
+        - Records: Check RECORD_RELATION edge from another record first, then BELONGS_TO to recordGroup
+        - RecordGroups: Check BELONGS_TO edge to another recordGroup, then to app (excluding KB apps)
+        - Apps: No parent (root level)
+        """
+        breadcrumbs = []
+        current_id = node_id
+        visited = set()
+        max_depth = 20
+
+        try:
+            while current_id and len(visited) < max_depth:
+                if current_id in visited:
+                    break
+                visited.add(current_id)
+
+                # Get node info and parent
+                query = """
+                // Try to find in each collection
+                OPTIONAL MATCH (record:Record {id: $id})
+                OPTIONAL MATCH (rg:RecordGroup {id: $id})
+                OPTIONAL MATCH (app:App {id: $id})
+
+                WITH record, rg, app
+
+                // For records, check isOfType to determine folder
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(f:File)
+                WHERE record IS NOT NULL
+
+                WITH record, rg, app, f,
+                     CASE WHEN f IS NOT NULL AND f.isFile = false THEN true ELSE false END AS is_folder
+
+                // Determine node type
+                WITH record, rg, app, f, is_folder,
+                     CASE
+                         WHEN record IS NOT NULL THEN CASE WHEN is_folder THEN 'folder' ELSE 'record' END
+                         WHEN rg IS NOT NULL THEN CASE WHEN rg.connectorName = 'KB' THEN 'kb' ELSE 'recordGroup' END
+                         WHEN app IS NOT NULL THEN 'app'
+                         ELSE null
+                     END AS node_type,
+                     coalesce(record, rg, app) AS node
+
+                // Get parent for records - REFACTORED LOGIC:
+                // Step 1: Check RECORD_RELATION edge from another RECORD only
+                // Edge direction: parent -> child (edge from parent, to current record)
+                // Use LIMIT 1 to ensure only one parent
+                OPTIONAL MATCH (parent_rec:Record)-[rr:RECORD_RELATION]->(record:Record)
+                WHERE record IS NOT NULL
+                      AND rr IS NOT NULL
+                      AND rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+                WITH node, node_type, record, rg, app, f, is_folder, head(collect(parent_rec)) AS parent_rec
+
+                // Step 2: If no record parent, check BELONGS_TO edge to recordGroup
+                // Use LIMIT 1 to ensure only one parent
+                OPTIONAL MATCH (record)-[:BELONGS_TO]->(rg_parent_from_record:RecordGroup)
+                WHERE record IS NOT NULL AND parent_rec IS NULL
+                WITH node, node_type, record, rg, app, f, is_folder, parent_rec, head(collect(rg_parent_from_record)) AS rg_parent_from_record
+
+                // Get parent for recordGroups - REFACTORED LOGIC:
+                // Step 1: Check BELONGS_TO edge to another recordGroup (for ALL recordGroups)
+                // Use LIMIT 1 to ensure only one parent
+                OPTIONAL MATCH (rg)-[:BELONGS_TO]->(rg_parent:RecordGroup)
+                WHERE rg IS NOT NULL
+                WITH node, node_type, record, rg, app, f, is_folder, parent_rec, rg_parent_from_record, head(collect(rg_parent)) AS rg_parent
+
+                // Step 2: If no parent recordGroup, check BELONGS_TO edge to app
+                // Use LIMIT 1 to ensure only one parent (KB filter applied in CASE statement)
+                OPTIONAL MATCH (rg)-[:BELONGS_TO]->(app_parent:App)
+                WHERE rg IS NOT NULL
+                      AND rg_parent IS NULL
+                WITH node, node_type, record, rg, app, f, is_folder, parent_rec, rg_parent_from_record, rg_parent, head(collect(app_parent)) AS app_parent
+
+                WITH node, node_type, record, rg, app, f, parent_rec, rg_parent_from_record, rg_parent, app_parent
+
+                // Determine parent ID (matching ArangoDB logic exactly)
+                // For Records:
+                //   1. Check RECORD_RELATION edge from another RECORD only
+                //   2. If no record parent, check BELONGS_TO edge to recordGroup
+                // For RecordGroups:
+                //   1. Check BELONGS_TO edge to another recordGroup
+                //   2. If no parent recordGroup, check BELONGS_TO edge to app (exclude KB apps)
+                // For Apps: No parent
+                WITH node, node_type, record, rg, app,
+                     CASE
+                         // Apps have no parent
+                         WHEN app IS NOT NULL THEN null
+
+                         // Records: Step 1 - Check RECORD_RELATION parent, Step 2 - Check BELONGS_TO to recordGroup
+                         WHEN record IS NOT NULL THEN CASE
+                             WHEN parent_rec IS NOT NULL THEN parent_rec.id
+                             WHEN rg_parent_from_record IS NOT NULL THEN rg_parent_from_record.id
+                             ELSE null
+                         END
+
+                         // RecordGroups: Step 1 - Check BELONGS_TO to recordGroup, Step 2 - Check BELONGS_TO to app
+                        WHEN rg IS NOT NULL THEN CASE
+                            WHEN rg_parent IS NOT NULL THEN rg_parent.id
+                            WHEN app_parent IS NOT NULL AND app_parent.type <> 'KB' THEN app_parent.id
+                            ELSE null
+                        END
+
+                         ELSE null
+                     END AS parent_id,
+                     // Extract subType based on node type
+                     CASE
+                         WHEN record IS NOT NULL THEN record.recordType
+                         WHEN rg IS NOT NULL THEN CASE
+                             WHEN rg.connectorName = 'KB' THEN 'KB'
+                             ELSE coalesce(rg.groupType, rg.connectorName)
+                         END
+                         WHEN app IS NOT NULL THEN app.type
+                         ELSE null
+                     END AS sub_type
+
+                RETURN {
+                    id: node.id,
+                    name: coalesce(node.recordName, node.groupName, node.name),
+                    nodeType: node_type,
+                    subType: sub_type,
+                    parentId: parent_id
+                } AS result
+                """
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"id": current_id},
+                    txn_id=transaction
+                )
+
+                if not results or not results[0].get("result"):
+                    break
+
+                node_info = results[0]["result"]
+                if not node_info.get("id") or not node_info.get("name"):
+                    break
+
+                # Append to breadcrumbs (will reverse at end)
+                breadcrumbs.append({
+                    "id": node_info["id"],
+                    "name": node_info["name"],
+                    "nodeType": node_info["nodeType"],
+                    "subType": node_info.get("subType")
+                })
+
+                # Move to parent
+                current_id = node_info.get("parentId")
+
+            # Reverse to get root -> leaf order (matching ArangoDB behavior)
+            breadcrumbs.reverse()
+            return breadcrumbs
+
+        except Exception as e:
+            self.logger.error(f"❌ Get knowledge hub breadcrumbs failed: {str(e)}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+            return []
+
     async def get_user_app_ids(
         self,
         user_key: str,
@@ -11580,337 +12527,143 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user app IDs failed: {str(e)}")
             return []
 
-    def _get_permission_role_cypher(
+    async def get_knowledge_hub_context_permissions(
         self,
-        node_type: str,
-        node_var: str = "node",
-        user_var: str = "u",
-    ) -> str:
-        """
-        Generate a CALL subquery that returns the user's highest permission role on a node.
-
-        This function generates a reusable Cypher CALL block that checks all permission paths
-        and returns the highest priority role for the user on the specified node.
-
-        Args:
-            node_type: Type of node - 'record', 'recordGroup', 'app', or 'kb'
-            node_var: Variable name of the node in the outer query (default: 'node')
-            user_var: Variable name of the user in the outer query (default: 'u')
-
-        Required outer query parameters:
-            - $org_id: Organization ID parameter
-
-        Returns:
-            Cypher CALL block string that yields: permission_role (string)
-
-        Permission model (10 paths for record/recordGroup):
-            1. user-[PERMISSION]->node (direct)
-            2. user-[PERMISSION]->ancestorRG (via INHERIT_PERMISSIONS chain)
-            3. user-[PERMISSION]->group-[PERMISSION]->node
-            4. user-[PERMISSION]->group-[PERMISSION]->ancestorRG
-            5. user-[PERMISSION]->role-[PERMISSION]->node
-            6. user-[PERMISSION]->role-[PERMISSION]->ancestorRG
-            7. user-[PERMISSION]->team-[PERMISSION]->node
-            8. user-[PERMISSION]->team-[PERMISSION]->ancestorRG
-            9. user-[BELONGS_TO]->org-[PERMISSION]->node
-            10. user-[BELONGS_TO]->org-[PERMISSION]->ancestorRG
-
-        Node type specific behavior:
-            - record: Checks all 10 paths (node + ancestors via INHERIT_PERMISSIONS)
-            - recordGroup: Checks all paths (node + ancestors via INHERIT_PERMISSIONS)
-            - kb: Same as recordGroup (KB is a root RecordGroup, no ancestors found)
-            - app: Uses USER_APP_RELATION based permission (different model)
-
-        The permission model is the same for KB and connector - no special handling.
-        Highest priority role wins: OWNER > ADMIN > EDITOR > WRITER > COMMENTER > READER
-
-        Usage example:
-            permission_call = self._get_permission_role_cypher(
-                node_type="record",
-                node_var="record",
-                user_var="u"
-            )
-            query = f'''
-            MATCH (record:Record {{id: $record_id}})
-            MATCH (u:User {{id: $user_key}})
-            {permission_call}
-            RETURN record, permission_role
-            '''
-        """
-        # Role priority map used for determining highest role
-        role_priority_map = "{OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1}"
-
-        if node_type == "record":
-            return self._get_record_permission_role_cypher(node_var, user_var, role_priority_map)
-        elif node_type in ("recordGroup", "kb"):
-            # KB is a RecordGroup at root level, same permission logic applies
-            # INHERIT_PERMISSIONS query works for both - KB just won't have ancestors
-            return self._get_record_group_permission_role_cypher(node_var, user_var, role_priority_map)
-        elif node_type == "app":
-            return self._get_app_permission_role_cypher(node_var, user_var, role_priority_map)
-        else:
-            raise ValueError(f"Unsupported node_type: {node_type}. Must be 'record', 'recordGroup', 'app', or 'kb'")
-
-    def _get_record_permission_role_cypher(
-        self,
-        node_var: str,
-        user_var: str,
-        role_priority_map: str,
-    ) -> str:
-        """
-        Generate CALL subquery for Record permission role.
-
-        Implements all 10 permission paths:
-        1. user-[PERMISSION]->record (direct)
-        2. user-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
-        3. user-[PERMISSION]->group-[PERMISSION]->record
-        4. user-[PERMISSION]->group-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
-        5. user-[PERMISSION]->role-[PERMISSION]->record
-        6. user-[PERMISSION]->role-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
-        7. user-[PERMISSION]->team-[PERMISSION]->record
-        8. user-[PERMISSION]->team-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
-        9. user-[BELONGS_TO]->org-[PERMISSION]->record
-        10. user-[BELONGS_TO]->org-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
-
-        Checks permissions on the record AND all ancestor RecordGroups via INHERIT_PERMISSIONS chain.
-        Returns highest priority role across all paths.
-        """
-        return f"""
-        CALL {{
-            WITH {node_var}, {user_var}
-
-            // Role priority map
-            WITH {node_var}, {user_var}, {role_priority_map} AS role_priority
-
-            // Step 1: Get all permission targets (record + ancestor RGs via INHERIT_PERMISSIONS)
-            // The record itself is a permission target
-            // Plus all RecordGroups reachable via INHERIT_PERMISSIONS chain
-            OPTIONAL MATCH ({node_var})-[:INHERIT_PERMISSIONS*1..20]->(ancestor_rg:RecordGroup)
-
-            WITH {node_var}, {user_var}, role_priority,
-                 [{node_var}] + collect(DISTINCT ancestor_rg) AS permission_targets_raw
-
-            // Filter out nulls
-            WITH {node_var}, {user_var}, role_priority,
-                 [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
-
-            // Step 2: Check all 10 permission paths across all targets
-            // Unwind targets to check each one
-            UNWIND permission_targets AS target
-
-            // Path 1: Direct user permission on target
-            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
-            WHERE p1.role IS NOT NULL AND p1.role <> ''
-
-            // Path 3: User -> Group -> target
-            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
-            WHERE p3.role IS NOT NULL AND p3.role <> ''
-
-            // Path 5: User -> Role -> target
-            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
-            WHERE p5.role IS NOT NULL AND p5.role <> ''
-
-            // Path 7: User -> Team -> target
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
-            WHERE p7.role IS NOT NULL AND p7.role <> ''
-
-            // Path 9: User -> Org -> target
-            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
-            WHERE p9.role IS NOT NULL AND p9.role <> ''
-
-            // Collect all found permissions for this target
-            WITH {node_var}, {user_var}, role_priority, permission_targets,
-                 collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
-                 collect(DISTINCT p7.role) + collect(DISTINCT p9.role) AS target_roles
-
-            // Flatten all roles across all targets
-            WITH role_priority, target_roles
-            UNWIND target_roles AS found_role
-
-            // Filter valid roles and map to priorities
-            WITH role_priority, found_role
-            WHERE found_role IS NOT NULL AND found_role <> ''
-
-            WITH role_priority, found_role, role_priority[toString(found_role)] AS priority
-            WHERE priority IS NOT NULL
-
-            // Get highest priority role
-            WITH found_role, priority
-            ORDER BY priority DESC
-            LIMIT 1
-
-            RETURN found_role AS permission_role
-        }}
-        """
-
-    def _get_record_group_permission_role_cypher(
-        self,
-        node_var: str,
-        user_var: str,
-        role_priority_map: str,
-    ) -> str:
-        """
-        Generate CALL subquery for RecordGroup/KB permission role.
-
-        Used for both RecordGroup and KB (KB is a RecordGroup at root level).
-        Checks permissions on the node itself AND all ancestor RecordGroups
-        via INHERIT_PERMISSIONS chain. For KB, no ancestors will be found (as expected).
-
-        Permission paths checked (applied to node and ancestors):
-        1. user-[PERMISSION]->node (direct)
-        2. user-[PERMISSION]->ancestorRG (via INHERIT_PERMISSIONS chain)
-        3. user-[PERMISSION]->group-[PERMISSION]->node/ancestorRG
-        4. user-[PERMISSION]->role-[PERMISSION]->node/ancestorRG
-        5. user-[PERMISSION]->team-[PERMISSION]->node/ancestorRG
-        6. user-[BELONGS_TO]->org-[PERMISSION]->node/ancestorRG
-
-        Returns highest priority role across all paths.
-        """
-        return f"""
-        CALL {{
-            WITH {node_var}, {user_var}
-
-            // Role priority map
-            WITH {node_var}, {user_var}, {role_priority_map} AS role_priority
-
-            // Step 1: Get all permission targets (this RG + ancestor RGs via INHERIT_PERMISSIONS)
-            OPTIONAL MATCH ({node_var})-[:INHERIT_PERMISSIONS*1..20]->(ancestor_rg:RecordGroup)
-
-            WITH {node_var}, {user_var}, role_priority,
-                 [{node_var}] + collect(DISTINCT ancestor_rg) AS permission_targets_raw
-
-            // Filter out nulls
-            WITH {node_var}, {user_var}, role_priority,
-                 [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
-
-            // Step 2: Check all permission paths across all targets
-            UNWIND permission_targets AS target
-
-            // Path 1: Direct user permission on target
-            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
-            WHERE p1.role IS NOT NULL AND p1.role <> ''
-
-            // Path 2: User -> Group -> target
-            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
-            WHERE p3.role IS NOT NULL AND p3.role <> ''
-
-            // Path 3: User -> Role -> target
-            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
-            WHERE p5.role IS NOT NULL AND p5.role <> ''
-
-            // Path 4: User -> Team -> target
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
-            WHERE p7.role IS NOT NULL AND p7.role <> ''
-
-            // Path 5: User -> Org -> target
-            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
-            WHERE p9.role IS NOT NULL AND p9.role <> ''
-
-            // Collect all found permissions for this target
-            WITH {node_var}, {user_var}, role_priority, permission_targets,
-                 collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
-                 collect(DISTINCT p7.role) + collect(DISTINCT p9.role) AS target_roles
-
-            // Flatten all roles across all targets
-            WITH role_priority, target_roles
-            UNWIND target_roles AS found_role
-
-            // Filter valid roles and map to priorities
-            WITH role_priority, found_role
-            WHERE found_role IS NOT NULL AND found_role <> ''
-
-            WITH role_priority, found_role, role_priority[toString(found_role)] AS priority
-            WHERE priority IS NOT NULL
-
-            // Get highest priority role
-            WITH found_role, priority
-            ORDER BY priority DESC
-            LIMIT 1
-
-            RETURN found_role AS permission_role
-        }}
-        """
-
-    def _get_app_permission_role_cypher(
-        self,
-        node_var: str,
-        user_var: str,
-        role_priority_map: str,
-    ) -> str:
-        """
-        Generate CALL subquery for App permission role.
-
-        - Checks USER_APP_RELATION edge
-        - If USER_APP_RELATION exists:
-        - Admin users:
-            - Team apps: EDITOR role
-            - Personal apps: OWNER role
-        - Team app creator: OWNER role (createdBy matches userId - MongoDB ID)
-        - Otherwise: READER role
-        - If USER_APP_RELATION doesn't exist: returns null (no access)
-
-        Note: createdBy stores MongoDB userId, so we compare with user.userId, not user.id
-        """
-        return f"""
-        CALL {{
-            WITH {node_var}, {user_var}
-
-            // Check if user has USER_APP_RELATION to app
-            OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
-
-            // Check if user is admin
-            WITH {node_var}, {user_var}, user_app_rel,
-                (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
-
-            // Get app scope and check if user is creator
-            // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
-            WITH {node_var}, {user_var}, user_app_rel, is_admin,
-                coalesce({node_var}.scope, 'personal') AS app_scope,
-                ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
-
-            // Determine role based on conditions
-            RETURN CASE
-                // If no USER_APP_RELATION, no access
-                WHEN user_app_rel IS NULL THEN null
-
-                // Admin users: EDITOR for team apps, OWNER for personal apps
-                WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
-                WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
-
-                // Team app creator gets OWNER role
-                WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
-
-                // Default: READER for regular users with USER_APP_RELATION
-                ELSE 'READER'
-            END AS permission_role
-        }}
-        """
-
-    async def is_knowledge_hub_folder(
-        self,
-        record_id: str,
-        folder_mime_types: List[str],
+        user_key: str,
+        org_id: str,
+        parent_id: Optional[str],
         transaction: Optional[str] = None
-    ) -> bool:
-        """Check if a record is a folder."""
+    ) -> Dict[str, Any]:
+        """
+        Get user's context-level permissions.
+
+        Uses the generic _get_permission_role_cypher method which provides:
+        - Complete permission checking (all 10 paths including role-based)
+        - INHERIT_PERMISSIONS chain traversal (up to 20 levels)
+        - Organization permissions
+
+        Returns permissions with context-specific flags (canUpload, canCreateFolders, etc.)
+        """
         try:
-            query = """
-            MATCH (r:Record {id: $record_id})
-            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(f:File)
-            WITH r, f,
-                 r.mimeType IN $folder_mime_types AS is_folder_by_mimetype,
-                 CASE WHEN f IS NOT NULL AND f.isFile = false THEN true ELSE false END AS is_folder_by_file
-            RETURN is_folder_by_mimetype OR is_folder_by_file AS is_folder
-            """
-            results = await self.client.execute_query(
-                query,
-                parameters={"record_id": record_id, "folder_mime_types": folder_mime_types},
-                txn_id=transaction
-            )
-            return results[0].get("is_folder", False) if results else False
+            if not parent_id:
+                # Root level - check if user is admin
+                query = """
+                MATCH (u:User {id: $user_key})
+                WITH u, (coalesce(u.role, '') = 'ADMIN' OR coalesce(u.orgRole, '') = 'ADMIN') AS is_admin
+                RETURN {
+                    role: CASE WHEN is_admin THEN 'ADMIN' ELSE 'MEMBER' END,
+                    canUpload: is_admin,
+                    canCreateFolders: is_admin,
+                    canEdit: is_admin,
+                    canDelete: is_admin,
+                    canManagePermissions: is_admin
+                } AS result
+                """
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"user_key": user_key},
+                    txn_id=transaction
+                )
+            else:
+                # Node level - use generic permission checker
+                # Generate permission calls for all node types
+                record_permission_call = self._get_permission_role_cypher(
+                    node_type="record",
+                    node_var="record",
+                    user_var="u"
+                )
+                rg_permission_call = self._get_permission_role_cypher(
+                    node_type="kb",  # Works for both KB and RecordGroup
+                    node_var="rg",
+                    user_var="u"
+                )
+                app_permission_call = self._get_permission_role_cypher(
+                    node_type="app",
+                    node_var="app",
+                    user_var="u"
+                )
+
+                query = f"""
+                MATCH (u:User {{id: $user_key}})
+
+                // Find the node (could be Record, App, or RecordGroup)
+                OPTIONAL MATCH (record:Record {{id: $parent_id}})
+                OPTIONAL MATCH (app:App {{id: $parent_id}})
+                OPTIONAL MATCH (rg:RecordGroup {{id: $parent_id}})
+
+                WITH u, record, app, rg,
+                     coalesce(record, app, rg) AS node,
+                     record IS NOT NULL AS is_record,
+                     app IS NOT NULL AS is_app,
+                     rg IS NOT NULL AS is_rg
+
+                WHERE node IS NOT NULL
+
+                // Get permission for Records
+                CALL {{
+                    WITH u, record, is_record
+                    WITH u, record
+                    WHERE is_record
+                    {record_permission_call}
+                    RETURN permission_role AS record_perm
+                }}
+
+                // Get permission for RecordGroups
+                CALL {{
+                    WITH u, rg, is_rg
+                    WITH u, rg
+                    WHERE is_rg
+                    {rg_permission_call}
+                    RETURN permission_role AS rg_perm
+                }}
+
+                // Get permission for Apps
+                CALL {{
+                    WITH u, app, is_app
+                    WITH u, app
+                    WHERE is_app
+                    {app_permission_call}
+                    RETURN permission_role AS app_perm
+                }}
+
+                WITH coalesce(record_perm, rg_perm, app_perm, 'READER') AS final_role
+
+                RETURN {{
+                    role: final_role,
+                    canUpload: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
+                    canCreateFolders: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
+                    canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
+                    canDelete: final_role IN ['OWNER', 'ADMIN'],
+                    canManagePermissions: final_role IN ['OWNER', 'ADMIN']
+                }} AS result
+                """
+
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
+                    txn_id=transaction
+                )
+
+            if results and results[0].get("result"):
+                return results[0]["result"]
+            return {
+                "role": "READER",
+                "canUpload": False,
+                "canCreateFolders": False,
+                "canEdit": False,
+                "canDelete": False,
+                "canManagePermissions": False
+            }
         except Exception as e:
-            self.logger.error(f"❌ Is knowledge hub folder check failed: {str(e)}")
-            return False
+            self.logger.error(f"❌ Get knowledge hub context permissions failed: {str(e)}")
+            return {
+                "role": "READER",
+                "canUpload": False,
+                "canCreateFolders": False,
+                "canEdit": False,
+                "canDelete": False,
+                "canManagePermissions": False
+            }
 
     async def get_knowledge_hub_node_info(
         self,
@@ -12210,905 +12963,75 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get knowledge hub filter options failed: {str(e)}")
             return {"kbs": [], "apps": []}
 
-    async def get_knowledge_hub_context_permissions(
-        self,
-        user_key: str,
-        org_id: str,
-        parent_id: Optional[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Get user's context-level permissions.
-
-        Uses the generic _get_permission_role_cypher method which provides:
-        - Complete permission checking (all 10 paths including role-based)
-        - INHERIT_PERMISSIONS chain traversal (up to 20 levels)
-        - Organization permissions
-
-        Returns permissions with context-specific flags (canUpload, canCreateFolders, etc.)
-        """
-        try:
-            if not parent_id:
-                # Root level - check if user is admin
-                query = """
-                MATCH (u:User {id: $user_key})
-                WITH u, (coalesce(u.role, '') = 'ADMIN' OR coalesce(u.orgRole, '') = 'ADMIN') AS is_admin
-                RETURN {
-                    role: CASE WHEN is_admin THEN 'ADMIN' ELSE 'MEMBER' END,
-                    canUpload: is_admin,
-                    canCreateFolders: is_admin,
-                    canEdit: is_admin,
-                    canDelete: is_admin,
-                    canManagePermissions: is_admin
-                } AS result
-                """
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"user_key": user_key},
-                    txn_id=transaction
-                )
-            else:
-                # Node level - use generic permission checker
-                # Generate permission calls for all node types
-                record_permission_call = self._get_permission_role_cypher(
-                    node_type="record",
-                    node_var="record",
-                    user_var="u"
-                )
-                rg_permission_call = self._get_permission_role_cypher(
-                    node_type="kb",  # Works for both KB and RecordGroup
-                    node_var="rg",
-                    user_var="u"
-                )
-                app_permission_call = self._get_permission_role_cypher(
-                    node_type="app",
-                    node_var="app",
-                    user_var="u"
-                )
-
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
-
-                // Find the node (could be Record, App, or RecordGroup)
-                OPTIONAL MATCH (record:Record {{id: $parent_id}})
-                OPTIONAL MATCH (app:App {{id: $parent_id}})
-                OPTIONAL MATCH (rg:RecordGroup {{id: $parent_id}})
-
-                WITH u, record, app, rg,
-                     coalesce(record, app, rg) AS node,
-                     record IS NOT NULL AS is_record,
-                     app IS NOT NULL AS is_app,
-                     rg IS NOT NULL AS is_rg
-
-                WHERE node IS NOT NULL
-
-                // Get permission for Records
-                CALL {{
-                    WITH u, record, is_record
-                    WITH u, record
-                    WHERE is_record
-                    {record_permission_call}
-                    RETURN permission_role AS record_perm
-                }}
-
-                // Get permission for RecordGroups
-                CALL {{
-                    WITH u, rg, is_rg
-                    WITH u, rg
-                    WHERE is_rg
-                    {rg_permission_call}
-                    RETURN permission_role AS rg_perm
-                }}
-
-                // Get permission for Apps
-                CALL {{
-                    WITH u, app, is_app
-                    WITH u, app
-                    WHERE is_app
-                    {app_permission_call}
-                    RETURN permission_role AS app_perm
-                }}
-
-                WITH coalesce(record_perm, rg_perm, app_perm, 'READER') AS final_role
-
-                RETURN {{
-                    role: final_role,
-                    canUpload: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
-                    canCreateFolders: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
-                    canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
-                    canDelete: final_role IN ['OWNER', 'ADMIN'],
-                    canManagePermissions: final_role IN ['OWNER', 'ADMIN']
-                }} AS result
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"user_key": user_key, "org_id": org_id, "parent_id": parent_id},
-                    txn_id=transaction
-                )
-
-            if results and results[0].get("result"):
-                return results[0]["result"]
-            return {
-                "role": "READER",
-                "canUpload": False,
-                "canCreateFolders": False,
-                "canEdit": False,
-                "canDelete": False,
-                "canManagePermissions": False
-            }
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub context permissions failed: {str(e)}")
-            return {
-                "role": "READER",
-                "canUpload": False,
-                "canCreateFolders": False,
-                "canEdit": False,
-                "canDelete": False,
-                "canManagePermissions": False
-            }
-
-    async def get_knowledge_hub_breadcrumbs(
-        self,
-        node_id: str,
-        transaction: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        """
-        Get breadcrumb trail for a node using iterative parent lookup.
-
-        NOTE: Uses iterative parent lookup (one query per level) because parent relationships
-        are stored via multiple mechanisms: parentId field (recordGroups), RECORD_RELATION edges
-        (records), and connectorId field (linking to apps).
-        """
-        breadcrumbs = []
-        current_id = node_id
-        visited = set()
-        max_depth = 20
-
-        try:
-            while current_id and len(visited) < max_depth:
-                if current_id in visited:
-                    break
-                visited.add(current_id)
-
-                # Get node info and parent
-                query = """
-                // Try to find in each collection
-                OPTIONAL MATCH (record:Record {id: $id})
-                OPTIONAL MATCH (rg:RecordGroup {id: $id})
-                OPTIONAL MATCH (app:App {id: $id})
-
-                WITH record, rg, app
-
-                // For records, check isOfType to determine folder
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(f:File)
-                WHERE record IS NOT NULL
-
-                WITH record, rg, app, f,
-                     CASE WHEN f IS NOT NULL AND f.isFile = false THEN true ELSE false END AS is_folder
-
-                // Determine node type
-                WITH record, rg, app, f, is_folder,
-                     CASE
-                         WHEN record IS NOT NULL THEN CASE WHEN is_folder THEN 'folder' ELSE 'record' END
-                         WHEN rg IS NOT NULL THEN CASE WHEN rg.connectorName = 'KB' THEN 'kb' ELSE 'recordGroup' END
-                         WHEN app IS NOT NULL THEN 'app'
-                         ELSE null
-                     END AS node_type,
-                     coalesce(record, rg, app) AS node
-
-                // Get parent for records - ONLY via RECORD_RELATION edges
-                // Edge direction: parent -> child (edge from parent, to current record)
-                OPTIONAL MATCH (parent_rec)-[rr:RECORD_RELATION]->(record)
-                WHERE record IS NOT NULL
-                      AND rr IS NOT NULL
-                      AND rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-
-                // Get parent for KB record groups via BELONGS_TO
-                OPTIONAL MATCH (rg)-[:BELONGS_TO]->(rg_parent)
-                WHERE rg IS NOT NULL AND rg.connectorName = 'KB'
-
-                WITH node, node_type, record, rg, app, f, parent_rec, rg_parent
-
-                // Determine parent ID (matching ArangoDB logic exactly)
-                WITH node, node_type, record, rg, app,
-                     CASE
-                         // Apps have no parent
-                         WHEN app IS NOT NULL THEN null
-
-                         // Records: ONLY use RECORD_RELATION parent (no BELONGS_TO or externalParentId)
-                         WHEN record IS NOT NULL THEN CASE
-                             WHEN parent_rec IS NOT NULL THEN parent_rec.id
-                             ELSE null
-                         END
-
-                         // RecordGroups
-                         WHEN rg IS NOT NULL THEN CASE
-                             // For KB record groups: check belongsTo edge
-                             WHEN rg.connectorName = 'KB' THEN CASE
-                                 WHEN rg_parent IS NULL THEN null
-                                 // If parent is App with type='KB', return null (KB apps shouldn't be shown)
-                                 WHEN rg_parent:App AND rg_parent.type = 'KB' THEN null
-                                 // Otherwise return parent's id
-                                 ELSE rg_parent.id
-                             END
-                             // For connector record groups: use parentId or connectorId
-                             WHEN rg.parentId IS NOT NULL THEN rg.parentId
-                             WHEN rg.connectorId IS NOT NULL THEN rg.connectorId
-                             ELSE null
-                         END
-
-                         ELSE null
-                     END AS parent_id,
-                     // Extract subType based on node type
-                     CASE
-                         WHEN record IS NOT NULL THEN record.recordType
-                         WHEN rg IS NOT NULL THEN CASE
-                             WHEN rg.connectorName = 'KB' THEN 'KB'
-                             ELSE coalesce(rg.groupType, rg.connectorName)
-                         END
-                         WHEN app IS NOT NULL THEN app.type
-                         ELSE null
-                     END AS sub_type
-
-                RETURN {
-                    id: node.id,
-                    name: coalesce(node.recordName, node.groupName, node.name),
-                    nodeType: node_type,
-                    subType: sub_type,
-                    parentId: parent_id
-                } AS result
-                """
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"id": current_id},
-                    txn_id=transaction
-                )
-
-                if not results or not results[0].get("result"):
-                    break
-
-                node_info = results[0]["result"]
-                if not node_info.get("id") or not node_info.get("name"):
-                    break
-
-                # Append to breadcrumbs (will reverse at end)
-                breadcrumbs.append({
-                    "id": node_info["id"],
-                    "name": node_info["name"],
-                    "nodeType": node_info["nodeType"],
-                    "subType": node_info.get("subType")
-                })
-
-                # Move to parent
-                current_id = node_info.get("parentId")
-
-            # Reverse to get root -> leaf order (matching ArangoDB behavior)
-            breadcrumbs.reverse()
-            return breadcrumbs
-
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub breadcrumbs failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return []
-
-    async def get_knowledge_hub_node_permissions(
-        self,
-        user_key: str,
-        node_ids: List[str],
-        node_types: List[str],
-        transaction: Optional[str] = None
-    ) -> Dict[str, Dict[str, Any]]:
-        """
-        Get user permissions for multiple nodes in batch.
-
-        Uses the generic _get_permission_role_cypher method which provides:
-        - Complete permission checking (all 10 paths for records)
-        - INHERIT_PERMISSIONS chain traversal (up to 20 levels)
-        - Organization and role-based permissions
-
-        No special KB handling needed since INHERIT_PERMISSIONS edges always exist,
-        allowing the generic method to traverse the full chain to root KB.
-        """
-        if not node_ids:
-            return {}
-
-        try:
-            # Separate by type
-            record_group_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype in ['kb', 'recordGroup']]
-            app_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype == 'app']
-            record_ids = [nid for nid, ntype in zip(node_ids, node_types) if ntype not in ['kb', 'recordGroup', 'app']]
-
-            permissions = {}
-
-            # Query record group permissions using generic permission method
-            if record_group_ids:
-                permission_call = self._get_permission_role_cypher(
-                    node_type="kb",  # Works for both KB and RecordGroup
-                    node_var="rg",
-                    user_var="u"
-                )
-
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
-
-                UNWIND $record_group_ids AS rg_id
-                MATCH (rg:RecordGroup {{id: rg_id}})
-                WHERE NOT coalesce(rg.isDeleted, false)
-
-                // Use generic permission checker (checks INHERIT_PERMISSIONS chain + all 10 paths)
-                {permission_call}
-
-                WITH rg, coalesce(permission_role, 'READER') AS final_role
-
-                RETURN rg.id AS node_id, {{
-                    role: final_role,
-                    canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
-                    canDelete: final_role IN ['OWNER', 'ADMIN']
-                }} AS perm
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"user_key": user_key, "record_group_ids": record_group_ids},
-                    txn_id=transaction
-                )
-                for r in results or []:
-                    if r.get("node_id") and r.get("perm"):
-                        permissions[r["node_id"]] = r["perm"]
-
-            # Query app permissions using generic permission method
-            if app_ids:
-                permission_call = self._get_permission_role_cypher(
-                    node_type="app",
-                    node_var="app",
-                    user_var="u"
-                )
-
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
-
-                UNWIND $app_ids AS app_id
-                MATCH (app:App {{id: app_id}})
-
-                // Use generic app permission checker
-                {permission_call}
-
-                WITH app, coalesce(permission_role, 'READER') AS final_role
-
-                RETURN app.id AS node_id, {{
-                    role: final_role,
-                    canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
-                    canDelete: final_role IN ['OWNER', 'ADMIN']
-                }} AS perm
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"user_key": user_key, "app_ids": app_ids},
-                    txn_id=transaction
-                )
-                for r in results or []:
-                    if r.get("node_id") and r.get("perm"):
-                        permissions[r["node_id"]] = r["perm"]
-
-            # Query record permissions using generic permission method
-            if record_ids:
-                permission_call = self._get_permission_role_cypher(
-                    node_type="record",
-                    node_var="record",
-                    user_var="u"
-                )
-
-                query = f"""
-                MATCH (u:User {{id: $user_key}})
-
-                UNWIND $record_ids AS rec_id
-                MATCH (record:Record {{id: rec_id}})
-
-                // Use generic permission checker (checks INHERIT_PERMISSIONS chain + all 10 paths)
-                {permission_call}
-
-                WITH record, coalesce(permission_role, 'READER') AS final_role
-
-                RETURN record.id AS node_id, {{
-                    role: final_role,
-                    canEdit: final_role IN ['OWNER', 'ADMIN', 'EDITOR', 'WRITER'],
-                    canDelete: final_role IN ['OWNER', 'ADMIN']
-                }} AS perm
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"user_key": user_key, "record_ids": record_ids},
-                    txn_id=transaction
-                )
-                for r in results or []:
-                    if r.get("node_id") and r.get("perm"):
-                        permissions[r["node_id"]] = r["perm"]
-
-            return permissions
-
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub node permissions failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return {}
-
-    async def get_knowledge_hub_root_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        user_app_ids: List[str],
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        include_kbs: bool,
-        include_apps: bool,
-        only_containers: bool,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """Get root level nodes (KBs and Apps) for Knowledge Hub."""
-        try:
-            query = """
-            MATCH (user_doc:User {id: $user_key})
-            WITH user_doc, user_doc.userId AS user_id
-
-            // ==================== Get Knowledge Bases ====================
-            // Get KBs only if include_kbs is true
-            OPTIONAL MATCH (kb:RecordGroup)
-            WHERE $include_kbs = true
-              AND kb.orgId = $org_id
-              AND kb.connectorName = 'KB'
-              AND NOT coalesce(kb.isDeleted, false)
-
-            // Check direct user permission
-            OPTIONAL MATCH (user_doc)-[direct_perm:PERMISSION {type: 'USER'}]->(kb)
-
-            // Check team permission
-            OPTIONAL MATCH (user_doc)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:PERMISSION {type: 'TEAM'}]->(kb)
-
-            WITH kb, user_doc, user_id,
-                 (direct_perm IS NOT NULL OR team IS NOT NULL) AS has_permission
-            WHERE kb IS NULL OR has_permission
-
-            // Check for children via BELONGS_TO edges
-            OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(kb)
-            WHERE NOT coalesce(record.isDeleted, false) AND record.externalParentId IS NULL
-
-            OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(kb)
-            WHERE child_rg.connectorName = 'KB' AND NOT coalesce(child_rg.isDeleted, false)
-
-            WITH kb, user_doc, user_id,
-                 count(DISTINCT record) > 0 OR count(DISTINCT child_rg) > 0 AS has_children
-
-            // Determine sharing status
-            OPTIONAL MATCH (other_user:User)-[other_user_perm:PERMISSION {type: 'USER'}]->(kb)
-            WHERE other_user <> user_doc
-
-            OPTIONAL MATCH ()-[team_perm:PERMISSION {type: 'TEAM'}]->(kb)
-
-            WITH kb, has_children, user_doc, user_id,
-                 (kb.createdBy = $user_key OR kb.createdBy = user_id) AS is_creator,
-                 count(DISTINCT other_user_perm) AS other_user_count,
-                 count(DISTINCT team_perm) AS team_perm_count
-
-            WITH user_doc, user_id,
-                 CASE WHEN kb IS NOT NULL
-                      THEN {
-                          id: kb.id,
-                          name: kb.groupName,
-                          nodeType: 'kb',
-                          parentId: null,
-                          source: 'KB',
-                          connector: 'KB',
-                          createdAt: kb.createdAtTimestamp,
-                          updatedAt: kb.updatedAtTimestamp,
-                          webUrl: '/kb/' + kb.id,
-                          hasChildren: has_children,
-                          sharingStatus: CASE WHEN is_creator AND other_user_count = 0 AND team_perm_count = 0
-                                              THEN 'private' ELSE 'shared' END
-                      }
-                      ELSE null
-                 END AS kb_node
-
-            WITH collect(kb_node) AS kb_nodes_raw
-            WITH [n IN kb_nodes_raw WHERE n IS NOT NULL] AS kb_nodes
-
-            // ==================== Get Apps ====================
-            // Get apps only if include_apps is true
-            OPTIONAL MATCH (app:App)
-            WHERE $include_apps = true
-              AND app.id IN $user_app_ids
-              AND app.type <> 'KB'
-
-            // Check for children (record groups)
-            OPTIONAL MATCH (rg:RecordGroup)
-            WHERE rg.connectorId = app.id
-
-            WITH kb_nodes, app, count(rg) > 0 AS has_children
-
-            WITH kb_nodes,
-                 CASE WHEN app IS NOT NULL
-                      THEN {
-                          id: app.id,
-                          name: app.name,
-                          nodeType: 'app',
-                          parentId: null,
-                          source: 'CONNECTOR',
-                          connector: app.type,
-                          createdAt: coalesce(app.createdAtTimestamp, 0),
-                          updatedAt: coalesce(app.updatedAtTimestamp, 0),
-                          webUrl: '/app/' + app.id,
-                          hasChildren: has_children,
-                          sharingStatus: coalesce(app.scope, 'personal')
-                      }
-                      ELSE null
-                 END AS app_node
-
-            WITH kb_nodes, collect(app_node) AS app_nodes_raw
-            WITH kb_nodes, [n IN app_nodes_raw WHERE n IS NOT NULL] AS app_nodes
-            WITH kb_nodes + app_nodes AS all_nodes
-
-            // Apply sorting with explicit field mapping (Neo4j doesn't support dynamic property access)
-            UNWIND all_nodes AS node
-            WITH node,
-                 CASE $sort_field
-                     WHEN 'name' THEN node.name
-                     WHEN 'createdAt' THEN node.createdAt
-                     WHEN 'updatedAt' THEN node.updatedAt
-                     WHEN 'nodeType' THEN node.nodeType
-                     WHEN 'source' THEN node.source
-                     WHEN 'connector' THEN node.connector
-                     ELSE node.name
-                 END AS sort_value
-            ORDER BY
-                CASE WHEN $sort_dir = 'ASC' THEN sort_value ELSE null END ASC,
-                CASE WHEN $sort_dir = 'DESC' THEN sort_value ELSE null END DESC
-
-            WITH collect(node) AS sorted_nodes
-
-            RETURN {
-                nodes: sorted_nodes[$skip..$skip + $limit],
-                total: size(sorted_nodes)
-            } AS result
-            """
-
-            results = await self.client.execute_query(
-                query,
-                parameters={
-                    "user_key": user_key,
-                    "org_id": org_id,
-                    "user_app_ids": user_app_ids,
-                    "include_kbs": include_kbs,
-                    "include_apps": include_apps,
-                    "skip": skip,
-                    "limit": limit,
-                    "sort_field": sort_field,
-                    "sort_dir": sort_dir.upper(),
-                },
-                txn_id=transaction
-            )
-
-            if results and results[0].get("result"):
-                return results[0]["result"]
-            return {"nodes": [], "total": 0}
-
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub root nodes failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
-
-    async def get_knowledge_hub_children(
-        self,
-        parent_id: str,
-        parent_type: str,
-        org_id: str,
-        user_key: str,
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        search_query: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        only_containers: bool = False,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Unified method to get children of any node type.
-        Neo4j implementation: Converts structured parameters to Cypher.
-        """
-        try:
-            self.logger.info(f"🔍 get_knowledge_hub_children called: parent_id={parent_id}, parent_type={parent_type}, user_key={user_key}")
-
-            # First, verify the parent exists and check for children
-            if parent_type in ("kb", "recordGroup"):
-                check_query = """
-                MATCH (rg:RecordGroup {id: $parent_id})
-                OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(rg)
-                OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
-                WHERE record.externalParentId IS NULL
-                RETURN rg, count(DISTINCT child_rg) AS nested_rg_count, count(DISTINCT record) AS record_count
-                """
-                check_results = await self.client.execute_query(check_query, parameters={"parent_id": parent_id}, txn_id=transaction)
-                if not check_results or not check_results[0].get("rg"):
-                    self.logger.error(f"❌ Parent RecordGroup not found: {parent_id}")
-                    return {"nodes": [], "total": 0}
-                parent_info = check_results[0]
-                self.logger.info(f"✅ Parent RG found: connectorName={parent_info['rg'].get('connectorName')}, nested_rgs={parent_info.get('nested_rg_count', 0)}, records={parent_info.get('record_count', 0)}")
-
-            # Build filter conditions
-            filter_conditions = []
-            params = {
-                "parent_id": parent_id,
-                "org_id": org_id,
-                "user_key": user_key,
-                "skip": skip,
-                "limit": limit,
-                "sort_field": sort_field,
-                "sort_dir": sort_dir.upper(),
-                "only_containers": only_containers,
-            }
-
-            if search_query:
-                params["search_query"] = search_query.lower()
-                filter_conditions.append("toLower(node.name) CONTAINS $search_query")
-
-            # Use parameterized node_types filter instead of string building
-            if node_types:
-                params["node_types"] = node_types
-                filter_conditions.append("node.nodeType IN $node_types")
-
-            if record_types:
-                params["record_types"] = record_types
-                filter_conditions.append("(node.recordType IS NOT NULL AND node.recordType IN $record_types)")
-
-            if indexing_status:
-                params["indexing_status"] = indexing_status
-                filter_conditions.append("(node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
-
-            if created_at:
-                if created_at.get("gte"):
-                    params["created_at_gte"] = created_at["gte"]
-                    filter_conditions.append("node.createdAt >= $created_at_gte")
-                if created_at.get("lte"):
-                    params["created_at_lte"] = created_at["lte"]
-                    filter_conditions.append("node.createdAt <= $created_at_lte")
-
-            if updated_at:
-                if updated_at.get("gte"):
-                    params["updated_at_gte"] = updated_at["gte"]
-                    filter_conditions.append("node.updatedAt >= $updated_at_gte")
-                if updated_at.get("lte"):
-                    params["updated_at_lte"] = updated_at["lte"]
-                    filter_conditions.append("node.updatedAt <= $updated_at_lte")
-
-            if size:
-                if size.get("gte"):
-                    params["size_gte"] = size["gte"]
-                    filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes >= $size_gte)")
-                if size.get("lte"):
-                    params["size_lte"] = size["lte"]
-                    filter_conditions.append("(node.sizeInBytes IS NULL OR node.sizeInBytes <= $size_lte)")
-
-            if origins:
-                params["origins"] = origins
-                filter_conditions.append("node.source IN $origins")
-
-            if connector_ids and kb_ids:
-                params["connector_ids"] = connector_ids
-                params["kb_ids"] = kb_ids
-                filter_conditions.append("(node.appId IN $connector_ids OR node.kbId IN $kb_ids)")
-            elif connector_ids:
-                params["connector_ids"] = connector_ids
-                filter_conditions.append("node.appId IN $connector_ids")
-            elif kb_ids:
-                params["kb_ids"] = kb_ids
-                filter_conditions.append("node.kbId IN $kb_ids")
-
-            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
-
-            # Generate query based on parent type
-            if parent_type == "app":
-                sub_query = self._get_app_children_cypher()
-                params["source"] = "CONNECTOR"
-            elif parent_type in ("kb", "recordGroup"):
-                sub_query = self._get_record_group_children_cypher(parent_type)
-                params["source"] = "KB" if parent_type == "kb" else "CONNECTOR"
-            elif parent_type in ("folder", "record"):
-                sub_query = self._get_record_children_cypher()
-            else:
-                return {"nodes": [], "total": 0}
-
-            query = f"""
-            CALL {{
-                {sub_query}
-            }}
-
-            // Apply filters using UNWIND for better performance
-            UNWIND raw_children AS node
-            WITH node WHERE {filter_clause}
-
-            // Apply only_containers filter
-            WITH node WHERE
-                $only_containers = false
-                OR node.hasChildren = true
-                OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
-
-            // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
-            WITH node,
-                 CASE $sort_field
-                     WHEN 'name' THEN node.name
-                     WHEN 'createdAt' THEN node.createdAt
-                     WHEN 'updatedAt' THEN node.updatedAt
-                     WHEN 'nodeType' THEN node.nodeType
-                     WHEN 'source' THEN node.source
-                     WHEN 'connector' THEN node.connector
-                     WHEN 'recordType' THEN node.recordType
-                     WHEN 'sizeInBytes' THEN node.sizeInBytes
-                     WHEN 'indexingStatus' THEN node.indexingStatus
-                     ELSE node.name
-                 END AS sort_value
-            ORDER BY
-                CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
-                CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
-
-            // Collect after sorting preserves order in Neo4j 5.x+
-            WITH collect(node) AS sorted_nodes
-
-            RETURN {{
-                nodes: sorted_nodes[$skip..($skip + $limit)],
-                total: size(sorted_nodes)
-            }} AS result
-            """
-
-            self.logger.info(f"📝 Executing query with params: parent_id={params.get('parent_id')}, user_key={params.get('user_key')}")
-            results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
-            self.logger.info(f"📊 Query results: {results}")
-            if results and results[0].get("result"):
-                result = results[0]["result"]
-                self.logger.info(f"✅ Returning {result.get('total', 0)} total nodes, {len(result.get('nodes', []))} in page")
-                return result
-            self.logger.warning("⚠️ No results returned from query")
-            return {"nodes": [], "total": 0}
-
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub children failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
-
     def _get_app_children_cypher(self) -> str:
         """Generate Cypher sub-query to fetch RecordGroups for an App.
 
-        For connector apps, we return "root" record groups that the user has permission to access.
-        A "root" is defined as a record group where either:
-        1. It has no parent (parentExternalGroupId is null)
-        2. OR its parent exists but the user does NOT have permission to access the parent
-        3. OR its parent does not exist in our DB
+        Simplified unified approach:
+        - Gets ALL recordGroups connected to app via BELONGS_TO edge (KB and Connector unified)
+        - Uses _get_permission_role_cypher for comprehensive permission checking (all 10 paths)
+        - Returns only recordGroups where user has permission
+        - Includes userRole field in results
         """
-        return """
-        MATCH (app:App {id: $parent_id})
-        MATCH (u:User {id: $user_key})
+        # Get the permission role Cypher for recordGroup permission checking
+        permission_role_cypher = self._get_permission_role_cypher("recordGroup", "rg", "u")
+
+        return f"""
+        MATCH (app:App {{id: $parent_id}})
+        MATCH (u:User {{id: $user_key}})
 
         // Determine if this is a KB app
         WITH app, u, $parent_id AS parent_id, (app.type = 'KB') AS is_kb_app
 
-        // ============================================
-        // PATH 1: Direct user -> recordGroup permission
-        // ============================================
-        // For KB apps: Find via BELONGS_TO edge from recordGroup to app
-        // For Connector apps: Use connectorId field
-        OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(rg_direct:RecordGroup)
-        WHERE NOT coalesce(rg_direct.isDeleted, false)
-              AND CASE
-                  WHEN is_kb_app THEN
-                      rg_direct.connectorName = 'KB' AND EXISTS((rg_direct)-[:BELONGS_TO]->(app))
-                  ELSE
-                      rg_direct.connectorId = app.id
-              END
+        // Get all recordGroups connected to app via BELONGS_TO edge (KB and Connector unified)
+        OPTIONAL MATCH (rg:RecordGroup)-[bt:BELONGS_TO]->(app)
+        WHERE (is_kb_app AND rg.connectorName = 'KB')
+              OR (NOT is_kb_app AND rg.connectorId = app.id)
 
-        WITH app, u, parent_id, is_kb_app, collect(DISTINCT rg_direct) AS direct_rgs
+        WITH app, u, parent_id, is_kb_app, collect(DISTINCT rg) AS all_rgs
 
-        // ============================================
-        // PATH 2: User -> Group/Role -> recordGroup permission
-        // ============================================
-        OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(grp)
-        WHERE grp:Group OR grp:Role
-        OPTIONAL MATCH (grp)-[grp_perm:PERMISSION]->(rg_group:RecordGroup)
-        WHERE (grp_perm.type = 'GROUP' OR grp_perm.type = 'ROLE')
-              AND NOT coalesce(rg_group.isDeleted, false)
-              AND CASE
-                  WHEN is_kb_app THEN
-                      rg_group.connectorName = 'KB' AND EXISTS((rg_group)-[:BELONGS_TO]->(app))
-                  ELSE
-                      rg_group.connectorId = app.id
-              END
+        // For each recordGroup, check comprehensive permissions using helper
+        UNWIND all_rgs AS rg
+        WITH app, u, parent_id, is_kb_app, rg
+        WHERE rg IS NOT NULL
 
-        WITH app, u, parent_id, is_kb_app, direct_rgs, collect(DISTINCT rg_group) AS group_rgs
+        // Use comprehensive permission checking (all 10 paths)
+        {permission_role_cypher}
 
-        // ============================================
-        // PATH 3: User -> Organization -> recordGroup permission
-        // ============================================
-        OPTIONAL MATCH (u)-[belongs:BELONGS_TO {entityType: 'ORGANIZATION'}]->(org)
-        OPTIONAL MATCH (org)-[:PERMISSION {type: 'ORG'}]->(rg_org:RecordGroup)
-        WHERE NOT coalesce(rg_org.isDeleted, false)
-              AND CASE
-                  WHEN is_kb_app THEN
-                      rg_org.connectorName = 'KB' AND EXISTS((rg_org)-[:BELONGS_TO]->(app))
-                  ELSE
-                      rg_org.connectorId = app.id
-              END
+        // Bring permission_role into scope after CALL subquery
+        WITH app, u, parent_id, is_kb_app, rg, permission_role
 
-        // First collect org_rgs with explicit grouping keys
-        WITH app, u, parent_id, is_kb_app, direct_rgs, group_rgs, collect(DISTINCT rg_org) AS org_rgs
+        // Only include recordGroups where user has permission
+        WHERE permission_role IS NOT NULL AND permission_role <> ''
 
-        // Now combine all record groups
-        WITH app, u, parent_id, is_kb_app,
-             direct_rgs + group_rgs + org_rgs AS all_rgs_raw
+        // Check if recordGroup has children for hasChildren flag
+        OPTIONAL MATCH (rg)<-[:BELONGS_TO]-(child_rg:RecordGroup)
+        WITH app, u, parent_id, is_kb_app, rg, permission_role,
+             count(DISTINCT child_rg) > 0 AS has_child_rgs
 
-        // Filter out nulls and get unique record groups
-        WITH app, u, parent_id, is_kb_app,
-             [rg IN all_rgs_raw WHERE rg IS NOT NULL] AS accessible_rgs
+        OPTIONAL MATCH (rg)<-[:BELONGS_TO]-(child_record:Record)
+        WITH app, u, parent_id, is_kb_app, rg, permission_role, has_child_rgs,
+             count(DISTINCT child_record) > 0 AS has_records
 
-        // Get unique accessible record group IDs for parent checking
-        WITH app, u, parent_id, is_kb_app, accessible_rgs,
-             [rg IN accessible_rgs | rg.id] AS accessible_rg_ids
-
-        // ============================================
-        // Identify "root" record groups and build nodes
-        // ============================================
-        WITH app, u, parent_id, is_kb_app, accessible_rg_ids,
-             [rg IN accessible_rgs WHERE
-                 // A "root" RG is one without an accessible parent
-                 // KB: Check via BELONGS_TO edge
-                 // Connector: Check via parentExternalGroupId field
-                 NOT (
-                     (is_kb_app AND EXISTS((rg)-[:BELONGS_TO]->(:RecordGroup)) AND
-                      EXISTS {
-                          MATCH (rg)-[:BELONGS_TO]->(parent_rg_kb:RecordGroup)
-                          WHERE parent_rg_kb.connectorName = 'KB' AND parent_rg_kb.id IN accessible_rg_ids
-                      })
-                     OR
-                     (NOT is_kb_app AND rg.parentExternalGroupId IS NOT NULL AND
-                      EXISTS {
-                          MATCH (parent_rg_conn:RecordGroup)
-                          WHERE parent_rg_conn.connectorId = app.id
-                                AND parent_rg_conn.externalGroupId = rg.parentExternalGroupId
-                                AND parent_rg_conn.id IN accessible_rg_ids
-                      })
-                 )
-             |
-                 {
-                     id: rg.id,
-                     name: rg.groupName,
-                     nodeType: 'recordGroup',
-                     parentId: 'apps/' + parent_id,
-                     source: 'CONNECTOR',
-                     connector: rg.connectorName,
-                     recordType: null,
-                     recordGroupType: rg.groupType,
-                     indexingStatus: null,
-                     createdAt: rg.createdAtTimestamp,
-                     updatedAt: rg.updatedAtTimestamp,
-                     sizeInBytes: null,
-                     mimeType: null,
-                     extension: null,
-                     webUrl: rg.webUrl,
-                     hasChildren: EXISTS((rg)<-[:BELONGS_TO]-(:RecordGroup)) OR EXISTS((rg)<-[:BELONGS_TO]-(:Record))
-                 }
-             ] AS raw_children
+        // Build result nodes
+        WITH collect({{
+            id: rg.id,
+            name: rg.groupName,
+            nodeType: 'recordGroup',
+            parentId: 'apps/' + parent_id,
+            origin: CASE WHEN rg.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+            connector: rg.connectorName,
+            recordType: null,
+            recordGroupType: rg.groupType,
+            indexingStatus: null,
+            createdAt: coalesce(rg.sourceCreatedAtTimestamp, 0),
+            updatedAt: coalesce(rg.sourceLastModifiedTimestamp, 0),
+            sizeInBytes: null,
+            mimeType: null,
+            extension: null,
+            webUrl: rg.webUrl,
+            hasChildren: has_child_rgs OR has_records,
+            userRole: permission_role
+        }}) AS raw_children
 
         RETURN raw_children
         """
@@ -13116,198 +13039,307 @@ class Neo4jProvider(IGraphDBProvider):
     def _get_record_group_children_cypher(self, parent_type: str) -> str:
         """Generate Cypher sub-query to fetch children of a KB or RecordGroup.
 
-        For both KB and Connector: Children are nested via BELONGS_TO edges only.
-        BELONGS_TO edges are always created when parentExternalGroupId is present (see data_source_entities_processor).
-
-        Permission checking is applied for connector record groups.
+        Simplified unified approach:
+        - Uses BELONGS_TO edges for both KB and Connector recordGroups
+        - Uses _get_permission_role_cypher for comprehensive permission checking (all 10 paths)
+        - Applies permission checks to both KB and Connector children
+        - Returns only children where user has permission
+        - Includes userRole field in results
+        - Special handling for internal recordGroups (fetches all records with permission check)
         """
-        source = "KB" if parent_type == "kb" else "CONNECTOR"
+        # Get the permission role Cypher for recordGroups and records
+        rg_permission_role_cypher = self._get_permission_role_cypher("recordGroup", "node", "u")
+        record_permission_role_cypher = self._get_permission_role_cypher("record", "record", "u")
+
         return f"""
         MATCH (rg:RecordGroup {{id: $parent_id}})
         MATCH (u:User {{id: $user_key}})
 
-        WITH rg, u, $parent_id AS parent_id, (rg.connectorName = 'KB') AS is_kb_rg
+        WITH rg, u, $parent_id AS parent_id, $org_id AS org_id, (rg.connectorName = 'KB') AS is_kb_rg,
+             coalesce(rg.isInternal, false) AS is_internal
 
         // ============================================
-        // GET NESTED RECORD GROUPS
+        // SPECIAL CASE: Internal RecordGroups
         // ============================================
-        // For both KB and Connector: use BELONGS_TO edges only
-        // (BELONGS_TO edges are always created when parentExternalGroupId is present)
-        OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(rg)
-        WHERE NOT coalesce(child_rg.isDeleted, false)
-              AND ((is_kb_rg AND child_rg.connectorName = 'KB' AND child_rg.orgId = $org_id)
+        // If internal, get all records with permission checks (no nested recordGroups)
+        CALL {{
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
+            WHERE is_internal = true
+
+            OPTIONAL MATCH (rg)<-[:BELONGS_TO]-(internal_record:Record)
+            WHERE internal_record.orgId = org_id
+
+            WITH collect(DISTINCT internal_record) AS internal_records_raw, u, parent_id
+
+            UNWIND internal_records_raw AS record
+            WITH record, u, parent_id
+            WHERE record IS NOT NULL
+
+            // Use comprehensive permission checking (all 10 paths)
+            {record_permission_role_cypher}
+
+            // Bring permission_role into scope after CALL subquery
+            WITH record, u, parent_id, permission_role
+
+            // Only include records where user has permission
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            // Get file info for folder detection
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file_info:File)
+            WITH record, parent_id, permission_role, file_info,
+                 CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN true ELSE false END AS is_folder
+
+            // Simple hasChildren check
+            OPTIONAL MATCH (record)-[:RECORD_RELATION]->(child:Record)
+            WHERE child IS NOT NULL
+            WITH record, parent_id, permission_role, file_info, is_folder,
+                 count(DISTINCT child) > 0 AS has_children
+
+            RETURN collect({{
+                id: record.id,
+                name: record.recordName,
+                nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
+                parentId: 'recordGroups/' + parent_id,
+                origin: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                connector: record.connectorName,
+                connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
+                kbId: CASE WHEN record.connectorName = 'KB' THEN record.externalGroupId ELSE null END,
+                externalGroupId: record.externalGroupId,
+                recordType: record.recordType,
+                recordGroupType: null,
+                indexingStatus: record.indexingStatus,
+                createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
+                updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                mimeType: record.mimeType,
+                extension: file_info.extension,
+                webUrl: record.webUrl,
+                hasChildren: has_children,
+                previewRenderable: coalesce(record.previewRenderable, true),
+                userRole: permission_role
+            }}) AS internal_records
+        }}
+
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal,
+             coalesce(internal_records, []) AS internal_records
+
+        // ============================================
+        // NORMAL CASE: Child RecordGroups
+        // ============================================
+        // Get child recordGroups via BELONGS_TO (skip if internal)
+        CALL {{
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
+            WHERE is_internal = false
+
+            OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(rg)
+            WHERE ((is_kb_rg AND child_rg.connectorName = 'KB' AND child_rg.orgId = org_id)
                    OR (NOT is_kb_rg AND child_rg.connectorId = rg.connectorId))
 
-        WITH rg, u, parent_id, is_kb_rg,
-             collect(DISTINCT child_rg) AS all_nested_rgs_raw
+            WITH collect(DISTINCT child_rg) AS all_nested_rgs_raw, u, parent_id
+            WITH [x IN all_nested_rgs_raw WHERE x IS NOT NULL] AS all_nested_rgs, u, parent_id
 
-        // Filter nulls (preserve rg context even when no child RecordGroups exist)
-        WITH rg, u, parent_id, is_kb_rg,
-             [x IN all_nested_rgs_raw WHERE x IS NOT NULL] AS all_nested_rgs
+            UNWIND all_nested_rgs AS node
+            WITH node, u, parent_id
+            WHERE node IS NOT NULL
 
-        // ============================================
-        // PERMISSION CHECK AND BUILD NESTED RG NODES
-        // ============================================
-        WITH rg, u, parent_id, is_kb_rg,
-             [child_rg IN all_nested_rgs WHERE
-                 // For KB: Allow all
-                 is_kb_rg
-                 // For Connector: Check permissions
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(child_rg))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(:Group|Role)-[:PERMISSION]->(child_rg))
-                 OR EXISTS((u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->()-[:PERMISSION {{type: 'ORG'}}]->(child_rg))
-             |
-                 {{
-                     id: child_rg.id,
-                     name: child_rg.groupName,
-                     nodeType: 'recordGroup',
-                     parentId: 'recordGroups/' + parent_id,
-                     source: '{source}',
-                     connector: child_rg.connectorName,
-                     connectorId: CASE WHEN '{source}' = 'CONNECTOR' THEN child_rg.connectorId ELSE null END,
-                     kbId: CASE WHEN '{source}' = 'KB' THEN parent_id ELSE null END,
-                     recordType: null,
-                     recordGroupType: child_rg.groupType,
-                     indexingStatus: null,
-                     createdAt: child_rg.createdAtTimestamp,
-                     updatedAt: child_rg.updatedAtTimestamp,
-                     sizeInBytes: null,
-                     mimeType: null,
-                     extension: null,
-                     webUrl: child_rg.webUrl,
-                     hasChildren: EXISTS((child_rg)<-[:BELONGS_TO]-(:RecordGroup)) OR EXISTS((child_rg)<-[:BELONGS_TO]-(:Record))
-                 }}
-             ] AS rg_nodes
+            // Use comprehensive permission checking (all 10 paths)
+            {rg_permission_role_cypher}
 
-        // ============================================
-        // GET AND FILTER DIRECT CHILDREN RECORDS
-        // ============================================
-        // Get records via BELONGS_TO
-        OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
-        WHERE NOT coalesce(record.isDeleted, false)
-              AND record.orgId = $org_id
-              AND record.externalParentId IS NULL
+            // Bring permission_role into scope after CALL subquery
+            WITH node, u, parent_id, permission_role
 
-        WITH rg, u, parent_id, is_kb_rg, rg_nodes,
-             [rec IN collect(DISTINCT record) WHERE
-                 // For KB: Allow all records
-                 is_kb_rg
-                 // For Connector: Check 6 permission paths
-                 OR EXISTS((u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->()-[:PERMISSION {{type: 'ORG'}}]->(rec))
-                 OR EXISTS((u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->()-[:PERMISSION {{type: 'ORG'}}]->(:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(rec))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(:Group|Role)-[:PERMISSION]->(rec))
-                 OR EXISTS((u)-[:PERMISSION {{type: 'USER'}}]->(:Group|Role)-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec))
-             ] AS permitted_records
+            // Only include recordGroups where user has permission
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            // Check if recordGroup has children
+            OPTIONAL MATCH (node)<-[:BELONGS_TO]-(child_rg_check:RecordGroup)
+            WITH node, parent_id, permission_role,
+                 count(DISTINCT child_rg_check) > 0 AS has_child_rgs
+
+            OPTIONAL MATCH (node)<-[:BELONGS_TO]-(child_record_check:Record)
+            WITH node, parent_id, permission_role, has_child_rgs,
+                 count(DISTINCT child_record_check) > 0 AS has_records
+
+            RETURN collect({{
+                id: node.id,
+                name: node.groupName,
+                nodeType: 'recordGroup',
+                parentId: 'recordGroups/' + parent_id,
+                origin: CASE WHEN node.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                connector: node.connectorName,
+                connectorId: CASE WHEN node.connectorName <> 'KB' THEN node.connectorId ELSE null END,
+                kbId: CASE WHEN node.connectorName = 'KB' THEN parent_id ELSE null END,
+                externalGroupId: node.externalGroupId,
+                recordType: null,
+                recordGroupType: node.groupType,
+                indexingStatus: null,
+                createdAt: coalesce(node.sourceCreatedAtTimestamp, node.createdAtTimestamp, 0),
+                updatedAt: coalesce(node.sourceLastModifiedTimestamp, node.updatedAtTimestamp, 0),
+                sizeInBytes: null,
+                mimeType: null,
+                extension: null,
+                webUrl: node.webUrl,
+                hasChildren: has_child_rgs OR has_records,
+                userRole: permission_role
+            }}) AS child_rgs
+        }}
+
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, internal_records,
+             coalesce(child_rgs, []) AS child_rgs
 
         // ============================================
-        // BUILD RECORD NODES
+        // NORMAL CASE: Direct Child Records
         // ============================================
-        WITH rg, parent_id, rg_nodes,
-             [record IN permitted_records |
-                 {{
-                     id: record.id,
-                     name: record.recordName,
-                     nodeType: CASE WHEN EXISTS((record)-[:IS_OF_TYPE]->(:File {{isFile: false}})) THEN 'folder' ELSE 'record' END,
-                     parentId: 'recordGroups/' + rg.id,
-                     source: '{source}',
-                     connector: record.connectorName,
-                     connectorId: CASE WHEN '{source}' = 'CONNECTOR' THEN record.connectorId ELSE null END,
-                     kbId: CASE WHEN '{source}' = 'KB' THEN record.connectorId ELSE null END,
-                     recordType: record.recordType,
-                     recordGroupType: null,
-                     indexingStatus: record.indexingStatus,
-                     createdAt: record.createdAtTimestamp,
-                     updatedAt: record.updatedAtTimestamp,
-                     sizeInBytes: record.sizeInBytes,
-                     mimeType: record.mimeType,
-                     extension: null,
-                     webUrl: record.webUrl,
-                     hasChildren: EXISTS((record)-[:RECORD_RELATION]->(:Record)),
-                     previewRenderable: coalesce(record.previewRenderable, true)
-                 }}
-             ] AS record_nodes
+        // Get direct child records via BELONGS_TO (skip if internal)
+        CALL {{
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
+            WITH rg, u, parent_id, org_id, is_kb_rg, is_internal
+            WHERE is_internal = false
 
-        // Combine results
-        RETURN rg_nodes + record_nodes AS raw_children
+            OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
+            WHERE record.orgId = org_id
+                  AND record.externalParentId IS NULL
+
+            WITH collect(DISTINCT record) AS all_direct_records, u, parent_id
+
+            UNWIND all_direct_records AS record
+            WITH record, u, parent_id
+            WHERE record IS NOT NULL
+
+            // Use comprehensive permission checking (all 10 paths)
+            {record_permission_role_cypher}
+
+            // Bring permission_role into scope after CALL subquery
+            WITH record, u, parent_id, permission_role
+
+            // Only include records where user has permission
+            WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+            // Get file info for folder detection
+            OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file_info:File)
+            WITH record, parent_id, permission_role, file_info,
+                 CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN true ELSE false END AS is_folder
+
+            // Simple hasChildren check
+            OPTIONAL MATCH (record)-[rr:RECORD_RELATION]->(child:Record)
+            WHERE rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+            AND child IS NOT NULL
+            WITH record, parent_id, permission_role, file_info, is_folder,
+                 count(DISTINCT child) > 0 AS has_children
+
+            RETURN collect({{
+                id: record.id,
+                name: record.recordName,
+                nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
+                parentId: 'recordGroups/' + parent_id,
+                origin: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+                connector: record.connectorName,
+                connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
+                kbId: CASE WHEN record.connectorName = 'KB' THEN record.externalGroupId ELSE null END,
+                externalGroupId: record.externalGroupId,
+                recordType: record.recordType,
+                recordGroupType: null,
+                indexingStatus: record.indexingStatus,
+                createdAt: coalesce(record.sourceCreatedAtTimestamp, record.createdAtTimestamp, 0),
+                updatedAt: coalesce(record.sourceLastModifiedTimestamp, record.updatedAtTimestamp, 0),
+                sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+                mimeType: record.mimeType,
+                extension: file_info.extension,
+                webUrl: record.webUrl,
+                hasChildren: has_children,
+                previewRenderable: coalesce(record.previewRenderable, true),
+                userRole: permission_role
+            }}) AS direct_records
+        }}
+
+        WITH rg, u, parent_id, org_id, is_kb_rg, is_internal, internal_records, child_rgs,
+             coalesce(direct_records, []) AS direct_records
+
+        // Combine results: if internal, return only internal_records, otherwise combine child_rgs and direct_records
+        WITH CASE WHEN is_internal = true THEN internal_records ELSE child_rgs + direct_records END AS raw_children
+
+        RETURN raw_children
         """
 
     def _get_record_children_cypher(self) -> str:
         """Generate Cypher sub-query to fetch children of a Folder/Record.
 
-        Children are found via RECORD_RELATION edges with relationshipType
-        IN ['PARENT_CHILD', 'ATTACHMENT'].
-
-        For connector records, permission checking is applied.
-        For KB records, all children are visible (KB-level permission applies).
-
-        This matches the ArangoDB implementation behavior.
+        Simplified unified approach:
+        - Uses RECORD_RELATION edge with relationshipType filter (PARENT_CHILD, ATTACHMENT)
+        - Uses _get_permission_role_cypher for comprehensive permission checking (all 10 paths)
+        - Applies permission checks to both KB and Connector records
+        - Returns only children where user has permission
+        - Includes userRole field in results
+        - Simplified hasChildren calculation (no permission filtering on grandchildren)
         """
-        return """
-        MATCH (parent_record:Record {id: $parent_id})
+        # Get the permission role Cypher for record permission checking
+        permission_role_cypher = self._get_permission_role_cypher("record", "record", "u")
 
-        // User is optional - use for permission checks only
-        OPTIONAL MATCH (u:User {id: $user_key})
+        return f"""
+        MATCH (parent_record:Record {{id: $parent_id}})
+        MATCH (u:User {{id: $user_key}})
 
-        // Determine if parent is from KB or connector
-        OPTIONAL MATCH (parent_connector:RecordGroup {id: parent_record.connectorId})
-        OPTIONAL MATCH (parent_app:App {id: parent_record.connectorId})
-
-        WITH parent_record, u, $parent_id AS parent_id,
-             (parent_record.connectorName = 'KB' OR
-              (parent_connector IS NOT NULL AND parent_connector.type = 'KB')) AS is_kb_parent
+        WITH parent_record, u, $parent_id AS parent_id, $org_id AS org_id
 
         // Get children via RECORD_RELATION (direction: parent -> child)
         OPTIONAL MATCH (parent_record)-[rr:RECORD_RELATION]->(record:Record)
         WHERE rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
-              AND NOT coalesce(record.isDeleted, false)
 
-        WITH parent_record, u, parent_id, is_kb_parent, collect(DISTINCT record) AS all_children
+        WITH parent_record, u, parent_id, org_id, collect(DISTINCT record) AS all_children
 
-        // Filter by permissions - for KB, allow all; for connector, check permission paths
-        WITH parent_record, parent_id, is_kb_parent, u, all_children,
-             [rec IN all_children WHERE rec IS NOT NULL AND (
-                 // For KB: Allow all (KB-level permission applies)
-                 is_kb_parent
-                 // For Connector: Check permission paths
-                 OR EXISTS((rec)-[:INHERIT_PERMISSIONS]->(:RecordGroup))
-                 OR (u IS NOT NULL AND EXISTS((u)-[:PERMISSION]->(rec)))
-                 OR (u IS NOT NULL AND EXISTS((u)-[:PERMISSION]->(:Group)-[:PERMISSION]->(rec)))
-                 OR (u IS NOT NULL AND EXISTS((u)-[:PERMISSION]->(:Role)-[:PERMISSION]->(rec)))
-                 OR (u IS NOT NULL AND EXISTS((u)-[:BELONGS_TO]->()-[:PERMISSION]->(rec)))
-                 OR (u IS NOT NULL AND EXISTS((u)-[:BELONGS_TO]->()-[:PERMISSION]->(:RecordGroup)<-[:INHERIT_PERMISSIONS]-(rec)))
-             )] AS permitted_records
+        // For each record, check comprehensive permissions using helper
+        UNWIND all_children AS record
+        WITH parent_record, u, parent_id, org_id, record
+        WHERE record IS NOT NULL
+              AND record.orgId = org_id
 
-        // ============================================
-        // BUILD RECORD NODES
-        // ============================================
-        WITH parent_record, parent_id,
-             [record IN permitted_records |
-                 {
-                     id: record.id,
-                     name: record.recordName,
-                     nodeType: CASE WHEN EXISTS((record)-[:IS_OF_TYPE]->(:File)) THEN
-                         CASE WHEN head([(record)-[:IS_OF_TYPE]->(f:File) | f.isFile]) = false THEN 'folder' ELSE 'record' END
-                         ELSE 'record' END,
-                     parentId: 'records/' + parent_id,
-                     source: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
-                     connector: record.connectorName,
-                     connectorId: record.connectorId,
-                     kbId: CASE WHEN record.connectorName = 'KB' THEN record.connectorId ELSE null END,
-                     recordType: record.recordType,
-                     recordGroupType: null,
-                     indexingStatus: record.indexingStatus,
-                     createdAt: record.createdAtTimestamp,
-                     updatedAt: record.updatedAtTimestamp,
-                     sizeInBytes: record.sizeInBytes,
-                     mimeType: record.mimeType,
-                     extension: null,
-                     webUrl: record.webUrl,
-                     hasChildren: EXISTS((record)-[:RECORD_RELATION]->(:Record)),
-                     previewRenderable: coalesce(record.previewRenderable, true)
-                 }
-             ] AS raw_children
+        // Use comprehensive permission checking (all 10 paths)
+        {permission_role_cypher}
+
+        // Bring permission_role into scope after CALL subquery
+        WITH parent_record, u, parent_id, org_id, record, permission_role
+
+        // Only include records where user has permission
+        WHERE permission_role IS NOT NULL AND permission_role <> ''
+
+        // Get file info for folder detection
+        OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file_info:File)
+        WITH parent_record, u, parent_id, record, permission_role, file_info,
+             CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN true ELSE false END AS is_folder
+
+        // Simple hasChildren check (no permission filtering on grandchildren)
+        OPTIONAL MATCH (record)-[rr:RECORD_RELATION]->(child:Record)
+        WHERE rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
+          AND child IS NOT NULL
+        WITH parent_record, u, parent_id, record, permission_role, file_info, is_folder,
+             count(DISTINCT child) > 0 AS has_children
+
+        // Build result nodes
+        WITH collect({{
+            id: record.id,
+            name: record.recordName,
+            nodeType: CASE WHEN is_folder THEN 'folder' ELSE 'record' END,
+            parentId: 'records/' + parent_id,
+            origin: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
+            connector: record.connectorName,
+            connectorId: CASE WHEN record.connectorName <> 'KB' THEN record.connectorId ELSE null END,
+            kbId: CASE WHEN record.connectorName = 'KB' THEN record.externalGroupId ELSE null END,
+            externalGroupId: record.externalGroupId,
+            recordType: record.recordType,
+            recordGroupType: null,
+            indexingStatus: record.indexingStatus,
+            createdAt: coalesce(record.sourceCreatedAtTimestamp, 0),
+            updatedAt: coalesce(record.sourceLastModifiedTimestamp, 0),
+            sizeInBytes: coalesce(record.sizeInBytes, file_info.fileSizeInBytes),
+            mimeType: record.mimeType,
+            extension: file_info.extension,
+            webUrl: record.webUrl,
+            hasChildren: has_children,
+            previewRenderable: coalesce(record.previewRenderable, true),
+            userRole: permission_role
+        }}) AS raw_children
 
         RETURN raw_children
         """
@@ -13324,6 +13356,7 @@ class Neo4jProvider(IGraphDBProvider):
         origins: Optional[List[str]] = None,
         connector_ids: Optional[List[str]] = None,
         kb_ids: Optional[List[str]] = None,
+        only_containers: bool = False,
     ) -> tuple[List[str], Dict[str, Any]]:
         """
         Build filter conditions and parameters for knowledge hub search queries.
@@ -13358,11 +13391,11 @@ class Neo4jProvider(IGraphDBProvider):
         # Record-specific filters - only apply to record/folder nodes
         if record_types:
             filter_params["record_types"] = record_types
-            filter_conditions.append("(node.nodeType IN ['record', 'folder'] AND node.recordType IS NOT NULL AND node.recordType IN $record_types)")
+            filter_conditions.append("(node.nodeType = 'record' AND node.recordType IS NOT NULL AND node.recordType IN $record_types)")
 
         if indexing_status:
             filter_params["indexing_status"] = indexing_status
-            filter_conditions.append("(node.nodeType IN ['record', 'folder'] AND node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
+            filter_conditions.append("(node.nodeType = 'record' AND node.indexingStatus IS NOT NULL AND node.indexingStatus IN $indexing_status)")
 
         if created_at:
             if created_at.get("gte"):
@@ -13390,21 +13423,21 @@ class Neo4jProvider(IGraphDBProvider):
 
         if origins:
             filter_params["origins"] = origins
-            filter_conditions.append("node.source IN $origins")
+            filter_conditions.append("node.origin IN $origins")
 
         if connector_ids and kb_ids:
             filter_params["connector_ids"] = connector_ids
             filter_params["kb_ids"] = kb_ids
             filter_conditions.append(
                 "((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids) OR "
-                "(node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.recordGroupId IN $kb_ids))"
+                "(node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids))"
             )
         elif connector_ids:
             filter_params["connector_ids"] = connector_ids
             filter_conditions.append("((node.nodeType = 'app' AND node.id IN $connector_ids) OR (node.connectorId IN $connector_ids))")
         elif kb_ids:
             filter_params["kb_ids"] = kb_ids
-            filter_conditions.append("((node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.recordGroupId IN $kb_ids))")
+            filter_conditions.append("((node.nodeType = 'kb' AND node.id IN $kb_ids) OR (node.kbId IN $kb_ids))")
 
         # Add search condition to filter conditions if present
         if search_query:
@@ -13412,936 +13445,492 @@ class Neo4jProvider(IGraphDBProvider):
 
         return filter_conditions, filter_params
 
-    async def get_knowledge_hub_recursive_search(
+    def _get_permission_role_cypher(
         self,
-        parent_id: str,
-        parent_type: str,
-        org_id: str,
-        user_key: str,
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        search_query: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        only_containers: bool = False,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
+        node_type: str,
+        node_var: str = "node",
+        user_var: str = "u",
+    ) -> str:
         """
-        Search recursively within a parent node and all its descendants.
-        Uses graph traversal to find all nested children.
+        Generate a CALL subquery that returns the user's highest permission role on a node.
 
-        For RecordGroup/KB parents:
-        - Gets all nested RecordGroups via BELONGS_TO edges
-        - For each RecordGroup, gets direct records via BELONGS_TO edges
-        - Checks permissions using _get_permission_role_cypher for both RecordGroups and Records
-        - Filters out nodes where user has no permission (permission_role is null)
-        - Applies all filters, sorting, and pagination
+        This function generates a reusable Cypher CALL block that checks all permission paths
+        and returns the highest priority role for the user on the specified node.
 
-        For Record/Folder parents:
-        - Traverses via RECORD_RELATION edges to find nested records
-        - Applies filters, sorting, and pagination
-        """
-        try:
-            # Build filter conditions using helper function
-            filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
-                search_query=search_query,
-                node_types=node_types,
-                record_types=record_types,
-                indexing_status=indexing_status,
-                created_at=created_at,
-                updated_at=updated_at,
-                size=size,
-                origins=origins,
-                connector_ids=connector_ids,
-                kb_ids=kb_ids
+        Args:
+            node_type: Type of node - 'record', 'recordGroup', 'app', or 'kb'
+            node_var: Variable name of the node in the outer query (default: 'node')
+            user_var: Variable name of the user in the outer query (default: 'u')
+
+        Required outer query parameters:
+            - $org_id: Organization ID parameter
+
+        Returns:
+            Cypher CALL block string that yields: permission_role (string)
+
+        Permission model (10 paths for record/recordGroup):
+            1. user-[PERMISSION]->node (direct)
+            2. user-[PERMISSION]->ancestorRG (via INHERIT_PERMISSIONS chain)
+            3. user-[PERMISSION]->group-[PERMISSION]->node
+            4. user-[PERMISSION]->group-[PERMISSION]->ancestorRG
+            5. user-[PERMISSION]->role-[PERMISSION]->node
+            6. user-[PERMISSION]->role-[PERMISSION]->ancestorRG
+            7. user-[PERMISSION]->team-[PERMISSION]->node
+            8. user-[PERMISSION]->team-[PERMISSION]->ancestorRG
+            9. user-[BELONGS_TO]->org-[PERMISSION]->node
+            10. user-[BELONGS_TO]->org-[PERMISSION]->ancestorRG
+
+        Node type specific behavior:
+            - record: Checks all 10 paths (node + ancestors via INHERIT_PERMISSIONS)
+            - recordGroup: Checks all paths (node + ancestors via INHERIT_PERMISSIONS)
+            - kb: Same as recordGroup (KB is a root RecordGroup, no ancestors found)
+            - app: Uses USER_APP_RELATION based permission (different model)
+
+        The permission model is the same for KB and connector - no special handling.
+        Highest priority role wins: OWNER > ADMIN > EDITOR > WRITER > COMMENTER > READER
+
+        Usage example:
+            permission_call = self._get_permission_role_cypher(
+                node_type="record",
+                node_var="record",
+                user_var="u"
             )
-
-            params = {
-                "parent_id": parent_id,
-                "org_id": org_id,
-                "user_key": user_key,
-                "skip": skip,
-                "limit": limit,
-                "sort_field": sort_field,
-                "sort_dir": sort_dir.upper(),
-                "only_containers": only_containers,
-            }
-            # Merge filter params into params dict
-            params.update(filter_params)
-
-            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
-
-            # Determine traversal based on parent type
-            if parent_type in ("kb", "recordGroup"):
-                # Generate permission cypher calls for RecordGroups and Records
-                permission_call_rg = self._get_permission_role_cypher("recordGroup", "rg", "u")
-                permission_call_record = self._get_permission_role_cypher("record", "record", "u")
-                # Fix double braces in permission calls (they're escaped for f-strings but need single braces for Cypher)
-                permission_call_rg = permission_call_rg.replace("{{", "{").replace("}}", "}")
-                permission_call_record = permission_call_record.replace("{{", "{").replace("}}", "}")
-
-                query = """
-                MATCH (parent:RecordGroup {id: $parent_id})
-                MATCH (u:User {id: $user_key})
-
-                // ==================== GET ALL NESTED RECORD GROUPS ====================
-                OPTIONAL MATCH (nested_rg:RecordGroup)-[:BELONGS_TO*1..10]->(parent)
-
-                WITH parent, u, collect(DISTINCT nested_rg) AS nested_rgs
-                WITH parent, u, [parent] + nested_rgs AS all_rgs
-
-                // ==================== PROCESS RECORD GROUPS ====================
-                UNWIND all_rgs AS rg
-                WITH rg, u, parent
-
-                // Check permission for record group
-                """ + permission_call_rg + """
-
-                // Filter out record groups with no permission
-                WITH rg, permission_role, u, parent
-                WHERE rg IS NOT NULL AND permission_role IS NOT NULL
-
-                // Get child counts for record group
-                OPTIONAL MATCH (sub_rg:RecordGroup)-[:BELONGS_TO]->(rg)
-                OPTIONAL MATCH (sub_record:Record)-[:BELONGS_TO]->(rg)
-
-                // Calculate children counts BEFORE collect
-                WITH rg, permission_role, u, parent,
-                     count(DISTINCT sub_rg) AS sub_rg_count,
-                     count(DISTINCT sub_record) AS sub_record_count
-
-                // Build record group node
-                WITH parent, u, collect(DISTINCT {{
-                    id: rg.id,
-                    name: rg.groupName,
-                    nodeType: 'recordGroup',
-                    parentId: $parent_id,
-                    source: CASE WHEN rg.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
-                    connector: rg.connectorName,
-                    connectorId: CASE WHEN rg.connectorName = 'KB' THEN null ELSE rg.connectorId END,
-                    kbId: CASE WHEN rg.connectorName = 'KB' THEN rg.id ELSE null END,
-                    recordGroupId: rg.parentExternalGroupId,
-                    recordType: null,
-                    recordGroupType: rg.groupType,
-                    indexingStatus: null,
-                    createdAt: rg.createdAtTimestamp,
-                    updatedAt: rg.updatedAtTimestamp,
-                    sizeInBytes: null,
-                    mimeType: null,
-                    extension: null,
-                    webUrl: rg.webUrl,
-                    hasChildren: sub_rg_count > 0 OR sub_record_count > 0,
-                    permission_role: permission_role
-                }}) AS rg_nodes
-
-                // ==================== PROCESS RECORDS ====================
-                // Get all record groups again for record processing
-                WITH rg_nodes, parent, u
-                // Re-get nested record groups
-                OPTIONAL MATCH (nested_rg2:RecordGroup)-[:BELONGS_TO]->(parent)
-                WITH rg_nodes, parent, u, collect(DISTINCT nested_rg2) AS nested_rgs2
-                WITH rg_nodes, parent, u, [parent] + nested_rgs2 AS all_rgs
-                UNWIND all_rgs AS rg
-                WITH rg_nodes, rg, u
-
-                // Get direct records for this record group
-                OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
-                WHERE record.orgId = $org_id
-                      AND record.externalParentId IS NULL
-
-                // Check permission for each record
-                """ + permission_call_record + """
-
-                // Filter out records with no permission
-                WITH rg_nodes, record, permission_role
-                WHERE record IS NOT NULL AND permission_role IS NOT NULL
-
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(f:File)
-                OPTIONAL MATCH (record)-[:RECORD_RELATION]->(child:Record)
-
-                // Calculate child count BEFORE collect
-                WITH rg_nodes, record, permission_role, f,
-                     CASE WHEN f IS NOT NULL AND f.isFile = false THEN 'folder' ELSE 'record' END AS nodeType,
-                     count(DISTINCT child) AS child_count
-
-                OPTIONAL MATCH (record_connector:RecordGroup {{id: record.connectorId}})
-                WITH rg_nodes,
-                     collect(DISTINCT {{
-                         id: record.id,
-                         name: record.recordName,
-                         nodeType: nodeType,
-                         parentId: record.externalParentId,
-                         source: CASE WHEN record.connectorName = 'KB' THEN 'KB' ELSE 'CONNECTOR' END,
-                         connector: record.connectorName,
-                         connectorId: record.connectorId,
-                         kbId: CASE WHEN record.connectorName = 'KB' THEN record.connectorId ELSE null END,
-                         recordGroupId: record.recordGroupId,
-                         recordType: record.recordType,
-                         recordGroupType: null,
-                         indexingStatus: record.indexingStatus,
-                         createdAt: record.createdAtTimestamp,
-                         updatedAt: record.updatedAtTimestamp,
-                         sizeInBytes: coalesce(record.sizeInBytes, f.fileSizeInBytes),
-                         mimeType: record.mimeType,
-                         extension: f.extension,
-                         webUrl: record.webUrl,
-                         hasChildren: child_count > 0,
-                         previewRenderable: coalesce(record.previewRenderable, true),
-                         permission_role: permission_role
-                     }}) AS record_nodes
-
-                // ==================== COMBINE AND FILTER ====================
-                WITH rg_nodes + record_nodes AS all_nodes_raw
-                WITH [n IN all_nodes_raw WHERE n.id IS NOT NULL] AS all_nodes
-
-                // Deduplicate
-                UNWIND all_nodes AS node
-                WITH DISTINCT node.id AS id, node
-                WITH collect(node) AS unique_nodes
-
-                // Apply filters
-                UNWIND unique_nodes AS node
-                WITH node WHERE {filter_clause}
-
-                // Apply only_containers filter
-                WITH node WHERE $only_containers = false
-                     OR node.hasChildren = true
-                     OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
-
-                // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
-                WITH node,
-                     CASE $sort_field
-                         WHEN 'name' THEN node.name
-                         WHEN 'createdAt' THEN node.createdAt
-                         WHEN 'updatedAt' THEN node.updatedAt
-                         WHEN 'nodeType' THEN node.nodeType
-                         WHEN 'source' THEN node.source
-                         WHEN 'connector' THEN node.connector
-                         WHEN 'recordType' THEN node.recordType
-                         WHEN 'sizeInBytes' THEN node.sizeInBytes
-                         WHEN 'indexingStatus' THEN node.indexingStatus
-                         ELSE node.name
-                     END AS sort_value
-                ORDER BY
-                    CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
-                    CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
-
-                WITH collect(node) AS sorted_nodes
-
-                RETURN {{
-                    nodes: sorted_nodes[$skip..($skip + $limit)],
-                    total: size(sorted_nodes)
-                }} AS result
-                """
-                # Fix any remaining double braces in the query (from f-string escaping)
-                # But first, format the filter_clause since concatenation broke f-string context
-                query = query.replace("{filter_clause}", filter_clause)
-                query = query.replace("{{", "{").replace("}}", "}")
-            elif parent_type in ("folder", "record"):
-                query = f"""
-                MATCH (parent:Record {{id: $parent_id}})
-                MATCH (u:User {{id: $user_key}})
-
-                // Traverse via RECORD_RELATION
-                OPTIONAL MATCH (parent)-[:RECORD_RELATION*1..10]->(v:Record)
-                WHERE NOT coalesce(v.isDeleted, false) AND v.orgId = $org_id
-
-                WITH collect(DISTINCT v) AS all_records
-
-                // Process each record
-                UNWIND CASE WHEN size(all_records) = 0 THEN [null] ELSE all_records END AS v
-                WITH v WHERE v IS NOT NULL
-
-                OPTIONAL MATCH (v)-[:IS_OF_TYPE]->(f:File)
-                OPTIONAL MATCH (v)-[:RECORD_RELATION]->(child:Record)
-                WHERE NOT coalesce(child.isDeleted, false)
-
-                // Calculate child count BEFORE collect
-                WITH v, f,
-                     CASE WHEN f IS NOT NULL AND f.isFile = false THEN 'folder' ELSE 'record' END AS nodeType,
-                     count(DISTINCT child) AS child_count
-
-                OPTIONAL MATCH (record_connector:RecordGroup {{id: v.connectorId}})
-                WITH collect(DISTINCT {{
-                    id: v.id,
-                    name: v.recordName,
-                    nodeType: nodeType,
-                    parentId: v.externalParentId,
-                    source: CASE WHEN record_connector IS NOT NULL AND record_connector.connectorName = 'KB'
-                                 THEN 'KB' ELSE 'CONNECTOR' END,
-                    connector: v.connectorName,
-                    connectorId: v.connectorId,
-                    kbId: CASE WHEN record_connector IS NOT NULL AND record_connector.connectorName = 'KB'
-                               THEN v.connectorId ELSE null END,
-                    recordGroupId: v.recordGroupId,
-                    recordType: v.recordType,
-                    recordGroupType: null,
-                    indexingStatus: v.indexingStatus,
-                    createdAt: v.createdAtTimestamp,
-                    updatedAt: v.updatedAtTimestamp,
-                    sizeInBytes: coalesce(v.sizeInBytes, f.fileSizeInBytes),
-                    mimeType: v.mimeType,
-                    extension: f.extension,
-                    webUrl: v.webUrl,
-                    hasChildren: child_count > 0,
-                    previewRenderable: coalesce(v.previewRenderable, true)
-                }}) AS all_nodes
-
-                // Apply filters
-                UNWIND all_nodes AS node
-                WITH node WHERE {filter_clause}
-
-                // Apply only_containers filter
-                WITH node WHERE $only_containers = false
-                     OR node.hasChildren = true
-                     OR node.nodeType IN ['folder']
-
-                // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
-                WITH node,
-                     CASE $sort_field
-                         WHEN 'name' THEN node.name
-                         WHEN 'createdAt' THEN node.createdAt
-                         WHEN 'updatedAt' THEN node.updatedAt
-                         WHEN 'nodeType' THEN node.nodeType
-                         WHEN 'source' THEN node.source
-                         WHEN 'connector' THEN node.connector
-                         WHEN 'recordType' THEN node.recordType
-                         WHEN 'sizeInBytes' THEN node.sizeInBytes
-                         WHEN 'indexingStatus' THEN node.indexingStatus
-                         ELSE node.name
-                     END AS sort_value
-                ORDER BY
-                    CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
-                    CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
-
-                WITH collect(node) AS sorted_nodes
-
-                RETURN {{
-                    nodes: sorted_nodes[$skip..($skip + $limit)],
-                    total: size(sorted_nodes)
-                }} AS result
-                """
-            elif parent_type == "app":
-                query = f"""
-                MATCH (app:App {{id: $parent_id}})
-                MATCH (u:User {{id: $user_key}})
-
-                // ==================== GET ALL DATA ====================
-                // Get record groups for this app
-                CALL {{
-                    WITH app
-                    OPTIONAL MATCH (rg:RecordGroup)
-                    WHERE rg.connectorId = app.id AND NOT coalesce(rg.isDeleted, false)
-                    RETURN collect(DISTINCT rg) AS rgs
-                }}
-
-                // Get records for these record groups (use separate CALL to avoid dependent match)
-                CALL {{
-                    WITH app
-                    MATCH (rg:RecordGroup)
-                    WHERE rg.connectorId = app.id AND NOT coalesce(rg.isDeleted, false)
-                    OPTIONAL MATCH (record:Record)-[:BELONGS_TO]->(rg)
-                    WHERE NOT coalesce(record.isDeleted, false) AND record.orgId = $org_id
-                    RETURN collect(DISTINCT record) AS direct_records
-                }}
-
-                CALL {{
-                    WITH app
-                    MATCH (rg:RecordGroup)
-                    WHERE rg.connectorId = app.id AND NOT coalesce(rg.isDeleted, false)
-                    MATCH (record:Record)-[:BELONGS_TO]->(rg)
-                    WHERE NOT coalesce(record.isDeleted, false) AND record.orgId = $org_id
-                    OPTIONAL MATCH (record)-[:RECORD_RELATION*1..10]->(nested:Record)
-                    WHERE NOT coalesce(nested.isDeleted, false) AND nested.orgId = $org_id
-                    RETURN collect(DISTINCT nested) AS nested_records
-                }}
-
-                WITH rgs, direct_records + nested_records AS all_records_raw
-                WITH rgs, [r IN all_records_raw WHERE r IS NOT NULL] AS all_records
-
-                // ==================== PROCESS RECORD GROUPS ====================
-                UNWIND CASE WHEN size(rgs) = 0 THEN [null] ELSE rgs END AS rg
-                WITH all_records, rg
-                WHERE rg IS NOT NULL
-
-                OPTIONAL MATCH (sub_rg:RecordGroup)-[:BELONGS_TO]->(rg)
-                WHERE NOT coalesce(sub_rg.isDeleted, false)
-                OPTIONAL MATCH (sub_record:Record)-[:BELONGS_TO]->(rg)
-                WHERE NOT coalesce(sub_record.isDeleted, false)
-
-                // Calculate children counts BEFORE collect
-                WITH all_records, rg,
-                     count(DISTINCT sub_rg) AS sub_rg_count,
-                     count(DISTINCT sub_record) AS sub_record_count
-
-                WITH all_records, collect(DISTINCT {{
-                    id: rg.id,
-                    name: rg.groupName,
-                    nodeType: 'recordGroup',
-                    parentId: $parent_id,
-                    source: 'CONNECTOR',
-                    connector: rg.connectorName,
-                    connectorId: rg.connectorId,
-                    kbId: null,
-                    recordGroupId: rg.parentExternalGroupId,
-                    recordType: null,
-                    recordGroupType: rg.groupType,
-                    indexingStatus: null,
-                    createdAt: rg.createdAtTimestamp,
-                    updatedAt: rg.updatedAtTimestamp,
-                    sizeInBytes: null,
-                    mimeType: null,
-                    extension: null,
-                    webUrl: rg.webUrl,
-                    hasChildren: sub_rg_count > 0 OR sub_record_count > 0
-                }}) AS rg_nodes
-
-                // ==================== PROCESS RECORDS ====================
-                UNWIND CASE WHEN size(all_records) = 0 THEN [null] ELSE all_records END AS record
-                WITH rg_nodes, record
-                WHERE record IS NOT NULL
-
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(f:File)
-                OPTIONAL MATCH (record)-[:RECORD_RELATION]->(child:Record)
-                WHERE NOT coalesce(child.isDeleted, false)
-
-                // Calculate child count BEFORE collect
-                WITH rg_nodes, record, f,
-                     CASE WHEN f IS NOT NULL AND f.isFile = false THEN 'folder' ELSE 'record' END AS nodeType,
-                     count(DISTINCT child) AS child_count
-
-                WITH rg_nodes, collect(DISTINCT {{
-                    id: record.id,
-                    name: record.recordName,
-                    nodeType: nodeType,
-                    parentId: record.externalParentId,
-                    source: 'CONNECTOR',
-                    connector: record.connectorName,
-                    connectorId: record.connectorId,
-                    kbId: null,
-                    recordGroupId: record.recordGroupId,
-                    recordType: record.recordType,
-                    recordGroupType: null,
-                    indexingStatus: record.indexingStatus,
-                    createdAt: record.createdAtTimestamp,
-                    updatedAt: record.updatedAtTimestamp,
-                    sizeInBytes: coalesce(record.sizeInBytes, f.fileSizeInBytes),
-                    mimeType: record.mimeType,
-                    extension: f.extension,
-                    webUrl: record.webUrl,
-                    hasChildren: child_count > 0,
-                    previewRenderable: coalesce(record.previewRenderable, true)
-                }}) AS record_nodes
-
-                // Combine after both are fully collected
-                WITH rg_nodes + record_nodes AS all_nodes_raw
-
-                // Filter nulls and deduplicate
-                WITH [n IN all_nodes_raw WHERE n.id IS NOT NULL] AS all_nodes
-                UNWIND all_nodes AS node
-                WITH DISTINCT node.id AS id, node
-                WITH collect(node) AS unique_nodes
-
-                // Apply filters
-                UNWIND unique_nodes AS node
-                WITH node WHERE {filter_clause}
-
-                // Apply only_containers filter
-                WITH node WHERE $only_containers = false
-                     OR node.hasChildren = true
-                     OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
-
-                // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
-                WITH node,
-                     CASE $sort_field
-                         WHEN 'name' THEN node.name
-                         WHEN 'createdAt' THEN node.createdAt
-                         WHEN 'updatedAt' THEN node.updatedAt
-                         WHEN 'nodeType' THEN node.nodeType
-                         WHEN 'source' THEN node.source
-                         WHEN 'connector' THEN node.connector
-                         WHEN 'recordType' THEN node.recordType
-                         WHEN 'sizeInBytes' THEN node.sizeInBytes
-                         WHEN 'indexingStatus' THEN node.indexingStatus
-                         ELSE node.name
-                     END AS sort_value
-                ORDER BY
-                    CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
-                    CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
-
-                WITH collect(node) AS sorted_nodes
-
-                RETURN {{
-                    nodes: sorted_nodes[$skip..($skip + $limit)],
-                    total: size(sorted_nodes)
-                }} AS result
-                """
-            else:
-                return {"nodes": [], "total": 0}
-
-            results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
-            if results and results[0].get("result"):
-                return results[0]["result"]
-            return {"nodes": [], "total": 0}
-
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub recursive search failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
-
-    async def get_knowledge_hub_search(
-        self,
-        org_id: str,
-        user_key: str,
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        search_query: Optional[str] = None,
-        node_types: Optional[List[str]] = None,
-        record_types: Optional[List[str]] = None,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        only_containers: bool = False,
-        parent_id: Optional[str] = None,
-        parent_type: Optional[str] = None,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Unified search for knowledge hub nodes with permission-first traversal.
-        When parent_id is set, delegates to get_knowledge_hub_children; otherwise
-        delegates to get_knowledge_hub_search_nodes for global search.
-        """
-        try:
-            if parent_id and parent_type:
-                return await self.get_knowledge_hub_children(
-                    parent_id=parent_id,
-                    parent_type=parent_type,
-                    org_id=org_id,
-                    user_key=user_key,
-                    skip=skip,
-                    limit=limit,
-                    sort_field=sort_field,
-                    sort_dir=sort_dir,
-                    search_query=search_query,
-                    node_types=node_types,
-                    record_types=record_types,
-                    origins=origins,
-                    connector_ids=connector_ids,
-                    kb_ids=kb_ids,
-                    indexing_status=indexing_status,
-                    created_at=created_at,
-                    updated_at=updated_at,
-                    size=size,
-                    only_containers=only_containers,
-                    transaction=transaction,
-                )
-            user_app_ids = await self._get_user_app_ids(user_key)
-            return await self.get_knowledge_hub_search_nodes(
-                user_key=user_key,
-                org_id=org_id,
-                user_app_ids=user_app_ids,
-                skip=skip,
-                limit=limit,
-                sort_field=sort_field,
-                sort_dir=sort_dir,
-                search_query=search_query,
-                node_types=node_types,
-                record_types=record_types,
-                only_containers=only_containers,
-                origins=origins,
-                connector_ids=connector_ids,
-                kb_ids=kb_ids,
-                indexing_status=indexing_status,
-                created_at=created_at,
-                updated_at=updated_at,
-                size=size,
-                transaction=transaction,
-            )
-        except Exception as e:
-            self.logger.error(f"❌ get_knowledge_hub_search failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
-
-    async def get_knowledge_hub_search_nodes(
-        self,
-        user_key: str,
-        org_id: str,
-        user_app_ids: List[str],
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        search_query: Optional[str],
-        node_types: Optional[List[str]],
-        record_types: Optional[List[str]],
-        only_containers: bool,
-        origins: Optional[List[str]] = None,
-        connector_ids: Optional[List[str]] = None,
-        kb_ids: Optional[List[str]] = None,
-        indexing_status: Optional[List[str]] = None,
-        created_at: Optional[Dict[str, Optional[int]]] = None,
-        updated_at: Optional[Dict[str, Optional[int]]] = None,
-        size: Optional[Dict[str, Optional[int]]] = None,
-        transaction: Optional[str] = None
-    ) -> Dict[str, Any]:
-        """
-        Search across all nodes (KBs, Apps, RecordGroups, Records) with comprehensive filters.
-        Combines results from multiple sources with permission filtering.
-        """
-        try:
-            # Build filter conditions using helper function
-            filter_conditions, filter_params = self._build_knowledge_hub_filter_conditions(
-                search_query=search_query,
-                node_types=node_types,
-                record_types=record_types,
-                indexing_status=indexing_status,
-                created_at=created_at,
-                updated_at=updated_at,
-                size=size,
-                origins=origins,
-                connector_ids=connector_ids,
-                kb_ids=kb_ids
-            )
-
-            # Node type filter - handle include/exclude logic
-            # Record-specific filters (recordTypes, indexingStatus) always mean only records
-            if record_types or indexing_status:
-                include_kbs = False
-                include_apps = False
-                include_record_groups = False
-                include_records = True
-            elif node_types:
-                include_kbs = "kb" in node_types
-                include_apps = "app" in node_types
-                include_record_groups = "recordGroup" in node_types
-                include_records = "folder" in node_types or "record" in node_types or "file" in node_types
-            else:
-                # Default: include all node types
-                include_kbs = True
-                include_apps = True
-                include_record_groups = True
-                include_records = True
-
-            # Origin filter affects include flags
-            if origins:
-                include_kbs = include_kbs and ("KB" in origins)
-                include_apps = include_apps and ("CONNECTOR" in origins)
-
-            params = {
-                "user_key": user_key,
-                "org_id": org_id,
-                "user_app_ids": user_app_ids,
-                "skip": skip,
-                "limit": limit,
-                "sort_field": sort_field,
-                "sort_dir": sort_dir.upper(),
-                "only_containers": only_containers,
-            }
-            # Merge filter params into params dict
-            params.update(filter_params)
-
-            filter_clause = " AND ".join(filter_conditions) if filter_conditions else "true"
-
-            params["include_kbs"] = include_kbs
-            params["include_apps"] = include_apps
-            params["include_record_groups"] = include_record_groups
-            params["include_records"] = include_records
-
-            query = f"""
+            query = f'''
+            MATCH (record:Record {{id: $record_id}})
             MATCH (u:User {{id: $user_key}})
-            WITH u
+            {permission_call}
+            RETURN record, permission_role
+            '''
+        """
+        # Role priority map used for determining highest role
+        role_priority_map = "{OWNER: 6, ADMIN: 5, EDITOR: 4, WRITER: 3, COMMENTER: 2, READER: 1}"
 
-            // ==================== Get Knowledge Bases ====================
-            // Note: Boolean filtering done via CASE in results, not in WHERE
-            CALL {{
-                WITH u
-                MATCH (kb:RecordGroup)
-                WHERE kb.orgId = $org_id AND kb.connectorName = 'KB' AND NOT coalesce(kb.isDeleted, false)
+        if node_type == "record":
+            return self._get_record_permission_role_cypher(node_var, user_var, role_priority_map)
+        elif node_type in ("recordGroup", "kb"):
+            # KB is a RecordGroup at root level, same permission logic applies
+            # INHERIT_PERMISSIONS query works for both - KB just won't have ancestors
+            return self._get_record_group_permission_role_cypher(node_var, user_var, role_priority_map)
+        elif node_type == "app":
+            return self._get_app_permission_role_cypher(node_var, user_var, role_priority_map)
+        else:
+            raise ValueError(f"Unsupported node_type: {node_type}. Must be 'record', 'recordGroup', 'app', or 'kb'")
 
-                // Check user has permission (direct, team, group, or org)
-                OPTIONAL MATCH (u)-[direct_perm:PERMISSION {{type: 'USER'}}]->(kb)
-                OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(kb)
-                OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(grp)-[grp_perm:PERMISSION]->(kb)
-                WHERE (grp:Group OR grp:Role) AND (grp_perm.type = 'GROUP' OR grp_perm.type = 'ROLE')
-                OPTIONAL MATCH (u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org)-[:PERMISSION {{type: 'ORG'}}]->(kb)
+    def _get_record_permission_role_cypher(
+        self,
+        node_var: str,
+        user_var: str,
+        role_priority_map: str,
+    ) -> str:
+        """
+        Generate CALL subquery for Record permission role.
 
-                WITH kb, (direct_perm IS NOT NULL OR team IS NOT NULL OR grp IS NOT NULL OR org IS NOT NULL) AS has_permission
-                WHERE has_permission
+        Implements all 10 permission paths:
+        1. user-[PERMISSION]->record (direct)
+        2. user-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        3. user-[PERMISSION]->group-[PERMISSION]->record
+        4. user-[PERMISSION]->group-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        5. user-[PERMISSION]->role-[PERMISSION]->record
+        6. user-[PERMISSION]->role-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        7. user-[PERMISSION]->team-[PERMISSION]->record
+        8. user-[PERMISSION]->team-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
+        9. user-[BELONGS_TO]->org-[PERMISSION]->record
+        10. user-[BELONGS_TO]->org-[PERMISSION]->recordGroup<-[INHERIT_PERMISSIONS*]-record
 
-                // Check for children - calculate count before building map
-                // Include both direct children via BELONGS_TO and via externalParentId IS NULL
-                OPTIONAL MATCH (child_record:Record)-[:BELONGS_TO]->(kb)
-                WHERE NOT coalesce(child_record.isDeleted, false) AND child_record.externalParentId IS NULL
-                OPTIONAL MATCH (child_rg:RecordGroup)-[:BELONGS_TO]->(kb)
-                WHERE NOT coalesce(child_rg.isDeleted, false)
+        Checks permissions on the record AND all ancestor RecordGroups via INHERIT_PERMISSIONS chain.
+        Returns highest priority role across all paths.
+        """
+        return f"""
+        CALL {{
+            WITH {node_var}, {user_var}
 
-                WITH kb, count(DISTINCT child_record) AS child_record_count, count(DISTINCT child_rg) AS child_rg_count
+            // Role priority map
+            WITH {node_var}, {user_var}, {role_priority_map} AS role_priority
 
-                RETURN {{
-                    id: kb.id,
-                    name: kb.groupName,
-                    nodeType: 'kb',
-                    parentId: null,
-                    source: 'KB',
-                    connector: 'KB',
-                    connectorId: null,
-                    kbId: kb.id,
-                    recordGroupId: kb.parentExternalGroupId,
-                    recordType: null,
-                    recordGroupType: 'KB',
-                    indexingStatus: null,
-                    createdAt: kb.createdAtTimestamp,
-                    updatedAt: kb.updatedAtTimestamp,
-                    sizeInBytes: null,
-                    mimeType: null,
-                    extension: null,
-                    webUrl: '/kb/' + kb.id,
-                    hasChildren: child_record_count > 0 OR child_rg_count > 0
-                }} AS node
-            }}
+            // Step 1: Get all permission targets (record + ancestor RGs via INHERIT_PERMISSIONS)
+            // The record itself is a permission target
+            // Plus all RecordGroups reachable via INHERIT_PERMISSIONS chain
+            OPTIONAL MATCH ({node_var})-[:INHERIT_PERMISSIONS*1..20]->(ancestor_rg:RecordGroup)
 
-            // Filter KB nodes based on include flag, then collect
-            WITH [n IN collect(node) WHERE $include_kbs = true OR n IS NULL] AS kb_nodes_filtered
-            WITH CASE WHEN $include_kbs THEN kb_nodes_filtered ELSE [] END AS kb_nodes
+            WITH {node_var}, {user_var}, role_priority,
+                 [{node_var}] + collect(DISTINCT ancestor_rg) AS permission_targets_raw
 
-            // ==================== Get Apps ====================
-            CALL {{
-                MATCH (app:App)
-                WHERE app.id IN $user_app_ids AND app.type <> 'KB'
+            // Filter out nulls
+            WITH {node_var}, {user_var}, role_priority,
+                 [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
 
-                OPTIONAL MATCH (rg:RecordGroup)
-                WHERE rg.connectorId = app.id AND NOT coalesce(rg.isDeleted, false)
+            // Step 2: Check all 10 permission paths across all targets
+            // Unwind targets to check each one
+            UNWIND permission_targets AS target
 
-                WITH app, count(rg) AS rg_count
+            // Path 1: Direct user permission on target
+            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            WHERE p1.role IS NOT NULL AND p1.role <> ''
 
-                RETURN {{
-                    id: app.id,
-                    name: app.name,
-                    nodeType: 'app',
-                    parentId: null,
-                    source: 'CONNECTOR',
-                    connector: app.type,
-                    connectorId: app.id,
-                    kbId: null,
-                    recordGroupId: null,
-                    recordType: null,
-                    recordGroupType: null,
-                    indexingStatus: null,
-                    createdAt: app.createdAtTimestamp,
-                    updatedAt: app.updatedAtTimestamp,
-                    sizeInBytes: null,
-                    mimeType: null,
-                    extension: null,
-                    webUrl: '/app/' + app.id,
-                    hasChildren: rg_count > 0
-                }} AS node
-            }}
+            // Path 3: User -> Group -> target
+            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            WHERE p3.role IS NOT NULL AND p3.role <> ''
 
-            // Filter app nodes based on include flag
-            WITH kb_nodes, collect(node) AS app_nodes_raw
-            WITH kb_nodes + CASE WHEN $include_apps THEN app_nodes_raw ELSE [] END AS kb_and_app_nodes
+            // Path 5: User -> Role -> target
+            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            WHERE p5.role IS NOT NULL AND p5.role <> ''
 
-            // ==================== Get Record Groups ====================
-            CALL {{
-                MATCH (u:User {{id: $user_key}})
-                MATCH (rg:RecordGroup)
-                WHERE rg.orgId = $org_id AND NOT coalesce(rg.isDeleted, false)
-                      AND (rg.connectorId IN $user_app_ids OR rg.connectorName = 'KB')
+            // Path 7: User -> Team -> target
+            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            WHERE ut.role IS NOT NULL AND ut.role <> ''
 
-                // Check permissions for KB record groups (direct, team, group, org)
-                OPTIONAL MATCH (u)-[direct_perm:PERMISSION {{type: 'USER'}}]->(rg)
-                OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(rg)
-                OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(grp)-[grp_perm:PERMISSION]->(rg)
-                WHERE (grp:Group OR grp:Role) AND (grp_perm.type = 'GROUP' OR grp_perm.type = 'ROLE')
-                OPTIONAL MATCH (u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org)-[:PERMISSION {{type: 'ORG'}}]->(rg)
+            // Path 9: User -> Org -> target
+            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            WHERE p9.role IS NOT NULL AND p9.role <> ''
 
-                WITH rg, u,
-                     (rg.connectorName <> 'KB' OR direct_perm IS NOT NULL OR team IS NOT NULL OR grp IS NOT NULL OR org IS NOT NULL) AS has_permission,
-                     (rg.connectorName = 'KB') AS is_kb_rg
-                WHERE has_permission AND (NOT is_kb_rg OR rg.groupType <> 'KB')  // Exclude root KBs
+            // Collect all found permissions for this target
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
+                 collect(DISTINCT ut.role) + collect(DISTINCT p9.role) AS target_roles
 
-                // Check for children via BELONGS_TO edge
-                OPTIONAL MATCH (child_record:Record)-[:BELONGS_TO]->(rg)
-                WHERE NOT coalesce(child_record.isDeleted, false) AND child_record.externalParentId IS NULL
+            // Flatten all roles across all targets
+            WITH role_priority, target_roles
+            UNWIND target_roles AS found_role
 
-                // Check for children record groups via BELONGS_TO edge
-                OPTIONAL MATCH (child_rg_edge:RecordGroup)-[:BELONGS_TO]->(rg)
-                WHERE NOT coalesce(child_rg_edge.isDeleted, false)
+            // Filter valid roles and map to priorities
+            WITH role_priority, found_role
+            WHERE found_role IS NOT NULL AND found_role <> ''
 
-                // For connector RGs, also check parentExternalGroupId field
-                OPTIONAL MATCH (child_rg_field:RecordGroup)
-                WHERE NOT is_kb_rg
-                      AND NOT coalesce(child_rg_field.isDeleted, false)
-                      AND child_rg_field.connectorId = rg.connectorId
-                      AND child_rg_field.parentExternalGroupId = rg.externalGroupId
+            WITH role_priority, found_role, role_priority[toString(found_role)] AS priority
+            WHERE priority IS NOT NULL
 
-                WITH rg, is_kb_rg,
-                     count(DISTINCT child_record) AS child_record_count,
-                     count(DISTINCT child_rg_edge) + count(DISTINCT child_rg_field) AS child_rg_count
+            // Get highest priority role
+            WITH found_role, priority
+            ORDER BY priority DESC
+            LIMIT 1
 
-                RETURN {{
-                    id: rg.id,
-                    name: rg.groupName,
-                    nodeType: 'recordGroup',
-                    parentId: rg.parentId,
-                    source: CASE WHEN is_kb_rg THEN 'KB' ELSE 'CONNECTOR' END,
-                    connector: rg.connectorName,
-                    connectorId: CASE WHEN NOT is_kb_rg THEN rg.connectorId ELSE null END,
-                    kbId: CASE WHEN is_kb_rg THEN rg.kbId ELSE null END,
-                    recordGroupId: rg.parentExternalGroupId,
-                    recordType: null,
-                    recordGroupType: rg.groupType,
-                    indexingStatus: null,
-                    createdAt: rg.createdAtTimestamp,
-                    updatedAt: rg.updatedAtTimestamp,
-                    sizeInBytes: null,
-                    mimeType: null,
-                    extension: null,
-                    webUrl: rg.webUrl,
-                    hasChildren: child_record_count > 0 OR child_rg_count > 0
-                }} AS node
-            }}
+            RETURN found_role AS permission_role
+        }}
+        """
 
-            // Filter record group nodes based on include flag
-            WITH kb_and_app_nodes, collect(node) AS rg_nodes_raw
-            WITH kb_and_app_nodes + CASE WHEN $include_record_groups THEN rg_nodes_raw ELSE [] END AS all_non_records
+    def _get_record_group_permission_role_cypher(
+        self,
+        node_var: str,
+        user_var: str,
+        role_priority_map: str,
+    ) -> str:
+        """
+        Generate CALL subquery for RecordGroup/KB permission role.
 
-            // ==================== Get Records ====================
-            CALL {{
-                MATCH (u:User {{id: $user_key}})
-                MATCH (record:Record)
-                WHERE record.orgId = $org_id AND NOT coalesce(record.isDeleted, false)
-                      AND (record.connectorId IN $user_app_ids OR record.connectorName = 'KB')
+        Used for both RecordGroup and KB (KB is a RecordGroup at root level).
+        Checks permissions on the node itself AND all ancestor RecordGroups
+        via INHERIT_PERMISSIONS chain. For KB, no ancestors will be found (as expected).
 
-                // Check permission via inheritPermissions for KB records
-                // Path 1: Direct permission on record
-                OPTIONAL MATCH (u)-[direct_rec_perm:PERMISSION {{type: 'USER'}}]->(record)
+        Permission paths checked (applied to node and ancestors):
+        1. user-[PERMISSION]->node (direct)
+        2. user-[PERMISSION]->ancestorRG (via INHERIT_PERMISSIONS chain)
+        3. user-[PERMISSION]->group-[PERMISSION]->node/ancestorRG
+        4. user-[PERMISSION]->role-[PERMISSION]->node/ancestorRG
+        5. user-[PERMISSION]->team-[PERMISSION]->node/ancestorRG
+        6. user-[BELONGS_TO]->org-[PERMISSION]->node/ancestorRG
 
-                // Path 2-4: Permission via recordGroup (inheritPermissions)
-                OPTIONAL MATCH (record)-[:INHERIT_PERMISSIONS]->(rg:RecordGroup)
-                OPTIONAL MATCH (u)-[direct_perm:PERMISSION {{type: 'USER'}}]->(rg)
-                OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(rg)
-                OPTIONAL MATCH (u)-[:PERMISSION {{type: 'USER'}}]->(grp)-[grp_perm:PERMISSION]->(rg)
-                WHERE (grp:Group OR grp:Role) AND (grp_perm.type = 'GROUP' OR grp_perm.type = 'ROLE')
-                OPTIONAL MATCH (u)-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org)-[:PERMISSION {{type: 'ORG'}}]->(rg)
+        Returns highest priority role across all paths.
+        """
+        return f"""
+        CALL {{
+            WITH {node_var}, {user_var}
 
-                WITH record, u,
-                     (record.connectorName <> 'KB' OR
-                      direct_rec_perm IS NOT NULL OR
-                      direct_perm IS NOT NULL OR team IS NOT NULL OR grp IS NOT NULL OR org IS NOT NULL) AS has_permission
-                WHERE has_permission
+            // Role priority map
+            WITH {node_var}, {user_var}, {role_priority_map} AS role_priority
 
-                // Get file info and check if folder
-                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(f:File)
+            // Step 1: Get all permission targets (this RG + ancestor RGs via INHERIT_PERMISSIONS)
+            OPTIONAL MATCH ({node_var})-[:INHERIT_PERMISSIONS*1..20]->(ancestor_rg:RecordGroup)
 
-                // Check for children - calculate count before using
-                OPTIONAL MATCH (record)-[:RECORD_RELATION]->(child:Record)
-                WHERE NOT coalesce(child.isDeleted, false)
+            WITH {node_var}, {user_var}, role_priority,
+                 [{node_var}] + collect(DISTINCT ancestor_rg) AS permission_targets_raw
 
-                // Determine source
-                OPTIONAL MATCH (record_connector:RecordGroup {{id: record.connectorId}})
+            // Filter out nulls
+            WITH {node_var}, {user_var}, role_priority,
+                 [t IN permission_targets_raw WHERE t IS NOT NULL] AS permission_targets
 
-                WITH record, f,
-                     CASE WHEN f IS NOT NULL AND f.isFile = false THEN 'folder' ELSE 'record' END AS nodeType,
-                     count(DISTINCT child) AS child_count,
-                     CASE WHEN record_connector IS NOT NULL AND record_connector.connectorName = 'KB'
-                          THEN 'KB' ELSE 'CONNECTOR' END AS source
+            // Step 2: Check all permission paths across all targets
+            UNWIND permission_targets AS target
 
-                RETURN {{
-                    id: record.id,
-                    name: record.recordName,
-                    nodeType: nodeType,
-                    parentId: record.externalParentId,
-                    source: source,
-                    connector: record.connectorName,
-                    connectorId: CASE WHEN source = 'CONNECTOR' THEN record.connectorId ELSE null END,
-                    kbId: CASE WHEN source = 'KB' THEN record.connectorId ELSE null END,
-                    recordGroupId: record.recordGroupId,
-                    recordType: record.recordType,
-                    recordGroupType: null,
-                    indexingStatus: record.indexingStatus,
-                    createdAt: record.createdAtTimestamp,
-                    updatedAt: record.updatedAtTimestamp,
-                    sizeInBytes: coalesce(record.sizeInBytes, f.fileSizeInBytes),
-                    mimeType: record.mimeType,
-                    extension: f.extension,
-                    webUrl: record.webUrl,
-                    hasChildren: child_count > 0,
-                    previewRenderable: coalesce(record.previewRenderable, true)
-                }} AS node
-            }}
+            // Path 1: Direct user permission on target
+            OPTIONAL MATCH ({user_var})-[p1:PERMISSION {{type: 'USER'}}]->(target)
+            WHERE p1.role IS NOT NULL AND p1.role <> ''
 
-            // Filter record nodes based on include flag
-            WITH all_non_records, collect(node) AS record_nodes_raw
-            WITH all_non_records + CASE WHEN $include_records THEN record_nodes_raw ELSE [] END AS all_nodes
+            // Path 2: User -> Group -> target
+            OPTIONAL MATCH ({user_var})-[ug:PERMISSION {{type: 'USER'}}]->(grp:Group)-[p3:PERMISSION]->(target)
+            WHERE p3.role IS NOT NULL AND p3.role <> ''
 
-            // Deduplicate
-            UNWIND all_nodes AS node
-            WITH DISTINCT node.id AS id, node
-            WITH collect(node) AS unique_nodes
+            // Path 3: User -> Role -> target
+            OPTIONAL MATCH ({user_var})-[ur:PERMISSION {{type: 'USER'}}]->(role:Role)-[p5:PERMISSION]->(target)
+            WHERE p5.role IS NOT NULL AND p5.role <> ''
 
-            // Apply all filters (including search)
-            UNWIND unique_nodes AS node
-            WITH node WHERE {filter_clause}
+            // Path 4: User -> Team -> target
+            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
+            WHERE ut.role IS NOT NULL AND ut.role <> ''
 
-            // Apply only_containers filter
-            WITH node WHERE $only_containers = false
-                 OR node.hasChildren = true
-                 OR node.nodeType IN ['app', 'kb', 'recordGroup', 'folder']
+            // Path 5: User -> Org -> target
+            OPTIONAL MATCH ({user_var})-[:BELONGS_TO {{entityType: 'ORGANIZATION'}}]->(org:Organization)-[p9:PERMISSION {{type: 'ORG'}}]->(target)
+            WHERE p9.role IS NOT NULL AND p9.role <> ''
 
-            // Sort with explicit field mapping (Neo4j doesn't support dynamic property access)
-            WITH node,
-                 CASE $sort_field
-                     WHEN 'name' THEN node.name
-                     WHEN 'createdAt' THEN node.createdAt
-                     WHEN 'updatedAt' THEN node.updatedAt
-                     WHEN 'nodeType' THEN node.nodeType
-                     WHEN 'source' THEN node.source
-                     WHEN 'connector' THEN node.connector
-                     WHEN 'recordType' THEN node.recordType
-                     WHEN 'sizeInBytes' THEN node.sizeInBytes
-                     WHEN 'indexingStatus' THEN node.indexingStatus
-                     ELSE node.name
-                 END AS sort_value
-            ORDER BY
-                CASE WHEN $sort_dir = 'ASC' THEN sort_value END ASC,
-                CASE WHEN $sort_dir = 'DESC' THEN sort_value END DESC
+            // Collect all found permissions for this target
+            WITH {node_var}, {user_var}, role_priority, permission_targets,
+                 collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
+                 collect(DISTINCT ut.role) + collect(DISTINCT p9.role) AS target_roles
 
-            WITH collect(node) AS sorted_nodes
+            // Flatten all roles across all targets
+            WITH role_priority, target_roles
+            UNWIND target_roles AS found_role
 
-            RETURN {{
-                nodes: sorted_nodes[$skip..($skip + $limit)],
-                total: size(sorted_nodes)
-            }} AS result
+            // Filter valid roles and map to priorities
+            WITH role_priority, found_role
+            WHERE found_role IS NOT NULL AND found_role <> ''
+
+            WITH role_priority, found_role, role_priority[toString(found_role)] AS priority
+            WHERE priority IS NOT NULL
+
+            // Get highest priority role
+            WITH found_role, priority
+            ORDER BY priority DESC
+            LIMIT 1
+
+            RETURN found_role AS permission_role
+        }}
+        """
+
+    def _get_app_permission_role_cypher(
+        self,
+        node_var: str,
+        user_var: str,
+        role_priority_map: str,
+    ) -> str:
+        """
+        Generate CALL subquery for App permission role.
+
+        - Checks USER_APP_RELATION edge
+        - If USER_APP_RELATION exists:
+        - Admin users:
+            - Team apps: EDITOR role
+            - Personal apps: OWNER role
+        - Team app creator: OWNER role (createdBy matches userId - MongoDB ID)
+        - Otherwise: READER role
+        - If USER_APP_RELATION doesn't exist: returns null (no access)
+
+        Note: createdBy stores MongoDB userId, so we compare with user.userId, not user.id
+        """
+        return f"""
+        CALL {{
+            WITH {node_var}, {user_var}
+
+            // Check if user has USER_APP_RELATION to app
+            OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
+
+            // Check if user is admin
+            WITH {node_var}, {user_var}, user_app_rel,
+                (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
+
+            // Get app scope and check if user is creator
+            // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
+            WITH {node_var}, {user_var}, user_app_rel, is_admin,
+                coalesce({node_var}.scope, 'personal') AS app_scope,
+                ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
+
+            // Determine role based on conditions
+            RETURN CASE
+                // If no USER_APP_RELATION, no access
+                WHEN user_app_rel IS NULL THEN null
+
+                // Admin users: EDITOR for team apps, OWNER for personal apps
+                WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
+                WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
+
+                // Team app creator gets OWNER role
+                WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
+
+                // Default: READER for regular users with USER_APP_RELATION
+                ELSE 'READER'
+            END AS permission_role
+        }}
+        """
+
+    def _build_scope_filters_cypher(
+        self,
+        parent_id: Optional[str],
+        parent_type: Optional[str],
+        parent_connector_id: Optional[str] = None
+    ) -> Tuple[str, str, str, str]:
+        """
+        Generate Cypher scope filter conditions based on parent_id and parent_type.
+
+        Returns tuple of:
+        - scope_filter_rg: WHERE clause for RecordGroup filtering (for use in MATCH/WHERE)
+        - scope_filter_record: WHERE clause for Record filtering (for use in MATCH/WHERE)
+        - scope_filter_rg_inline: Inline condition for RecordGroups (for use in FILTER expressions with inherited_node)
+        - scope_filter_record_inline: Inline condition for Records (for use in FILTER expressions with inherited_node)
+
+        Args:
+            parent_id: Optional parent node ID for scoped search
+            parent_type: Optional type of parent: 'app', 'kb', 'recordGroup', 'folder', 'record'
+            parent_connector_id: Optional connector ID of parent (needed for record/folder types)
+        """
+        if not parent_id or not parent_type:
+            # Global search - no scope filters
+            return ("", "", "true", "true")
+
+        if parent_type == "app":
+            # Filter RecordGroups by connectorId
+            scope_filter_rg = "AND rg.connectorId = $parent_id"
+            scope_filter_rg_inline = "inherited_node.connectorId = $parent_id"
+            # Records inherit scope from their RecordGroups, so filter by connectorId
+            scope_filter_record = "AND record.connectorId = $parent_id"
+            scope_filter_record_inline = "inherited_node.connectorId = $parent_id"
+        elif parent_type in ("kb", "recordGroup"):
+            # Filter RecordGroups by hierarchy via BELONGS_TO or parentId
+            # For KB: use BELONGS_TO edges
+            # For connector: use parentId or BELONGS_TO
+            scope_filter_rg = """AND (
+                rg.parentId = $parent_id
+                OR EXISTS((rg)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
+            )"""
+            scope_filter_rg_inline = """(
+                inherited_node.parentId = $parent_id
+                OR EXISTS((inherited_node)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
+            )"""
+            # Records belong to RecordGroups, so filter by parent RecordGroup hierarchy
+            scope_filter_record = """AND (
+                EXISTS((record)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
+                OR EXISTS((record)-[:BELONGS_TO]->(:RecordGroup)-[:BELONGS_TO*]->(:RecordGroup {id: $parent_id}))
+                OR EXISTS((record)-[:INHERIT_PERMISSIONS*]->(:RecordGroup {id: $parent_id}))
+            )"""
+            scope_filter_record_inline = """(
+                EXISTS((inherited_node)-[:BELONGS_TO]->(:RecordGroup {id: $parent_id}))
+                OR EXISTS((inherited_node)-[:BELONGS_TO]->(:RecordGroup)-[:BELONGS_TO*]->(:RecordGroup {id: $parent_id}))
+                OR EXISTS((inherited_node)-[:INHERIT_PERMISSIONS*]->(:RecordGroup {id: $parent_id}))
+            )"""
+        elif parent_type in ("record", "folder"):
+            # Filter by same connector (parent_connector_id)
+            if parent_connector_id:
+                scope_filter_rg = "AND rg.connectorId = $parent_connector_id"
+                scope_filter_rg_inline = "inherited_node.connectorId = $parent_connector_id"
+                scope_filter_record = "AND record.connectorId = $parent_connector_id"
+                scope_filter_record_inline = "inherited_node.connectorId = $parent_connector_id"
+            else:
+                # No connector ID available - can't scope properly
+                scope_filter_rg = ""
+                scope_filter_rg_inline = "true"
+                scope_filter_record = ""
+                scope_filter_record_inline = "true"
+        else:
+            # Unknown parent type - no scope filters
+            return ("", "", "true", "true")
+
+        return (scope_filter_rg, scope_filter_record, scope_filter_rg_inline, scope_filter_record_inline)
+
+    def _build_children_intersection_cypher(
+        self,
+        parent_id: Optional[str],
+        parent_type: Optional[str]
+    ) -> str:
+        """
+        Generate Cypher subquery for children-first traversal and intersection.
+
+        When parent_type is kb/recordGroup/record/folder, this generates Cypher that:
+        1. Traverses children from the parent node
+        2. Intersects found children with accessible nodes
+        3. Returns final_accessible_rgs and final_accessible_records
+
+        For global search (no parent), simply passes through accessible nodes unchanged.
+
+        Args:
+            parent_id: Optional parent node ID
+            parent_type: Optional type of parent ('kb', 'recordGroup', 'record', 'folder')
+
+        Returns:
+            Cypher string to insert into the main query
+        """
+        if not parent_id or parent_type not in ("kb", "recordGroup", "record", "folder"):
+            # No children intersection needed - use accessible nodes as-is
+            return """
+            // No children intersection - use accessible nodes directly
+            WITH accessible_rgs AS final_accessible_rgs,
+                 accessible_records AS final_accessible_records
             """
 
-            results = await self.client.execute_query(query, parameters=params, txn_id=transaction)
-            if results and results[0].get("result"):
-                return results[0]["result"]
-            return {"nodes": [], "total": 0}
+        if parent_type in ("kb", "recordGroup"):
+            # For KB/RecordGroup: traverse INHERIT_PERMISSIONS to find all children
+            return """
+            // ========== CHILDREN TRAVERSAL & INTERSECTION (kb/recordGroup parent) ==========
+            // Get parent RecordGroup
+            MATCH (parent_rg:RecordGroup {id: $parent_doc_id})
 
-        except Exception as e:
-            self.logger.error(f"❌ Get knowledge hub search nodes failed: {str(e)}")
-            import traceback
-            self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
+            // Find all child RecordGroups via INHERIT_PERMISSIONS (recursive)
+            OPTIONAL MATCH (child_rg:RecordGroup)-[:INHERIT_PERMISSIONS*1..100]->(parent_rg)
+            WHERE child_rg.orgId = $org_id
+            WITH accessible_rgs, accessible_records, parent_rg,
+                 collect(DISTINCT child_rg) AS all_child_rgs
+
+            // Find all child Records via INHERIT_PERMISSIONS (recursive)
+            OPTIONAL MATCH (child_record:Record)-[:INHERIT_PERMISSIONS*1..100]->(parent_rg)
+            WHERE child_record.orgId = $org_id
+            WITH accessible_rgs, accessible_records, parent_rg, all_child_rgs,
+                 collect(DISTINCT child_record) AS inherited_child_records
+
+            // Also find records directly belonging to parent via BELONGS_TO
+            OPTIONAL MATCH (direct_record:Record)-[:BELONGS_TO]->(parent_rg)
+            WHERE direct_record.orgId = $org_id
+            WITH accessible_rgs, accessible_records, all_child_rgs, inherited_child_records,
+                 collect(DISTINCT direct_record) AS direct_child_records
+
+            // Combine all child records
+            WITH accessible_rgs, accessible_records, all_child_rgs,
+                 [r IN inherited_child_records + direct_child_records WHERE r IS NOT NULL] AS all_child_records
+
+            // Intersect children with accessible nodes
+            // final_accessible_rgs = child_rgs that are in accessible_rgs
+            WITH accessible_rgs, accessible_records, all_child_rgs, all_child_records,
+                 [rg IN all_child_rgs WHERE rg IN accessible_rgs] AS final_accessible_rgs_list
+
+            // final_accessible_records = child_records that are in accessible_records
+            WITH accessible_rgs, accessible_records, final_accessible_rgs_list,
+                 [r IN all_child_records WHERE r IN accessible_records] AS final_accessible_records_list
+
+            // Convert to final format
+            WITH [rg IN final_accessible_rgs_list WHERE rg IS NOT NULL] AS final_accessible_rgs,
+                 [r IN final_accessible_records_list WHERE r IS NOT NULL] AS final_accessible_records
+            """
+
+        elif parent_type in ("record", "folder"):
+            # For Record/Folder: traverse RECORD_RELATION to find child records
+            return """
+            // ========== CHILDREN TRAVERSAL & INTERSECTION (record/folder parent) ==========
+            // Get parent Record
+            MATCH (parent_record:Record {id: $parent_doc_id})
+
+            // Find all child Records via RECORD_RELATION (recursive)
+            OPTIONAL MATCH (parent_record)-[rr:RECORD_RELATION*1..100]->(child_record:Record)
+            WHERE child_record.orgId = $org_id
+              AND ALL(rel IN rr WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
+            WITH accessible_rgs, accessible_records, parent_record,
+                 collect(DISTINCT child_record) AS all_child_records
+
+            // For record/folder parent, no child RecordGroups
+            WITH accessible_rgs, accessible_records, all_child_records,
+                 [] AS all_child_rgs
+
+            // Intersect children with accessible nodes
+            // final_accessible_rgs = empty for record/folder parent (no RecordGroups should be returned)
+            WITH accessible_rgs, accessible_records, all_child_records,
+                 [] AS final_accessible_rgs
+
+            // final_accessible_records = child_records that are in accessible_records
+            WITH final_accessible_rgs, all_child_records, accessible_records,
+                 [r IN all_child_records WHERE r IN accessible_records] AS final_accessible_records_list
+
+            // Convert to final format
+            WITH final_accessible_rgs,
+                 [r IN final_accessible_records_list WHERE r IS NOT NULL] AS final_accessible_records
+            """
+
 
     # ==================== Team Operations ====================
 

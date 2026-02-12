@@ -22,7 +22,7 @@ class SchemaValidationError(Exception):
     and provides a clear error message.
     """
 
-    def __init__(self, collection: str, message: str, original_error: Optional[Exception] = None):
+    def __init__(self, collection: str, message: str, original_error: Optional[Exception] = None) -> None:
         self.collection = collection
         self.original_error = original_error
         super().__init__(f"Schema validation failed for collection '{collection}': {message}")
@@ -36,7 +36,7 @@ class NodeSchemaValidator:
     enforces at the database level, but applied in the application layer for Neo4j.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize the validator."""
         pass
 
