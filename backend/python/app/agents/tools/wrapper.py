@@ -303,17 +303,22 @@ class RegistryToolWrapper(BaseTool):
         """
         return self.chat_state
 
-    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> str:
+    def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> Union[str, tuple]:
         """Execute the registry tool.
 
         Args:
             **kwargs: Tool arguments
 
         Returns:
-            Formatted result string
+            Tool result (tuple if (bool, str) format, otherwise string)
+            Preserves tuple structure for success detection in nodes.py
         """
         try:
             result = self._execute_tool(kwargs)
+            # Preserve tuple structure for success detection
+            # nodes.py will handle formatting for LLM
+            if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+                return result
             return self._format_result(result)
         except Exception as e:
             return self._format_error(e, kwargs)

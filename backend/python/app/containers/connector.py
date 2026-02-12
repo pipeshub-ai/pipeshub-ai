@@ -33,9 +33,6 @@ from app.migrations.permission_edge_migration import (
 from app.migrations.record_group_app_edge_migration import (
     run_record_group_app_edge_migration,
 )
-from app.migrations.delete_old_agents_templates_migration import (
-    run_delete_old_agents_templates_migration,
-)
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger

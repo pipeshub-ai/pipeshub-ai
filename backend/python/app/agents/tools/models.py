@@ -63,13 +63,14 @@ class Tool:
     """Represents a tool that can be called by an LLM"""
     app_name: str
     tool_name: str
-    description: str
+    description: str  # User-friendly description for frontend (default)
     function: Callable[[Any], Any]
     parameters: List[ToolParameter] = field(default_factory=list)
     args_schema: Optional[Type[BaseModel]] = None  # NEW: Pydantic schema for validation
     returns: Optional[str] = None
     examples: List[Dict] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+    llm_description: Optional[str] = None  # NEW: Detailed description for LLM planner
 
 
     @property

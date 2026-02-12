@@ -779,7 +779,9 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
         descriptions = []
         for tool in tools[:20]:
             name = getattr(tool, 'name', str(tool))
-            desc = getattr(tool, 'description', '')
+            # Use llm_description if available, otherwise fall back to description
+            llm_desc = getattr(tool, 'llm_description', None)
+            desc = llm_desc if llm_desc else getattr(tool, 'description', '')
 
             short_desc = desc[:DESCRIPTION_MAX_LENGTH] + "..." if len(desc) > DESCRIPTION_MAX_LENGTH else desc
 
@@ -1152,7 +1154,30 @@ async def _execute_single_tool(
                 return await loop.run_in_executor(None, functools.partial(tool.run, **tool_args))
 
         result = await asyncio.wait_for(run_tool(), timeout=NodeConfig.TOOL_TIMEOUT_SECONDS)
+
+        # Log before success detection
+        log.info(f"🔍 Tool {tool_name} result before success detection - type: {type(result).__name__}")
+        if isinstance(result, tuple):
+            log.info(f"🔍 Tool {tool_name} result tuple length: {len(result)}, first element: {result[0] if len(result) > 0 else 'N/A'}")
+
         is_success = _detect_tool_success(result)
+        log.info(f"🔍 Tool {tool_name} success detection result: {is_success}")
+
+        # Log raw tool result
+        log.info(f"🔍 Tool {tool_name} raw result type: {type(result).__name__}")
+        if isinstance(result, tuple):
+            log.info(f"🔍 Tool {tool_name} raw result tuple: success={result[0] if len(result) > 0 else 'N/A'}, data_type={type(result[1]).__name__ if len(result) > 1 else 'N/A'}")
+            if len(result) > 1:
+                result_data = result[1]
+                if isinstance(result_data, str):
+                    log.info(f"🔍 Tool {tool_name} raw result data (first 500 chars): {result_data[:500]}")
+                else:
+                    log.info(f"🔍 Tool {tool_name} raw result data: {json.dumps(result_data, default=str, indent=2)[:1000]}")
+        else:
+            if isinstance(result, str):
+                log.info(f"🔍 Tool {tool_name} raw result (first 500 chars): {result[:500]}")
+            else:
+                log.info(f"🔍 Tool {tool_name} raw result: {json.dumps(result, default=str, indent=2)[:1000]}")
 
         # Handle retrieval output
         content = result
@@ -1161,12 +1186,22 @@ async def _execute_single_tool(
         else:
             content = clean_tool_result(result)
 
+        # Log cleaned content
+        log.info(f"🔍 Tool {tool_name} cleaned content type: {type(content).__name__}")
+        if isinstance(content, str):
+            log.info(f"🔍 Tool {tool_name} cleaned content (first 500 chars): {content[:500]}")
+        else:
+            log.info(f"🔍 Tool {tool_name} cleaned content: {json.dumps(content, default=str, indent=2)[:1000]}")
+
         duration_ms = (time.perf_counter() - start_time) * 1000
         status = "success" if is_success else "error"
 
         log.info(f"{'✅' if is_success else '❌'} {tool_name}: {duration_ms:.0f}ms")
 
         content_str = format_result_for_llm(content, tool_name)
+
+        # Log formatted content for LLM
+        log.info(f"🔍 Tool {tool_name} formatted for LLM (first 1000 chars): {content_str[:1000]}")
 
         return {
             "tool_result": {
@@ -1993,8 +2028,21 @@ def _build_tool_results_context(tool_results: List[Dict], final_results: List[Di
             tool_name = r.get('tool_name', 'unknown')
             content = r.get("result", "")
 
+
+            # Extract data from tuple if it's a (bool, str) tuple
+            if isinstance(content, tuple) and len(content) == TOOL_RESULT_TUPLE_LENGTH:
+                success, data = content
+                content = data  # Use just the data part, not the tuple
+
             if isinstance(content, (dict, list)):
                 content_str = json.dumps(content, indent=2, default=str)
+            elif isinstance(content, str):
+                # If it's a JSON string, try to parse and format it nicely
+                try:
+                    parsed = json.loads(content)
+                    content_str = json.dumps(parsed, indent=2, default=str)
+                except (json.JSONDecodeError, TypeError):
+                    content_str = content
             else:
                 content_str = str(content)
 
@@ -2114,7 +2162,8 @@ If tool results show zero items or empty data:
 
     parts.append("\nReturn ONLY the JSON object, no markdown wrapping.\n")
 
-    return "".join(parts)
+    context = "".join(parts)
+    return context
 
 
 # ============================================================================

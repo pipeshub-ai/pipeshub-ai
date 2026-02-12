@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import threading
+import traceback
 from typing import Coroutine, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
@@ -1068,11 +1069,29 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="search_issues",
-        description=(
-            "Search for JIRA issues using JQL (JIRA Query Language). "
-        ),
+        description="Search for JIRA issues using JQL (JIRA Query Language)",  # User-friendly (frontend)
         args_schema=SearchIssuesInput,  # NEW: Pydantic schema
-        returns="List of matching issues with key, summary, status, assignee, etc."
+        returns="List of matching issues with key, summary, status, assignee, etc.",
+        llm_description=(
+            "Search for JIRA issues using JQL (JIRA Query Language). "
+            "\n"
+            "CURRENT USER QUERIES:\n"
+            "- Use `assignee = currentUser()` for 'my tickets' or 'assigned to me'\n"
+            "- Do NOT call search_users first - currentUser() auto-resolves\n"
+            "\n"
+            "REQUIRED TIME FILTER (prevents unbounded query errors):\n"
+            "- Always include: `AND updated >= -30d` or `AND created >= -7d`\n"
+            "\n"
+            "JQL SYNTAX RULES:\n"
+            "- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)\n"
+            "- Current user: `currentUser()` with parentheses\n"
+            "- Status values: `status = \"Open\"` with quotes\n"
+            "\n"
+            "EXAMPLES:\n"
+            "- `project = \"PA\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`\n"
+            "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
+            "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
+        ),  # Detailed description for LLM
     )
     def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
         """Search for JIRA issues using the enhanced search endpoint"""
@@ -1083,23 +1102,13 @@ class Jira:
             if fixed_jql != jql:
                 logger.info(f"JQL query auto-corrected: '{jql}' -> '{fixed_jql}'")
 
-            # Resolve currentUser() to actual accountId to avoid "unbounded query" errors
-            # The enhanced search API may not properly recognize currentUser() as a restriction
-            if "currentUser()" in fixed_jql:
-                try:
-                    user_response = self._run_async(self.client.get_current_user())
-                    if user_response.status == HttpStatusCode.SUCCESS.value:
-                        user_data = user_response.json()
-                        account_id = user_data.get("accountId")
-                        if account_id:
-                            # Replace currentUser() with the actual accountId
-                            fixed_jql = fixed_jql.replace("currentUser()", f'"{account_id}"')
-                            logger.info(f"Resolved currentUser() to accountId: {account_id}")
-                except Exception as e:
-                    logger.warning(f"Could not resolve currentUser(), using as-is: {e}")
+            # Note: currentUser() is a native JQL function that Jira handles correctly.
+            # We do NOT replace it with accountId as that can cause JQL syntax errors.
+            # The enhanced search API properly recognizes currentUser() as a restriction.
 
             # Use the enhanced search endpoint (POST /rest/api/3/search/jql)
             # The standard search endpoint (/rest/api/3/search) has been removed (410 Gone)
+            logger.info(f"Calling Jira search API with JQL: {fixed_jql}")
             response = self._run_async(
                 self.client.search_and_reconsile_issues_using_jql_post(
                     jql=fixed_jql,
@@ -1109,20 +1118,49 @@ class Jira:
                 )
             )
 
+            logger.info(f"Jira search API response status: {response.status}")
             if response.status == HttpStatusCode.SUCCESS.value:
-                data = response.json()
-                # Clean response: remove redundant fields, keep essential ones
-                cleaned_data = (
-                    ResponseTransformer(data)
-                    .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
-                            "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
-                            "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
-                            "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
-                    .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
-                          "priority", "issuetype", "created", "updated", "description", "fields",
-                          "total", "startAt", "maxResults", "nextPageToken", "isLast")
-                    .clean()
-                )
+                try:
+                    data = response.json()
+                    logger.info(f"Jira search API response data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                    logger.info(f"Jira search API response - total issues: {data.get('total', 'N/A') if isinstance(data, dict) else 'N/A'}")
+                    logger.debug(f"Jira search API full response: {json.dumps(data, indent=2)[:2000]}")  # First 2000 chars
+                except Exception as e:
+                    logger.error(
+                        f"Failed to parse successful response as JSON - Status: {response.status}, "
+                        f"Error: {e}, Response text: {response.text()[:500]}"
+                    )
+                    return False, json.dumps({
+                        "error": f"Failed to parse response: {str(e)}",
+                        "jql_query": fixed_jql
+                    })
+
+                try:
+                    # Clean response: remove redundant fields, keep essential ones
+                    cleaned_data = (
+                        ResponseTransformer(data)
+                        .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                                "*.description", "*.subtask", "*.avatarId", "*.hierarchyLevel",
+                                "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
+                                "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
+                        .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
+                              "priority", "issuetype", "created", "updated", "description", "fields",
+                              "total", "startAt", "maxResults", "nextPageToken", "isLast")
+                        .clean()
+                    )
+                    logger.info(f"Response cleaned successfully - issues count: {len(cleaned_data.get('issues', [])) if isinstance(cleaned_data, dict) else 'N/A'}")
+                except Exception as e:
+                    logger.error(
+                        f"Failed to clean response data - Error: {e}, "
+                        f"Traceback: {traceback.format_exc()}, "
+                        f"Raw data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}"
+                    )
+                    return False, json.dumps({
+                        "error": f"Failed to clean response: {str(e)}",
+                        "jql_query": fixed_jql,
+                        "raw_data_keys": list(data.keys()) if isinstance(data, dict) else "Not a dict"
+                    })
+
                 result = {
                     "message": "Issues fetched successfully",
                     "data": cleaned_data
@@ -1131,8 +1169,21 @@ class Jira:
                     result["warning"] = jql_warning
                     result["original_jql"] = jql
                     result["fixed_jql"] = fixed_jql
-                return True, json.dumps(result)
+
+                result_json = json.dumps(result)
+                logger.info(f"Returning success result - JSON length: {len(result_json)} chars")
+                return True, result_json
             else:
+                # Log detailed error information before handling
+                try:
+                    error_text = response.text()
+                except Exception:
+                    error_text = "Unable to extract error text"
+                logger.error(
+                    f"JIRA search_issues failed - Status: {response.status}, "
+                    f"JQL: {fixed_jql}, "
+                    f"Response: {error_text}"
+                )
                 # Include JQL information in error response
                 error_result = self._handle_response(
                     response,
@@ -1153,7 +1204,11 @@ class Jira:
                     # If parsing fails, return original error
                     return error_result
         except Exception as e:
-            logger.error(f"Error searching issues: {e}")
+            logger.error(
+                f"Error searching issues - JQL: {jql}, "
+                f"Exception: {type(e).__name__}: {e}, "
+                f"Traceback: {traceback.format_exc()}"
+            )
             error_response = {"error": str(e)}
             # jql is always in scope here as it's a function parameter
             error_response["jql_query"] = jql
@@ -1270,11 +1325,14 @@ class Jira:
     @tool(
         app_name="jira",
         tool_name="search_users",
-        description=(
-            "Search JIRA users by name or email. Returns user accountId needed for JQL queries. "
-        ),
+        description="Search JIRA users by name or email",  # User-friendly (frontend)
         args_schema=SearchUsersInput,  # NEW: Pydantic schema
-        returns="List of users with account IDs (accountId, displayName, emailAddress)"
+        returns="List of users with account IDs (accountId, displayName, emailAddress)",
+        llm_description=(
+            "Search JIRA users by name or email. Returns user accountId needed for JQL queries. "
+            "NOTE: For searching issues assigned to the CURRENT user (self), use `assignee = currentUser()` "
+            "in JQL instead of calling this tool - it's faster and more reliable."
+        ),  # Detailed description for LLM
     )
     def search_users(
         self,

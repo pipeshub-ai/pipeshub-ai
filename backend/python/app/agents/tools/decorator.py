@@ -22,7 +22,7 @@ from app.agents.tools.registry import _global_tools_registry
 def tool(
     app_name: str,
     tool_name: str,
-    description: Optional[str] = None,
+    description: Optional[str] = None,  # User-friendly description (for frontend)
     parameters: Optional[List[ToolParameter]] = None,  # DEPRECATED: Use args_schema instead
     args_schema: Optional[Type[BaseModel]] = None,  # NEW: Pydantic schema for validation
     returns: Optional[str] = None,
@@ -31,6 +31,7 @@ def tool(
     category: ToolCategory = ToolCategory.UTILITY,
     is_essential: bool = False,
     requires_auth: bool = True,
+    llm_description: Optional[str] = None,  # NEW: Detailed description for LLM planner
 ) -> Callable:
     """
     Enhanced decorator to register a function as a tool.
@@ -38,7 +39,7 @@ def tool(
     Args:
         app_name: Tool app name (required)
         tool_name: Tool name (required)
-        description: Tool description (defaults to docstring)
+        description: User-friendly tool description for frontend (defaults to docstring)
         parameters: List of ToolParameter objects (DEPRECATED: use args_schema instead)
         args_schema: Pydantic BaseModel schema for tool arguments (NEW: preferred)
         returns: Description of return value
@@ -47,6 +48,7 @@ def tool(
         category: Tool category
         is_essential: Whether tool is essential (always loaded)
         requires_auth: Whether tool requires authentication
+        llm_description: Detailed description for LLM planner (optional, falls back to description)
 
     Returns:
         Decorated function
@@ -99,7 +101,8 @@ def tool(
             args_schema=args_schema,  # NEW: Store Pydantic schema
             returns=returns,
             examples=examples or [],
-            tags=tags or []
+            tags=tags or [],
+            llm_description=llm_description  # NEW: Store detailed LLM description
         )
 
         # Create metadata
