@@ -288,6 +288,9 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            # Try signed URL first if available, fallback to connector streaming if it fails
+            signed_url_success = False
+
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
@@ -309,12 +312,16 @@ class RecordEventHandler(BaseEventService):
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
+                    signed_url_success = True
                     return
                 except Exception as e:
-                    error_occurred = True
-                    error_msg = str(e)
-                    raise Exception(error_msg)
-            else:
+                    self.logger.warning(
+                        f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
+                        f"Falling back to connector streaming..."
+                    )
+                    # Don't raise - fall through to connector streaming fallback
+
+            if not signed_url_success:
                 self.logger.info(f"🔍 No signed URL received for record {record_id}")
                 try:
                     jwt_payload  = {

@@ -5260,13 +5260,9 @@ class BaseArangoService:
             if not mime_type:
                 mime_type = record.get("mimeType", "")
 
-            endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
-                )
+            
             file_content = ""
-            if record.get("origin") == OriginTypes.UPLOAD.value:
-                pass
-            else:
+            if record.get("origin") != OriginTypes.UPLOAD.value:
 
                 if record.get("recordType") == "MAIL":
                     mime_type = "text/gmail_content"
@@ -8983,16 +8979,6 @@ class BaseArangoService:
 
             self.logger.info(f"🚀 Publishing creation events for {len(created_files_data)} new records.")
 
-            # Get storage endpoint
-            try:
-                endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
-                )
-                self.logger.info(f"This the the endpoint {endpoints}")
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            except Exception as config_error:
-                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
-                storage_url = "http://localhost:3000"  # Fallback
 
             # Create events with enhanced error handling
             successful_events = 0
