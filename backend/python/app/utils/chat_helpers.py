@@ -1354,12 +1354,12 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
         
         sorted_units = sorted(units, key=lambda x: x["block_index"])
 
-        previos_block_group_index = None
+        previous_block_group_index = None
         for unit in sorted_units:
             block_type = unit["block_type"]
             if block_type == BlockType.TABLE_ROW.value:
-                if previos_block_group_index != unit.get('block_group_index'):
-                    previos_block_group_index = unit.get('block_group_index')
+                if previous_block_group_index != unit.get('block_group_index'):
+                    previous_block_group_index = unit.get('block_group_index')
                     record_string += f"* Block Group Number: R{record_number}-{unit.get('block_group_index')}\n* Block Group Type: table\n* Table Rows/Blocks:\n"
                 record_string += unit["formatted_text"]
             else:
