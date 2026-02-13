@@ -300,12 +300,12 @@ class ConfigurationService:
                 success = False
 
             if success:
-                # Update cache with value
-                self.cache[key] = value
+                # Invalidate local cache so the next read fetches the fresh value.
+                # For Redis: the store's create_key auto-publishes a Pub/Sub
+                # invalidation message which handles cross-process cache sync.
+                # For etcd: the server-side watch handles it automatically.
+                self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully set config for key: %s", key)
-
-                # Publish cache invalidation for other processes (Redis only)
-                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to set config for key: %s", key)
 
@@ -333,12 +333,9 @@ class ConfigurationService:
                 success = False
 
             if success:
-                # Update cache with value
-                self.cache[key] = value
+                # Invalidate local cache (cross-process handled by store auto-publish / etcd watch)
+                self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully updated config for key: %s", key)
-
-                # Publish cache invalidation for other processes (Redis only)
-                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to update config for key: %s", key)
 
@@ -354,12 +351,9 @@ class ConfigurationService:
             success = await self.store.delete_key(key)
 
             if success:
-                # Remove from cache
+                # Invalidate local cache (cross-process handled by store auto-publish / etcd watch)
                 self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
-
-                # Publish cache invalidation for other processes (Redis only)
-                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to delete config for key: %s", key)
 
@@ -368,22 +362,6 @@ class ConfigurationService:
         except Exception as e:
             self.logger.error("❌ Failed to delete config %s: %s", key, str(e))
             return False
-
-    async def _publish_cache_invalidation(self, key: str) -> None:
-        """Publish cache invalidation message for cross-process cache sync.
-
-        Only publishes when using Redis as the KV store.
-        For etcd, the watch mechanism handles cross-process invalidation.
-        """
-        if self._kv_store_type != "redis":
-            return
-
-        try:
-            if hasattr(self.store, 'publish_cache_invalidation'):
-                await self.store.publish_cache_invalidation(key)
-        except Exception as e:
-            # Log but don't fail the operation - cache will eventually be consistent
-            self.logger.warning("⚠️ Failed to publish cache invalidation for key %s: %s", key, str(e))
 
     def _etcd_watch_callback(self, event) -> None:
         """Handle etcd watch events to update cache.
