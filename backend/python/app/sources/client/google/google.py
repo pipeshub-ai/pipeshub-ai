@@ -118,23 +118,20 @@ class GoogleClient(IClient):
                 refresh_token = saved_credentials.get(CredentialKeys.REFRESH_TOKEN.value)
                 oauth_scopes = saved_credentials.get('scope')
                 if oauth_scopes:
-                    # Handle both string (space-separated) and list formats
+                    credential_scopes = []
                     if isinstance(oauth_scopes, str):
                         credential_scopes = [s.strip() for s in oauth_scopes.split()] if oauth_scopes.strip() else []
-                    else:
-                        credential_scopes = oauth_scopes if isinstance(oauth_scopes, list) else []
-                    logger.info(f"Using authorized scopes from credentials: {credential_scopes}")
+                    elif isinstance(oauth_scopes, list):
+                        credential_scopes = oauth_scopes
+                    logger.info("Using authorized scopes from credentials")
                 else:
-                    # Fallback: this should rarely happen
                     logger.warning(f"No scope found in stored credentials for {connector_instance_id}")
-                    credential_scopes = []
 
                 if not client_id or not client_secret:
                     logger.error(f"Missing OAuth client credentials (client_id: {bool(client_id)}, client_secret: {bool(client_secret)}). These are required for token refresh. Please re-authenticate the connector.")
                     raise ValueError(
-                        f"Missing OAuth client credentials (client_id: {bool(client_id)}, "
-                        f"client_secret: {bool(client_secret)}). These are required for token refresh. "
-                        f"Please re-authenticate the connector."
+                        f"Missing OAuth client credentials. Client ID present: {bool(client_id)}, "
+                        f"Client Secret present: {bool(client_secret)}. These are required for token refresh. "
                     )
 
                 # Refresh token is REQUIRED for long-term operation
@@ -182,16 +179,15 @@ class GoogleClient(IClient):
                     )
                 oauth_scopes = saved_credentials.get('scope')
                 if oauth_scopes:
-                    # Handle both string (space-separated) and list formats
+                    credential_scopes = []
                     if isinstance(oauth_scopes, str):
                         credential_scopes = [s.strip() for s in oauth_scopes.split()] if oauth_scopes.strip() else []
-                    else:
-                        credential_scopes = oauth_scopes if isinstance(oauth_scopes, list) else []
-                    logger.info(f"Using authorized scopes from credentials: {credential_scopes}")
+                    elif isinstance(oauth_scopes, list):
+                        credential_scopes = oauth_scopes
+                    logger.info("Using authorized scopes from credentials")
                 else:
                     # Fallback: this should rarely happen
                     logger.warning(f"No scope found in stored credentials for {connector_instance_id}")
-                    credential_scopes = []
             except Exception as e:
                 raise AdminAuthError("Failed to get enterprise token: " + str(e))
 
