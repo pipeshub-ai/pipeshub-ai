@@ -205,13 +205,11 @@ class RSSConnector(BaseConnector):
             )
             return False
 
-    def _parse_feed_urls(self, raw_urls: Union[str, List[str]]) -> List[str]:
+    def _parse_feed_urls(self, raw_urls: str) -> List[str]:
         """Parse comma or newline separated feed URLs into a clean list."""
         if isinstance(raw_urls, str):
             # Split by newlines and commas
             urls = raw_urls.replace(",", "\n").split("\n")
-        else:
-            return []
 
         clean_urls = []
         for url in urls:
@@ -262,15 +260,12 @@ class RSSConnector(BaseConnector):
             if user.email
         ]
 
-    async def create_record_group(
-        self, feed_url: str, app_users: List[AppUser]
-    ) -> None:
+    async def create_record_group(self, feed_url: str) -> None:
         """
         Create a record group for a specific feed URL.
 
         Args:
             feed_url: The RSS/Atom feed URL
-            app_users: List of AppUser objects to grant permissions to
         """
         try:
             parsed_url = urlparse(feed_url)
@@ -288,22 +283,20 @@ class RSSConnector(BaseConnector):
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Create READ permissions for all users
+            # Org-level READ permission (RSS content is public within the org)
             permissions = [
                 Permission(
-                    email=app_user.email,
+                    external_id=self.data_entities_processor.org_id,
                     type=PermissionType.READ,
-                    entity_type=EntityType.USER,
+                    entity_type=EntityType.ORG,
                 )
-                for app_user in app_users
-                if app_user.email
             ]
 
             await self.data_entities_processor.on_new_record_groups(
                 [(record_group, permissions)]
             )
             self.logger.info(
-                f"✅ Created record group '{record_group_name}' for feed with {len(permissions)} user permissions"
+                f"✅ Created record group '{record_group_name}' for feed with org-level permissions"
             )
 
         except Exception as e:
@@ -355,7 +348,7 @@ class RSSConnector(BaseConnector):
         self.logger.info(f"📡 Processing feed: {feed_url}")
 
         # Create record group for this feed
-        await self.create_record_group(feed_url, app_users)
+        await self.create_record_group(feed_url)
 
         # Fetch and parse the feed
         feed = await self._fetch_and_parse_feed(feed_url)
