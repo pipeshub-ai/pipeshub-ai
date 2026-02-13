@@ -261,6 +261,45 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 4. **Query Understanding**: Extract key entities, dates, context, and service names (Drive, Jira, Slack, etc.)
 5. **Conversation Context**: Use previous messages, reuse data (IDs, keys, etc.)
 
+## Planning Rules for Retrieval
+1. **Limit Retrieval Queries**: Maximum 2-3 retrieval calls per request
+
+## Cascading Tool Calls (IMPORTANT)
+
+When a task requires multiple steps where one tool's output is needed as input to another:
+
+1. **Use placeholder syntax**: `{{{{TOOL_NAME.field}}}}` to reference previous tool results
+2. **Plan tools in order**: First tool that generates data, then tools that use it
+3. **Common patterns**:
+   - Create then comment: `jira.create_issue` → `jira.add_comment` with `{{{{jira.create_issue.data.key}}}}`
+   - Search then update: `jira.search_issues` → `jira.update_issue` with `{{{{jira.search_issues.key}}}}`
+   - Get then delete: `drive.get_files_list` → `drive.delete_file` with `{{{{drive.get_files_list.id}}}}`
+
+**Example cascading plan**:
+```json
+{{
+  "tools": [
+    {{"name": "jira.create_issue", "args": {{"project_key": "PA", "summary": "New task"}}}},
+    {{"name": "jira.add_comment", "args": {{"issue_key": "{{{{jira.create_issue.data.key}}}}", "comment": "Starting work"}}}}
+  ]
+}}
+```
+
+**Placeholder format**: `{{{{tool_name.field}}}}` or `{{{{tool_name.data.field}}}}` where:
+- `tool_name` is the tool that runs first (e.g., `jira.create_issue`)
+- `field` is the field to extract (e.g., `key`, `id`, `data.key`)
+
+**IMPORTANT - Array Results**:
+- If a tool returns an array (e.g., `confluence.get_spaces` returns `data.results` array):
+  - Use `{{{{tool_name.data.results.id}}}}` to get `id` from first item
+  - Or use `{{{{tool_name.data.results[0].id}}}}` for explicit first item
+  - The system will automatically handle arrays and extract from the first item
+
+**Examples**:
+- `{{{{jira.create_issue.data.key}}}}` → "PA-690" (direct field)
+- `{{{{confluence.get_spaces.data.results.id}}}}` → "65708" (from first item in results array)
+- `{{{{jira.search_issues.data.results[0].key}}}}` → "PA-691" (explicit array index)
+
 ## IMPORTANT - Context Awareness
 - "try again", "retry" → look at previous conversation
 - "that project", "the first one" → extract IDs/keys from Reference Data
@@ -404,6 +443,49 @@ def _has_confluence_tools(state: ChatState) -> bool:
         if isinstance(toolset, dict) and "confluence" in toolset.get("name", "").lower():
             return True
     return False
+
+
+def _check_primary_tool_success(query: str, successful: List[Dict], log: logging.Logger) -> bool:
+    """
+    Check if the primary/critical tool succeeded based on user intent.
+
+    Examples:
+    - "Create a Jira ticket and add comment" -> primary is create_issue
+    - "Search and update" -> primary is search
+    - "Get and delete" -> primary is get
+
+    Returns True if the primary tool for the user's request succeeded.
+    """
+    query_lower = query.lower()
+    successful_tools = [r.get("tool_name", "").lower() for r in successful]
+
+    # Map intent keywords to primary tool patterns
+    intent_to_primary = {
+        "create": ["create", "make", "add", "new"],
+        "update": ["update", "modify", "change", "edit"],
+        "delete": ["delete", "remove", "clear"],
+        "search": ["search", "find", "get", "list"],
+    }
+
+    # Detect primary intent from query
+    primary_intent = None
+    for intent, keywords in intent_to_primary.items():
+        if any(keyword in query_lower for keyword in keywords):
+            primary_intent = intent
+            break
+
+    if not primary_intent:
+        # If can't determine intent, assume first successful tool is primary
+        return len(successful) > 0
+
+    # Check if any successful tool matches primary intent
+    for tool in successful_tools:
+        if primary_intent in tool:
+            log.debug(f"Primary tool for '{primary_intent}' intent succeeded: {tool}")
+            return True
+
+    # Fallback: if any tool succeeded, consider it partial success
+    return len(successful) > 0
 
 
 def _check_if_task_needs_continue(
@@ -573,6 +655,11 @@ async def _decompose_query_if_needed(query: str, llm, log: logging.Logger) -> Op
         decomposition_prompt = f"""Analyze this query and break it into distinct sub-tasks if it requires multiple tools.
 
 Query: "{query}"
+
+RULES:
+1. Maximum 3 sub-tasks total
+2. For retrieval/search tasks
+3. Avoid overly specific queries with many details
 
 If this query can be answered with a single tool, return: {{"needs_decomposition": false}}
 
@@ -1295,6 +1382,27 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
                         "name": tool["name"],
                         "args": tool.get("args", {})
                     })
+
+            # Validate and clean retrieval queries
+            retrieval_tools = [t for t in normalized_tools if "retrieval" in t.get("name", "").lower()]
+
+            if len(retrieval_tools) > 3:
+                log.warning(f"Too many retrieval queries ({len(retrieval_tools)}), limiting to 3")
+                # Keep only first 3
+                other_tools = [t for t in normalized_tools if "retrieval" not in t.get("name", "").lower()]
+                normalized_tools = retrieval_tools[:3] + other_tools
+
+            # Trim overly long queries
+            for tool in normalized_tools:
+                if "retrieval" in tool.get("name", "").lower():
+                    query = tool.get("args", {}).get("query", "")
+                    if len(query) > 100:
+                        # Extract first few meaningful words
+                        words = query.split()[:8]
+                        trimmed = " ".join(words)
+                        log.warning(f"Trimmed long query: '{query[:50]}...' -> '{trimmed}'")
+                        tool["args"]["query"] = trimmed
+
             plan["tools"] = normalized_tools
 
             return plan
@@ -1333,7 +1441,7 @@ async def execute_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """Execute all planned tools in parallel"""
+    """Execute all planned tools in parallel OR sequentially if cascading"""
     start_time = time.perf_counter()
     log = state.get("logger", logger)
 
@@ -1352,7 +1460,6 @@ async def execute_node(
     # Get tools
     try:
         from app.modules.agents.qna.tool_system import (
-            _sanitize_tool_name_if_needed,
             get_agent_tools_with_schemas,
         )
         tools = get_agent_tools_with_schemas(state)
@@ -1371,26 +1478,570 @@ async def execute_node(
         log.error(f"Failed to get tools: {e}")
         tools_by_name = {}
 
-    # Execute in parallel
+    # NEW: Detect cascading tools (tools with placeholders like {{...}})
+    has_cascading = _detect_cascading_tools(planned_tools, log)
+
+    if has_cascading:
+        # Execute sequentially to handle dependencies
+        log.info("Detected cascading tools - executing sequentially")
+        tool_results = await _execute_tools_sequentially(
+            planned_tools, tools_by_name, llm, state, log, writer, config
+        )
+    else:
+        # Execute in parallel (original behavior)
+        log.info("No cascading detected - executing in parallel")
+        tool_results = await _execute_tools_in_parallel(
+            planned_tools, tools_by_name, llm, state, log
+        )
+
+    # Update state
+    tool_messages = []
+    success_count = sum(1 for r in tool_results if r.get("status") == "success")
+    failed_count = sum(1 for r in tool_results if r.get("status") == "error")
+
+    # Build tool messages
+    for result in tool_results:
+        if result.get("tool_id"):
+            content_str = format_result_for_llm(result.get("result", ""), result.get("tool_name", ""))
+            tool_messages.append(ToolMessage(
+                content=content_str,
+                tool_call_id=result.get("tool_id", "")
+            ))
+
+    state["tool_results"] = tool_results
+    state["all_tool_results"] = tool_results
+
+    if not state.get("messages"):
+        state["messages"] = []
+    state["messages"].extend(tool_messages)
+
+    state["pending_tool_calls"] = False
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    executed_tool_names = [r.get("tool_name", "") for r in tool_results]
+    log.info(f"✅ Executed {len(tool_results)} tools in {duration_ms:.0f}ms ({success_count} succeeded, {failed_count} failed)")
+
+    # Validate executed tools match planned tools
+    planned_tool_names = [t.get("name", "") for t in planned_tools]
+    if planned_tool_names != executed_tool_names:
+        log.warning(f"⚠️ Tool mismatch! Planned: {planned_tool_names}, Executed: {executed_tool_names}")
+
+    return state
+
+
+def _detect_cascading_tools(planned_tools: List[Dict[str, Any]], log: logging.Logger) -> bool:
+    """
+    Detect if tools have dependencies (placeholders like {{...}} in args).
+
+    Returns True if any tool has placeholder references to previous tool results.
+    """
+    placeholder_pattern = re.compile(r'\{\{[^}]+\}\}')
+
+    for tool in planned_tools:
+        args = tool.get("args", {})
+        # Check all arg values for placeholders
+        args_str = json.dumps(args, default=str)
+        if placeholder_pattern.search(args_str):
+            log.info(f"Found cascading tool: {tool.get('name')} has placeholder args")
+            return True
+
+    return False
+
+
+async def _execute_tools_sequentially(
+    planned_tools: List[Dict[str, Any]],
+    tools_by_name: Dict[str, Any],
+    llm: Any,
+    state: ChatState,
+    log: logging.Logger,
+    writer: StreamWriter,
+    config: RunnableConfig
+) -> List[Dict[str, Any]]:
+    """
+    Execute tools sequentially, resolving placeholders from previous results.
+
+    This enables cascading tool calls where one tool's output is used as input to the next.
+    """
+    from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
+
+    tool_results = []
+    # Store results by tool name for placeholder resolution
+    results_by_tool = {}
+
+    for i, tool_call in enumerate(planned_tools):
+        tool_name = tool_call.get("name", "")
+        normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+        actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+
+        if actual_tool_name not in tools_by_name:
+            log.warning(f"Tool not found: {tool_name}")
+            error_result = {
+                "tool_name": tool_name,
+                "result": f"Error: Tool '{tool_name}' not found",
+                "status": "error",
+                "tool_id": f"call_{i}_{tool_name}"
+            }
+            tool_results.append(error_result)
+            continue
+
+        # Resolve placeholders in args using previous results
+        tool_args = tool_call.get("args", {})
+        resolved_args = _resolve_placeholders(tool_args, results_by_tool, log)
+
+        # Validate that all placeholders were resolved
+        unresolved_placeholders = []
+        for key, value in resolved_args.items():
+            if isinstance(value, str) and '{{' in value:
+                unresolved_placeholders.append(f"{key}={value}")
+
+        if unresolved_placeholders:
+            log.error(f"Unresolved placeholders in {actual_tool_name}: {unresolved_placeholders}")
+            # Don't execute tool with unresolved placeholders - it will fail
+            error_result = {
+                "tool_name": actual_tool_name,
+                "result": f"Error: Could not resolve placeholders: {', '.join(unresolved_placeholders)}. Available tools: {list(results_by_tool.keys())}",
+                "status": "error",
+                "tool_id": f"call_{i}_{actual_tool_name}"
+            }
+            tool_results.append(error_result)
+            log.warning(f"Skipping {actual_tool_name} due to unresolved placeholders")
+            continue
+
+        tool_id = f"call_{i}_{actual_tool_name}"
+
+        log.debug(f"Executing {actual_tool_name} sequentially with {json.dumps(resolved_args, default=str)[:100]}...")
+
+        # Stream status update
+        safe_stream_write(writer, {
+            "event": "status",
+            "data": {"status": "executing", "message": f"Executing {actual_tool_name}..."}
+        }, config)
+
+        # Execute single tool
+        result = await _execute_single_tool(
+            tool=tools_by_name[actual_tool_name],
+            tool_name=actual_tool_name,
+            tool_args=resolved_args,
+            tool_id=tool_id,
+            state=state,
+            log=log
+        )
+
+        if isinstance(result, dict) and "tool_result" in result:
+            tool_result = result["tool_result"]
+            tool_results.append(tool_result)
+
+            # CRITICAL: Only store successful results for placeholder resolution
+            # Failed tools should not be available for placeholder resolution
+            if tool_result.get("status") != "success":
+                log.debug(f"Skipping failed tool {actual_tool_name} from placeholder resolution (status: {tool_result.get('status')})")
+                log.info(f"Sequential execution: {actual_tool_name} failed")
+                continue  # Skip storing this result
+
+            # Store result for placeholder resolution (only for successful tools)
+            result_data = tool_result.get("result", {})
+
+            # If result is a tuple (success, data), extract data
+            if isinstance(result_data, tuple) and len(result_data) == 2:
+                success, data = result_data
+                # Always try to parse JSON strings to dict for easier navigation
+                if isinstance(data, str):
+                    try:
+                        parsed = json.loads(data)
+                        if isinstance(parsed, dict):
+                            # Store parsed dict for easy navigation
+                            results_by_tool[actual_tool_name] = parsed
+                            log.debug(f"Stored parsed result for {actual_tool_name}: {list(parsed.keys())}")
+                        else:
+                            results_by_tool[actual_tool_name] = data
+                    except (json.JSONDecodeError, TypeError):
+                        # If not JSON, store as-is
+                        results_by_tool[actual_tool_name] = data
+                else:
+                    results_by_tool[actual_tool_name] = data
+            else:
+                # Not a tuple, store directly but parse if it's a JSON string
+                if isinstance(result_data, str):
+                    try:
+                        parsed = json.loads(result_data)
+                        if isinstance(parsed, dict):
+                            results_by_tool[actual_tool_name] = parsed
+                            log.debug(f"Stored parsed result for {actual_tool_name}: {list(parsed.keys())}")
+                        else:
+                            results_by_tool[actual_tool_name] = result_data
+                    except (json.JSONDecodeError, TypeError):
+                        results_by_tool[actual_tool_name] = result_data
+                else:
+                    results_by_tool[actual_tool_name] = result_data
+
+            log.info(f"Sequential execution: {actual_tool_name} succeeded")
+            # Debug: log what we stored for placeholder resolution
+            if actual_tool_name in results_by_tool:
+                stored = results_by_tool[actual_tool_name]
+                if isinstance(stored, dict):
+                    log.debug(f"Stored result keys for {actual_tool_name}: {list(stored.keys())}")
+                else:
+                    log.debug(f"Stored result type for {actual_tool_name}: {type(stored).__name__}")
+        else:
+            log.error(f"Unexpected result format from {actual_tool_name}")
+
+    return tool_results
+
+
+def _navigate_field_path(value: Any, field_path: List[str], log: logging.Logger) -> Optional[Any]:
+    """
+    Navigate through a field path, handling arrays intelligently.
+    
+    Handles:
+    - Direct dict fields: data.id
+    - Array results: data.results.id (gets from first item)
+    - Array indices: data.results[0].id
+    - Nested structures: data.results[0].nested.field
+    
+    Args:
+        value: Starting value (usually a dict)
+        field_path: List of field names to navigate
+        log: Logger for debugging
+        
+    Returns:
+        Extracted value or None if path doesn't exist
+    """
+    current_value = value
+    
+    i = 0
+    while i < len(field_path):
+        if current_value is None:
+            break
+            
+        field = field_path[i]
+        
+        # Handle dict
+        if isinstance(current_value, dict):
+            current_value = current_value.get(field)
+            
+            # If we got an array, handle it intelligently
+            if isinstance(current_value, list) and len(current_value) > 0:
+                # Check if there are more fields to navigate
+                if i + 1 < len(field_path):
+                    # Try to get the next field from the first array item
+                    next_field = field_path[i + 1]
+                    first_item = current_value[0]
+                    
+                    if isinstance(first_item, dict) and next_field in first_item:
+                        # Found the field in first item, navigate there
+                        current_value = first_item.get(next_field)
+                        i += 2  # Skip both current field (array) and next field
+                        continue
+                    else:
+                        # Field not in first item, try parsing as index
+                        try:
+                            index = int(next_field)
+                            if 0 <= index < len(current_value):
+                                current_value = current_value[index]
+                                i += 2  # Skip array field and index
+                                continue
+                        except ValueError:
+                            pass
+                
+                # No more fields or couldn't navigate further, use first item
+                current_value = current_value[0]
+                
+        # Handle array (direct array access)
+        elif isinstance(current_value, list):
+            if len(current_value) > 0:
+                # Try to parse field as index
+                try:
+                    index = int(field)
+                    if 0 <= index < len(current_value):
+                        current_value = current_value[index]
+                    else:
+                        return None
+                except ValueError:
+                    # Not a numeric index, try to get field from first item
+                    first_item = current_value[0]
+                    if isinstance(first_item, dict) and field in first_item:
+                        current_value = first_item.get(field)
+                    else:
+                        # Try to find field in any item
+                        for item in current_value:
+                            if isinstance(item, dict) and field in item:
+                                current_value = item.get(field)
+                                break
+                        else:
+                            return None
+            else:
+                return None
+                
+        # Handle string (try parsing JSON)
+        elif isinstance(current_value, str):
+            try:
+                parsed = json.loads(current_value)
+                if isinstance(parsed, dict):
+                    current_value = parsed.get(field)
+                elif isinstance(parsed, list) and len(parsed) > 0:
+                    current_value = parsed[0]
+                    if isinstance(current_value, dict):
+                        current_value = current_value.get(field)
+                else:
+                    return None
+            except (json.JSONDecodeError, TypeError):
+                return None
+        else:
+            return None
+        
+        i += 1
+    
+    return current_value
+
+
+def _parse_placeholder(placeholder: str, results_by_tool: Dict[str, Any], log: logging.Logger) -> tuple[Optional[str], List[str]]:
+    """
+    Parse a placeholder like "jira.create_issue.data.key" into tool_ref and field_path.
+    
+    Returns:
+        (tool_ref, field_path) or (None, []) if parsing fails
+    """
+    # Get available tool names (sorted by length, longest first for better matching)
+    available_tool_names = sorted(results_by_tool.keys(), key=len, reverse=True)
+    
+    # Try to find matching tool name at the start of the placeholder
+    for tool_name in available_tool_names:
+        # Check if placeholder starts with tool name
+        if placeholder.startswith(tool_name + '.'):
+            # Extract field path after tool name
+            remaining = placeholder[len(tool_name) + 1:]  # +1 for the dot
+            field_path = remaining.split('.') if remaining else []
+            return tool_name, field_path
+    
+    # If no match found, fall back to splitting by first dot (legacy format)
+    parts = placeholder.split('.', 1)  # Split only on first dot
+    if len(parts) < 2:
+        log.warning(f"Invalid placeholder format: {placeholder}")
+        return None, []
+    
+    tool_ref = parts[0]
+    field_path = parts[1].split('.') if parts[1] else []
+    return tool_ref, field_path
+
+
+def _resolve_placeholders(
+    args: Dict[str, Any],
+    results_by_tool: Dict[str, Any],
+    log: logging.Logger
+) -> Dict[str, Any]:
+    """
+    Resolve placeholders like {{CREATE_ISSUE_RESULT.key}} with actual values from previous tool results.
+
+    Supported placeholder formats:
+    - {{TOOL_NAME.field}} - extracts field from tool result
+    - {{TOOL_NAME_data.field}} - extracts field from result.data
+
+    Example:
+    - {{jira.create_issue.data.key}} -> "PA-690"
+    - {{CREATE_ISSUE_RESULT.key}} -> "PA-690" (if result has key)
+    """
+    # Recursively resolve placeholders in the args dict
+    resolved_args = {}
+
+    for key, value in args.items():
+        if isinstance(value, str):
+            # Check if value contains placeholders
+            placeholder_pattern = re.compile(r'\{\{([^}]+)\}\}')
+            matches = placeholder_pattern.findall(value)
+
+            if matches:
+                # Has placeholders - resolve them
+                resolved_value = value
+                for match in matches:
+                    # Parse placeholder using helper function
+                    tool_ref, field_path = _parse_placeholder(match, results_by_tool, log)
+                    if tool_ref is None:
+                        continue
+
+                    # Try to find matching tool result
+                    matched_value = None
+
+                    # First try exact match (most common case)
+                    if tool_ref in results_by_tool:
+                        tool_result = results_by_tool[tool_ref]
+                        try:
+                            matched_value = _navigate_field_path(tool_result, field_path, log)
+                            if matched_value is not None:
+                                log.info(f"Resolved placeholder {{{{{match}}}}} -> {matched_value} (exact match)")
+                        except Exception as e:
+                            log.warning(f"Error extracting field from placeholder {{{{{match}}}}}: {e}")
+
+                    # If exact match failed, try fuzzy matching
+                    if matched_value is None:
+                        for tool_name, tool_result in results_by_tool.items():
+                            # Check if tool_ref matches tool_name (case-insensitive, ignore dots/underscores)
+                            normalized_ref = tool_ref.lower().replace('_', '').replace('.', '').replace('result', '').replace('data', '')
+                            normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
+
+                            # Match if normalized versions are similar
+                            if normalized_ref == normalized_tool or normalized_ref in normalized_tool or normalized_tool in normalized_ref:
+                                try:
+                                    matched_value = _navigate_field_path(tool_result, field_path, log)
+                                    if matched_value is not None:
+                                        log.info(f"Resolved placeholder {{{{{match}}}}} -> {matched_value} (fuzzy match: {tool_name})")
+                                        break
+                                except Exception as e:
+                                    log.warning(f"Error extracting field from placeholder {{{{{match}}}}}: {e}")
+
+                    # If still not resolved, try alternative paths for array results
+                    if matched_value is None and len(field_path) >= 2:
+                        # Try alternative: if path is "data.id" but data.results exists, try "data.results[0].id"
+                        if tool_ref in results_by_tool:
+                            tool_result = results_by_tool[tool_ref]
+                            try:
+                                # Check if we have data.results structure
+                                if isinstance(tool_result, dict) and "data" in tool_result:
+                                    data = tool_result["data"]
+                                    if isinstance(data, dict) and "results" in data:
+                                        results = data["results"]
+                                        if isinstance(results, list) and len(results) > 0:
+                                            # Try to get the field from first result item
+                                            first_result = results[0]
+                                            if isinstance(first_result, dict):
+                                                # Try different field names from the path
+                                                for field_name in field_path[-1:]:  # Try last field name
+                                                    if field_name in first_result:
+                                                        matched_value = first_result.get(field_name)
+                                                        log.info(f"Resolved placeholder {{{{{match}}}}} -> {matched_value} (array fallback: data.results[0].{field_name})")
+                                                        break
+                            except Exception as e:
+                                log.debug(f"Array fallback failed for {{{{{match}}}}}: {e}")
+
+                    if matched_value is not None:
+                        # Replace placeholder with actual value
+                        placeholder_full = f"{{{{{match}}}}}"
+                        resolved_value = resolved_value.replace(placeholder_full, str(matched_value))
+                    else:
+                        # Debug: log available tools for troubleshooting
+                        available_tools = list(results_by_tool.keys())
+                        log.warning(f"Could not resolve placeholder: {{{{{match}}}}}. Available tools: {available_tools}")
+                        log.debug(f"Looking for tool_ref: '{tool_ref}', field_path: {field_path}")
+
+                resolved_args[key] = resolved_value
+            else:
+                # No placeholders, keep as is
+                resolved_args[key] = value
+        elif isinstance(value, dict):
+            # Recursively resolve placeholders in nested dicts
+            resolved_args[key] = _resolve_placeholders(value, results_by_tool, log)
+        elif isinstance(value, list):
+            # Handle lists - resolve placeholders in each item
+            resolved_list = []
+            for item in value:
+                if isinstance(item, dict):
+                    resolved_list.append(_resolve_placeholders(item, results_by_tool, log))
+                elif isinstance(item, str) and '{{' in item:
+                    # Resolve placeholders in list items
+                    placeholder_pattern = re.compile(r'\{\{([^}]+)\}\}')
+                    matches = placeholder_pattern.findall(item)
+                    resolved_item = item
+                    for match in matches:
+                        # Parse placeholder using helper function
+                        tool_ref, field_path = _parse_placeholder(match, results_by_tool, log)
+                        if tool_ref is None:
+                            continue
+                        
+                        matched_value = None
+
+                        # First try exact match
+                        if tool_ref in results_by_tool:
+                            tool_result = results_by_tool[tool_ref]
+                            try:
+                                value_to_extract = tool_result
+                                for field in field_path:
+                                    if isinstance(value_to_extract, dict):
+                                        value_to_extract = value_to_extract.get(field)
+                                    elif isinstance(value_to_extract, str):
+                                        try:
+                                            parsed = json.loads(value_to_extract)
+                                            if isinstance(parsed, dict):
+                                                value_to_extract = parsed.get(field)
+                                            else:
+                                                break
+                                        except (json.JSONDecodeError, TypeError):
+                                            break
+                                    else:
+                                        break
+
+                                if value_to_extract is not None:
+                                    matched_value = value_to_extract
+                            except Exception:
+                                pass
+
+                        # If exact match failed, try fuzzy matching
+                        if matched_value is None:
+                            for tool_name, tool_result in results_by_tool.items():
+                                normalized_ref = tool_ref.lower().replace('_', '').replace('.', '').replace('result', '').replace('data', '')
+                                normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
+
+                                if normalized_ref == normalized_tool or normalized_ref in normalized_tool or normalized_tool in normalized_ref:
+                                    try:
+                                        value_to_extract = tool_result
+                                        for field in field_path:
+                                            if isinstance(value_to_extract, dict):
+                                                value_to_extract = value_to_extract.get(field)
+                                            elif isinstance(value_to_extract, str):
+                                                try:
+                                                    parsed = json.loads(value_to_extract)
+                                                    if isinstance(parsed, dict):
+                                                        value_to_extract = parsed.get(field)
+                                                    else:
+                                                        break
+                                                except (json.JSONDecodeError, TypeError):
+                                                    break
+                                            else:
+                                                break
+
+                                        if value_to_extract is not None:
+                                            matched_value = value_to_extract
+                                            break
+                                    except Exception:
+                                        pass
+
+                            if matched_value is not None:
+                                placeholder_full = f"{{{{{match}}}}}"
+                                resolved_item = resolved_item.replace(placeholder_full, str(matched_value))
+
+                    resolved_list.append(resolved_item)
+                else:
+                    resolved_list.append(item)
+            resolved_args[key] = resolved_list
+        else:
+            # Other types, keep as is
+            resolved_args[key] = value
+
+    return resolved_args
+
+
+async def _execute_tools_in_parallel(
+    planned_tools: List[Dict[str, Any]],
+    tools_by_name: Dict[str, Any],
+    llm: Any,
+    state: ChatState,
+    log: logging.Logger
+) -> List[Dict[str, Any]]:
+    """Execute tools in parallel (original behavior)"""
+    from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
+
     tasks = []
-    planned_tool_names = []
+
     for i, tool_call in enumerate(planned_tools[:NodeConfig.MAX_PARALLEL_TOOLS]):
         tool_name = tool_call.get("name", "")
-        # Normalize tool name to match available tools
         normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
-
-        # Try normalized name first, then original
         actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+
         if actual_tool_name not in tools_by_name:
-            log.warning(f"Tool not found: {tool_name} (normalized: {normalized_name}). Available tools: {list(tools_by_name.keys())[:10]}")
+            log.warning(f"Tool not found: {tool_name}")
             tasks.append(_create_error_result(tool_name, f"call_{i}_{tool_name}", f"Tool '{tool_name}' not found"))
             continue
 
         tool_args = tool_call.get("args", {})
         tool_id = f"call_{i}_{actual_tool_name}"
-        planned_tool_names.append(actual_tool_name)
-
-        log.debug(f"Planning {actual_tool_name} with {json.dumps(tool_args, default=str)[:100]}...")
 
         tasks.append(_execute_single_tool(
             tool=tools_by_name[actual_tool_name],
@@ -1403,48 +2054,16 @@ async def execute_node(
 
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
-    # Process results
+    # Extract tool_result from each result
     tool_results = []
-    tool_messages = []
-    success_count = 0
-    failed_count = 0
-
     for result in results:
         if isinstance(result, Exception):
             log.error(f"Tool execution exception: {result}")
             continue
+        if isinstance(result, dict) and "tool_result" in result:
+            tool_results.append(result["tool_result"])
 
-        if isinstance(result, dict):
-            tool_result = result.get("tool_result", {})
-            tool_results.append(tool_result)
-
-            if tool_result.get("status") == "success":
-                success_count += 1
-            elif tool_result.get("status") == "error":
-                failed_count += 1
-
-            if "tool_message" in result:
-                tool_messages.append(result["tool_message"])
-
-    # Update state
-    state["tool_results"] = tool_results
-    state["all_tool_results"] = tool_results
-
-    if not state.get("messages"):
-        state["messages"] = []
-    state["messages"].extend(tool_messages)
-
-    state["pending_tool_calls"] = False
-
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    executed_tool_names = [r.get("tool_name", "") for r in tool_results]
-    log.info(f"✅ Executed {len(tool_results)} tools in {duration_ms:.0f}ms ({success_count} succeeded)")
-
-    # Validate executed tools match planned tools
-    if planned_tool_names != executed_tool_names:
-        log.warning(f"⚠️ Tool mismatch! Planned: {planned_tool_names}, Executed: {executed_tool_names}")
-
-    return state
+    return tool_results
 
 
 async def _execute_single_tool(
@@ -1606,7 +2225,13 @@ async def _execute_single_tool(
 
     except asyncio.TimeoutError:
         duration_ms = (time.perf_counter() - start_time) * 1000
-        error_msg = f"Timeout after {duration_ms:.0f}ms"
+
+        # Special handling for retrieval timeouts
+        if "retrieval" in tool_name.lower():
+            error_msg = f"Search timed out after {duration_ms:.0f}ms - query may be too complex. Try a simpler query."
+        else:
+            error_msg = f"Timeout after {duration_ms:.0f}ms"
+
         log.error(f"❌ {tool_name} timed out")
         return _create_error_result_sync(tool_name, tool_id, error_msg)
 
@@ -1714,11 +2339,63 @@ async def reflect_node(
     retry_count = state.get("retry_count", 0)
     max_retries = state.get("max_retries", 1)
 
-    # Fast path: all succeeded - but check if task is complete
+    # Count successes and failures
+    successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
     iteration_count = state.get("iteration_count", 0)
     max_iterations = state.get("max_iterations", 3)
 
+    log.info(f"Tool execution summary: {len(successful)} succeeded, {len(failed)} failed")
+
+    # NEW: Detailed logging for debugging
+    for r in successful:
+        log.debug(f"✅ Success: {r.get('tool_name')} - {str(r.get('result', ''))[:100]}")
+    for r in failed:
+        log.debug(f"❌ Failed: {r.get('tool_name')} - {str(r.get('result', ''))[:100]}")
+
+    # Check if we have retrieval results (internal knowledge)
+    has_retrieval_success = any(
+        "retrieval" in r.get("tool_name", "").lower()
+        for r in successful
+    )
+
+    # CRITICAL FIX: If we have ANY successful results, proceed to respond
+    # Don't treat partial success as complete failure
+    # Exception: If ALL tools failed, then it's an error
+    if len(successful) > 0 and len(failed) > 0:
+        # Partial success - some tools succeeded, some failed
+        log.info(f"Partial success: {len(successful)} succeeded, {len(failed)} failed")
+
+        # Check if the failed tools are critical or secondary
+        # For cascading tools, if primary tool (e.g., create_issue) succeeded
+        # but secondary tool (e.g., add_comment) failed, still proceed
+        query = state.get("query", "").lower()
+        primary_succeeded = _check_primary_tool_success(query, successful, log)
+
+        if primary_succeeded or has_retrieval_success:
+            log.info("Primary tool or retrieval succeeded - proceeding despite failures")
+            state["reflection_decision"] = "respond_success"
+            state["reflection"] = {
+                "decision": "respond_success",
+                "reasoning": f"Primary task completed: {len(successful)} tools succeeded (ignoring {len(failed)} secondary failures)",
+                "task_complete": True
+            }
+            log.info("Reflect: respond_success (partial success - primary completed)")
+            return state
+
+    # EXISTING: Partial success with retrieval
+    if has_retrieval_success and len(successful) > 0:
+        log.info(f"Partial success: {len(successful)} succeeded, {len(failed)} failed (has retrieval data)")
+        state["reflection_decision"] = "respond_success"
+        state["reflection"] = {
+            "decision": "respond_success",
+            "reasoning": f"Proceeding with {len(successful)} successful results despite {len(failed)} timeouts",
+            "task_complete": True
+        }
+        log.info("Reflect: respond_success (partial success with retrieval data)")
+        return state
+
+    # Fast path: all succeeded - but check if task is complete
     if not failed:
         # All tools succeeded - check if task is complete
         query = state.get("query", "").lower()
@@ -1746,7 +2423,39 @@ async def reflect_node(
             log.info("Reflect: respond_success (fast path)")
             return state
 
-    # Fast path: unrecoverable errors
+    # Check if primary task succeeded (e.g., create succeeded even if add_comment failed)
+    # The first planned tool is usually the primary action
+    planned_tools = state.get("planned_tool_calls", [])
+    primary_action_succeeded = False
+
+    if planned_tools and len(planned_tools) > 0:
+        primary_tool_name = planned_tools[0].get("name", "").lower()
+
+        # Check if the primary tool succeeded
+        for result in successful:
+            tool_name = result.get("tool_name", "").lower()
+            # Normalize tool names (handle sanitized names with underscores)
+            normalized_primary = primary_tool_name.replace('.', '_')
+            normalized_tool = tool_name.replace('.', '_')
+
+            if tool_name == primary_tool_name or normalized_tool == normalized_primary:
+                primary_action_succeeded = True
+                log.info(f"Primary action tool succeeded: {tool_name} (was first planned tool: {primary_tool_name})")
+                break
+
+    # If primary action succeeded, don't treat dependent failures as unrecoverable
+    if primary_action_succeeded:
+        log.info(f"Primary action succeeded despite {len(failed)} dependent tool failure(s) - proceeding with success")
+        state["reflection_decision"] = "respond_success"
+        state["reflection"] = {
+            "decision": "respond_success",
+            "reasoning": f"Primary action succeeded, {len(failed)} dependent tool(s) failed but task is complete",
+            "task_complete": True
+        }
+        log.info("Reflect: respond_success (primary action succeeded)")
+        return state
+
+    # Fast path: unrecoverable errors (only if primary action didn't succeed)
     error_text = " ".join(str(r.get("result", "")) for r in failed).lower()
 
     unrecoverable = [
@@ -2126,12 +2835,16 @@ async def respond_node(
         state["completion_data"] = clarify_response
         return state
 
-    # Error
+    # Error - only treat as error if reflection explicitly says so AND no tools succeeded
+    # If we have successful tools, reflection should have set respond_success
     has_failed = failed_count > 0
     has_no_success = successful_count == 0 and not final_results
     all_failed = has_failed and successful_count == 0 and len(tool_results) > 0
 
-    if reflection_decision == "respond_error" or has_no_success or all_failed:
+    # Only treat as error if:
+    # 1. Reflection explicitly says respond_error AND no tools succeeded, OR
+    # 2. All tools failed (no success at all)
+    if (reflection_decision == "respond_error" and has_no_success) or all_failed:
         error_context = reflection.get("error_context", "")
 
         failed_tool_errors = []
