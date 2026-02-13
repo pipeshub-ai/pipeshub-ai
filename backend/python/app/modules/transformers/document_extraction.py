@@ -237,7 +237,7 @@ class DocumentExtraction(Transformer):
                 self.logger.info("✅ Document classification parsed successfully")
                 return parsed_response
             else:
-                self.logger.error(f"the parsed response is: {parsed_response}")
+                self.logger.debug(f"the parsed response is: {parsed_response}")
                 self.logger.error(
                     "❌ Failed to parse document classification after all attempts"
                 )
