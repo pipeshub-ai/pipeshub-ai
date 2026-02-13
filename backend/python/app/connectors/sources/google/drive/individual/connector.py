@@ -205,11 +205,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             self.config = {"credentials": config}
 
-            # Extract auth configuration
-            # auth_config = config.get("auth", {})
-            # client_id = auth_config.get("clientId")
-            # client_secret = auth_config.get("clientSecret")
-
             auth_config = config.get("auth")
             oauth_config_id = auth_config.get("oauthConfigId")
 
