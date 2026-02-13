@@ -12,6 +12,7 @@ export const APP_TYPES = {
   OUTLOOK: 'outlook',
   SERVICENOW: 'servicenow',
   WEB: 'web',
+  RSS: 'rss',
   LOCAL: 'local',
   NOTION: 'notion',
 } as const;
