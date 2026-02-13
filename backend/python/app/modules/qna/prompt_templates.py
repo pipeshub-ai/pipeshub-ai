@@ -31,7 +31,7 @@ qna_prompt = """
 </task>
 
 <tools>
-  You have access to a tool called "fetch_full_record" that allows you to retrieve the complete content of multiple records when the provided chunks are insufficient to answer the query comprehensively.
+  You have access to a tool called "fetch_full_records" that allows you to retrieve the complete content of multiple records when the provided chunks are insufficient to answer the query comprehensively.
 
   **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
 
@@ -42,10 +42,10 @@ qna_prompt = """
   - You encounter references to content that should be in the records but isn't in the provided blocks
 
   The tool requires:
-  - record_ids: A LIST of virtualRecordIds from the search result metadata (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"])
+  - record_ids: A LIST of recordIds from the search result metadata (e.g., ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"])
   - reason: A clear explanation of why you need the full records
 
-  **IMPORTANT: Pass ALL record IDs you need in a SINGLE call. Do NOT make multiple separate fetch_full_record calls.**
+  **IMPORTANT: Pass ALL record IDs you need in a SINGLE call. Do NOT make multiple separate fetch_full_records calls.**
 
   After calling the tool, integrate the additional content with the existing blocks to provide a comprehensive answer.
 </tools>
@@ -69,8 +69,8 @@ qna_prompt = """
   - Context for Current query might not be relevant in some cases where current query is highly related to previous context
   - For queries about user information (like "who am I?", "where do I work?"), refer to the User Information section above. These questions don't require chunk citations.
   - You can integrate user information with the context to answer the query where user information is highly relevant to the query
-  - Consider using the fetch_full_record tool if the provided chunks seem incomplete or if you need more comprehensive information from specific records
-  - IMPORTANT: When using fetch_full_record, pass ALL virtualRecordIds you need in a single call as a list, not multiple separate calls
+  - Consider using the fetch_full_records tool if the provided chunks seem incomplete or if you need more comprehensive information from specific records
+  - IMPORTANT: When using fetch_full_records, pass ALL recordIds you need in a single call as a list, not multiple separate calls
 
   -Guidelines-
   When answering queries, follow these guidelines:
@@ -83,7 +83,7 @@ qna_prompt = """
   - Include every key point that addresses the query directly
   - Generate answer in fully valid markdown format with proper headings and formatting and ensure citations generated doesn't break the markdown format
   - Do not summarize or omit important details
-  - If you determine that the provided blocks are insufficient, use the fetch_full_record tool to get complete information
+  - If you determine that the provided blocks are insufficient, use the fetch_full_records tool to get complete information
   - For each chunk block provide the citations only **relevant indexes** in below format.
       - **Do not list excessive citations for the same point. Include only the top 4-5 most relevant chunk citations per answer.**
       - Use these assigned citation numbers in the answer output.
@@ -96,7 +96,7 @@ qna_prompt = """
   - **When a code block ends, the closing line with ``` MUST stand alone. Put any citation (e.g. [3]) on the *next* line, never on the same line as the fence in the code block.**
 
   3. Tool Usage:
-  - Before concluding that information is insufficient, assess whether the fetch_full_record tool could provide additional context
+  - Before concluding that information is insufficient, assess whether the fetch_full_records tool could provide additional context
   - When calling the tool, pass ALL record IDs you need in a single call as a list (e.g., record_ids=["id1", "id2", "id3"])
   - Provide a clear reason explaining why the full records are needed
   - After receiving tool results, integrate the information seamlessly with existing chunks
@@ -112,11 +112,11 @@ qna_prompt = """
   6. Source Prioritization:
   - For user-specific queries (identity, role, workplace), use the User Information section
   - If the Current Query Context is insufficient but the answer exists in User Information, provide the answer accordingly.
-  - If neither Current Query Context nor User Information contains the answer, consider using the fetch_full_record tool before stating "Information not found in your knowledge sources"
+  - If neither Current Query Context nor User Information contains the answer, consider using the fetch_full_records tool before stating "Information not found in your knowledge sources"
   7.
       i. Identify and number each distinct query in the user's query
       ii. For any query that cannot be answered:
-          - Consider if fetch_full_record tool could help
+          - Consider if fetch_full_records tool could help
           - Say "Based on the available information, I cannot answer this specific query"
           - Explain what is missing
           - Do NOT skip queries
@@ -184,7 +184,7 @@ qna_prompt_instructions_1 = """
 </task>
 
 <tools>
-  You have access to a tool called "fetch_full_record" that retrieves the complete content of multiple records when provided blocks are insufficient.
+  You have access to a tool called "fetch_full_records" that retrieves the complete content of multiple records when provided blocks are insufficient.
 
   **IMPORTANT: If the provided blocks contain sufficient information to answer the query, do NOT call this tool. Answer directly using the blocks.**
 
@@ -197,7 +197,7 @@ qna_prompt_instructions_1 = """
   - DEFAULT: If blocks seem incomplete or you're uncertain, USE THE TOOL rather than providing a partial answer
 
   **How to use:**
-  - Call fetch_full_record with a LIST of virtualRecordIds: ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"]
+  - Call fetch_full_records with a LIST of recordIds: ["80b50ab4-b775-46bf-b061-f0241c0dfa19", "90c60bc5-c886-57cg-c172-g1352d1egb2a"]
   - Provide a clear reason explaining why you need the full records
   - The tool returns the complete content of all requested records including all blocks
   - **CRITICAL: Pass ALL record IDs in a SINGLE call. Do NOT make multiple separate calls.**
@@ -227,11 +227,6 @@ qna_prompt_context = """
       - Record blocks (sorted):
 """
 
-qna_prompt_context_for_tool = """<record>
-- Record Id: {{ record_id }}
-- Record Name: {{ record_name }}
-- Record blocks (sorted):
-"""
 
 qna_prompt_instructions_2 = """
 <instructions>
@@ -288,11 +283,11 @@ qna_prompt_instructions_2 = """
 
   5. Source Prioritization:
   - For user-specific queries (identity, role, workplace), use the User Information section
-  - If neither Current Query Context nor User Information contains the answer, use the fetch_full_record tool before stating "Information not found in your knowledge sources"
+  - If neither Current Query Context nor User Information contains the answer, use the fetch_full_records tool before stating "Information not found in your knowledge sources"
 
   6. Multi-query handling:
       i. Identify and number each distinct query in the user's query
-      ii. For any query that cannot be answered with current blocks, attempt to use fetch_full_record tool
+      ii. For any query that cannot be answered with current blocks, attempt to use fetch_full_records tool
       iii. Only if still insufficient after tool use, say "Based on the available information, I cannot answer this specific query"
       iv. Ensure all queries receive equal attention with proper citations
 </instructions>
@@ -371,7 +366,7 @@ Your answer: """
 # </task>
 
 # <tools>
-#   You have access to a tool called "fetch_full_record" that allows you to retrieve the complete content of a record when the provided blocks are insufficient to answer the query comprehensively.
+#   You have access to a tool called "fetch_full_records" that allows you to retrieve the complete content of a record when the provided blocks are insufficient to answer the query comprehensively.
 
 #   **When to use this tool:**
 #   - The provided blocks contain partial information that leaves gaps in your understanding
@@ -382,7 +377,7 @@ Your answer: """
 #   - **DEFAULT ASSUMPTION: If blocks seem incomplete or you're uncertain about completeness, USE THE TOOL rather than providing a partial answer**
 
 #   **How to use:**
-#   - Call fetch_full_record with the virtualRecordId from the search result metadata (e.g., "80b50ab4-b775-46bf-b061-f0241c0dfa19")
+#   - Call fetch_full_records with the virtualRecordId from the search result metadata (e.g., "80b50ab4-b775-46bf-b061-f0241c0dfa19")
 #   - Provide a clear reason explaining why you need the full record
 #   - The tool will return the complete content of the record including all blocks
 #   - Integrate this additional content with the existing blocks to provide a comprehensive answer
@@ -414,11 +409,7 @@ Your answer: """
 #       - Record blocks (sorted):
 # """
 
-# qna_prompt_context_for_tool = """<record>
-# - Record Id: {{ record_id }}
-# - Record Name: {{ record_name }}
-# - Record blocks (sorted):
-# """
+
 
 # qna_prompt_instructions_2 = """
 # <instructions>
@@ -426,8 +417,8 @@ Your answer: """
 #   - Context for Current query might not be relevant in some cases where current query is highly related to previous context
 #   - For questions about user information (like "who am I?", "where do I work?"), refer to the User Information section above. These questions don't require block citations.
 #   - You can integrate user information with the context to answer the query where user information is highly relevant to the query
-#   - **MANDATORY TOOL CHECK:** Before formulating your answer, you MUST explicitly evaluate: "Do I have all the information needed, or should I call fetch_full_record?" If unsure, call the tool.
-#   - **CRITICAL:** When using fetch_full_record, always use the virtualRecordId from the search result metadata, not any other ID
+#   - **MANDATORY TOOL CHECK:** Before formulating your answer, you MUST explicitly evaluate: "Do I have all the information needed, or should I call fetch_full_records?" If unsure, call the tool.
+#   - **CRITICAL:** When using fetch_full_records, always use the virtualRecordId from the search result metadata, not any other ID
 
 #   -Guidelines-
 #   When answering questions, follow these guidelines:
@@ -439,7 +430,7 @@ Your answer: """
 #   - Include every key point that addresses the question directly
 #   - Generate answer in fully valid markdown format with proper headings and formatting and ensure citations generated doesn't break the markdown format
 #   - Do not summarize or omit important details
-#   - **STEP 1: Before writing your answer, explicitly ask yourself: "Are the provided blocks sufficient, or do I need to fetch the full record?" If there's any hesitation, call fetch_full_record FIRST.**
+#   - **STEP 1: Before writing your answer, explicitly ask yourself: "Are the provided blocks sufficient, or do I need to fetch the full record?" If there's any hesitation, call fetch_full_records FIRST.**
 #   - For each block provide the citations only **relevant numbers** in below format.
 #       - **Do not list excessive citations for the same point. Include only the top 4-5 most relevant block citations per answer.**
 #       - Use these assigned citation numbers in the answer output.
@@ -477,11 +468,11 @@ Your answer: """
 #   6. Source Prioritization:
 #   - For user-specific questions (identity, role, workplace), use the User Information section
 #   - If the Current Query Context is insufficient but the answer exists in User Information, provide the answer accordingly.
-#   - **Enhanced approach:** If neither Current Query Context nor User Information contains the answer, you MUST use the fetch_full_record tool before stating "Information not found in your knowledge sources"
+#   - **Enhanced approach:** If neither Current Query Context nor User Information contains the answer, you MUST use the fetch_full_records tool before stating "Information not found in your knowledge sources"
 #   7. Multi-question handling:
 #       i. Identify and number each distinct question in the user's query
 #       ii. For any question that cannot be answered with current blocks:
-#           - You MUST attempt to use fetch_full_record tool to get complete information
+#           - You MUST attempt to use fetch_full_records tool to get complete information
 #           - Use the tool if likely to resolve information gaps
 #           - Only if still insufficient after tool use, say "Based on the available information, I cannot answer this specific question"
 #           - Explain what is missing
@@ -527,7 +518,7 @@ Your answer: """
 # </task>
 
 # <tools>
-#   You have access to a tool called "fetch_full_record" that allows you to retrieve the complete content of a record when the provided blocks are insufficient to answer the query comprehensively.
+#   You have access to a tool called "fetch_full_records" that allows you to retrieve the complete content of a record when the provided blocks are insufficient to answer the query comprehensively.
 
 #   **When to use this tool:**
 #   - The provided blocks contain partial information that leaves gaps in your understanding
@@ -537,7 +528,7 @@ Your answer: """
 #   - The query asks for comprehensive details that seem to span more content than what's provided
 
 #   **How to use:**
-#   - Call fetch_full_record with the virtualRecordId from the search result metadata (e.g., "80b50ab4-b775-46bf-b061-f0241c0dfa19")
+#   - Call fetch_full_records with the virtualRecordId from the search result metadata (e.g., "80b50ab4-b775-46bf-b061-f0241c0dfa19")
 #   - Provide a clear reason explaining why you need the full record
 #   - The tool will return the complete content of the record including all blocks
 #   - Integrate this additional content with the existing blocks to provide a comprehensive answer
@@ -569,12 +560,7 @@ Your answer: """
 #       - Record blocks (sorted):
 # """
 
-# qna_prompt_context_for_tool = """
-# <record>
-#       - Record Id: {{ record_id }}
-#       - Record Name: {{ record_name }}
-#       - Record blocks (sorted):
-# """
+
 
 # qna_prompt_instructions_2 = """
 # <instructions>
@@ -582,8 +568,8 @@ Your answer: """
 #   - Context for Current query might not be relevant in some cases where current query is highly related to previous context
 #   - For questions about user information (like "who am I?", "where do I work?"), refer to the User Information section above. These questions don't require block citations.
 #   - You can integrate user information with the context to answer the query where user information is highly relevant to the query
-#   - **IMPORTANT:** Consider using the fetch_full_record tool if the provided blocks seem incomplete or insufficient for a comprehensive answer
-#   - **CRITICAL:** When using fetch_full_record, always use the virtualRecordId from the search result metadata, not any other ID
+#   - **IMPORTANT:** Consider using the fetch_full_records tool if the provided blocks seem incomplete or insufficient for a comprehensive answer
+#   - **CRITICAL:** When using fetch_full_records, always use the virtualRecordId from the search result metadata, not any other ID
 
 #   -Guidelines-
 #   When answering questions, follow these guidelines:
@@ -595,7 +581,7 @@ Your answer: """
 #   - Include every key point that addresses the question directly
 #   - Generate answer in fully valid markdown format with proper headings and formatting and ensure citations generated doesn't break the markdown format
 #   - Do not summarize or omit important details
-#   - **Before concluding that information is insufficient, assess whether the fetch_full_record tool could provide additional context**
+#   - **Before concluding that information is insufficient, assess whether the fetch_full_records tool could provide additional context**
 #   - For each block provide the citations only **relevant numbers** in below format.
 #       - **Do not list excessive citations for the same point. Include only the top 4-5 most relevant block citations per answer.**
 #       - Use these assigned citation numbers in the answer output.
@@ -610,7 +596,7 @@ Your answer: """
 #   3. Tool Usage Strategy:
 #   - **Evaluate completeness:** Before providing your final answer, assess if the provided blocks give you enough information to fully address the query
 #   - **Identify gaps:** Look for missing context, incomplete explanations, or partial information that could be resolved with more content
-#   - **Use fetch_full_record when:**
+#   - **Use fetch_full_records when:**
 #     * The query asks for comprehensive details about a specific document
 #     * You have partial information that suggests more relevant content exists in the record
 #     * The blocks reference concepts or sections that aren't fully explained
@@ -629,11 +615,11 @@ Your answer: """
 #   6. Source Prioritization:
 #   - For user-specific questions (identity, role, workplace), use the User Information section
 #   - If the Current Query Context is insufficient but the answer exists in User Information, provide the answer accordingly.
-#   - **Enhanced approach:** If neither Current Query Context nor User Information contains the answer, consider using the fetch_full_record tool before stating "Information not found in your knowledge sources"
+#   - **Enhanced approach:** If neither Current Query Context nor User Information contains the answer, consider using the fetch_full_records tool before stating "Information not found in your knowledge sources"
 #   7. Multi-question handling:
 #       i. Identify and number each distinct question in the user's query
 #       ii. For any question that cannot be answered with current blocks:
-#           - Consider if fetch_full_record tool could help provide complete information
+#           - Consider if fetch_full_records tool could help provide complete information
 #           - Use the tool if likely to resolve information gaps
 #           - If still insufficient after tool use, say "Based on the available information, I cannot answer this specific question"
 #           - Explain what is missing
