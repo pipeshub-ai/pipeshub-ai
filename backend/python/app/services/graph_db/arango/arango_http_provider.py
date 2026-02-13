@@ -6250,24 +6250,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         // ========== BUILD RECORDGROUP NODES ==========
         LET rg_nodes = (
             FOR rg IN final_accessible_rgs
-                // Calculate hasChildren (look within final accessible sets)
-                LET has_child_rgs = (LENGTH(
-                    FOR sub_rg IN final_accessible_rgs
-                        FILTER sub_rg.parentId == rg._key
-                        RETURN 1
-                ) > 0)
-
-                LET has_records = (LENGTH(
-                    FOR record IN final_accessible_records
-                        FILTER LENGTH(
-                            FOR ip IN inheritPermissions
-                                FILTER ip._from == record._id AND ip._to == rg._id
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
+                // Check hasChildren via belongsTo edge (uses edge index on _to)
+                LET has_children = LENGTH(
+                    FOR edge IN belongsTo
+                        FILTER edge._to == rg._id
                         LIMIT 1
                         RETURN 1
-                ) > 0)
+                ) > 0
 
                 RETURN {{
                     id: rg._key,
@@ -6288,7 +6277,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     mimeType: null,
                     extension: null,
                     webUrl: rg.webUrl,
-                    hasChildren: has_child_rgs OR has_records,
+                    hasChildren: has_children,
                     previewRenderable: true
                 }}
         )
@@ -6302,19 +6291,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 LET is_folder = file_info != null AND file_info.isFile == false
 
-                // Check hasChildren within final accessible records
-                LET has_children = (LENGTH(
-                    FOR child IN final_accessible_records
-                        FILTER LENGTH(
-                            FOR edge IN recordRelations
-                                FILTER edge._from == record._id AND edge._to == child._id
-                                FILTER edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
-                                LIMIT 1
-                                RETURN 1
-                        ) > 0
+                // Check hasChildren via recordRelations edge (uses edge index on _from)
+                LET has_children = LENGTH(
+                    FOR edge IN recordRelations
+                        FILTER edge._from == record._id
+                        FILTER edge.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
                         LIMIT 1
                         RETURN 1
-                ) > 0)
+                ) > 0
 
                 LET record_connector = DOCUMENT(CONCAT("recordGroups/", record.connectorId)) || DOCUMENT(CONCAT("apps/", record.connectorId))
                 LET source = (record_connector != null AND record_connector.connectorName == "KB") ? "KB" : "CONNECTOR"
