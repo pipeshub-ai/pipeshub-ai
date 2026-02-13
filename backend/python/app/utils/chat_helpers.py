@@ -1277,7 +1277,7 @@ def _select_units_by_score(
                     virtual_record_id, unit["score"], tokens
                 )
                 return selected_units, cumulative_tokens
-            
+
             unit["formatted_text"] = formatted_text
             selected_units.append(unit)
             cumulative_tokens += tokens
@@ -1322,7 +1322,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
     # Phase 3: Reconstruct and format
     # Group selected units by virtual_record_id
     record_units = defaultdict(list)
-    
+
     for unit in selected_units:
         virtual_record_id = unit["virtual_record_id"]
         if virtual_record_id not in record_units:
@@ -1346,12 +1346,12 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
         record_number = virtual_record_id_to_record_number.get(virtual_record_id, 1)
 
         # Start record string
-        record_string = f"""<record> 
+        record_string = f"""<record>
         * Record Id: {record.get("id","Not available")}
         * Record Name: {record.get("record_name","Not available")}
         * Record blocks (sorted):\n\n
         """
-        
+
         sorted_units = sorted(units, key=lambda x: x["block_index"])
 
         previous_block_group_index = None
@@ -1438,7 +1438,7 @@ def count_tokens_text(text: str) -> int:
         except Exception:
             logger.warning("tiktoken encoding failed, falling back to heuristic.")
             pass
-        
+
 
     return max(1, len(text) // 4)
 

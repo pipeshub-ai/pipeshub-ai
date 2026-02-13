@@ -541,7 +541,7 @@ async def execute_tool_calls(
         messages.append(ai)
 
         message_contents = {}
-       
+
         for record in all_records:
             virtual_record_id = record.get("virtual_record_id")
             if virtual_record_id:
@@ -596,7 +596,7 @@ async def execute_tool_calls(
             if search_results:
                 flatten_search_results = await get_flattened_results(search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result,from_tool=True)
                 final_tool_results = sorted(flatten_search_results, key=lambda x: (x['virtual_record_id'], x['block_index']))
-               
+
                 _start = time.perf_counter()
                 message_contents = get_message_content_for_tool(final_tool_results, virtual_record_id_to_result,final_results,MAX_TOKENS_THRESHOLD)
                 _elapsed_ms = (time.perf_counter() - _start) * 1000
