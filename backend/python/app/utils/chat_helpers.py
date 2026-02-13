@@ -954,10 +954,8 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
 
                         # Extract column headers from the block group
                         column_headers = data.get("column_headers", [])
-                        if isinstance(column_headers, list):
-                            column_headers_joined = "\t".join(column_headers)
-                        else:
-                            column_headers_joined = column_headers
+                        column_headers_joined = _get_joined_column_headers(column_headers)
+                        
 
                         # Process table rows
                         child_results = []
@@ -1152,11 +1150,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 elif block_type == GroupType.TABLE.value:
                     table_summary,column_headers,child_results = result.get("content")
                     if child_results:
-                        if isinstance(column_headers, list):
-                            column_headers_joined = "\t".join(column_headers)
-                        else:
-                            column_headers_joined = column_headers
-
+                        column_headers_joined = _get_joined_column_headers(column_headers)
                         template = Template(table_prompt)
                         rendered_form = template.render(
                             block_group_index=result.get("block_group_index"),
@@ -1287,11 +1281,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
             if block_type == GroupType.TABLE.value:
                 table_summary,column_headers,child_results = result.get("content")
                 if child_results:
-                    if isinstance(column_headers, list):
-                        column_headers_joined = "\t".join(column_headers)
-                    else:
-                        column_headers_joined = column_headers
-
+                    column_headers_joined = _get_joined_column_headers(column_headers)
                     template = Template(table_prompt)
                     rendered_form = template.render(
                         block_group_index=result.get("block_group_index"),
@@ -1444,4 +1434,11 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
 
     return current_message_tokens, new_tokens
+
+
+def _get_joined_column_headers(column_headers: Union[list, str]) -> str:
+    """Joins a list of column headers into a tab-separated string."""
+    if isinstance(column_headers, list):
+        return "\t".join(column_headers)
+    return column_headers
 
