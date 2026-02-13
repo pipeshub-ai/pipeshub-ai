@@ -329,7 +329,6 @@ export class Application {
       '/api/v1/health',
       createHealthRouter(
         this.tokenManagerContainer,
-        this.knowledgeBaseContainer,
         this.configurationManagerContainer,
       ),
     );

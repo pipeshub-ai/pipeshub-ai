@@ -25,6 +25,160 @@ async def get_services(request: Request) -> Dict[str, Any]:
     }
 
 
+async def _validate_owner_removal(
+    arango_service,
+    team_id: str,
+    user_ids_to_remove: list,
+    logger
+) -> None:
+    """
+    Validate that removing owners won't leave the team without any owners.
+    Raises HTTPException if validation fails.
+    """
+    if not user_ids_to_remove:
+        return
+
+    # Single optimized query: Check Owners being removed and total owner count
+    removal_validation_query = f"""
+    LET owners_being_removed = (
+        FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER SPLIT(permission._from, '/')[1] IN @userIds
+            FILTER permission.role == 'OWNER'
+            RETURN SPLIT(permission._from, '/')[1]
+    )
+    LET total_owner_count = (
+        FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER permission.role == 'OWNER'
+            COLLECT WITH COUNT INTO count
+            RETURN count
+    )
+    RETURN {{
+        ownersBeingRemoved: owners_being_removed,
+        totalOwnerCount: LENGTH(total_owner_count) > 0 ? total_owner_count[0] : 0
+    }}
+    """
+    validation_result = arango_service.db.aql.execute(
+        removal_validation_query,
+        bind_vars={
+            "userIds": user_ids_to_remove,
+            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+        }
+    )
+    validation_data = next(validation_result, {})
+    owners_being_removed = validation_data.get("ownersBeingRemoved", [])
+    total_owner_count = validation_data.get("totalOwnerCount", 0)
+
+    if owners_being_removed:
+        remaining_owners = total_owner_count - len(owners_being_removed)
+        if remaining_owners < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot remove all owners from the team. At least one owner must remain."
+            )
+        logger.info(f"Removing {len(owners_being_removed)} Owner(s) from team {team_id} (remaining owners: {remaining_owners})")
+
+
+async def _validate_and_filter_owner_updates(
+    arango_service,
+    team_id: str,
+    valid_user_roles: list,
+    logger
+) -> tuple[list, int]:
+    """
+    Validate owner role updates and filter out unchanged owners.
+    Returns (filtered_updates, total_owner_count).
+    Raises HTTPException if validation fails.
+    """
+    # Single optimized query: Get team info, current permissions, and owner count in one go
+    user_ids_to_check = [ur.get("userId") for ur in valid_user_roles]
+    team_and_permissions_query = f"""
+    LET team = DOCUMENT(@teamId)
+    LET current_perms = (
+        FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER SPLIT(permission._from, '/')[1] IN @userIds
+            RETURN {{
+                userId: SPLIT(permission._from, '/')[1],
+                role: permission.role
+            }}
+    )
+    LET owner_count = (
+        FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER permission.role == 'OWNER'
+            COLLECT WITH COUNT INTO count
+            RETURN count
+    )
+    RETURN {{
+        team: team,
+        permissions: current_perms,
+        ownerCount: LENGTH(owner_count) > 0 ? owner_count[0] : 0
+    }}
+    """
+    result_cursor = arango_service.db.aql.execute(
+        team_and_permissions_query,
+        bind_vars={
+            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+            "userIds": user_ids_to_check
+        }
+    )
+    result_data = next(result_cursor, None)
+
+    if not result_data or not result_data.get("team"):
+        raise HTTPException(status_code=404, detail="Team not found")
+
+    current_permissions = {perm["userId"]: perm["role"] for perm in result_data.get("permissions", [])}
+    total_owner_count = result_data.get("ownerCount", 0)
+
+    # Filter out unchanged Owners and validate
+    filtered_updates = []
+    owners_being_updated = []
+
+    for user_role in valid_user_roles:
+        user_id = user_role.get("userId")
+        new_role = user_role.get("role")
+        current_role = current_permissions.get(user_id)
+
+        # Skip unchanged Owners (no-op)
+        if current_role == 'OWNER' and new_role == 'OWNER':
+            continue
+
+        # Track Owners being updated
+        if current_role == 'OWNER':
+            owners_being_updated.append(user_id)
+
+        filtered_updates.append(user_role)
+
+    # Early exit if no updates needed
+    if not filtered_updates:
+        logger.info("No user role updates needed (all Owners unchanged)")
+        return [], total_owner_count
+
+    # Bulk Operation Prevention: Cannot perform bulk operations on Owner permissions
+    if len(filtered_updates) > 1 and owners_being_updated:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot perform bulk operations on Owner permissions. Please update Owners one at a time."
+        )
+
+    # Single Owner Update Validation
+    if len(owners_being_updated) == 1 and len(filtered_updates) == 1:
+        owner_user_id = owners_being_updated[0]
+        owner_update = filtered_updates[0]  # Only one item, so direct access
+        if owner_update.get("role") != "OWNER":
+            # Owner is being downgraded - check minimum requirement using already fetched count
+            if total_owner_count <= 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Cannot remove all owners from the team. At least one owner must remain."
+                )
+            logger.info(f"Downgrading Owner {owner_user_id} to {owner_update.get('role')} on team {team_id} (remaining owners: {total_owner_count - 1})")
+
+    return filtered_updates, total_owner_count
+
+
 @router.post("/team")
 async def create_team(request: Request) -> JSONResponse:
     """Create a team"""
@@ -418,12 +572,10 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
             default_role = body_dict.get("role", "READER")
             add_user_roles = [{"userId": uid, "role": default_role} for uid in body_dict.get("addUserIds", [])]
 
-        # Prevent removing the team owner
-        if remove_user_ids and user['_key'] in remove_user_ids:
-            raise HTTPException(status_code=400, detail="Cannot remove team owner from team")
-
         # Remove users if specified
         if remove_user_ids:
+            await _validate_owner_removal(arango_service, team_id, remove_user_ids, logger)
+
             delete_query = f"""
             FOR permission IN {CollectionNames.PERMISSION.value}
             FILTER permission._to == @teamId
@@ -445,41 +597,49 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         # Update individual user roles if specified (batch update)
         update_user_roles = body_dict.get("updateUserRoles", [])  # Array of {userId, role}
         if update_user_roles:
-            # Filter out invalid entries and owner
-            owner_key = user['_key']
+            # Filter out invalid entries early
             valid_user_roles = [
                 user_role for user_role in update_user_roles
-                if user_role.get("userId") and user_role.get("role") and user_role.get("userId") != owner_key
+                if user_role.get("userId") and user_role.get("role")
             ]
 
-            if valid_user_roles:
-                # Batch update all user roles in a single query
-                batch_update_query = f"""
-                FOR user_role IN @update_user_roles
-                    LET user_id = user_role.userId
-                    LET new_role = user_role.role
-                    FOR permission IN {CollectionNames.PERMISSION.value}
-                        FILTER permission._to == @teamId
-                        FILTER SPLIT(permission._from, '/')[1] == user_id
-                        UPDATE permission WITH {{
-                            role: new_role,
-                            updatedAtTimestamp: @timestamp
-                        }} IN {CollectionNames.PERMISSION.value}
-                        RETURN NEW
-                """
-                try:
-                    cursor = arango_service.db.aql.execute(
-                        batch_update_query,
-                        bind_vars={
-                            "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
-                            "update_user_roles": valid_user_roles,
-                            "timestamp": get_epoch_timestamp_in_ms()
-                        }
-                    )
-                    updated_permissions = list(cursor)
-                    logger.info(f"Updated {len(updated_permissions)} user roles in batch")
-                except Exception as e:
-                    logger.error(f"Error updating user roles in batch: {str(e)}")
+            if not valid_user_roles:
+                logger.warning("No valid user roles to update")
+            else:
+                # Validate and filter owner updates using shared helper
+                filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
+                    arango_service, team_id, valid_user_roles, logger
+                )
+
+                # Process filtered updates
+                if filtered_updates:
+                    batch_update_query = f"""
+                    FOR user_role IN @update_user_roles
+                        LET user_id = user_role.userId
+                        LET new_role = user_role.role
+                        FOR permission IN {CollectionNames.PERMISSION.value}
+                            FILTER permission._to == @teamId
+                            FILTER SPLIT(permission._from, '/')[1] == user_id
+                            UPDATE permission WITH {{
+                                role: new_role,
+                                updatedAtTimestamp: @timestamp
+                            }} IN {CollectionNames.PERMISSION.value}
+                            RETURN NEW
+                    """
+                    try:
+                        cursor = arango_service.db.aql.execute(
+                            batch_update_query,
+                            bind_vars={
+                                "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+                                "update_user_roles": filtered_updates,
+                                "timestamp": get_epoch_timestamp_in_ms()
+                            }
+                        )
+                        updated_permissions = list(cursor)
+                        logger.info(f"Updated {len(updated_permissions)} user roles in batch")
+                    except Exception as e:
+                        logger.error(f"Error updating user roles in batch: {str(e)}")
+                        raise HTTPException(status_code=500, detail=f"Failed to update user roles: {str(e)}")
 
         # Add users if specified (excluding creator to preserve OWNER role)
         if add_user_roles:
@@ -653,13 +813,12 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
     if permission.get("role") != "OWNER":
         raise HTTPException(status_code=403, detail="User does not have permission to remove users from this team")
 
-    # Prevent removing the team owner
-    if user['_key'] in user_ids:
-        raise HTTPException(status_code=400, detail="Cannot remove team owner from team")
-
     logger.info(f"Removing users {user_ids} from team {team_id}")
 
     try:
+        # Validate owner removal using shared helper
+        await _validate_owner_removal(arango_service, team_id, user_ids, logger)
+
         # Delete permissions in a single atomic AQL operation
         delete_query = f"""
         FOR permission IN {CollectionNames.PERMISSION.value}
@@ -743,23 +902,34 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
     if not user_roles:
         raise HTTPException(status_code=400, detail="No users provided")
 
-    # Prevent changing team owner's role
-    user_ids = [ur.get("userId") for ur in user_roles if ur.get("userId")]
-    if user['_key'] in user_ids:
-        raise HTTPException(status_code=400, detail="Cannot change team owner's role")
-
     try:
         timestamp = get_epoch_timestamp_in_ms()
-        owner_key = user['_key']
 
-        # Filter out invalid entries and owner
+        # Filter out invalid entries early
         valid_user_roles = [
             user_role for user_role in user_roles
-            if user_role.get("userId") and user_role.get("userId") != owner_key
+            if user_role.get("userId") and user_role.get("role")
         ]
 
         if not valid_user_roles:
-            raise HTTPException(status_code=404, detail="No user permissions found to update")
+            raise HTTPException(status_code=400, detail="No valid user roles to update")
+
+        # Validate and filter owner updates using shared helper
+        filtered_updates, total_owner_count = await _validate_and_filter_owner_updates(
+            arango_service, team_id, valid_user_roles, logger
+        )
+
+        # Early exit if no updates needed
+        if not filtered_updates:
+            updated_team = await get_team_with_users(arango_service, team_id, user['_key'])
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "status": "success",
+                    "message": "No changes needed (Owners remain unchanged)",
+                    "team": updated_team
+                }
+            )
 
         # Batch update all user roles in a single query
         batch_update_query = f"""
@@ -785,7 +955,7 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
             batch_update_query,
             bind_vars={
                 "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
-                "user_roles": valid_user_roles,
+                "user_roles": filtered_updates,
                 "timestamp": timestamp
             }
         )

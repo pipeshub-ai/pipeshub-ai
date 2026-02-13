@@ -21,7 +21,7 @@ from app.containers.connector import ConnectorAppContainer
 from app.models.entities import IndexingStatus, RecordType
 
 knowledge_hub_router = APIRouter(
-    prefix="/api/v2/knowledge-hub",
+    prefix="/api/v1/knowledge-hub",
     tags=["Knowledge Hub"]
 )
 
@@ -45,11 +45,9 @@ async def get_knowledge_hub_service(request: Request) -> KnowledgeHubService:
     graph_provider = request.app.state.graph_provider
     return KnowledgeHubService(logger=logger, graph_provider=graph_provider)
 
-
 def _get_enum_values(enum_class) -> Set[str]:
     """Get all valid values from an enum class."""
     return {e.value for e in enum_class}
-
 
 def _validate_enum_values(
     values: Optional[List[str]],
@@ -67,7 +65,6 @@ def _validate_enum_values(
     valid = [v for v in values if v in valid_values]
     return valid if valid else None
 
-
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
     if not value:
@@ -80,7 +77,6 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
         )
     return items if items else None
 
-
 def _validate_uuid_format(value: Optional[str], field_name: str) -> None:
     """Validate UUID format for IDs"""
     if not value:
@@ -92,7 +88,6 @@ def _validate_uuid_format(value: Optional[str], field_name: str) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid UUID format for {field_name}: {value}"
         )
-
 
 def _parse_date_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]]:
     """Parse and validate date range from query parameter"""
@@ -128,7 +123,6 @@ def _parse_date_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]
         )
 
     return result if result else None
-
 
 def _parse_size_range(value: Optional[str]) -> Optional[Dict[str, Optional[int]]]:
     """Parse and validate size range from query parameter"""

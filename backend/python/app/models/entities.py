@@ -465,7 +465,7 @@ class FileRecord(Record):
             if (size := arango_base_record.get("sizeInBytes")) is not None
             else arango_base_file_record.get("sizeInBytes", None),
             extension=arango_base_file_record["extension"],
-            path=arango_base_file_record["path"],
+            path=arango_base_file_record.get("path"),
             etag=arango_base_file_record["etag"],
             ctag=arango_base_file_record["ctag"],
             quick_xor_hash=arango_base_file_record["quickXorHash"],

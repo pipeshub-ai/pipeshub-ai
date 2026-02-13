@@ -32,7 +32,6 @@ import {
   getKnowledgeHubNodes,
   moveRecord,
 } from '../controllers/kb_controllers';
-import { ArangoService } from '../../../libs/services/arango.service';
 import { metricsMiddleware } from '../../../libs/middlewares/prometheus.middleware';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -90,7 +89,6 @@ export function createKnowledgeBaseRouter(
 ): Router {
   const router = Router();
   const appConfig = container.get<AppConfig>('AppConfig');
-  const arangoService = container.get<ArangoService>('ArangoService');
   const recordsEventProducer = container.get<RecordsEventProducer>(
     'RecordsEventProducer',
   );
@@ -98,7 +96,6 @@ export function createKnowledgeBaseRouter(
     container.get<SyncEventProducer>('SyncEventProducer');
 
   const recordRelationService = new RecordRelationService(
-    arangoService,
     recordsEventProducer,
     syncEventProducer,
     appConfig.storage,
@@ -413,7 +410,7 @@ export function createKnowledgeBaseRouter(
     ValidationMiddleware.validate(uploadRecordsSchema),
 
     // Upload handler
-    uploadRecordsToKB(recordRelationService, keyValueStoreService, appConfig, notificationService),
+    uploadRecordsToKB(keyValueStoreService, appConfig, notificationService),
   );
 
   // Upload records to a specific folder in the KB
@@ -436,7 +433,6 @@ export function createKnowledgeBaseRouter(
 
     // Upload handler
     uploadRecordsToFolder(
-      recordRelationService,
       keyValueStoreService,
       appConfig,
       notificationService,
