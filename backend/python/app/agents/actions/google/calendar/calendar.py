@@ -5,7 +5,9 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -13,8 +15,8 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
@@ -80,7 +82,7 @@ class GetCalendarListByIdInput(BaseModel):
 @ToolsetBuilder("Calendar")\
     .in_group("Google Workspace")\
     .with_description("Google Calendar integration for event management and scheduling")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Calendar",
@@ -142,6 +144,23 @@ class GoogleCalendar:
         tool_name="get_calendar_events",
         description="Get upcoming calendar events",
         args_schema=GetCalendarEventsInput,
+        when_to_use=[
+            "User wants to see calendar events/meetings",
+            "User mentions 'Calendar' + wants events",
+            "User asks about upcoming meetings/events"
+        ],
+        when_not_to_use=[
+            "User wants to create event (use create_calendar_event)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show my calendar events",
+            "What meetings do I have?",
+            "Get calendar events for tomorrow"
+        ],
+        category=ToolCategory.CALENDAR
     )
     def get_calendar_events(
         self,
@@ -194,6 +213,23 @@ class GoogleCalendar:
         tool_name="create_calendar_event",
         description="Create a new calendar event",
         args_schema=CreateCalendarEventInput,
+        when_to_use=[
+            "User wants to create/schedule a meeting/event",
+            "User mentions 'Calendar' + wants to create event",
+            "User asks to schedule something"
+        ],
+        when_not_to_use=[
+            "User wants to see events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a calendar event",
+            "Schedule a meeting",
+            "Add event to calendar"
+        ],
+        category=ToolCategory.CALENDAR
     )
     def create_calendar_event(
         self,
@@ -290,6 +326,24 @@ class GoogleCalendar:
         tool_name="update_calendar_event",
         description="Update a calendar event",
         args_schema=UpdateCalendarEventInput,
+        when_to_use=[
+            "User wants to modify/edit an event",
+            "User mentions 'Calendar' + wants to update event",
+            "User asks to change event details"
+        ],
+        when_not_to_use=[
+            "User wants to create event (use create_calendar_event)",
+            "User wants to see events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Update calendar event",
+            "Change event time",
+            "Edit meeting details"
+        ],
+        category=ToolCategory.CALENDAR
     )
     def update_calendar_event(
         self,
@@ -390,6 +444,24 @@ class GoogleCalendar:
         tool_name="delete_calendar_event",
         description="Delete a calendar event",
         args_schema=DeleteCalendarEventInput,
+        when_to_use=[
+            "User wants to delete/cancel an event",
+            "User mentions 'Calendar' + wants to delete",
+            "User asks to remove event"
+        ],
+        when_not_to_use=[
+            "User wants to create event (use create_calendar_event)",
+            "User wants to see events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Delete calendar event",
+            "Cancel meeting",
+            "Remove event from calendar"
+        ],
+        category=ToolCategory.CALENDAR
     )
     def delete_calendar_event(
         self,
@@ -419,8 +491,25 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="get_calendar_list",
-        description="List all calendars"
-        # No args_schema needed (no parameters)
+        description="List all calendars",
+        when_to_use=[
+            "User wants to list all calendars",
+            "User mentions 'Calendar' + wants calendars",
+            "User asks for available calendars"
+        ],
+        when_not_to_use=[
+            "User wants events (use get_calendar_events)",
+            "User wants to create event (use create_calendar_event)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all calendars",
+            "Show me available calendars",
+            "What calendars do I have?"
+        ],
+        category=ToolCategory.CALENDAR
     )
     def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
@@ -441,6 +530,24 @@ class GoogleCalendar:
         tool_name="get_calendar_list_by_id",
         description="Get a specific calendar by ID",
         args_schema=GetCalendarListByIdInput,
+        when_to_use=[
+            "User wants details about a specific calendar",
+            "User mentions 'Calendar' + has calendar ID",
+            "User asks about a calendar"
+        ],
+        when_not_to_use=[
+            "User wants all calendars (use get_calendar_list)",
+            "User wants events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get calendar by ID",
+            "Show calendar details",
+            "What is this calendar?"
+        ],
+        category=ToolCategory.CALENDAR
     )
     def get_calendar_list_by_id(
         self,

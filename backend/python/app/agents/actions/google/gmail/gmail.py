@@ -6,7 +6,9 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 from app.agents.actions.google.gmail.utils import GmailUtils
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -14,8 +16,8 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
@@ -90,7 +92,7 @@ class GetUserProfileInput(BaseModel):
 @ToolsetBuilder("Gmail")\
     .in_group("Google Workspace")\
     .with_description("Gmail integration for sending, receiving, and managing emails")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Gmail",
@@ -153,6 +155,24 @@ class Gmail:
         tool_name="reply",
         description="Reply to an email message",
         args_schema=ReplyInput,
+        when_to_use=[
+            "User wants to reply to an email",
+            "User mentions 'Gmail' or 'email' + wants to reply",
+            "User asks to respond to email"
+        ],
+        when_not_to_use=[
+            "User wants to send new email (use send_email)",
+            "User wants to search emails (use search_emails)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Reply to email",
+            "Respond to message",
+            "Reply to this email"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def reply(
         self,
@@ -209,6 +229,24 @@ class Gmail:
         tool_name="draft_email",
         description="Create a draft email",
         args_schema=DraftEmailInput,
+        when_to_use=[
+            "User wants to create a draft email",
+            "User mentions 'Gmail' + wants to draft",
+            "User asks to save email as draft"
+        ],
+        when_not_to_use=[
+            "User wants to send email (use send_email)",
+            "User wants to search emails (use search_emails)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create draft email",
+            "Save email as draft",
+            "Draft an email"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def draft_email(
         self,
@@ -259,6 +297,24 @@ class Gmail:
         tool_name="send_email",
         description="Send an email via Gmail",
         args_schema=SendEmailInput,
+        when_to_use=[
+            "User wants to send an email",
+            "User mentions 'Gmail' or 'email' + wants to send",
+            "User asks to send message"
+        ],
+        when_not_to_use=[
+            "User wants to reply (use reply)",
+            "User wants to search emails (use search_emails)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Send email to user@company.com",
+            "Email someone",
+            "Send message via Gmail"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def send_email(
         self,
@@ -315,6 +371,23 @@ class Gmail:
         tool_name="search_emails",
         description="Search for email messages using Gmail search syntax",
         args_schema=SearchEmailsInput,
+        when_to_use=[
+            "User wants to search/find emails",
+            "User mentions 'Gmail' or 'email' + wants to search",
+            "User asks to find emails"
+        ],
+        when_not_to_use=[
+            "User wants to send email (use send_email)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Search for emails from user@company.com",
+            "Find emails about 'project'",
+            "Show my unread emails"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def search_emails(
         self,
@@ -349,6 +422,24 @@ class Gmail:
         tool_name="get_email_details",
         description="Get a specific email message",
         args_schema=GetEmailDetailsInput,
+        when_to_use=[
+            "User wants to read a specific email",
+            "User mentions 'Gmail' + has message ID",
+            "User asks to show email content"
+        ],
+        when_not_to_use=[
+            "User wants to search emails (use search_emails)",
+            "User wants to send email (use send_email)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get email details",
+            "Show me this email",
+            "Read email message"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_email_details(
         self,
@@ -378,6 +469,24 @@ class Gmail:
         tool_name="get_email_attachments",
         description="Get attachments for a specific email",
         args_schema=GetEmailAttachmentsInput,
+        when_to_use=[
+            "User wants to see email attachments",
+            "User mentions 'Gmail' + wants attachments",
+            "User asks for files attached to email"
+        ],
+        when_not_to_use=[
+            "User wants email content (use get_email_details)",
+            "User wants to search emails (use search_emails)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get attachments from email",
+            "Show email attachments",
+            "What files are attached?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_email_attachments(
         self,
@@ -419,6 +528,24 @@ class Gmail:
         tool_name="get_user_profile",
         description="Get the authenticated user's Gmail profile",
         args_schema=GetUserProfileInput,
+        when_to_use=[
+            "User wants their Gmail account info",
+            "User mentions 'Gmail' + wants profile",
+            "User asks about their email account"
+        ],
+        when_not_to_use=[
+            "User wants to send email (use send_email)",
+            "User wants to search emails (use search_emails)",
+            "User wants info ABOUT Gmail (use retrieval)",
+            "No Gmail/email mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get my Gmail profile",
+            "Show my email account",
+            "What's my Gmail address?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_user_profile(
         self,

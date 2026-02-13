@@ -6,9 +6,10 @@ from typing import Coroutine, Dict, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agents.tools.models import ToolIntent, ToolParameter
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -16,8 +17,8 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.confluence.confluence import ConfluenceClient
@@ -66,7 +67,7 @@ class GetSpaceInput(BaseModel):
 @ToolsetBuilder("Confluence")\
     .in_group("Atlassian")\
     .with_description("Confluence integration for wiki pages, documentation, and knowledge management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Confluence",
@@ -208,7 +209,25 @@ class Confluence:
         tool_name="create_page",
         description="Create a page in Confluence",
         args_schema=CreatePageInput,  # NEW: Pydantic schema
-        returns="JSON with success status and page details"
+        returns="JSON with success status and page details",
+        when_to_use=[
+            "User wants to create a Confluence page",
+            "User mentions 'Confluence' + wants to create page",
+            "User asks to create documentation/page"
+        ],
+        when_not_to_use=[
+            "User wants to search pages (use search_pages)",
+            "User wants to read page (use get_page_content)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a Confluence page",
+            "Add a new page to Confluence",
+            "Create documentation page"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def create_page(
         self,
@@ -252,7 +271,25 @@ class Confluence:
         tool_name="get_page_content",
         description="Get the content of a page in Confluence",
         args_schema=GetPageContentInput,  # NEW: Pydantic schema
-        returns="JSON with page content and metadata"
+        returns="JSON with page content and metadata",
+        when_to_use=[
+            "User wants to read/view a Confluence page",
+            "User mentions 'Confluence' + wants page content",
+            "User asks to get/show a specific page"
+        ],
+        when_not_to_use=[
+            "User wants to create page (use create_page)",
+            "User wants to search pages (use search_pages)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show me the Confluence page",
+            "Get page content from Confluence",
+            "Read the documentation page"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def get_page_content(self, page_id: str) -> Tuple[bool, str]:
         """Get the content of a page in Confluence.
@@ -287,7 +324,25 @@ class Confluence:
         tool_name="get_pages_in_space",
         description="Get all pages in a Confluence space",
         args_schema=GetPagesInSpaceInput,  # NEW: Pydantic schema
-        returns="JSON with list of pages"
+        returns="JSON with list of pages",
+        when_to_use=[
+            "User wants to list all pages in a space",
+            "User mentions 'Confluence' + wants space pages",
+            "User asks for pages in a space"
+        ],
+        when_not_to_use=[
+            "User wants to search pages (use search_pages)",
+            "User wants specific page (use get_page_content)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List pages in space X",
+            "Show all pages in Confluence space",
+            "Get pages from space"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def get_pages_in_space(self, space_id: str) -> Tuple[bool, str]:
         """Get all pages in a space.
@@ -314,7 +369,25 @@ class Confluence:
         tool_name="update_page_title",
         description="Update the title of a Confluence page",
         args_schema=UpdatePageTitleInput,  # NEW: Pydantic schema
-        returns="JSON with success status"
+        returns="JSON with success status",
+        when_to_use=[
+            "User wants to rename/update page title",
+            "User mentions 'Confluence' + wants to change title",
+            "User asks to rename page"
+        ],
+        when_not_to_use=[
+            "User wants to create page (use create_page)",
+            "User wants to read page (use get_page_content)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Rename Confluence page",
+            "Update page title",
+            "Change page name"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def update_page_title(self, page_id: str, new_title: str) -> Tuple[bool, str]:
         """Update the title of a page.
@@ -356,7 +429,25 @@ class Confluence:
                 description="The ID of the parent page"
             ),
         ],
-        returns="JSON with list of child pages"
+        returns="JSON with list of child pages",
+        when_to_use=[
+            "User wants to see child/sub-pages",
+            "User mentions 'Confluence' + wants child pages",
+            "User asks for sub-pages of a page"
+        ],
+        when_not_to_use=[
+            "User wants all pages in space (use get_pages_in_space)",
+            "User wants to read page (use get_page_content)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get child pages of page X",
+            "Show sub-pages",
+            "What pages are under this page?"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def get_child_pages(self, page_id: str) -> Tuple[bool, str]:
         """Get child pages of a page.
@@ -388,7 +479,25 @@ class Confluence:
         tool_name="search_pages",
         description="Search pages by title in Confluence",
         args_schema=SearchPagesInput,  # NEW: Pydantic schema
-        returns="JSON with search results"
+        returns="JSON with search results",
+        when_to_use=[
+            "User wants to find pages by title",
+            "User mentions 'Confluence' + wants to search",
+            "User asks to find a page"
+        ],
+        when_not_to_use=[
+            "User wants to create page (use create_page)",
+            "User wants all pages (use get_pages_in_space)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Search for page 'Project Plan'",
+            "Find Confluence page by title",
+            "Search pages in Confluence"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def search_pages(
         self,
@@ -423,7 +532,25 @@ class Confluence:
         tool_name="get_spaces",
         description="Get all spaces with permissions in Confluence",
         # No args_schema needed (no parameters)
-        returns="JSON with list of spaces"
+        returns="JSON with list of spaces",
+        when_to_use=[
+            "User wants to list all Confluence spaces",
+            "User mentions 'Confluence' + wants spaces",
+            "User asks for available spaces"
+        ],
+        when_not_to_use=[
+            "User wants specific space (use get_space)",
+            "User wants pages (use get_pages_in_space)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all Confluence spaces",
+            "Show me available spaces",
+            "What spaces are in Confluence?"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def get_spaces(self) -> Tuple[bool, str]:
         """Get all spaces accessible to the user.
@@ -444,7 +571,25 @@ class Confluence:
         tool_name="get_space",
         description="Get details of a Confluence space by ID",
         args_schema=GetSpaceInput,  # NEW: Pydantic schema
-        returns="JSON with space details"
+        returns="JSON with space details",
+        when_to_use=[
+            "User wants details about a specific space",
+            "User mentions 'Confluence' + wants space info",
+            "User asks about a space"
+        ],
+        when_not_to_use=[
+            "User wants all spaces (use get_spaces)",
+            "User wants pages (use get_pages_in_space)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get space X details",
+            "Show me Confluence space info",
+            "What is space X?"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def get_space(self, space_id: str) -> Tuple[bool, str]:
         """Get details of a specific space.
@@ -482,7 +627,25 @@ class Confluence:
                 description="The ID of the page"
             )
         ],
-        returns="JSON with page versions"
+        returns="JSON with page versions",
+        when_to_use=[
+            "User wants to see page version history",
+            "User mentions 'Confluence' + wants versions",
+            "User asks for page history"
+        ],
+        when_not_to_use=[
+            "User wants page content (use get_page_content)",
+            "User wants to create page (use create_page)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get version history of page",
+            "Show page versions",
+            "What versions does this page have?"
+        ],
+        category=ToolCategory.DOCUMENTATION
     )
     def get_page_versions(self, page_id: str) -> Tuple[bool, str]:
         """Get version history of a page.

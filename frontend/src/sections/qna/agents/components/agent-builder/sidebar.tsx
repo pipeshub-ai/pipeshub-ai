@@ -63,11 +63,9 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedCategories, setExpandedCategories] = useState<Record<string, boolean>>({
     'Input / Output': true,
-    Agents: false,
     'LLM Models': false,
     Knowledge: false,
     Tools: true,
-    'Vector Stores': false,
   });
   const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
 
@@ -191,11 +189,6 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       categories: ['inputs', 'outputs'],
     },
     {
-      name: 'Agents',
-      icon: CATEGORY_ICONS.agent,
-      categories: ['agent'],
-    },
-    {
       name: 'LLM Models',
       icon: CATEGORY_ICONS.model,
       categories: ['llm'],
@@ -209,11 +202,6 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       name: 'Tools',
       icon: CATEGORY_ICONS.processing,
       categories: ['tools', 'connectors'],
-    },
-    {
-      name: 'Vector Stores',
-      icon: CATEGORY_ICONS.vector,
-      categories: ['vector'],
     },
   ];
 

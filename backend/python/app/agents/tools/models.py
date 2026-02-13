@@ -1,9 +1,19 @@
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import BaseModel
 
 from app.agents.tools.enums import ParameterType
+
+
+class ToolIntent(str, Enum):
+    """What the tool is primarily used for"""
+    QUESTION = "question"     # Answering questions
+    ACTION = "action"         # Creating/modifying
+    SEARCH = "search"         # Finding/listing
+    ANALYSIS = "analysis"     # Computing/analyzing
+    UTILITY = "utility"       # Utility/helper tools (validation, diagnostics, etc.)
 
 
 @dataclass
@@ -72,6 +82,11 @@ class Tool:
     tags: List[str] = field(default_factory=list)
     llm_description: Optional[str] = None  # NEW: Detailed description for LLM planner
 
+    # Enhanced metadata for intelligent tool selection
+    when_to_use: List[str] = field(default_factory=list)  # Explicit scenarios when to use
+    when_not_to_use: List[str] = field(default_factory=list)  # Anti-patterns
+    primary_intent: ToolIntent = ToolIntent.ACTION  # Main use case
+    typical_queries: List[str] = field(default_factory=list)  # Example queries for few-shot
 
     @property
     def name(self) -> str:

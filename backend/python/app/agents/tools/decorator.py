@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from app.agents.tools.config import ToolCategory, ToolMetadata
 from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import Tool, ToolParameter
+from app.agents.tools.models import Tool, ToolIntent, ToolParameter
 from app.agents.tools.registry import _global_tools_registry
 
 
@@ -32,6 +32,11 @@ def tool(
     is_essential: bool = False,
     requires_auth: bool = True,
     llm_description: Optional[str] = None,  # NEW: Detailed description for LLM planner
+    # Enhanced metadata for intelligent tool selection
+    when_to_use: Optional[List[str]] = None,  # Explicit scenarios when to use
+    when_not_to_use: Optional[List[str]] = None,  # Anti-patterns
+    primary_intent: ToolIntent = ToolIntent.ACTION,  # Main use case
+    typical_queries: Optional[List[str]] = None,  # Example queries for few-shot
 ) -> Callable:
     """
     Enhanced decorator to register a function as a tool.
@@ -49,6 +54,10 @@ def tool(
         is_essential: Whether tool is essential (always loaded)
         requires_auth: Whether tool requires authentication
         llm_description: Detailed description for LLM planner (optional, falls back to description)
+        when_to_use: List of explicit scenarios when to use this tool
+        when_not_to_use: List of anti-patterns (when NOT to use this tool)
+        primary_intent: Main use case (QUESTION, ACTION, SEARCH, ANALYSIS)
+        typical_queries: Example queries for few-shot learning
 
     Returns:
         Decorated function
@@ -91,6 +100,20 @@ def tool(
         # Auto-generate parameters if not provided and no schema
         tool_parameters = parameters or (None if args_schema else _extract_parameters(func))
 
+        # Build structured llm_description if not provided and when_to_use/when_not_to_use are available
+        final_llm_description = llm_description
+        if not final_llm_description and (when_to_use or when_not_to_use):
+            parts = [tool_description]
+            if when_to_use:
+                parts.append("\n**WHEN TO USE**:")
+                for item in when_to_use:
+                    parts.append(f"- {item}")
+            if when_not_to_use:
+                parts.append("\n**WHEN NOT TO USE**:")
+                for item in when_not_to_use:
+                    parts.append(f"- {item}")
+            final_llm_description = "\n".join(parts)
+
         # Create tool object
         tool_obj = Tool(
             app_name=app_name,
@@ -102,7 +125,11 @@ def tool(
             returns=returns,
             examples=examples or [],
             tags=tags or [],
-            llm_description=llm_description  # NEW: Store detailed LLM description
+            llm_description=final_llm_description or tool_description,  # Use structured description if built
+            when_to_use=when_to_use or [],
+            when_not_to_use=when_not_to_use or [],
+            primary_intent=primary_intent,
+            typical_queries=typical_queries or []
         )
 
         # Create metadata

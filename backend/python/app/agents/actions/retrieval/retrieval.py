@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from app.agents.actions.utils import run_async
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
@@ -82,9 +83,27 @@ class Retrieval:
             "This tool searches across all configured knowledge sources and returns "
             "relevant chunks with proper citations."
         ),
-        category=ToolCategory.SEARCH,  # Search category for retrieval tool
+        category=ToolCategory.KNOWLEDGE,
         is_essential=True,
-        requires_auth=False
+        requires_auth=False,
+        # Enhanced metadata for intelligent tool selection
+        when_to_use=[
+            "Questions without service mention (no Drive/Jira/Gmail/etc)",
+            "Policy/procedure questions",
+            "General information requests",
+            "What/how/why queries (no specific app mentioned)"
+        ],
+        when_not_to_use=[
+            "Service-specific queries (user mentions Drive, Jira, Slack, Gmail, etc.)",
+            "Create/update/delete actions",
+            "Real-time data requests"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "What is our vacation policy?",
+            "How do I submit expenses?",
+            "Find information about Q4 results"
+        ]
     )
     def search_internal_knowledge(
         self,

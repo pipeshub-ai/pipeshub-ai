@@ -30,16 +30,21 @@ from app.connectors.core.registry.oauth_config_registry import get_oauth_config_
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 
 
-class ToolCategory(str, Enum):
+class ToolsetCategory(str, Enum):
     """Categories for toolsets"""
-    APP = "app"  # Application-specific tools (Jira, Slack, etc.)
-    FILE = "file"  # File-related tools
-    WEB_SEARCH = "web_search"  # Web search tools
-    RESEARCH = "research"  # Research-related tools
-    UTILITY = "utility"  # Utility tools
-    COMMUNICATION = "communication"  # Communication tools
-    PRODUCTIVITY = "productivity"  # Productivity tools
-    DATABASE = "database"  # Database tools
+    APP = "app"  # Application-specific toolsets (Jira, Slack, etc.)
+    FILE = "file"  # File-related toolsets
+    FILE_STORAGE = "file_storage"  # File storage toolsets (Drive, Dropbox, etc.)
+    WEB_SEARCH = "web_search"  # Web search toolsets
+    SEARCH = "search"  # Search toolsets (internal knowledge, etc.)
+    RESEARCH = "research"  # Research-related toolsets
+    UTILITY = "utility"  # Utility toolsets
+    COMMUNICATION = "communication"  # Communication toolsets (Slack, Gmail, etc.)
+    PRODUCTIVITY = "productivity"  # Productivity toolsets
+    DATABASE = "database"  # Database toolsets
+    CALENDAR = "calendar"  # Calendar toolsets
+    PROJECT_MANAGEMENT = "project_management"  # Project management toolsets (Jira, etc.)
+    DOCUMENTATION = "documentation"  # Documentation toolsets (Confluence, etc.)
 
 
 @dataclass
@@ -339,7 +344,7 @@ class ToolsetBuilder:
         self.app_group = ""
         self.supported_auth_types: List[str] = ["API_TOKEN"]  # Supported auth types (user selects one during creation)
         self.description = ""
-        self.category = ToolCategory.APP
+        self.category = ToolsetCategory.APP
         self.config_builder = ToolsetConfigBuilder()
         self.tools: List[ToolDefinition] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
@@ -423,7 +428,7 @@ class ToolsetBuilder:
         self.description = description
         return self
 
-    def with_category(self, category: ToolCategory) -> 'ToolsetBuilder':
+    def with_category(self, category: ToolsetCategory) -> 'ToolsetBuilder':
         """Set the toolset category"""
         self.category = category
         return self

@@ -6,12 +6,13 @@ import threading
 import traceback
 from typing import Coroutine, Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from app.agents.actions.response_transformer import ResponseTransformer
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agents.tools.models import ToolIntent, ToolParameter
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -19,8 +20,8 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
 from app.sources.client.http.exception.exception import HttpStatusCode
@@ -33,9 +34,9 @@ logger = logging.getLogger(__name__)
 # Pydantic schemas for Jira tools
 class CreateIssueInput(BaseModel):
     """Schema for creating JIRA issues"""
-    project_key: str = Field(description="JIRA project key")
+    project_key: str = Field(description="JIRA project key (e.g., 'PA')")
     summary: str = Field(description="Issue summary")
-    issue_type_name: str = Field(description="Issue type")
+    issue_type_name: str = Field(description="Issue type (e.g., 'Task', 'Bug', 'Story')")
     description: Optional[str] = Field(default=None, description="Issue description")
     assignee_account_id: Optional[str] = Field(default=None, description="Assignee account ID")
     assignee_query: Optional[str] = Field(default=None, description="Name or email to resolve assignee")
@@ -43,17 +44,86 @@ class CreateIssueInput(BaseModel):
     labels: Optional[List[str]] = Field(default=None, description="List of labels")
     components: Optional[List[str]] = Field(default=None, description="List of component names")
 
+    @model_validator(mode='before')
+    @classmethod
+    def extract_nested_values(cls, data: dict):
+        """Extract values from nested structures that LLMs might use"""
+        if isinstance(data, dict):
+            normalized = dict(data)
+
+            # Handle project_key variations
+            for key in ['project', 'projectKey', 'project_key']:
+                if key in normalized and 'project_key' not in normalized:
+                    normalized['project_key'] = normalized[key]
+                    if key != 'project_key':
+                        normalized.pop(key, None)
+
+            # Handle issue_type_name variations
+            if 'issuetype' in normalized and isinstance(normalized['issuetype'], dict):
+                # Extract from nested structure like {"issuetype": {"name": "Task"}}
+                if 'name' in normalized['issuetype']:
+                    normalized['issue_type_name'] = normalized['issuetype']['name']
+                elif 'issue_type_name' not in normalized:
+                    normalized['issue_type_name'] = str(normalized['issuetype'])
+                normalized.pop('issuetype', None)
+            elif 'issue_type' in normalized and 'issue_type_name' not in normalized:
+                normalized['issue_type_name'] = normalized['issue_type']
+                normalized.pop('issue_type', None)
+
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = 'ignore'
+
 
 class GetIssuesInput(BaseModel):
     """Schema for getting issues from a project"""
-    project_key: str = Field(description="Project key")
+    project_key: str = Field(description="Project key (e.g., 'PA')")
     days: Optional[int] = Field(default=None, description="Days to look back")
     max_results: Optional[int] = Field(default=None, description="Max results")
+
+    @model_validator(mode='before')
+    @classmethod
+    def extract_project_key(cls, data: dict):
+        """Extract project_key from various field names that LLMs might use"""
+        if isinstance(data, dict):
+            normalized = dict(data)
+            for key in ['project', 'projectKey', 'project_key']:
+                if key in normalized and 'project_key' not in normalized:
+                    normalized['project_key'] = normalized[key]
+                    if key != 'project_key':
+                        normalized.pop(key, None)
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = 'ignore'
 
 
 class GetIssueInput(BaseModel):
     """Schema for getting a specific issue"""
-    issue_key: str = Field(description="Issue key")
+    issue_key: str = Field(description="Issue key (e.g., 'PA-123')")
+
+    @model_validator(mode='before')
+    @classmethod
+    def extract_issue_key(cls, data: dict):
+        """Extract issue_key from various field names that LLMs might use"""
+        if isinstance(data, dict):
+            normalized = dict(data)
+            for key in ['issueId', 'issueIdOrKey', 'issue_id', 'issue_key', 'issueKey']:
+                if key in normalized and 'issue_key' not in normalized:
+                    normalized['issue_key'] = normalized[key]
+                    if key != 'issue_key':
+                        normalized.pop(key, None)
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = 'ignore'
 
 
 class SearchIssuesInput(BaseModel):
@@ -66,6 +136,30 @@ class AddCommentInput(BaseModel):
     """Schema for adding a comment"""
     issue_key: str = Field(description="Issue key")
     comment: str = Field(description="Comment text")
+
+    @model_validator(mode='before')
+    @classmethod
+    def extract_issue_key(cls, data: dict):
+        """Extract issue_key from various field names that LLMs might use"""
+        if isinstance(data, dict):
+            # Create a new dict to avoid modification during iteration
+            normalized = dict(data)
+
+            # Check all possible variations and normalize to issue_key
+            for key in ['issueId', 'issueIdOrKey', 'issue_id', 'issue_key', 'issueKey']:
+                if key in normalized and 'issue_key' not in normalized:
+                    normalized['issue_key'] = normalized[key]
+                    # Remove the alternate key to avoid confusion
+                    if key != 'issue_key':
+                        normalized.pop(key, None)
+
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        # Allow extra fields to be ignored (LLM might send extra params)
+        extra = 'ignore'
 
 
 class SearchUsersInput(BaseModel):
@@ -86,15 +180,96 @@ class UpdateIssueInput(BaseModel):
     components: Optional[List[str]] = Field(default=None, description="List of component names")
     status: Optional[str] = Field(default=None, description="Issue status (e.g., 'In Progress', 'Done')")
 
+    @model_validator(mode='before')
+    @classmethod
+    def extract_nested_values(cls, data: dict):
+        """Extract values from nested structures that LLMs might use"""
+        if isinstance(data, dict):
+            # Create normalized dict
+            normalized = dict(data)
+
+            # Handle issue_key variations FIRST (before processing update wrapper)
+            for key in ['issueId', 'issueIdOrKey', 'issue_id', 'issue_key', 'issueKey']:
+                if key in normalized and 'issue_key' not in normalized:
+                    normalized['issue_key'] = normalized[key]
+                    if key != 'issue_key':
+                        normalized.pop(key, None)
+
+            # Handle direct 'fields' key (LLM sometimes sends this directly, not nested in update/updateData)
+            if 'fields' in normalized and isinstance(normalized['fields'], dict):
+                fields = normalized['fields']
+                # Map common field names from fields dict to top-level
+                if 'summary' in fields:
+                    normalized['summary'] = fields['summary']
+                if 'description' in fields:
+                    normalized['description'] = fields['description']
+                # Copy other fields
+                for field in ['assignee_account_id', 'assignee_query', 'priority_name', 'labels', 'components', 'status']:
+                    if field in fields:
+                        normalized[field] = fields[field]
+                # Remove the fields wrapper after extraction
+                normalized.pop('fields', None)
+
+            # Handle update/updateData wrapper
+            update_wrapper = normalized.get('update') or normalized.get('updateData')
+            if update_wrapper and isinstance(update_wrapper, dict):
+                # Extract fields from nested structure
+                if 'fields' in update_wrapper:
+                    fields = update_wrapper['fields']
+                    if isinstance(fields, dict):
+                        # Map common field names
+                        if 'summary' in fields:
+                            normalized['summary'] = fields['summary']
+                        if 'description' in fields:
+                            normalized['description'] = fields['description']
+                        # Copy other fields
+                        for field in ['assignee_account_id', 'assignee_query', 'priority_name', 'labels', 'components', 'status']:
+                            if field in fields:
+                                normalized[field] = fields[field]
+                # Extract issue_key from update wrapper if not already set
+                if 'issue_key' not in normalized:
+                    for key in ['issueId', 'issueIdOrKey', 'issue_id', 'issue_key', 'issueKey']:
+                        if key in update_wrapper:
+                            normalized['issue_key'] = update_wrapper[key]
+                            break
+                # Remove wrapper keys
+                normalized.pop('update', None)
+                normalized.pop('updateData', None)
+
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = 'ignore'  # Allow both field name and alias
+
 class GetProjectMetadataInput(BaseModel):
     """Schema for getting project metadata"""
-    project_key: str = Field(description="Project key")
+    project_key: str = Field(description="Project key (e.g., 'PA')")
+
+    @model_validator(mode='before')
+    @classmethod
+    def extract_project_key(cls, data: dict):
+        """Extract project_key from various field names that LLMs might use"""
+        if isinstance(data, dict):
+            normalized = dict(data)
+            for key in ['project', 'projectKey', 'project_key']:
+                if key in normalized and 'project_key' not in normalized:
+                    normalized['project_key'] = normalized[key]
+                    if key != 'project_key':
+                        normalized.pop(key, None)
+            return normalized
+        return data
+
+    class Config:
+        populate_by_name = True
+        extra = 'ignore'
 
 # Register JIRA toolset
 @ToolsetBuilder("Jira")\
     .in_group("Atlassian")\
     .with_description("JIRA integration for issue tracking, project management, and team collaboration")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="JIRA",
@@ -522,7 +697,24 @@ class Jira:
         tool_name="validate_connection",
         description="Validate JIRA connection and provide diagnostics",
         parameters=[],
-        returns="Connection validation status with diagnostics"
+        returns="Connection validation status with diagnostics",
+        when_to_use=[
+            "User wants to verify Jira connection",
+            "Debugging connection/auth issues",
+            "Checking Jira authentication status"
+        ],
+        when_not_to_use=[
+            "User wants to use Jira features (use other tools)",
+            "Normal Jira operations",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.UTILITY,
+        typical_queries=[
+            "Check Jira connection",
+            "Validate Jira authentication",
+            "Test Jira connection"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def validate_connection(self) -> Tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
@@ -572,7 +764,24 @@ class Jira:
             "this tool - just use `assignee = currentUser()` directly in the JQL query."
         ),
         parameters=[],
-        returns="Current user's account details (accountId, displayName, emailAddress)"
+        returns="Current user's account details (accountId, displayName, emailAddress)",
+        when_to_use=[
+            "User wants their own Jira account info",
+            "User mentions 'Jira' + wants their details",
+            "User asks 'who am I in Jira?'"
+        ],
+        when_not_to_use=[
+            "User wants 'my tickets' (use search_issues with currentUser())",
+            "User wants to create/search issues (use other tools)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Who am I in Jira?",
+            "Get my Jira account details",
+            "Show my Jira user info"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_current_user(self) -> Tuple[bool, str]:
         """Get the current authenticated JIRA user's details"""
@@ -622,7 +831,24 @@ class Jira:
                 required=True
             ),
         ],
-        returns="ADF document structure"
+        returns="ADF document structure",
+        when_to_use=[
+            "User needs to convert text to ADF format",
+            "Preparing description for Jira issue",
+            "Formatting text for Jira API"
+        ],
+        when_not_to_use=[
+            "User wants to create issue (use create_issue - auto-converts)",
+            "User wants to search issues (use search_issues)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.UTILITY,
+        typical_queries=[
+            "Convert text to ADF",
+            "Format text for Jira",
+            "Prepare ADF document"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def convert_text_to_adf(self, text: str) -> Tuple[bool, str]:
         """Convert plain text to Atlassian Document Format"""
@@ -642,7 +868,24 @@ class Jira:
         tool_name="create_issue",
         description="Create a new issue in JIRA",
         args_schema=CreateIssueInput,  # NEW: Pydantic schema
-        returns="Created issue details"
+        returns="Created issue details",
+        when_to_use=[
+            "User wants to create a Jira ticket/issue",
+            "User mentions 'Jira' + wants to create ticket",
+            "User asks to create a new issue"
+        ],
+        when_not_to_use=[
+            "User wants to search issues (use search_issues)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a Jira ticket",
+            "Open a new issue in Jira",
+            "Create a bug report"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def create_issue(
         self,
@@ -750,7 +993,25 @@ class Jira:
         tool_name="update_issue",
         description="Update an existing JIRA issue. Can update summary, description, assignee, priority, labels, components, and status.",
         args_schema=UpdateIssueInput,  # NEW: Pydantic schema
-        returns="Updated issue details"
+        returns="Updated issue details",
+        when_to_use=[
+            "User wants to update/edit a Jira ticket",
+            "User mentions 'Jira' + wants to modify issue",
+            "User asks to change issue details/status"
+        ],
+        when_not_to_use=[
+            "User wants to create issue (use create_issue)",
+            "User wants to search issues (use search_issues)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Update Jira ticket PA-123",
+            "Change issue status to Done",
+            "Edit Jira issue"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def update_issue(
         self,
@@ -891,7 +1152,24 @@ class Jira:
         tool_name="get_projects",
         description="Get all JIRA projects",
         parameters=[],
-        returns="List of JIRA projects"
+        returns="List of JIRA projects",
+        when_to_use=[
+            "User wants to list all Jira projects",
+            "User mentions 'Jira' + wants projects",
+            "User asks for available projects"
+        ],
+        when_not_to_use=[
+            "User wants specific project (use get_project)",
+            "User wants to create/search issues (use other tools)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all Jira projects",
+            "Show me Jira projects",
+            "What projects are available?"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_projects(self) -> Tuple[bool, str]:
         """Get all JIRA projects"""
@@ -935,7 +1213,24 @@ class Jira:
                 required=True
             ),
         ],
-        returns="Project details"
+        returns="Project details",
+        when_to_use=[
+            "User wants details about a specific project",
+            "User mentions 'Jira' + project key",
+            "User asks about a project"
+        ],
+        when_not_to_use=[
+            "User wants all projects (use get_projects)",
+            "User wants to create/search issues (use other tools)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get project PA details",
+            "Show me Jira project info",
+            "What is project X?"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_project(self, project_key: str) -> Tuple[bool, str]:
         """Get a specific JIRA project"""
@@ -973,7 +1268,25 @@ class Jira:
         tool_name="get_issues",
         description="Get issues from a JIRA project. For more specific queries, use search_issues with custom JQL.",
         args_schema=GetIssuesInput,  # NEW: Pydantic schema
-        returns="List of issues from the project"
+        returns="List of issues from the project",
+        when_to_use=[
+            "User wants issues from a specific project",
+            "User mentions 'Jira' + project + wants issues",
+            "User asks for project's tickets"
+        ],
+        when_not_to_use=[
+            "User wants specific search (use search_issues)",
+            "User wants single issue (use get_issue)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get issues from project PA",
+            "Show tickets in project",
+            "List issues for project"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_issues(
         self,
@@ -1031,7 +1344,25 @@ class Jira:
         tool_name="get_issue",
         description="Get a specific JIRA issue",
         args_schema=GetIssueInput,  # NEW: Pydantic schema
-        returns="Issue details"
+        returns="Issue details",
+        when_to_use=[
+            "User wants details of a specific ticket",
+            "User mentions 'Jira' + issue key",
+            "User asks about a specific ticket"
+        ],
+        when_not_to_use=[
+            "User wants to search issues (use search_issues)",
+            "User wants to create issue (use create_issue)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get issue PA-123",
+            "Show me ticket details",
+            "What is issue X?"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_issue(self, issue_key: str) -> Tuple[bool, str]:
         """Get a specific JIRA issue"""
@@ -1092,6 +1423,23 @@ class Jira:
             "- `project = \"PA\" AND status = \"In Progress\" AND updated >= -7d`\n"
             "- `reporter = currentUser() AND created >= -30d ORDER BY created DESC`"
         ),  # Detailed description for LLM
+        when_to_use=[
+            "User wants to search/find Jira tickets/issues",
+            "User mentions 'Jira' + wants to find tickets",
+            "User asks for 'my tickets', 'open issues', etc."
+        ],
+        when_not_to_use=[
+            "User wants to create issue (use create_issue)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show my Jira tickets",
+            "Find open issues in project PA",
+            "Search for Jira issues"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
         """Search for JIRA issues using the enhanced search endpoint"""
@@ -1219,7 +1567,25 @@ class Jira:
         tool_name="add_comment",
         description="Add a comment to a JIRA issue",
         args_schema=AddCommentInput,  # NEW: Pydantic schema
-        returns="Comment details"
+        returns="Comment details",
+        when_to_use=[
+            "User wants to add comment to ticket",
+            "User mentions 'Jira' + wants to comment",
+            "User asks to comment on issue"
+        ],
+        when_not_to_use=[
+            "User wants to create issue (use create_issue)",
+            "User wants to read comments (use get_comments)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Add comment to PA-123",
+            "Comment on Jira ticket",
+            "Reply to issue"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
 
@@ -1288,7 +1654,25 @@ class Jira:
                 required=True
             ),
         ],
-        returns="List of comments"
+        returns="List of comments",
+        when_to_use=[
+            "User wants to read comments on ticket",
+            "User mentions 'Jira' + wants issue comments",
+            "User asks for ticket comments"
+        ],
+        when_not_to_use=[
+            "User wants to add comment (use add_comment)",
+            "User wants issue details (use get_issue)",
+            "User wants info ABOUT Jira (use retrieval)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get comments for PA-123",
+            "Show comments on ticket",
+            "What comments are on this issue?"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_comments(self, issue_key: str) -> Tuple[bool, str]:
         """Get comments for an issue"""
@@ -1333,6 +1717,23 @@ class Jira:
             "NOTE: For searching issues assigned to the CURRENT user (self), use `assignee = currentUser()` "
             "in JQL instead of calling this tool - it's faster and more reliable."
         ),  # Detailed description for LLM
+        when_to_use=[
+            "User wants to find Jira user by name/email",
+            "User mentions 'Jira' + wants to find user",
+            "User needs accountId for assignee"
+        ],
+        when_not_to_use=[
+            "User wants 'my tickets' (use search_issues with currentUser())",
+            "User wants to create/search issues (use other tools)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Find Jira user by email",
+            "Search for user in Jira",
+            "Get user accountId"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def search_users(
         self,
@@ -1405,7 +1806,24 @@ class Jira:
         tool_name="get_project_metadata",
         description="Get project metadata including issue types and components",
         args_schema=GetProjectMetadataInput,
-        returns="Project metadata"
+        returns="Project metadata",
+        when_to_use=[
+            "User wants project metadata (issue types, components)",
+            "User mentions 'Jira' + wants project structure",
+            "User asks about project configuration"
+        ],
+        when_not_to_use=[
+            "User wants project info (use get_project)",
+            "User wants to create/search issues (use other tools)",
+            "No Jira mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get metadata for project PA",
+            "Show issue types in project",
+            "What components are in project?"
+        ],
+        category=ToolCategory.PROJECT_MANAGEMENT
     )
     def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
         """Get project metadata"""

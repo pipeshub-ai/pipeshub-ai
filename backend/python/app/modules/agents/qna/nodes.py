@@ -229,21 +229,31 @@ CONFLUENCE_GUIDANCE = r"""
 
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant.
 
+## Decision Tree (Follow in order)
+1. **Is it a greeting/simple question?** → `can_answer_directly: true`
+2. **Does user mention a service name?** (Drive, Jira, Slack, Gmail, Calendar, Confluence, etc.) → Use THAT service's tools
+3. **Is it a question without service mention?** (what/how/why/find info) → Use `retrieval.search_internal_knowledge`
+4. **Is it an action?** (create/update/delete) → Use appropriate API tool
+
+## Correct Examples (Learn from these)
+- "Hello!" → ✓ `can_answer_directly: true` | ✗ calling tools
+- "What is our vacation policy?" → ✓ `retrieval.search_internal_knowledge` | ✗ `drive.search_files` (no Drive mention)
+- "Show me my Drive files" → ✓ `drive.get_files_list` | ✗ `retrieval.search_internal_knowledge` (Drive mentioned)
+- "Find information about Q4 results" → ✓ `retrieval.search_internal_knowledge` | ✗ `drive.search_files` (no service mention)
+- "Create a Jira ticket" → ✓ `jira.create_issue` | ✗ `retrieval.search_internal_knowledge` (action + Jira mentioned)
+- "Help me prepare for tomorrow's meeting about AI" → ✓ `retrieval.search_internal_knowledge` + `calendar.get_events` (mixed query)
+
 ## Available Tools
 {available_tools}
 
-## CRITICAL - Parameter Rules
-Only use parameters listed above. DO NOT invent parameters.
-- Tools show exact parameters: `param_name (type, required/optional)`
-- "Parameters: none" → empty args: {{"args": {{}}}}
-- NEVER add unlisted parameters
+**Note**: Tool parameters are shown above for reference. Use the exact parameter names shown. Function calling schemas will validate the parameters automatically.
 
 ## Planning Rules
 1. **Internal Knowledge Search**: ONLY for searching company knowledge bases, indexed documents, policies, or internal documentation → `retrieval.search_internal_knowledge`
    - ❌ DO NOT use for: accessing external APIs (Drive, Jira, Slack, etc.), getting files from cloud storage, managing tickets, sending messages
    - ✅ Use for: "find information about X", "search company docs", "what's our policy on Y"
 2. **API/External Tools**: For accessing external services and managing data in those services
-   - **Drive/Cloud Storage**: Getting files, folders, permissions → use `drive.*` tools (drive.get_files_list, drive.get_file_details, drive.search_files, etc.)
+   - **Drive/Cloud Storage**: Getting files, folders, permissions → use `drive.*` tools
    - **Project Management**: Tickets, projects → use `jira.*` tools
    - **Communication**: Messages, users → use `slack.*` tools
    - **Other Services**: Use the appropriate service-specific tools
@@ -263,28 +273,6 @@ Only use parameters listed above. DO NOT invent parameters.
 - Reference Data items have: `name`, `id`, `key` (optional), `type`
 - Use `id` for Confluence spaces, `key` for Jira projects/issues
 - **DO NOT** call tools to fetch data already in Reference Data
-
-## Tool Selection Rules
-
-**CRITICAL: Choose the RIGHT tool category first, THEN match intent:**
-
-1. **Service Detection**: Identify which service the user is asking about
-   - "Drive files", "Google Drive", "files in Drive" → `drive.*` tools
-   - "Jira tickets", "issues", "projects" → `jira.*` tools
-   - "Slack messages", "channels", "users" → `slack.*` tools
-   - Generic "search", "find info", "company docs" → `retrieval.search_internal_knowledge`
-
-2. **Intent Matching** (within the correct service):
-   - "create"/"make"/"new" → CREATE tools
-   - "get"/"find"/"search"/"list" → READ/SEARCH tools
-   - "update"/"modify"/"change" → UPDATE tools
-   - "delete"/"remove" → DELETE tools
-
-**Examples of CORRECT tool selection:**
-- "Get my Drive files" → `drive.get_files_list` (NOT retrieval)
-- "Search for files in Drive" → `drive.search_files` (NOT retrieval)
-- "Find information about Q4 results" → `retrieval.search_internal_knowledge` (no specific service mentioned)
-- "List my Jira tickets" → `jira.search_issues` (NOT retrieval)
 
 {jira_guidance}
 {confluence_guidance}
@@ -327,18 +315,17 @@ If query is ambiguous or missing critical info, set `needs_clarification: true`.
 
 If `needs_clarification: true`, set `tools: []` and provide `clarifying_question`.
 
-## Examples
-- "Q4 results" (no service mentioned) → retrieval.search_internal_knowledge with {{"query": "Q4 results"}}
-- "Get my Drive files" → drive.get_files_list with {{}}
-- "Search for files in Drive" → drive.search_files with {{"query": "..."}}
-- "My Jira projects" → jira.get_projects with {{}}
-- "My tickets in PA" → jira.search_issues with {{"jql": "project = \\"PA\\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d"}}
+## Additional Examples
+- "Q4 results" (no service mentioned) → `retrieval.search_internal_knowledge` with {{"query": "Q4 results"}}
+- "Get my Drive files" → `drive.get_files_list` with {{}}
+- "Search for files in Drive" → `drive.search_files` with {{"query": "..."}}
+- "My Jira projects" → `jira.get_projects` with {{}}
+- "My tickets in PA" → `jira.search_issues` with {{"jql": "project = \\"PA\\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d"}}
 - "Create a Confluence page" → Check Reference Data for space_id, or call get_spaces first, then create_page with numeric ID
-- "Find a page" → confluence.search_pages with {{"title": "..."}}
-- "Hello!" → can_answer_directly: true, tools: []
-- "my name" (user info in prompt) → can_answer_directly: true, tools: []
+- "Find a page" → `confluence.search_pages` with {{"title": "..."}}
+- "my name" (user info in prompt) → `can_answer_directly: true`, tools: []
 
-**IMPORTANT**: When user mentions a specific service (Drive, Jira, Slack, etc.), use that service's tools, NOT retrieval.search_internal_knowledge."""
+**IMPORTANT**: When user mentions a specific service (Drive, Jira, Slack, etc.), use that service's tools, NOT `retrieval.search_internal_knowledge`."""
 
 PLANNER_USER_TEMPLATE = """Query: {query}
 
@@ -539,6 +526,177 @@ def _format_user_context(state: ChatState) -> str:
 
 
 # ============================================================================
+# Phase 4: Query Decomposition
+# ============================================================================
+
+async def _decompose_query_if_needed(query: str, llm, log: logging.Logger) -> Optional[List[Dict[str, str]]]:
+    """
+    Detect vague queries that might need multiple tools and decompose them.
+
+    Returns:
+        List of sub-tasks with their queries, or None if decomposition not needed
+    """
+    query_lower = query.lower()
+
+    # Indicators of vague/multi-intent queries:
+    # 1. Multiple "and" conjunctions suggesting multiple intents
+    # 2. No specific service mentioned but multiple action words
+    # 3. Questions combined with action requests
+
+    # Simple heuristics first (fast path)
+    and_count = query_lower.count(' and ')
+
+    # Check for multiple distinct intents
+    question_words = ['what', 'how', 'why', 'when', 'where', 'find', 'search', 'get', 'show']
+    action_words = ['create', 'make', 'add', 'update', 'delete', 'send', 'post']
+    service_mentions = ['drive', 'jira', 'slack', 'gmail', 'calendar', 'confluence']
+
+    has_question = any(word in query_lower for word in question_words)
+    has_action = any(word in query_lower for word in action_words)
+    has_service = any(service in query_lower for service in service_mentions)
+
+    # Decompose if:
+    # - Multiple "and" conjunctions (likely multiple intents)
+    # - Both question and action intents
+    # - No service mentioned but multiple action/question words
+    needs_decomposition = (
+        (and_count >= 2) or
+        (and_count >= 1 and (has_question and has_action)) or
+        (not has_service and (query_lower.count(' ') >= 8 and (has_question or has_action)))
+    )
+
+    if not needs_decomposition:
+        return None
+
+    # Use LLM to decompose the query
+    try:
+        decomposition_prompt = f"""Analyze this query and break it into distinct sub-tasks if it requires multiple tools.
+
+Query: "{query}"
+
+If this query can be answered with a single tool, return: {{"needs_decomposition": false}}
+
+If this query needs multiple tools (e.g., "What are Q4 results and my Drive files?"), return:
+{{
+  "needs_decomposition": true,
+  "subtasks": [
+    {{"query": "Q4 results", "intent": "knowledge_search"}},
+    {{"query": "my Drive files", "intent": "file_list"}}
+  ]
+}}
+
+Return only valid JSON."""
+
+        response = await asyncio.wait_for(
+            llm.ainvoke([SystemMessage(content="You are a query analysis expert. Return only valid JSON."),
+                        HumanMessage(content=decomposition_prompt)]),
+            timeout=5.0
+        )
+
+        result = json.loads(response.content if hasattr(response, 'content') else str(response))
+
+        if result.get("needs_decomposition") and result.get("subtasks"):
+            return result["subtasks"]
+        return None
+
+    except Exception as e:
+        log.warning(f"Query decomposition failed: {e}")
+        return None
+
+
+async def _plan_with_decomposition(
+    state: ChatState,
+    config: RunnableConfig,
+    writer: StreamWriter,
+    subtasks: List[Dict[str, str]],
+    start_time: float,
+    log: logging.Logger
+) -> ChatState:
+    """
+    Plan tools for decomposed query sub-tasks and combine into single plan.
+    """
+    llm = state.get("llm")
+    all_tools = []
+    combined_intent = []
+    combined_reasoning = []
+
+    # Plan each sub-task
+    for i, subtask in enumerate(subtasks):
+        sub_query = subtask.get("query", "")
+
+        log.info(f"Planning sub-task {i+1}/{len(subtasks)}: {sub_query[:50]}")
+
+        # Build planner prompt for this sub-task
+        tool_descriptions = _get_cached_tool_descriptions(state, log)
+        jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
+        confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
+
+        system_prompt = PLANNER_SYSTEM_PROMPT.format(
+            available_tools=tool_descriptions,
+            jira_guidance=jira_guidance,
+            confluence_guidance=confluence_guidance
+        )
+
+        user_prompt = f"""Sub-task {i+1} of {len(subtasks)}: {sub_query}
+
+Plan tools for this sub-task only. Return JSON with tools needed for this specific sub-task."""
+
+        try:
+            response = await asyncio.wait_for(
+                llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]),
+                timeout=15.0
+            )
+
+            plan = _parse_planner_response(
+                response.content if hasattr(response, 'content') else str(response),
+                log
+            )
+
+            # Collect tools from this sub-task
+            sub_tools = plan.get("tools", [])
+            all_tools.extend(sub_tools)
+            combined_intent.append(f"Sub-task {i+1}: {plan.get('intent', sub_query[:30])}")
+            combined_reasoning.append(f"Sub-task {i+1}: {plan.get('reasoning', '')}")
+
+        except Exception as e:
+            log.warning(f"Failed to plan sub-task {i+1}: {e}")
+            continue
+
+    # Combine into single plan
+    combined_plan = {
+        "intent": " | ".join(combined_intent),
+        "reasoning": "Decomposed query into multiple sub-tasks. " + " | ".join(combined_reasoning),
+        "can_answer_directly": False,
+        "needs_clarification": False,
+        "tools": all_tools
+    }
+
+    # Validate tools
+    tools = combined_plan.get('tools', [])
+    is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
+
+    if not is_valid and invalid_tools:
+        log.warning(f"Invalid tools in decomposed plan: {invalid_tools}")
+        # Remove invalid tools
+        combined_plan["tools"] = [t for t in tools if t.get('name', '') not in invalid_tools]
+
+    # Store plan
+    state["execution_plan"] = combined_plan
+    state["planned_tool_calls"] = combined_plan.get("tools", [])
+    state["pending_tool_calls"] = bool(combined_plan.get("tools"))
+    state["query_analysis"] = {
+        "intent": combined_plan.get("intent", ""),
+        "reasoning": combined_plan.get("reasoning", ""),
+        "can_answer_directly": combined_plan.get("can_answer_directly", False),
+    }
+
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    log.info(f"⚡ Planner (decomposed): {duration_ms:.0f}ms, {len(combined_plan.get('tools', []))} tools")
+
+    return state
+
+
+# ============================================================================
 # Node 1: Planner
 # ============================================================================
 
@@ -547,12 +705,19 @@ async def planner_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """LLM-driven planner"""
+    """LLM-driven planner with query decomposition for vague queries"""
     start_time = time.perf_counter()
     log = state.get("logger", logger)
     llm = state.get("llm")
     query = state.get("query", "")
     previous_conversations = state.get("previous_conversations", [])
+
+    # Phase 4: Query Decomposition - Check if query needs decomposition
+    decomposed_subtasks = await _decompose_query_if_needed(query, llm, log)
+    if decomposed_subtasks:
+        log.info(f"Query decomposed into {len(decomposed_subtasks)} sub-tasks")
+        # Plan tools for each sub-task and combine
+        return await _plan_with_decomposition(state, config, writer, decomposed_subtasks, start_time, log)
 
     safe_stream_write(writer, {
         "event": "status",
@@ -798,7 +963,7 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
 
     # Build cache key from toolsets and LLM type (for sanitization)
     toolset_names = sorted([ts.get("name", "") for ts in agent_toolsets if isinstance(ts, dict)])
-    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{llm_type}_internal"
+    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{llm_type}_clean"
 
     if cache_key in _tool_description_cache:
         return _tool_description_cache[cache_key]
@@ -809,82 +974,10 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
         if not tools:
             # Use sanitized name in fallback if needed
             fallback_name = "retrieval_search_internal_knowledge" if (llm and _requires_sanitized_tool_names(llm)) else "retrieval.search_internal_knowledge"
-            return f"- {fallback_name}: Search internal knowledge base\n  Parameters: query (string, required)"
+            return f"### {fallback_name}\n  ✅ Use: Questions without service mention; policies; general info\n  ❌ Don't: Service mentioned (Drive/Jira/Gmail); action intent"
 
-        descriptions = []
-        for tool in tools[:20]:
-            name = getattr(tool, 'name', str(tool))
-            # Use llm_description if available, otherwise fall back to description
-            llm_desc = getattr(tool, 'llm_description', None)
-            desc = llm_desc if llm_desc else getattr(tool, 'description', '')
-
-            short_desc = desc[:DESCRIPTION_MAX_LENGTH] + "..." if len(desc) > DESCRIPTION_MAX_LENGTH else desc
-
-            tool_entry = f"- {name}"
-            if short_desc:
-                tool_entry += f": {short_desc}"
-
-            # Extract parameters - check Pydantic schema first, then legacy parameters
-            params = []
-            # Check for Pydantic schema (preferred - used by modern tools)
-            args_schema = getattr(tool, 'args_schema', None)
-            if args_schema and hasattr(args_schema, 'model_fields'):
-                # Extract from Pydantic schema
-                from typing import Union, get_args, get_origin
-                for field_name, field_info in args_schema.model_fields.items():
-                    # Get field description
-                    # description = field_info.description or field_name
-
-                    # Determine type - handle Optional, Union, etc.
-                    field_type = field_info.annotation
-                    param_type = "string"  # default
-
-                    # Handle Optional types (Union[T, None])
-                    origin = get_origin(field_type) if hasattr(field_type, '__origin__') or hasattr(field_type, '__args__') else None
-                    if origin is Union:
-                        args = get_args(field_type)
-                        # Filter out None type
-                        non_none_args = [arg for arg in args if arg is not type(None)]
-                        if non_none_args:
-                            field_type = non_none_args[0]
-                            origin = get_origin(field_type) if hasattr(field_type, '__origin__') else None
-
-                    # Determine base type
-                    if field_type is int:
-                        param_type = "integer"
-                    elif field_type is float:
-                        param_type = "number"
-                    elif field_type is bool:
-                        param_type = "boolean"
-                    elif origin is list:
-                        param_type = "array"
-                    elif origin is dict:
-                        param_type = "object"
-
-                    # Check if required (not Optional and no default)
-                    param_required = field_info.is_required() and field_info.default is ...
-                    req_str = "required" if param_required else "optional"
-                    params.append(f"{field_name} ({param_type}, {req_str})")
-
-            # Fallback to legacy ToolParameter list if no schema found
-            if not params:
-                registry_tool = getattr(tool, 'registry_tool', None)
-                if registry_tool and hasattr(registry_tool, 'parameters') and registry_tool.parameters:
-                    for param in registry_tool.parameters:
-                        param_name = getattr(param, 'name', 'unknown')
-                        param_type = getattr(getattr(param, 'type', None), 'name', 'string')
-                        param_required = getattr(param, 'required', False)
-                        req_str = "required" if param_required else "optional"
-                        params.append(f"{param_name} ({param_type}, {req_str})")
-
-            if params:
-                tool_entry += f"\n  Parameters: {', '.join(params)}"
-            else:
-                tool_entry += "\n  Parameters: none"
-
-            descriptions.append(tool_entry)
-
-        result = "\n".join(descriptions)
+        # Use clean formatting function (NO parameters - they're in schemas)
+        result = _format_clean_tool_descriptions(tools, log)
         _tool_description_cache[cache_key] = result
         return result
 
@@ -892,7 +985,164 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
         log.warning(f"Tool load failed: {e}")
         # Use sanitized name in fallback if needed (llm already retrieved above)
         fallback_name = "retrieval_search_internal_knowledge" if (llm and _requires_sanitized_tool_names(llm)) else "retrieval.search_internal_knowledge"
-        return f"- {fallback_name}: Search internal knowledge base\n  Parameters: query (string, required)"
+        return f"### {fallback_name}\n  ✅ Use: Questions without service mention; policies; general info\n  ❌ Don't: Service mentioned (Drive/Jira/Gmail); action intent"
+
+
+def _format_clean_tool_descriptions(tools: List, log: logging.Logger) -> str:
+    """
+    Format tools for planner prompt - includes parameters for better LLM guidance.
+
+    Format:
+    ### [CATEGORY] tool.name
+      ✅ Use: scenario1; scenario2
+      ❌ Don't: anti-pattern1; anti-pattern2
+      📋 Parameters: param1 (type), param2 (type, optional)
+    """
+    import re
+
+    from app.agents.tools.config import ToolCategory
+
+    # Group tools by category for better organization
+    tools_by_category: Dict[str, List] = {}
+
+    for tool in tools[:30]:  # Limit to prevent prompt bloat
+        name = getattr(tool, 'name', str(tool))
+
+        # Get category from metadata via global registry
+        category = ToolCategory.UTILITY  # default
+        try:
+            from app.agents.tools.registry import _global_tools_registry
+            metadata = _global_tools_registry.get_metadata(name)
+            if metadata:
+                category = metadata.category
+        except Exception:
+            pass
+
+        category_name = category.value if hasattr(category, 'value') else str(category)
+
+        # Extract when_to_use and when_not_to_use
+        when_use = []
+        when_not = []
+
+        # Try to get from Tool object
+        when_use = getattr(tool, 'when_to_use', [])
+        when_not = getattr(tool, 'when_not_to_use', [])
+
+        # If not found, try parsing from llm_description
+        if not when_use and not when_not:
+            llm_desc = getattr(tool, 'llm_description', None)
+            if llm_desc and isinstance(llm_desc, str):
+                # Parse structured format
+                when_match = re.search(r'\*\*WHEN TO USE\*\*:?\s*\n(.*?)(?:\*\*WHEN NOT|\Z)', llm_desc, re.DOTALL)
+                if when_match:
+                    when_text = when_match.group(1).strip()
+                    when_use = [line.strip('- ').strip() for line in when_text.split('\n') if line.strip().startswith('-')]
+
+                not_match = re.search(r'\*\*WHEN NOT TO USE\*\*:?\s*\n(.*?)(?:\*\*|\Z)', llm_desc, re.DOTALL)
+                if not_match:
+                    not_text = not_match.group(1).strip()
+                    when_not = [line.strip('- ').strip() for line in not_text.split('\n') if line.strip().startswith('-')]
+
+        # Extract parameter information - check Pydantic schema first, then legacy parameters
+        param_info = []
+        # Check for Pydantic schema (preferred - used by modern tools)
+        args_schema = getattr(tool, 'args_schema', None)
+        if args_schema:
+            # Check if it's a Pydantic BaseModel class (v2)
+            try:
+                from typing import Union, get_args, get_origin
+
+                from pydantic import BaseModel
+
+                # Handle both class and instance
+                schema_class = args_schema if isinstance(args_schema, type) else args_schema.__class__
+
+                # Check if it's a Pydantic v2 model
+                if issubclass(schema_class, BaseModel) and hasattr(schema_class, 'model_fields'):
+                    for field_name, field_info in schema_class.model_fields.items():
+                        # Determine type - handle Optional, Union, etc.
+                        field_type = field_info.annotation
+                        param_type = "string"  # default
+
+                        # Handle Optional types (Union[T, None])
+                        origin = get_origin(field_type) if hasattr(field_type, '__origin__') or hasattr(field_type, '__args__') else None
+                        if origin is Union:
+                            args = get_args(field_type)
+                            # Filter out None type
+                            non_none_args = [arg for arg in args if arg is not type(None)]
+                            if non_none_args:
+                                field_type = non_none_args[0]
+                                origin = get_origin(field_type) if hasattr(field_type, '__origin__') else None
+
+                        # Determine base type
+                        if field_type is int:
+                            param_type = "integer"
+                        elif field_type is float:
+                            param_type = "number"
+                        elif field_type is bool:
+                            param_type = "boolean"
+                        elif origin is list:
+                            param_type = "array"
+                        elif origin is dict:
+                            param_type = "object"
+
+                        # Check if required (not Optional and no default)
+                        param_required = field_info.is_required() and field_info.default is ...
+                        req_str = "required" if param_required else "optional"
+                        param_info.append(f"{field_name} ({param_type}, {req_str})")
+            except Exception as e:
+                log.debug(f"Could not extract params from Pydantic schema for {name}: {e}")
+
+        # Fallback to legacy ToolParameter list if no schema found
+        if not param_info:
+            registry_tool = getattr(tool, 'registry_tool', None)
+            if registry_tool and hasattr(registry_tool, 'parameters') and registry_tool.parameters:
+                for param in registry_tool.parameters:
+                    param_name = getattr(param, 'name', 'unknown')
+                    param_type = getattr(getattr(param, 'type', None), 'name', 'string')
+                    param_required = getattr(param, 'required', False)
+                    req_str = "required" if param_required else "optional"
+                    param_info.append(f"{param_name} ({param_type}, {req_str})")
+
+        # Group by category
+        if category_name not in tools_by_category:
+            tools_by_category[category_name] = []
+
+        # Format entry with parameters
+        tool_lines = [f"\n### [{category_name.upper()}] {name}"]
+
+        if when_use:
+            # Join first 3 use cases with semicolons
+            use_summary = '; '.join(when_use[:3])
+            tool_lines.append(f"  ✅ Use: {use_summary}")
+
+        if when_not:
+            # Join first 2 anti-patterns with semicolons
+            not_summary = '; '.join(when_not[:2])
+            tool_lines.append(f"  ❌ Don't: {not_summary}")
+
+        # Add parameter information (limit to first 5 to keep prompt concise)
+        if param_info:
+            params_str = ', '.join(param_info)
+            tool_lines.append(f"  📋 Parameters: {params_str}")
+        else :
+            tool_lines.append("  📋 Parameters: none")
+        tools_by_category[category_name].append('\n'.join(tool_lines))
+
+    # Format by category
+    result_lines = []
+    # Order categories: SEARCH first (retrieval), then others
+    category_order = ['search', 'communication', 'project_management', 'file_storage', 'calendar', 'documentation', 'utility']
+    for cat in category_order:
+        if cat in tools_by_category:
+            result_lines.extend(tools_by_category[cat])
+            del tools_by_category[cat]
+
+    # Add remaining categories
+    for cat, tool_list in sorted(tools_by_category.items()):
+        result_lines.extend(tool_list)
+
+    return "\n".join(result_lines) if result_lines else ""
 
 
 def _format_conversation_history(conversations: List[Dict], log: logging.Logger) -> str:
@@ -1209,22 +1459,90 @@ async def _execute_single_tool(
     start_time = time.perf_counter()
 
     try:
-        # Normalize args
+        # Normalize args structure
         if isinstance(tool_args, dict) and "kwargs" in tool_args and len(tool_args) == 1:
             tool_args = tool_args["kwargs"]
 
         log.debug(f"Executing {tool_name} with {json.dumps(tool_args, default=str)[:100]}...")
 
-        # Execute
+        # CRITICAL: Validate and normalize args using Pydantic schema BEFORE calling tool
+        # This ensures model_validator normalizes field names (e.g., issueKey -> issue_key)
+        validated_args = tool_args
+        args_schema = None
+
+        # Try to get schema from StructuredTool first (if it's a LangChain tool)
+        if hasattr(tool, 'args_schema'):
+            args_schema = tool.args_schema
+        elif hasattr(tool, 'args') and hasattr(tool.args, 'schema'):
+            # LangChain StructuredTool stores schema in tool.args.schema
+            try:
+                args_schema = tool.args.schema
+            except AttributeError:
+                pass
+
+        # Fallback: Get schema from registry
+        if args_schema is None:
+            try:
+                from app.agents.tools.registry import _global_tools_registry
+                tool_metadata = _global_tools_registry.get_metadata(tool_name)
+                if tool_metadata and hasattr(tool_metadata, 'tool') and hasattr(tool_metadata.tool, 'args_schema'):
+                    args_schema = tool_metadata.tool.args_schema
+            except Exception as e:
+                log.debug(f"Could not get schema from registry for {tool_name}: {e}")
+
+        # Validate and normalize using Pydantic schema if available
+        if args_schema:
+            try:
+                from pydantic import ValidationError
+                # Validate and normalize - this triggers model_validator(mode='before')
+                validated_model = args_schema.model_validate(tool_args)
+                # Convert validated Pydantic model to dict for kwargs
+                validated_args = validated_model.model_dump(exclude_unset=True)
+                log.debug(f"✅ Validated/normalized args for {tool_name}: {json.dumps(validated_args, default=str)[:100]}")
+            except ValidationError as e:
+                duration_ms = int((time.perf_counter() - start_time) * 1000)
+                error_details = {
+                    "status": "error",
+                    "message": f"Validation error for {tool_name}: {str(e)}",
+                    "tool": tool_name,
+                    "args": tool_args,
+                    "validation_errors": e.errors() if hasattr(e, 'errors') else []
+                }
+                log.error(f"❌ Pydantic validation failed for {tool_name} after {duration_ms}ms: {e}")
+                return {
+                    "tool_result": {
+                        "tool_name": tool_name,
+                        "result": json.dumps(error_details, indent=2),
+                        "status": "error",
+                        "tool_id": tool_id,
+                        "args": tool_args,
+                        "duration_ms": duration_ms
+                    },
+                    "tool_message": ToolMessage(
+                        content=json.dumps({
+                            "status": "error",
+                            "message": f"Validation error for {tool_name}: {str(e)}",
+                            "tool": tool_name
+                        }, indent=2),
+                        tool_call_id=tool_id
+                    )
+                }
+            except Exception as validation_error:
+                log.warning(f"⚠️ Unexpected error during validation for {tool_name}: {validation_error}")
+                # Continue with original args if validation fails unexpectedly
+
+        # Execute with validated/normalized args
         async def run_tool() -> object:
             if hasattr(tool, 'arun'):
-                return await tool.arun(tool_args)
+                # For StructuredTool, pass validated_args as dict
+                # LangChain will handle it (but we've already validated/normalized)
+                return await tool.arun(validated_args)
             elif hasattr(tool, '_run'):
                 loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, functools.partial(tool._run, **tool_args))
+                return await loop.run_in_executor(None, functools.partial(tool._run, **validated_args))
             else:
                 loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, functools.partial(tool.run, **tool_args))
+                return await loop.run_in_executor(None, functools.partial(tool.run, **validated_args))
 
         result = await asyncio.wait_for(run_tool(), timeout=NodeConfig.TOOL_TIMEOUT_SECONDS)
 
@@ -1239,18 +1557,18 @@ async def _execute_single_tool(
         # Log raw tool result
         log.info(f"🔍 Tool {tool_name} raw result type: {type(result).__name__}")
         if isinstance(result, tuple):
-            log.info(f"🔍 Tool {tool_name} raw result tuple: success={result[0] if len(result) > 0 else 'N/A'}, data_type={type(result[1]).__name__ if len(result) > 1 else 'N/A'}")
+            log.debug(f"🔍 Tool {tool_name} raw result tuple: success={result[0] if len(result) > 0 else 'N/A'}, data_type={type(result[1]).__name__ if len(result) > 1 else 'N/A'}")
             if len(result) > 1:
                 result_data = result[1]
                 if isinstance(result_data, str):
-                    log.info(f"🔍 Tool {tool_name} raw result data (first 500 chars): {result_data[:500]}")
+                    log.debug(f"🔍 Tool {tool_name} raw result data (first 500 chars): {result_data[:500]}")
                 else:
-                    log.info(f"🔍 Tool {tool_name} raw result data: {json.dumps(result_data, default=str, indent=2)[:1000]}")
+                    log.debug(f"🔍 Tool {tool_name} raw result data: {json.dumps(result_data, default=str, indent=2)[:1000]}")
         else:
             if isinstance(result, str):
-                log.info(f"🔍 Tool {tool_name} raw result (first 500 chars): {result[:500]}")
+                log.debug(f"🔍 Tool {tool_name} raw result (first 500 chars): {result[:500]}")
             else:
-                log.info(f"🔍 Tool {tool_name} raw result: {json.dumps(result, default=str, indent=2)[:1000]}")
+                log.debug(f"🔍 Tool {tool_name} raw result: {json.dumps(result, default=str, indent=2)[:1000]}")
 
         # Handle retrieval output
         content = result
@@ -1260,11 +1578,11 @@ async def _execute_single_tool(
             content = clean_tool_result(result)
 
         # Log cleaned content
-        log.info(f"🔍 Tool {tool_name} cleaned content type: {type(content).__name__}")
+        log.debug(f"🔍 Tool {tool_name} cleaned content type: {type(content).__name__}")
         if isinstance(content, str):
-            log.info(f"🔍 Tool {tool_name} cleaned content (first 500 chars): {content[:500]}")
+            log.debug(f"🔍 Tool {tool_name} cleaned content (first 500 chars): {content[:500]}")
         else:
-            log.info(f"🔍 Tool {tool_name} cleaned content: {json.dumps(content, default=str, indent=2)[:1000]}")
+            log.debug(f"🔍 Tool {tool_name} cleaned content: {json.dumps(content, default=str, indent=2)[:1000]}")
 
         duration_ms = (time.perf_counter() - start_time) * 1000
         status = "success" if is_success else "error"
@@ -1273,8 +1591,6 @@ async def _execute_single_tool(
 
         content_str = format_result_for_llm(content, tool_name)
 
-        # Log formatted content for LLM
-        log.info(f"🔍 Tool {tool_name} formatted for LLM (first 1000 chars): {content_str[:1000]}")
 
         return {
             "tool_result": {

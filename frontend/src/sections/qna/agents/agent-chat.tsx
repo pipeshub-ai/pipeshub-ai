@@ -73,6 +73,7 @@ interface StreamingContextType {
 
 export interface Model {
   provider: string;
+  modelKey: string;
   modelName: string;
 }
 
@@ -684,12 +685,15 @@ const AgentChat = () => {
             if (typeof m === 'object' && m !== null) {
               return {
                 provider: m.provider || 'unknown',
+                modelKey: m.modelKey || '',
                 modelName: m.modelName || m.modelKey || 'Unknown Model',
               };
             }
+            console.log('m', m);
             // Fallback for string model keys
             return {
               provider: 'AI',
+              modelKey: m,
               modelName: m,
             };
           });
@@ -1215,6 +1219,7 @@ const AgentChat = () => {
         query: trimmedInput,
         modelName: modelName || currentModel?.modelName,
         chatMode: chatMode || currentMode?.id,
+        modelKey: modelKey || currentModel?.modelKey,
 
         // Tools: List of tool full names to enable (filters agent's toolsets)
         // Empty means use all tools from agent's toolsets

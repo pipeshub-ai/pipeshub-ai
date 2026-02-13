@@ -7,7 +7,9 @@ from pydantic import BaseModel, Field, model_validator
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.actions.slack.config import SlackResponse
 from app.agents.actions.utils import run_async
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -15,8 +17,8 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
@@ -256,7 +258,7 @@ class GetThreadRepliesInput(BaseModel):
 @ToolsetBuilder("Slack")\
     .in_group("Slack")\
     .with_description("Slack workspace integration for messaging, channels, file management, and collaboration")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Slack",
@@ -538,6 +540,23 @@ class Slack:
         tool_name="send_message",
         description="Send a message to a Slack channel using mrkdwn format",
         args_schema=SendMessageInput,
+        when_to_use=[
+            "User wants to send a message to Slack",
+            "User mentions 'Slack' + wants to send/post message",
+            "User wants to notify someone in Slack"
+        ],
+        when_not_to_use=[
+            "User wants to read/search messages (use get_channel_history or search_messages)",
+            "User wants info ABOUT Slack (use retrieval)",
+            "No Slack mention (use other communication tools)"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Send a message to #general",
+            "Post in Slack channel",
+            "Notify the team in Slack"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
         """Send a message to a channel using Slack's mrkdwn format.
@@ -588,6 +607,23 @@ class Slack:
         tool_name="get_channel_history",
         description="Get message history from a Slack channel",
         args_schema=GetChannelHistoryInput,
+        when_to_use=[
+            "User wants to read messages from Slack channel",
+            "User mentions 'Slack' + wants to see messages/history",
+            "User asks for recent messages in a channel"
+        ],
+        when_not_to_use=[
+            "User wants to send a message (use send_message)",
+            "User wants info ABOUT Slack (use retrieval)",
+            "No Slack mention (use other tools)"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show me messages from #general",
+            "Get Slack channel history",
+            "What was said in the channel?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get the history of a channel"""
@@ -709,6 +745,23 @@ class Slack:
         tool_name="get_channel_info",
         description="Get the info of a channel",
         args_schema=GetChannelInfoInput,
+        when_to_use=[
+            "User wants channel details/info",
+            "User mentions 'Slack' + wants channel information",
+            "User asks about a specific channel"
+        ],
+        when_not_to_use=[
+            "User wants messages (use get_channel_history)",
+            "User wants to send message (use send_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get info about #general channel",
+            "What is the #engineering channel?",
+            "Show channel details"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_channel_info(self, channel: str) -> Tuple[bool, str]:
         """Get the info of a channel"""
@@ -736,6 +789,23 @@ class Slack:
         tool_name="get_user_info",
         description="Get information about a Slack user",
         args_schema=GetUserInfoInput,
+        when_to_use=[
+            "User wants Slack user information",
+            "User mentions 'Slack' + wants user details",
+            "User asks about a Slack user"
+        ],
+        when_not_to_use=[
+            "User wants to send message (use send_message)",
+            "User wants messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get info about user@company.com in Slack",
+            "Who is @username in Slack?",
+            "Show Slack user details"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_user_info(self, user: str) -> Tuple[bool, str]:
         """Get the info of a user"""
@@ -775,8 +845,24 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="fetch_channels",
-        description="Fetch all channels in the workspace"
-        # No args_schema needed (no parameters)
+        description="Fetch all channels in the workspace",
+        when_to_use=[
+            "User wants to list all Slack channels",
+            "User mentions 'Slack' + wants to see channels",
+            "User asks for available channels"
+        ],
+        when_not_to_use=[
+            "User wants channel info (use get_channel_info)",
+            "User wants messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all Slack channels",
+            "Show me available channels",
+            "What channels are in Slack?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def fetch_channels(self) -> Tuple[bool, str]:
         """Fetch all channels"""
@@ -799,6 +885,23 @@ class Slack:
         tool_name="search_all",
         description="Search messages, files, and channels in Slack",
         args_schema=SearchAllInput,
+        when_to_use=[
+            "User wants to search across Slack (messages/files/channels)",
+            "User mentions 'Slack' + wants to search",
+            "User asks to find something in Slack"
+        ],
+        when_not_to_use=[
+            "User wants to search only messages (use search_messages)",
+            "User wants info ABOUT Slack (use retrieval)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Search Slack for 'project update'",
+            "Find messages about X in Slack",
+            "Search all Slack content"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Search messages, files, and channels in Slack"""
@@ -841,6 +944,23 @@ class Slack:
         tool_name="get_channel_members",
         description="Get the members of a channel",
         args_schema=GetChannelMembersInput,
+        when_to_use=[
+            "User wants to see who is in a Slack channel",
+            "User mentions 'Slack' + wants channel members",
+            "User asks about channel participants"
+        ],
+        when_not_to_use=[
+            "User wants messages (use get_channel_history)",
+            "User wants channel info (use get_channel_info)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Who is in #general channel?",
+            "Show members of Slack channel",
+            "List channel participants"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_channel_members(self, channel: str) -> Tuple[bool, str]:
         """Get the members of a channel"""
@@ -871,6 +991,22 @@ class Slack:
         tool_name="get_channel_members_by_id",
         description="Get the members of a channel by ID",
         args_schema=GetChannelMembersByIdInput,
+        when_to_use=[
+            "User has channel ID and wants members",
+            "User mentions 'Slack' + has channel ID",
+            "Programmatic access with known channel ID"
+        ],
+        when_not_to_use=[
+            "User has channel name (use get_channel_members)",
+            "User wants messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get members of channel C123456",
+            "Who is in channel by ID?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
         """Get the members of a channel by ID"""
@@ -895,6 +1031,22 @@ class Slack:
         tool_name="resolve_user",
         description="Resolve a Slack user ID to display name and email",
         args_schema=ResolveUserInput,
+        when_to_use=[
+            "User has Slack user ID and wants name/email",
+            "User mentions 'Slack' + has user ID",
+            "Programmatic access with known user ID"
+        ],
+        when_not_to_use=[
+            "User has email/name (use get_user_info)",
+            "User wants to send message (use send_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Resolve user ID U123456",
+            "Get name for Slack user ID"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def resolve_user(self, user_id: str) -> Tuple[bool, str]:
         """Resolve a Slack user ID to display name and email"""
@@ -920,7 +1072,25 @@ class Slack:
 
     @tool(
         app_name="slack",
-        tool_name="check_token_info"
+        tool_name="check_token_info",
+        description="Check Slack token information and available scopes",
+        when_to_use=[
+            "User wants to verify Slack connection/permissions",
+            "Debugging token/scope issues",
+            "Checking Slack authentication status"
+        ],
+        when_not_to_use=[
+            "User wants to use Slack features (use other tools)",
+            "Normal Slack operations",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.UTILITY,
+        typical_queries=[
+            "Check Slack token",
+            "Verify Slack permissions",
+            "What Slack scopes do I have?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def check_token_info(self) -> Tuple[bool, str]:
         """Check Slack token information and available scopes"""
@@ -943,6 +1113,23 @@ class Slack:
         tool_name="send_direct_message",
         description="Send a direct message to a user",
         args_schema=SendDirectMessageInput,
+        when_to_use=[
+            "User wants to send DM to a specific person",
+            "User mentions 'Slack' + wants to DM someone",
+            "User asks to message someone directly"
+        ],
+        when_not_to_use=[
+            "User wants to send to channel (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Send a DM to user@company.com",
+            "Message @username in Slack",
+            "Send direct message to someone"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def send_direct_message(self, user: str, message: str) -> Tuple[bool, str]:
         """Send a direct message to a user"""
@@ -1007,6 +1194,23 @@ class Slack:
         tool_name="reply_to_message",
         description="Reply to a specific message in a channel",
         args_schema=ReplyToMessageInput,
+        when_to_use=[
+            "User wants to reply to a specific message",
+            "User mentions 'Slack' + wants to reply",
+            "User asks to respond to a message"
+        ],
+        when_not_to_use=[
+            "User wants to send new message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Reply to message in #general",
+            "Respond to a Slack message",
+            "Reply to latest message"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def reply_to_message(self, channel: str, message: str, thread_ts: Optional[str] = None, latest_message: Optional[bool] = None) -> Tuple[bool, str]:
         """Reply to a specific message in a channel"""
@@ -1063,7 +1267,23 @@ class Slack:
         tool_name="send_message_to_multiple_channels",
         description="Send a message to multiple channels",
         args_schema=SendMessageToMultipleChannelsInput,
-
+        when_to_use=[
+            "User wants to send same message to multiple channels",
+            "User mentions 'Slack' + wants to broadcast",
+            "User asks to post to several channels"
+        ],
+        when_not_to_use=[
+            "User wants to send to one channel (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Send message to #general and #engineering",
+            "Broadcast to multiple Slack channels",
+            "Post to several channels"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
         """Send a message to multiple channels. Message will be auto-converted from standard markdown to Slack mrkdwn."""
@@ -1123,6 +1343,23 @@ class Slack:
         tool_name="add_reaction",
         description="Add a reaction to a message",
         args_schema=AddReactionInput,
+        when_to_use=[
+            "User wants to add emoji reaction to message",
+            "User mentions 'Slack' + wants to react",
+            "User asks to react to a message"
+        ],
+        when_not_to_use=[
+            "User wants to send message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Add thumbs up to message",
+            "React with :+1: to message",
+            "Add reaction in Slack"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Add a reaction to a message"""
@@ -1155,6 +1392,23 @@ class Slack:
         tool_name="search_messages",
         description="Search for messages in Slack",
         args_schema=SearchMessagesInput,
+        when_to_use=[
+            "User wants to search for specific messages",
+            "User mentions 'Slack' + wants to find messages",
+            "User asks to search messages by content"
+        ],
+        when_not_to_use=[
+            "User wants to read channel history (use get_channel_history)",
+            "User wants to search all content (use search_all)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Search for messages about 'project'",
+            "Find messages in #general about X",
+            "Search Slack messages"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
         """Search for messages in Slack"""
@@ -1193,6 +1447,23 @@ class Slack:
         tool_name="set_user_status",
         description="Set user status",
         args_schema=SetUserStatusInput,
+        when_to_use=[
+            "User wants to set/update their Slack status",
+            "User mentions 'Slack' + wants to change status",
+            "User asks to update status"
+        ],
+        when_not_to_use=[
+            "User wants to send message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Set my Slack status to 'In a meeting'",
+            "Update my status in Slack",
+            "Change Slack status"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, expiration: Optional[str] = None) -> Tuple[bool, str]:
         """Set user status"""
@@ -1229,6 +1500,23 @@ class Slack:
         tool_name="schedule_message",
         description="Schedule a message to be sent at a specific time",
         args_schema=ScheduleMessageInput,
+        when_to_use=[
+            "User wants to schedule message for later",
+            "User mentions 'Slack' + wants to schedule",
+            "User asks to send message at specific time"
+        ],
+        when_not_to_use=[
+            "User wants to send now (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Schedule message for tomorrow",
+            "Send message at 3pm in Slack",
+            "Schedule Slack message"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
         """Schedule a message to be sent at a specific time"""
@@ -1265,6 +1553,23 @@ class Slack:
         tool_name="pin_message",
         description="Pin a message to a channel",
         args_schema=PinMessageInput,
+        when_to_use=[
+            "User wants to pin a message in channel",
+            "User mentions 'Slack' + wants to pin message",
+            "User asks to pin a message"
+        ],
+        when_not_to_use=[
+            "User wants to send message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Pin this message in #general",
+            "Pin a message in Slack",
+            "Make message pinned"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Pin a message to a channel"""
@@ -1295,6 +1600,23 @@ class Slack:
         tool_name="get_unread_messages",
         description="Get unread messages from a channel",
         args_schema=GetUnreadMessagesInput,
+        when_to_use=[
+            "User wants to see unread/new messages",
+            "User mentions 'Slack' + wants unread messages",
+            "User asks for new messages in channel"
+        ],
+        when_not_to_use=[
+            "User wants all messages (use get_channel_history)",
+            "User wants to send message (use send_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show unread messages in #general",
+            "Get new messages from Slack",
+            "What's unread in channel?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
         """Get unread messages from a channel"""
@@ -1352,6 +1674,23 @@ class Slack:
         tool_name="get_scheduled_messages",
         description="Get scheduled messages",
         args_schema=GetScheduledMessagesInput,
+        when_to_use=[
+            "User wants to see scheduled/pending messages",
+            "User mentions 'Slack' + wants scheduled messages",
+            "User asks for pending scheduled messages"
+        ],
+        when_not_to_use=[
+            "User wants to schedule message (use schedule_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show scheduled messages",
+            "What messages are scheduled in Slack?",
+            "List pending scheduled messages"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
         """Get scheduled messages"""
@@ -1379,6 +1718,23 @@ class Slack:
         tool_name="send_message_with_mentions",
         description="Send a message with user mentions",
         args_schema=SendMessageWithMentionsInput,
+        when_to_use=[
+            "User wants to send message and mention users",
+            "User mentions 'Slack' + wants to @mention people",
+            "User asks to notify users in message"
+        ],
+        when_not_to_use=[
+            "User wants simple message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Send message and mention @user1 and @user2",
+            "Notify team in Slack message",
+            "Send message with mentions"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
         """Send a message with user mentions"""
@@ -1431,6 +1787,23 @@ class Slack:
         tool_name="get_users_list",
         description="Get list of all users in the organization",
         args_schema=GetUsersListInput,
+        when_to_use=[
+            "User wants to list all Slack users",
+            "User mentions 'Slack' + wants user list",
+            "User asks for all users in workspace"
+        ],
+        when_not_to_use=[
+            "User wants specific user info (use get_user_info)",
+            "User wants to send message (use send_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all Slack users",
+            "Show me users in workspace",
+            "Get all Slack users"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get list of all users in the organization"""
@@ -1460,7 +1833,24 @@ class Slack:
         app_name="slack",
         tool_name="get_user_conversations",
         description="Get conversations for a specific user",
-        args_schema=GetUserConversationsInput
+        args_schema=GetUserConversationsInput,
+        when_to_use=[
+            "User wants to see conversations for a user",
+            "User mentions 'Slack' + wants user's conversations",
+            "User asks for channels/DMs for a user"
+        ],
+        when_not_to_use=[
+            "User wants user info (use get_user_info)",
+            "User wants to send message (use send_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "What channels is user@company.com in?",
+            "Show conversations for @username",
+            "Get user's Slack conversations"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_user_conversations(self, user: str, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get conversations for a specific user"""
@@ -1495,6 +1885,23 @@ class Slack:
         tool_name="get_user_groups",
         description="Get list of user groups in the organization",
         args_schema=GetUserGroupsInput,
+        when_to_use=[
+            "User wants to list Slack user groups",
+            "User mentions 'Slack' + wants user groups",
+            "User asks for all user groups"
+        ],
+        when_not_to_use=[
+            "User wants specific group info (use get_user_group_info)",
+            "User wants user info (use get_user_info)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all Slack user groups",
+            "Show user groups in workspace",
+            "Get all user groups"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get list of user groups in the organization"""
@@ -1525,6 +1932,23 @@ class Slack:
         tool_name="get_user_group_info",
         description="Get information about a specific user group",
         args_schema=GetUserGroupInfoInput,
+        when_to_use=[
+            "User wants info about a specific user group",
+            "User mentions 'Slack' + wants group details",
+            "User asks about a user group"
+        ],
+        when_not_to_use=[
+            "User wants all groups (use get_user_groups)",
+            "User wants user info (use get_user_info)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get info about user group X",
+            "Show details of Slack user group",
+            "What is in user group?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get information about a specific user group"""
@@ -1553,6 +1977,23 @@ class Slack:
         tool_name="get_user_channels",
         description="Get channels that a specific user is a member of",
         args_schema=GetUserChannelsInput,
+        when_to_use=[
+            "User wants to see channels a user is in",
+            "User mentions 'Slack' + wants user's channels",
+            "User asks what channels someone is in"
+        ],
+        when_not_to_use=[
+            "User wants all channels (use fetch_channels)",
+            "User wants user info (use get_user_info)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "What channels is user@company.com in?",
+            "Show channels for @username",
+            "Get user's Slack channels"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_user_channels(self, user: str, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
         """Get channels that a specific user is a member of"""
@@ -1584,6 +2025,23 @@ class Slack:
         tool_name="delete_message",
         description="Delete a message from a channel",
         args_schema=DeleteMessageInput,
+        when_to_use=[
+            "User wants to delete a message",
+            "User mentions 'Slack' + wants to delete",
+            "User asks to remove a message"
+        ],
+        when_not_to_use=[
+            "User wants to send message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Delete message in #general",
+            "Remove a Slack message",
+            "Delete this message"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
@@ -1619,6 +2077,23 @@ class Slack:
         tool_name="update_message",
         description="Update an existing message in a channel",
         args_schema=UpdateMessageInput,
+        when_to_use=[
+            "User wants to edit/update a message",
+            "User mentions 'Slack' + wants to edit message",
+            "User asks to modify a message"
+        ],
+        when_not_to_use=[
+            "User wants to send new message (use send_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Edit message in #general",
+            "Update a Slack message",
+            "Change message text"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Update an existing message"""
@@ -1659,6 +2134,23 @@ class Slack:
         tool_name="get_message_permalink",
         description="Get a permalink for a specific message",
         args_schema=GetMessagePermalinkInput,
+        when_to_use=[
+            "User wants link to a specific message",
+            "User mentions 'Slack' + wants message link",
+            "User asks for message URL"
+        ],
+        when_not_to_use=[
+            "User wants to read messages (use get_channel_history)",
+            "User wants to send message (use send_message)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get link to message",
+            "Share message permalink",
+            "Get message URL"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Get a permalink for a specific message"""
@@ -1686,6 +2178,23 @@ class Slack:
         tool_name="get_reactions",
         description="Get reactions for a specific message",
         args_schema=GetReactionsInput,
+        when_to_use=[
+            "User wants to see reactions on a message",
+            "User mentions 'Slack' + wants message reactions",
+            "User asks for emoji reactions"
+        ],
+        when_not_to_use=[
+            "User wants to add reaction (use add_reaction)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show reactions on message",
+            "Get emoji reactions",
+            "What reactions does message have?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
         """Get reactions for a specific message"""
@@ -1718,6 +2227,23 @@ class Slack:
         tool_name="remove_reaction",
         description="Remove a reaction from a message",
         args_schema=RemoveReactionInput,
+        when_to_use=[
+            "User wants to remove emoji reaction",
+            "User mentions 'Slack' + wants to remove reaction",
+            "User asks to unreact"
+        ],
+        when_not_to_use=[
+            "User wants to add reaction (use add_reaction)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Remove thumbs up from message",
+            "Unreact to message",
+            "Remove reaction in Slack"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""
@@ -1747,6 +2273,23 @@ class Slack:
         tool_name="get_pinned_messages",
         description="Get pinned messages from a channel",
         args_schema=GetPinnedMessagesInput,
+        when_to_use=[
+            "User wants to see pinned messages",
+            "User mentions 'Slack' + wants pinned messages",
+            "User asks for pinned content"
+        ],
+        when_not_to_use=[
+            "User wants to pin message (use pin_message)",
+            "User wants all messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show pinned messages in #general",
+            "Get pinned messages from Slack",
+            "What's pinned in channel?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
         """Get pinned messages from a channel"""
@@ -1770,6 +2313,23 @@ class Slack:
         tool_name="unpin_message",
         description="Unpin a message from a channel",
         args_schema=UnpinMessageInput,
+        when_to_use=[
+            "User wants to unpin a message",
+            "User mentions 'Slack' + wants to unpin",
+            "User asks to remove pin"
+        ],
+        when_not_to_use=[
+            "User wants to pin message (use pin_message)",
+            "User wants to read messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Unpin message in #general",
+            "Remove pin from message",
+            "Unpin a Slack message"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Unpin a message from a channel"""
@@ -1798,6 +2358,23 @@ class Slack:
         tool_name="get_thread_replies",
         description="Get replies in a thread",
         args_schema=GetThreadRepliesInput,
+        when_to_use=[
+            "User wants to see thread replies",
+            "User mentions 'Slack' + wants thread replies",
+            "User asks for conversation thread"
+        ],
+        when_not_to_use=[
+            "User wants to reply (use reply_to_message)",
+            "User wants channel messages (use get_channel_history)",
+            "No Slack mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show replies in thread",
+            "Get thread conversation",
+            "What replies are in this thread?"
+        ],
+        category=ToolCategory.COMMUNICATION
     )
     def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get replies in a thread"""

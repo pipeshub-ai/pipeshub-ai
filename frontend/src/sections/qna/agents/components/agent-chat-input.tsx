@@ -40,6 +40,7 @@ import { KnowledgeBase } from '../services/api';
 
 export interface Model {
   provider: string;
+  modelKey: string;
   modelName: string;
 }
 
@@ -461,7 +462,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       // Pass the persistent selected items with correct IDs/names for API
       await onSubmit(
         trimmedValue,
-        selectedModel?.modelName,        
+        selectedModel?.modelKey,        
         selectedModel?.modelName,        
         selectedChatMode?.id,            
         selectedTools,                  

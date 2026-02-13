@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Type, Uni
 if TYPE_CHECKING:
     pass
 
-from app.connectors.core.registry.tool_builder import ToolCategory, ToolDefinition
+from app.connectors.core.registry.tool_builder import ToolDefinition, ToolsetCategory
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ def Toolset(
     app_group: str,
     supported_auth_types: Union[str, List[str]],  # Supported auth types (user selects one during creation)
     description: str = "",
-    category: ToolCategory = ToolCategory.APP,
+    category: ToolsetCategory = ToolsetCategory.APP,
     config: Optional[Dict[str, Any]] = None,
     tools: Optional[List[ToolDefinition]] = None,
     internal: bool = False  # If True, toolset is internal and not sent to frontend
@@ -47,7 +47,7 @@ def Toolset(
             app_group="Atlassian",
             supported_auth_types=["OAUTH", "API_TOKEN"],
             description="Jira issue management tools",
-            category=ToolCategory.APP,
+            category=ToolsetCategory.APP,
             tools=[...]
         )
         class JiraToolset:
@@ -78,12 +78,21 @@ def Toolset(
                 })
 
         # Store metadata in the class (no authType - it comes from etcd/database when toolset is created)
+        # Safely extract category value
+        category_value = category
+        if hasattr(category, 'value'):
+            category_value = category.value
+        elif isinstance(category, str):
+            category_value = category
+        else:
+            category_value = str(category)
+
         cls._toolset_metadata = {
             "name": name,
             "appGroup": app_group,
             "supportedAuthTypes": supported_auth_types_list,  # Supported types (user selects one during creation)
             "description": description,
-            "category": category.value,
+            "category": category_value,
             "config": config or {},
             "tools": tools_dict,
             "toolsetClass": cls,  # Store reference to the class for tool discovery
@@ -243,7 +252,10 @@ class ToolsetRegistry:
                 if hasattr(attr, '_tool_metadata'):
                     tool_metadata = attr._tool_metadata
                     tools[tool_metadata.tool_name] = attr
-            except Exception:
+            except Exception as e:
+                import traceback
+                logger.error(f"Failed to discover tools from class {toolset_class.__name__}: {e}", exc_info=True)
+                logger.debug(f"Full traceback for {toolset_class.__name__}:\n{traceback.format_exc()}")
                 continue
 
         # Also check class __dict__ directly for methods that might not be found by getmembers
@@ -259,7 +271,10 @@ class ToolsetRegistry:
                     if hasattr(actual_func, '_tool_metadata'):
                         tool_metadata = actual_func._tool_metadata
                         tools[tool_metadata.tool_name] = actual_func
-            except Exception:
+            except Exception as e:
+                import traceback
+                logger.error(f"Failed to discover tools from class {toolset_class.__name__}: {e}", exc_info=True)
+                logger.debug(f"Full traceback for {toolset_class.__name__}:\n{traceback.format_exc()}")
                 continue
 
         return tools
@@ -351,7 +366,9 @@ class ToolsetRegistry:
                         self.register_toolset(obj)
 
             except Exception as e:
-                logger.error(f"Failed to discover toolsets in {module_path}: {e}")
+                import traceback
+                logger.error(f"Failed to discover toolsets in {module_path}: {e}", exc_info=True)
+                logger.debug(f"Full traceback for {module_path}:\n{traceback.format_exc()}")
 
     def auto_discover_toolsets(self) -> None:
         """Auto-discover toolsets from action files"""

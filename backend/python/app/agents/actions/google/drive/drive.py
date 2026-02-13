@@ -5,7 +5,9 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -13,8 +15,8 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
@@ -87,11 +89,17 @@ class GetFilePermissionsInput(BaseModel):
     page_size: Optional[int] = Field(default=None, description="Maximum number of permissions to return")
 
 
+class GetSharedDrivesInput(BaseModel):
+    """Schema for getting shared drives"""
+    page_size: Optional[int] = Field(default=None, description="Maximum number of drives to return per page")
+    query: Optional[str] = Field(default=None, description="Search query for shared drives")
+
+
 # Register Google Drive toolset
 @ToolsetBuilder("Drive")\
     .in_group("Google Workspace")\
     .with_description("Google Drive integration for file management, search, and collaboration")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Drive",
@@ -154,6 +162,23 @@ class GoogleDrive:
         tool_name="get_files_list",
         description="Get list of files in Google Drive",
         args_schema=GetFilesListInput,
+        when_to_use=[
+            "User mentions 'Drive' or 'Google Drive'",
+            "List/browse file requests",
+            "'my files' with Drive context"
+        ],
+        when_not_to_use=[
+            "No Drive mention (use retrieval)",
+            "Search by content (use drive.search_files)",
+            "Create files (use other tools)"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show me my Drive files",
+            "List all files in my Drive",
+            "What files do I have in Drive?"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def get_files_list(
         self,
@@ -274,6 +299,24 @@ class GoogleDrive:
         tool_name="get_file_details",
         description="Get detailed information about a file",
         args_schema=GetFileDetailsInput,
+        when_to_use=[
+            "User wants details about a specific file",
+            "User mentions 'Drive' + has file ID",
+            "User asks about file metadata"
+        ],
+        when_not_to_use=[
+            "User wants to list files (use get_files_list)",
+            "User wants to search files (use search_files)",
+            "User wants info ABOUT Drive (use retrieval)",
+            "No Drive mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get details for file ID",
+            "Show file information",
+            "What is this file?"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def get_file_details(
         self,
@@ -314,6 +357,24 @@ class GoogleDrive:
         tool_name="create_folder",
         description="Create a new folder in Google Drive",
         args_schema=CreateFolderInput,
+        when_to_use=[
+            "User wants to create a folder",
+            "User mentions 'Drive' + wants to create folder",
+            "User asks to make a new folder"
+        ],
+        when_not_to_use=[
+            "User wants to list files (use get_files_list)",
+            "User wants to search files (use search_files)",
+            "User wants info ABOUT Drive (use retrieval)",
+            "No Drive mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create folder in Drive",
+            "Make a new folder",
+            "Add folder to Drive"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def create_folder(
         self,
@@ -372,6 +433,23 @@ class GoogleDrive:
         tool_name="search_files",
         description="Search for files in Google Drive using query syntax",
         args_schema=SearchFilesInput,
+        when_to_use=[
+            "User wants to search for files by name/content in Drive",
+            "User mentions 'Drive' + wants to search files",
+            "User asks to find files matching criteria"
+        ],
+        when_not_to_use=[
+            "User wants to list all files (use get_files_list)",
+            "User wants info ABOUT Drive (use retrieval)",
+            "No Drive mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Search for files named 'report' in Drive",
+            "Find PDF files in my Drive",
+            "Search Drive for documents"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def search_files(
         self,
@@ -417,8 +495,25 @@ class GoogleDrive:
     @tool(
         app_name="drive",
         tool_name="get_drive_info",
-        description="Get information about the user's Drive"
-        # No args_schema needed (no parameters)
+        description="Get information about the user's Drive",
+        when_to_use=[
+            "User wants Drive account/storage info",
+            "User mentions 'Drive' + wants account details",
+            "User asks about Drive storage/quota"
+        ],
+        when_not_to_use=[
+            "User wants files (use get_files_list)",
+            "User wants to search files (use search_files)",
+            "User wants info ABOUT Drive (use retrieval)",
+            "No Drive mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get my Drive info",
+            "Show Drive storage quota",
+            "What's my Drive account info?"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def get_drive_info(self) -> tuple[bool, str]:
         """Get information about the user's Drive"""
@@ -446,7 +541,25 @@ class GoogleDrive:
         app_name="drive",
         tool_name="get_shared_drives",
         description="Get list of shared drives",
-        args_schema=GetFilesListInput,  # Reuse schema (has page_size and query)
+        args_schema=GetSharedDrivesInput,
+        when_to_use=[
+            "User wants to list shared/team drives",
+            "User mentions 'Drive' + wants shared drives",
+            "User asks for team drives"
+        ],
+        when_not_to_use=[
+            "User wants files (use get_files_list)",
+            "User wants to search files (use search_files)",
+            "User wants info ABOUT Drive (use retrieval)",
+            "No Drive mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List shared drives",
+            "Show team drives in Drive",
+            "Get all shared drives"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def get_shared_drives(
         self,
@@ -482,6 +595,24 @@ class GoogleDrive:
         tool_name="get_file_permissions",
         description="Get permissions for a specific file",
         args_schema=GetFilePermissionsInput,
+        when_to_use=[
+            "User wants to see file permissions/sharing",
+            "User mentions 'Drive' + wants file permissions",
+            "User asks who has access to file"
+        ],
+        when_not_to_use=[
+            "User wants file details (use get_file_details)",
+            "User wants to list files (use get_files_list)",
+            "User wants info ABOUT Drive (use retrieval)",
+            "No Drive mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get permissions for file",
+            "Show who has access to file",
+            "What are file permissions?"
+        ],
+        category=ToolCategory.FILE_STORAGE
     )
     def get_file_permissions(
         self,
