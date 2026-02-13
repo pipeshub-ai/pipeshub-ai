@@ -29,7 +29,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppRole,
@@ -5260,7 +5260,7 @@ class BaseArangoService:
             if not mime_type:
                 mime_type = record.get("mimeType", "")
 
-            
+
             file_content = ""
             if record.get("origin") != OriginTypes.UPLOAD.value:
 
@@ -8938,7 +8938,7 @@ class BaseArangoService:
             record_id = record_doc["_key"]
             self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
 
-           
+
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface

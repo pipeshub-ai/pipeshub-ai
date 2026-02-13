@@ -25,7 +25,6 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import config_node_constants
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
