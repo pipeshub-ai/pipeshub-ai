@@ -237,7 +237,7 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
             if state_logger:
                 state_logger.error(f"Failed to load {full_name}: {e}")
 
-    tools = user_tools + internal_tools
+    tools = internal_tools + user_tools
 
     # Apply tool limit
     if len(tools) > MAX_TOOLS_LIMIT:

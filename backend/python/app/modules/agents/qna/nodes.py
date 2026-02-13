@@ -1,14 +1,15 @@
 """
-Agent Node Implementations - Refactored
+Agent Node Implementations
 
-Cleaner architecture with:
-- Simplified planner prompt (removed redundant essential tools concept)
-- Better error handling
-- Reduced branching complexity
-- Clearer tool result processing
+Enterprise-grade agent system with:
+- Reliable cascading tool execution
+- Smart placeholder resolution
+- Robust error handling and recovery
+- Accurate tool result processing
+- Context-aware conversation handling
+- Comprehensive logging and debugging
 """
 
-from __future__ import annotations
 
 import asyncio
 import functools
@@ -17,7 +18,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
@@ -28,18 +29,26 @@ from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.response_prompt import create_response_messages
 from app.utils.streaming import stream_llm_response
 
-# Constants
-STREAMING_CHUNK_DELAY = 0.015
-TOOL_RESULT_TUPLE_LENGTH = 2
-DESCRIPTION_MAX_LENGTH = 80
-USER_QUERY_MAX_LENGTH = 300
-BOT_RESPONSE_MAX_LENGTH = 800
-MAX_AVAILABLE_TOOLS_DISPLAY = 20  # Maximum number of tools to display in error messages
-MAX_TOOL_RESULT_PREVIEW_LENGTH = 500  # Maximum length for tool result preview
+# ============================================================================
+# CONSTANTS & CONFIGURATION
+# ============================================================================
 
+# Logging
 logger = logging.getLogger(__name__)
 
-# Opik tracer
+# Tool execution constants
+TOOL_RESULT_TUPLE_LENGTH = 2
+MAX_PARALLEL_TOOLS = 10
+TOOL_TIMEOUT_SECONDS = 60.0
+RETRIEVAL_TIMEOUT_SECONDS = 45.0  # Faster timeout for retrieval
+
+# Response formatting constants
+USER_QUERY_MAX_LENGTH = 300
+BOT_RESPONSE_MAX_LENGTH = 800
+MAX_TOOL_RESULT_PREVIEW_LENGTH = 500
+MAX_AVAILABLE_TOOLS_DISPLAY = 20
+
+# Opik tracer initialization
 _opik_tracer = None
 _opik_api_key = os.getenv("OPIK_API_KEY")
 _opik_workspace = os.getenv("OPIK_WORKSPACE")
@@ -47,26 +56,36 @@ if _opik_api_key and _opik_workspace:
     try:
         from opik.integrations.langchain import OpikTracer
         _opik_tracer = OpikTracer()
-        logger.info("Opik tracer initialized")
+        logger.info("✅ Opik tracer initialized")
     except Exception as e:
-        logger.warning(f"Failed to initialize Opik tracer: {e}")
+        logger.warning(f"⚠️ Failed to initialize Opik tracer: {e}")
 
 
 # ============================================================================
-# Configuration
+# CONFIGURATION CLASS
 # ============================================================================
 
 class NodeConfig:
-    """Node behavior configuration"""
+    """Centralized node behavior configuration"""
     MAX_PARALLEL_TOOLS: int = 10
     TOOL_TIMEOUT_SECONDS: float = 60.0
-    PLANNER_TIMEOUT_SECONDS: float = 30.0
-    STREAM_CHUNK_SIZE: int = 3
-    STREAM_DELAY: float = 0.01
+    RETRIEVAL_TIMEOUT_SECONDS: float = 45.0  # Faster timeout for retrieval
+    PLANNER_TIMEOUT_SECONDS: float = 20.0
+    REFLECTION_TIMEOUT_SECONDS: float = 8.0
+
+    # Retry & iteration limits
+    MAX_RETRIES: int = 1
+    MAX_ITERATIONS: int = 3
+    MAX_VALIDATION_RETRIES: int = 2
+
+    # Query limits
+    MAX_RETRIEVAL_QUERIES: int = 3
+    MAX_QUERY_LENGTH: int = 100
+    MAX_QUERY_WORDS: int = 8
 
 
 # ============================================================================
-# Result Cleaner (same as before, proven logic)
+# RESULT CLEANING UTILITIES
 # ============================================================================
 
 REMOVE_FIELDS = {
@@ -88,22 +107,6 @@ REMOVE_FIELDS = {
     "changelog", "history", "worklog", "worklogs",
 }
 
-KEEP_FIELDS = {
-    "id", "key", "name", "title", "slug",
-    "content", "body", "text", "message", "description", "summary",
-    "value", "data", "result", "results", "items", "issues", "files",
-    "status", "state", "type", "kind", "category",
-    "issuetype", "priority", "resolution",
-    "assignee", "reporter", "author", "creator", "owner", "user",
-    "accountId", "displayName", "emailAddress", "email",
-    "created", "updated", "modified", "createdAt", "updatedAt",
-    "date", "timestamp", "time", "dueDate",
-    "url", "link", "href", "webUrl", "permalink",
-    "count", "size", "length",
-    "labels", "tags", "components",
-    "parent", "children", "project", "workspace", "channel", "folder",
-}
-
 
 def clean_tool_result(result: object) -> object:
     """Clean tool result by removing verbose fields"""
@@ -120,7 +123,22 @@ def clean_tool_result(result: object) -> object:
             return result
 
     if isinstance(result, dict):
-        return _clean_dict(result)
+        cleaned = {}
+        for key, value in result.items():
+            if key in REMOVE_FIELDS or key.lower() in REMOVE_FIELDS:
+                continue
+            if key.startswith("_") or key.startswith("$"):
+                continue
+
+            if isinstance(value, dict):
+                cleaned_value = clean_tool_result(value)
+                if cleaned_value:
+                    cleaned[key] = cleaned_value
+            elif isinstance(value, list):
+                cleaned[key] = [clean_tool_result(item) for item in value]
+            else:
+                cleaned[key] = value
+        return cleaned
 
     if isinstance(result, list):
         return [clean_tool_result(item) for item in result]
@@ -128,36 +146,8 @@ def clean_tool_result(result: object) -> object:
     return result
 
 
-def _clean_dict(data: Dict) -> Dict:
-    """Clean dictionary"""
-    cleaned = {}
-
-    for key, value in data.items():
-        key_lower = key.lower()
-
-        if key in REMOVE_FIELDS or key_lower in REMOVE_FIELDS:
-            continue
-
-        if key.startswith("_") or key.startswith("$"):
-            continue
-
-        if key_lower in ("self", "resource", "api", "endpoint"):
-            continue
-
-        if isinstance(value, dict):
-            cleaned_value = _clean_dict(value)
-            if cleaned_value:
-                cleaned[key] = cleaned_value
-        elif isinstance(value, list):
-            cleaned[key] = [clean_tool_result(item) for item in value]
-        else:
-            cleaned[key] = value
-
-    return cleaned
-
-
 def format_result_for_llm(result: object, tool_name: str = "") -> str:
-    """Format result for LLM"""
+    """Format result for LLM consumption"""
     if isinstance(result, tuple) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
         success, data = result
         status = "✅ Success" if success else "❌ Failed"
@@ -174,7 +164,665 @@ def format_result_for_llm(result: object, tool_name: str = "") -> str:
 
 
 # ============================================================================
-# Planner Prompts - Simplified (no essential tools concept)
+# TOOL RESULT PROCESSING - RELIABLE EXTRACTION
+# ============================================================================
+
+class ToolResultExtractor:
+    """Reliable extraction of data from tool results"""
+
+    @staticmethod
+    def extract_success_status(result: Any) -> bool:
+        """
+        Reliably detect if a tool execution succeeded.
+
+        Handles multiple result formats:
+        - Tuple: (bool, data)
+        - Dict: {"success": bool, ...}
+        - String: checks for error indicators
+        """
+        if result is None:
+            return False
+
+        # Tuple format: (success, data)
+        if isinstance(result, tuple) and len(result) >= 1:
+            if isinstance(result[0], bool):
+                return result[0]
+
+        # Dict format
+        if isinstance(result, dict):
+            # Check success field
+            if "success" in result and isinstance(result["success"], bool):
+                return result["success"]
+            # Check ok field
+            if "ok" in result and isinstance(result["ok"], bool):
+                return result["ok"]
+            # Check for error field
+            if "error" in result and result["error"] not in (None, "", "null"):
+                return False
+
+        # String format - check for error indicators
+        result_str = str(result).lower()
+        error_indicators = [
+            "error:", '"error": "', "'error': '",
+            "failed", "failure", "exception",
+            "traceback", "status_code: 4", "status_code: 5"
+        ]
+
+        # Ignore null errors
+        if '"error": null' in result_str or "'error': none" in result_str:
+            return True
+
+        return not any(ind in result_str for ind in error_indicators)
+
+    @staticmethod
+    def extract_data_from_result(result: Any) -> Any:
+        """
+        Extract the actual data from a tool result.
+
+        Handles:
+        - Tuple: (success, data) → returns data
+        - Dict: tries to parse JSON strings
+        - Other: returns as-is
+        """
+        # Handle tuple format
+        if isinstance(result, tuple) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+            _, data = result
+            return ToolResultExtractor.extract_data_from_result(data)
+
+        # Handle JSON strings
+        if isinstance(result, str):
+            try:
+                parsed = json.loads(result)
+                return parsed
+            except (json.JSONDecodeError, TypeError):
+                # ✅ NEW: Return the string directly (for retrieval tool)
+                # Retrieval returns formatted string, not JSON
+                return result
+
+        return result
+
+    @staticmethod
+    def extract_field_from_data(data: Any, field_path: List[str]) -> Optional[Any]:
+        """
+        Extract a specific field from data using a field path.
+
+        Examples:
+        - ["data", "key"] → data.key
+        - ["data", "results", "0", "id"] → data.results[0].id
+
+        Handles:
+        - Nested dicts
+        - Arrays (auto-extracts from first item)
+        - JSON strings
+        """
+        current = data
+
+        for field in field_path:
+            if current is None:
+                return None
+
+            # Handle dict
+            if isinstance(current, dict):
+                current = current.get(field)
+
+                # If we got an array, use first item for next navigation
+                if isinstance(current, list) and len(current) > 0:
+                    current = current[0]
+
+            # Handle array with index
+            elif isinstance(current, list):
+                try:
+                    # Try to parse as index
+                    index = int(field)
+                    if 0 <= index < len(current):
+                        current = current[index]
+                    else:
+                        return None
+                except ValueError:
+                    # Not an index, try to get field from first item
+                    if len(current) > 0 and isinstance(current[0], dict):
+                        current = current[0].get(field)
+                    else:
+                        return None
+
+            # Handle JSON string
+            elif isinstance(current, str):
+                try:
+                    parsed = json.loads(current)
+                    if isinstance(parsed, dict):
+                        current = parsed.get(field)
+                    else:
+                        return None
+                except (json.JSONDecodeError, TypeError):
+                    return None
+            else:
+                return None
+
+        return current
+
+
+# ============================================================================
+# PLACEHOLDER RESOLUTION - SIMPLIFIED & RELIABLE
+# ============================================================================
+
+class PlaceholderResolver:
+    """
+    Simplified placeholder resolution for cascading tools.
+
+    Supports formats:
+    - {{tool_name.field}} → single field
+    - {{tool_name.data.key}} → nested field
+    - {{tool_name.results.0.id}} → array index
+    """
+
+    PLACEHOLDER_PATTERN = re.compile(r'\{\{([^}]+)\}\}')
+
+    @classmethod
+    def has_placeholders(cls, args: Dict[str, Any]) -> bool:
+        """Check if args contain any placeholders"""
+        args_str = json.dumps(args, default=str)
+        return bool(cls.PLACEHOLDER_PATTERN.search(args_str))
+
+    @classmethod
+    def resolve_all(
+        cls,
+        args: Dict[str, Any],
+        results_by_tool: Dict[str, Any],
+        log: logging.Logger
+    ) -> Dict[str, Any]:
+        """
+        Resolve all placeholders in args using results from previous tools.
+
+        Returns:
+            New dict with all placeholders resolved
+        """
+        resolved = {}
+
+        for key, value in args.items():
+            if isinstance(value, str) and '{{' in value:
+                resolved[key] = cls._resolve_string_value(value, results_by_tool, log)
+            elif isinstance(value, dict):
+                resolved[key] = cls.resolve_all(value, results_by_tool, log)
+            elif isinstance(value, list):
+                resolved[key] = [
+                    cls.resolve_all(item, results_by_tool, log) if isinstance(item, dict)
+                    else cls._resolve_string_value(item, results_by_tool, log) if isinstance(item, str) and '{{' in item
+                    else item
+                    for item in value
+                ]
+            else:
+                resolved[key] = value
+
+        return resolved
+
+    @classmethod
+    def _resolve_string_value(
+        cls,
+        value: str,
+        results_by_tool: Dict[str, Any],
+        log: logging.Logger
+    ) -> str:
+        """Resolve all placeholders in a string value"""
+        matches = cls.PLACEHOLDER_PATTERN.findall(value)
+        resolved_value = value
+
+        for match in matches:
+            replacement = cls._resolve_single_placeholder(match, results_by_tool, log)
+            if replacement is not None:
+                placeholder_full = f"{{{{{match}}}}}"
+                resolved_value = resolved_value.replace(placeholder_full, str(replacement))
+            else:
+                log.warning(f"⚠️ Could not resolve placeholder: {{{{{match}}}}}")
+
+        return resolved_value
+
+    @classmethod
+    def _resolve_single_placeholder(
+        cls,
+        placeholder: str,
+        results_by_tool: Dict[str, Any],
+        log: logging.Logger
+    ) -> Optional[Any]:
+        """
+        Resolve a single placeholder to its value.
+
+        Args:
+            placeholder: e.g., "jira.create_issue.data.key"
+            results_by_tool: {"jira.create_issue": {...}}
+
+        Returns:
+            Extracted value or None if not found
+        """
+        # Parse placeholder into tool_name and field_path
+        tool_name, field_path = cls._parse_placeholder(placeholder, results_by_tool)
+
+        if not tool_name or tool_name not in results_by_tool:
+            log.debug(f"Tool not found for placeholder: {placeholder}")
+            return None
+
+        tool_data = results_by_tool[tool_name]
+
+        # ✅ SPECIAL CASE: Retrieval tool returns string directly
+        if "retrieval" in tool_name.lower() and isinstance(tool_data, str):
+            # If placeholder is just the tool name (no field path), return the string
+            if not field_path or field_path == ['data']:
+                log.info(f"✅ Resolved {{{{{placeholder}}}}} → [retrieval content string]")
+                return tool_data
+            # If they're trying to access a field, we can't (it's a string)
+            log.warning(f"❌ Retrieval tool returns string, cannot access field: {field_path}")
+            return None
+
+        # Extract data using field path (for structured results)
+        extracted = ToolResultExtractor.extract_field_from_data(tool_data, field_path)
+
+        if extracted is not None:
+            log.info(f"✅ Resolved {{{{{placeholder}}}}} → {str(extracted)[:50]}...")
+        else:
+            log.warning(f"❌ Could not extract field from placeholder: {{{{{placeholder}}}}}")
+            log.debug(f"Available data: {str(tool_data)[:200]}")
+
+        return extracted
+
+    @classmethod
+    def _parse_placeholder(
+        cls,
+        placeholder: str,
+        results_by_tool: Dict[str, Any]
+    ) -> Tuple[Optional[str], List[str]]:
+        """
+        Parse placeholder into tool_name and field_path.
+
+        Examples:
+        - "jira.create_issue.data.key" → ("jira.create_issue", ["data", "key"])
+        - "create_issue.key" → ("jira.create_issue", ["key"]) if fuzzy match
+
+        Returns:
+            (tool_name, field_path) or (None, []) if can't parse
+        """
+        # Try exact match first (longest tool names first)
+        sorted_tools = sorted(results_by_tool.keys(), key=len, reverse=True)
+
+        for tool_name in sorted_tools:
+            if placeholder.startswith(tool_name + '.'):
+                # Extract field path
+                remaining = placeholder[len(tool_name) + 1:]
+                field_path = remaining.split('.') if remaining else []
+                return tool_name, field_path
+
+        # Fuzzy match - find tool that matches end of placeholder
+        parts = placeholder.split('.')
+        if len(parts) >= 2:
+            # Try matching the first part against tool names
+            prefix = parts[0]
+            field_path = parts[1:]
+
+            for tool_name in sorted_tools:
+                # Normalize for comparison
+                normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
+                normalized_prefix = prefix.lower().replace('_', '')
+
+                if normalized_prefix in normalized_tool or normalized_tool.endswith(normalized_prefix):
+                    return tool_name, field_path
+
+        return None, []
+
+
+# ============================================================================
+# TOOL EXECUTION - SEQUENTIAL WITH CASCADING SUPPORT
+# ============================================================================
+
+class ToolExecutor:
+    """Handles tool execution with cascading support"""
+
+    @staticmethod
+    async def execute_tools(
+        planned_tools: List[Dict[str, Any]],
+        tools_by_name: Dict[str, Any],
+        llm: Any,
+        state: ChatState,
+        log: logging.Logger,
+        writer: StreamWriter,
+        config: RunnableConfig
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute tools - sequentially if cascading, parallel otherwise.
+
+        Returns:
+            List of tool results with status, result, tool_name, etc.
+        """
+        # Detect if we need sequential execution (cascading)
+        has_cascading = PlaceholderResolver.has_placeholders(
+            {"tools": planned_tools}
+        )
+
+        if has_cascading:
+            log.info("🔗 Cascading detected - executing sequentially")
+            return await ToolExecutor._execute_sequential(
+                planned_tools, tools_by_name, llm, state, log, writer, config
+            )
+        else:
+            log.info("⚡ No cascading - executing in parallel")
+            return await ToolExecutor._execute_parallel(
+                planned_tools, tools_by_name, llm, state, log
+            )
+
+    @staticmethod
+    async def _execute_sequential(
+        planned_tools: List[Dict[str, Any]],
+        tools_by_name: Dict[str, Any],
+        llm: Any,
+        state: ChatState,
+        log: logging.Logger,
+        writer: StreamWriter,
+        config: RunnableConfig
+    ) -> List[Dict[str, Any]]:
+        """Execute tools sequentially with placeholder resolution"""
+        from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
+
+        tool_results = []
+        results_by_tool = {}  # Store successful results for placeholder resolution
+
+        for i, tool_call in enumerate(planned_tools):
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("args", {})
+
+            # Normalize tool name
+            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+
+            if actual_tool_name not in tools_by_name:
+                log.warning(f"❌ Tool not found: {tool_name}")
+                tool_results.append({
+                    "tool_name": tool_name,
+                    "result": f"Error: Tool '{tool_name}' not found",
+                    "status": "error",
+                    "tool_id": f"call_{i}_{tool_name}"
+                })
+                continue
+
+            # Resolve placeholders
+            resolved_args = PlaceholderResolver.resolve_all(tool_args, results_by_tool, log)
+
+            # Check for unresolved placeholders
+            if PlaceholderResolver.has_placeholders(resolved_args):
+                unresolved = PlaceholderResolver.PLACEHOLDER_PATTERN.findall(json.dumps(resolved_args))
+                log.error(f"❌ Unresolved placeholders in {actual_tool_name}: {unresolved}")
+                tool_results.append({
+                    "tool_name": actual_tool_name,
+                    "result": f"Error: Unresolved placeholders: {', '.join(set(unresolved))}",
+                    "status": "error",
+                    "tool_id": f"call_{i}_{actual_tool_name}"
+                })
+                continue
+
+            # Stream status
+            safe_stream_write(writer, {
+                "event": "status",
+                "data": {"status": "executing", "message": f"Executing {actual_tool_name}..."}
+            }, config)
+
+            # Execute tool
+            result_dict = await ToolExecutor._execute_single_tool(
+                tool=tools_by_name[actual_tool_name],
+                tool_name=actual_tool_name,
+                tool_args=resolved_args,
+                tool_id=f"call_{i}_{actual_tool_name}",
+                state=state,
+                log=log
+            )
+
+            tool_results.append(result_dict)
+
+            # Store successful results for next placeholder resolution
+            if result_dict.get("status") == "success":
+                # Extract clean data for placeholder resolution
+                result_data = ToolResultExtractor.extract_data_from_result(
+                    result_dict.get("result")
+                )
+                results_by_tool[actual_tool_name] = result_data
+                log.debug(f"✅ Stored result for {actual_tool_name} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
+            else:
+                log.debug(f"❌ Skipped storing failed tool: {actual_tool_name}")
+
+        return tool_results
+
+    @staticmethod
+    async def _execute_parallel(
+        planned_tools: List[Dict[str, Any]],
+        tools_by_name: Dict[str, Any],
+        llm: Any,
+        state: ChatState,
+        log: logging.Logger
+    ) -> List[Dict[str, Any]]:
+        """Execute tools in parallel"""
+        from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
+
+        tasks = []
+
+        for i, tool_call in enumerate(planned_tools[:NodeConfig.MAX_PARALLEL_TOOLS]):
+            tool_name = tool_call.get("name", "")
+            tool_args = tool_call.get("args", {})
+
+            # Normalize tool name
+            normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
+
+            if actual_tool_name not in tools_by_name:
+                log.warning(f"❌ Tool not found: {tool_name}")
+                # Create error result directly
+                tasks.append(asyncio.create_task(asyncio.sleep(0, result={
+                    "tool_name": tool_name,
+                    "result": f"Error: Tool '{tool_name}' not found",
+                    "status": "error",
+                    "tool_id": f"call_{i}_{tool_name}"
+                })))
+                continue
+
+            tasks.append(
+                ToolExecutor._execute_single_tool(
+                    tool=tools_by_name[actual_tool_name],
+                    tool_name=actual_tool_name,
+                    tool_args=tool_args,
+                    tool_id=f"call_{i}_{actual_tool_name}",
+                    state=state,
+                    log=log
+                )
+            )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Filter and process results
+        tool_results = []
+        for result in results:
+            if isinstance(result, Exception):
+                log.error(f"❌ Tool execution exception: {result}")
+                continue
+            if isinstance(result, dict):
+                tool_results.append(result)
+
+        return tool_results
+
+    @staticmethod
+    async def _execute_single_tool(
+        tool: object,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_id: str,
+        state: ChatState,
+        log: logging.Logger
+    ) -> Dict[str, Any]:
+        """
+        Execute a single tool with proper timeout and error handling.
+
+        Returns:
+            Dict with: tool_name, result, status, tool_id, args, duration_ms
+        """
+        start_time = time.perf_counter()
+
+        try:
+            # Normalize args
+            if isinstance(tool_args, dict) and "kwargs" in tool_args and len(tool_args) == 1:
+                tool_args = tool_args["kwargs"]
+
+            log.debug(f"⚙️ Executing {tool_name} with args: {json.dumps(tool_args, default=str)[:150]}...")
+
+            # Validate args using Pydantic schema
+            validated_args = await ToolExecutor._validate_and_normalize_args(
+                tool, tool_name, tool_args, log
+            )
+
+            if validated_args is None:
+                # Validation failed - error already logged
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                return {
+                    "tool_name": tool_name,
+                    "result": "Error: Argument validation failed",
+                    "status": "error",
+                    "tool_id": tool_id,
+                    "args": tool_args,
+                    "duration_ms": duration_ms
+                }
+
+            # Determine timeout based on tool type
+            timeout = NodeConfig.TOOL_TIMEOUT_SECONDS
+            if "retrieval" in tool_name.lower():
+                timeout = NodeConfig.RETRIEVAL_TIMEOUT_SECONDS
+
+            # Execute tool
+            result = await asyncio.wait_for(
+                ToolExecutor._run_tool(tool, validated_args),
+                timeout=timeout
+            )
+
+            # Process result
+            success = ToolResultExtractor.extract_success_status(result)
+
+            # Handle retrieval output
+            if "retrieval" in tool_name.lower():
+                content = ToolExecutor._process_retrieval_output(result, state, log)
+            else:
+                content = clean_tool_result(result)
+
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            status = "success" if success else "error"
+
+            log.info(f"{'✅' if success else '❌'} {tool_name}: {duration_ms:.0f}ms")
+
+            return {
+                "tool_name": tool_name,
+                "result": content,
+                "status": status,
+                "tool_id": tool_id,
+                "args": tool_args,
+                "duration_ms": duration_ms
+            }
+
+        except asyncio.TimeoutError:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            error_msg = f"Timeout after {duration_ms:.0f}ms"
+            if "retrieval" in tool_name.lower():
+                error_msg = "Search timed out - query may be too complex. Try simpler query."
+
+            log.error(f"⏱️ {tool_name} timed out after {duration_ms:.0f}ms")
+            return {
+                "tool_name": tool_name,
+                "result": f"Error: {error_msg}",
+                "status": "error",
+                "tool_id": tool_id,
+                "args": tool_args,
+                "duration_ms": duration_ms
+            }
+
+        except Exception as e:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.error(f"💥 {tool_name} failed: {e}", exc_info=True)
+            return {
+                "tool_name": tool_name,
+                "result": f"Error: {type(e).__name__}: {str(e)}",
+                "status": "error",
+                "tool_id": tool_id,
+                "args": tool_args,
+                "duration_ms": duration_ms
+            }
+
+    @staticmethod
+    async def _validate_and_normalize_args(
+        tool: object,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        log: logging.Logger
+    ) -> Optional[Dict[str, Any]]:
+        """Validate and normalize tool args using Pydantic schema"""
+        try:
+            # Get schema
+            args_schema = getattr(tool, 'args_schema', None)
+            if not args_schema:
+                return tool_args  # No validation available
+
+            # Validate
+            validated_model = args_schema.model_validate(tool_args)
+            validated_args = validated_model.model_dump(exclude_unset=True)
+
+            log.debug(f"✅ Validated args for {tool_name}")
+            return validated_args
+
+        except Exception as e:
+            log.error(f"❌ Validation failed for {tool_name}: {e}")
+            return None
+
+    @staticmethod
+    async def _run_tool(tool: object, args: Dict[str, Any]) -> Any:
+        """Run tool using appropriate method"""
+        if hasattr(tool, 'arun'):
+            return await tool.arun(args)
+        elif hasattr(tool, '_run'):
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, functools.partial(tool._run, **args))
+        else:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(None, functools.partial(tool.run, **args))
+
+    @staticmethod
+    def _process_retrieval_output(result: Any, state: ChatState, log: logging.Logger) -> str:
+        """Process retrieval tool output and update state"""
+        try:
+            from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
+
+            # Try to parse as RetrievalToolOutput
+            retrieval_output = None
+
+            if isinstance(result, dict) and "content" in result and "final_results" in result:
+                retrieval_output = RetrievalToolOutput(**result)
+            elif isinstance(result, str):
+                try:
+                    data = json.loads(result)
+                    if isinstance(data, dict) and "content" in data and "final_results" in data:
+                        retrieval_output = RetrievalToolOutput(**data)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            if retrieval_output:
+                state["final_results"] = retrieval_output.final_results
+                state["virtual_record_id_to_result"] = retrieval_output.virtual_record_id_to_result
+
+                if retrieval_output.virtual_record_id_to_result:
+                    state["tool_records"] = list(retrieval_output.virtual_record_id_to_result.values())
+
+                log.info(f"📚 Retrieved {len(retrieval_output.final_results)} knowledge blocks")
+                return retrieval_output.content
+
+        except Exception as e:
+            log.warning(f"⚠️ Could not process retrieval output: {e}")
+
+        return str(result)
+
+
+# ============================================================================
+# PART 2: PLANNER NODE + REFLECTION + HELPER FUNCTIONS
+# ============================================================================
+
+# ============================================================================
+# PLANNER PROMPTS - IMPROVED FOR ACCURACY
 # ============================================================================
 
 JIRA_GUIDANCE = r"""
@@ -182,7 +830,7 @@ JIRA_GUIDANCE = r"""
 
 ### Never Fabricate Data
 - ❌ NEVER invent emails, accountIds, or user identifiers
-- ✅ User email is in the prompt - use `jira.search_users(query="[USER_EMAIL]")` to get accountIds
+- ✅ Use `jira.search_users(query="[USER_EMAIL]")` to get accountIds
 - ✅ Use project keys from Reference Data
 
 ### JQL Syntax Rules
@@ -194,7 +842,6 @@ JIRA_GUIDANCE = r"""
 6. Project: Use KEY (e.g., "PA") not name or ID
 
 ### ⚠️ CRITICAL: Unbounded Query Error
-
 **THE FIX**: Add time filter to EVERY JQL query:
 - ✅ `project = "PA" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`
 - ❌ `project = "PA" AND assignee = currentUser() AND resolution IS EMPTY` (UNBOUNDED!)
@@ -204,20 +851,30 @@ JIRA_GUIDANCE = r"""
 - Last month: `updated >= -30d`
 - Last 3 months: `updated >= -90d`
 - This year: `updated >= startOfYear()`
-
-### Common Patterns (ALL with time filters)
-- "My tickets": `jira.search_users(query="[EMAIL]")` → `assignee = "[accountId]" AND resolution IS EMPTY AND updated >= -30d"`
-- "Recent tickets": `assignee = currentUser() AND updated >= -7d ORDER BY updated DESC`
-- "Unresolved in project": `project = "[KEY]" AND resolution IS EMPTY AND updated >= -30d`
 """
 
 CONFLUENCE_GUIDANCE = r"""
 ## Confluence-Specific Guidance
 
 ### Tool Selection
-- CREATE page → use `confluence.create_page` (NOT get_spaces or get_pages_in_space)
+- CREATE page → use `confluence.create_page`
 - SEARCH/FIND page → use `confluence.search_pages`
 - GET/READ pages → use `confluence.get_pages_in_space` or `confluence.get_page_content`
+
+### Critical Parameter Names (Common Mistakes)
+
+**confluence.search_pages:**
+- ✅ CORRECT: `{"title": "Page Name"}`
+- ❌ WRONG: `{"query": "..."}` or `{"cql": "..."}`
+
+**confluence.create_page:**
+- ✅ CORRECT: `{"space_id": "123", "page_title": "...", "page_content": "..."}`
+- ❌ WRONG: `{"title": "..."}` (use `page_title` not `title`)
+- ❌ WRONG: `{"content": "..."}` (use `page_content` not `content`)
+
+**confluence.get_page_content:**
+- ✅ CORRECT: `{"page_id": "12345"}`
+- ❌ WRONG: `{"id": "..."}` or `{"pageId": "..."}`
 
 ### Space ID Resolution for create_page
 1. **Check Reference Data first** - if `type: "confluence_space"` exists, use its `id` field
@@ -225,122 +882,191 @@ CONFLUENCE_GUIDANCE = r"""
    - If space_id is a key (non-numeric): Call `confluence.get_spaces`, find matching space, extract numeric `id`
    - If space_id is numeric: Use directly
 3. **CRITICAL**: API requires numeric space IDs. Always use `id` field, never `key` field.
+
+### Example Cascading Pattern
+
+Search for page, then get its content:
+```json
+{
+  "tools": [
+    {"name": "confluence.search_pages", "args": {"title": "My Page"}},
+    {"name": "confluence.get_page_content", "args": {"page_id": "{{confluence.search_pages.data.results.id}}"}}
+  ]
+}
+```
 """
 
-PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant.
+PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
 
-## Decision Tree (Follow in order)
-1. **Is it a greeting/simple question?** → `can_answer_directly: true`
-2. **Does user mention a service name?** (Drive, Jira, Slack, Gmail, Calendar, Confluence, etc.) → Use THAT service's tools
-3. **Is it a question without service mention?** (what/how/why/find info) → Use `retrieval.search_internal_knowledge`
-4. **Is it an action?** (create/update/delete) → Use appropriate API tool
+## Core Planning Logic - Understanding User Intent
 
-## Correct Examples (Learn from these)
-- "Hello!" → ✓ `can_answer_directly: true` | ✗ calling tools
-- "What is our vacation policy?" → ✓ `retrieval.search_internal_knowledge` | ✗ `drive.search_files` (no Drive mention)
-- "Show me my Drive files" → ✓ `drive.get_files_list` | ✗ `retrieval.search_internal_knowledge` (Drive mentioned)
-- "Find information about Q4 results" → ✓ `retrieval.search_internal_knowledge` | ✗ `drive.search_files` (no service mention)
-- "Create a Jira ticket" → ✓ `jira.create_issue` | ✗ `retrieval.search_internal_knowledge` (action + Jira mentioned)
-- "Help me prepare for tomorrow's meeting about AI" → ✓ `retrieval.search_internal_knowledge` + `calendar.get_events` (mixed query)
+**Decision Tree (Follow in Order):**
+1. **Simple greeting/thanks?** → `can_answer_directly: true`
+2. **User references previous discussion?** → Use conversation context, minimal tools
+3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
+4. **User wants LIVE/REAL-TIME data from a connected service?** → Use service tools
+5. **User wants INFORMATION ABOUT something?** (from knowledge base/docs) → Use `retrieval.search_internal_knowledge`
+6. **Documentation creation with KB citations in history?** → Start with `retrieval.search_internal_knowledge`
+
+## Tool Selection Principles
+
+**Read tool descriptions carefully** - Each tool has a description, parameters, and usage examples. Use these to determine if a tool matches the user's intent.
+
+**Use SERVICE TOOLS when:**
+- User wants **LIVE/REAL-TIME data** from a connected service (e.g., "list items", "show records", "get data from X")
+- User wants to **PERFORM an action** (create/update/delete/modify resources)
+- User wants **current status** of items in a service
+- User explicitly asks for data **from** a specific service
+- Tool description matches the user's request
+
+**Use RETRIEVAL when:**
+- User wants **INFORMATION ABOUT** a topic/person/concept (e.g., "what is X", "tell me about Y", "who is Z")
+- User wants **DOCUMENTATION** or **KNOWLEDGE** (e.g., "how to X", "best practices for Y")
+- User asks **GENERAL QUESTIONS** that could be answered from knowledge base
+- Query is **AMBIGUOUS** and could be answered from indexed knowledge
+- No service tool description matches the request
+
+**Key Distinction:**
+- **LIVE data requests:** "list/get/show/fetch [items] from [service]" → Use service tools
+- **Information requests:** "what/explain/tell me about [topic]" → Use retrieval
+- **Action requests:** "create/update/delete [resource]" → Use service tools
+
+**Important:** Service data might also be indexed in the knowledge base. Choose based on intent:
+- User wants current/live data → Service tools
+- User wants information/explanation → Retrieval
 
 ## Available Tools
 {available_tools}
 
-**Note**: Tool parameters are shown above for reference. Use the exact parameter names shown. Function calling schemas will validate the parameters automatically.
+**How to Use Tool Descriptions:**
+- Each tool has a name, description, parameters, and usage examples
+- Read the tool description to understand what it does
+- Check parameter schemas to see required vs optional fields
+- Match user intent to tool purpose, not just keywords
+- If multiple tools could work, choose the one that best matches the user's intent
+- Tool descriptions are your primary guide for tool selection
 
-## Planning Rules
-1. **Internal Knowledge Search**: ONLY for searching company knowledge bases, indexed documents, policies, or internal documentation → `retrieval.search_internal_knowledge`
-   - ❌ DO NOT use for: accessing external APIs (Drive, Jira, Slack, etc.), getting files from cloud storage, managing tickets, sending messages
-   - ✅ Use for: "find information about X", "search company docs", "what's our policy on Y"
-2. **API/External Tools**: For accessing external services and managing data in those services
-   - **Drive/Cloud Storage**: Getting files, folders, permissions → use `drive.*` tools
-   - **Project Management**: Tickets, projects → use `jira.*` tools
-   - **Communication**: Messages, users → use `slack.*` tools
-   - **Other Services**: Use the appropriate service-specific tools
-3. **Direct Answer**: Greetings, simple math, general knowledge, user info queries → `can_answer_directly: true`
-4. **Query Understanding**: Extract key entities, dates, context, and service names (Drive, Jira, Slack, etc.)
-5. **Conversation Context**: Use previous messages, reuse data (IDs, keys, etc.)
+## Cascading Tools (Multi-Step Tasks)
 
-## Planning Rules for Retrieval
-1. **Limit Retrieval Queries**: Maximum 2-3 retrieval calls per request
+**When one tool's output feeds into another, use placeholders:**
 
-## Cascading Tool Calls (IMPORTANT)
+Format: `{{{{tool_name.data.field}}}}`
 
-When a task requires multiple steps where one tool's output is needed as input to another:
+**CRITICAL: NEVER pass instruction text as parameter values**
+- ❌ WRONG: `{{"space_id": "Use the numeric id from get_spaces results"}}`
+- ❌ WRONG: `{{"space_id": "Resolve the numeric id for space name/key from results"}}`
+- ✅ CORRECT: `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}`
 
-1. **Use placeholder syntax**: `{{{{TOOL_NAME.field}}}}` to reference previous tool results
-2. **Plan tools in order**: First tool that generates data, then tools that use it
-3. **Common patterns**:
-   - Create then comment: `jira.create_issue` → `jira.add_comment` with `{{{{jira.create_issue.data.key}}}}`
-   - Search then update: `jira.search_issues` → `jira.update_issue` with `{{{{jira.search_issues.key}}}}`
-   - Get then delete: `drive.get_files_list` → `drive.delete_file` with `{{{{drive.get_files_list.id}}}}`
-
-**Example cascading plan**:
+**Example:**
 ```json
 {{
   "tools": [
-    {{"name": "jira.create_issue", "args": {{"project_key": "PA", "summary": "New task"}}}},
-    {{"name": "jira.add_comment", "args": {{"issue_key": "{{{{jira.create_issue.data.key}}}}", "comment": "Starting work"}}}}
+    {{"name": "confluence.get_spaces", "args": {{}}}},
+    {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}}}
   ]
 }}
 ```
 
-**Placeholder format**: `{{{{tool_name.field}}}}` or `{{{{tool_name.data.field}}}}` where:
-- `tool_name` is the tool that runs first (e.g., `jira.create_issue`)
-- `field` is the field to extract (e.g., `key`, `id`, `data.key`)
+**Placeholder rules:**
+- Simple: `{{{{tool_name.field}}}}`
+- Nested: `{{{{tool_name.data.nested.field}}}}`
+- Arrays: `{{{{tool_name.data.results[0].id}}}}` (use [0] for first item, [1] for second, etc.)
+- Multiple levels: `{{{{tool_name.data.results[0].space.id}}}}`
+- Tools execute sequentially when placeholders detected
 
-**IMPORTANT - Array Results**:
-- If a tool returns an array (e.g., `confluence.get_spaces` returns `data.results` array):
-  - Use `{{{{tool_name.data.results.id}}}}` to get `id` from first item
-  - Or use `{{{{tool_name.data.results[0].id}}}}` for explicit first item
-  - The system will automatically handle arrays and extract from the first item
+**How to extract from arrays:**
+- If result is `{{"data": {{"results": [{{"id": "123"}}, {{"id": "456"}}]}}}}`
+- Use `{{{{tool_name.data.results[0].id}}}}` to get "123"
+- Use `{{{{tool_name.data.results[1].id}}}}` to get "456"
 
-**Examples**:
-- `{{{{jira.create_issue.data.key}}}}` → "PA-690" (direct field)
-- `{{{{confluence.get_spaces.data.results.id}}}}` → "65708" (from first item in results array)
-- `{{{{jira.search_issues.data.results[0].key}}}}` → "PA-691" (explicit array index)
+**Finding the right field path:**
+1. Look at the tool's return description
+2. Check the tool result structure
+3. Use dot notation to navigate: `data.results[0].id`
+4. Use array index [0] for first item in arrays
 
-## IMPORTANT - Context Awareness
-- "try again", "retry" → look at previous conversation
-- "that project", "the first one" → extract IDs/keys from Reference Data
-- Reuse data from previous responses
+**Common patterns:**
+- Get first result: `{{{{tool.data.results[0].field}}}}`
+- Get nested field: `{{{{tool.data.item.nested_field}}}}`
+- Get by index: `{{{{tool.data.items[2].id}}}}`
 
-## Reference Data Usage
+## Context Reuse (CRITICAL)
 
-**Always check Reference Data from previous responses before calling tools:**
-- If needed ID/key exists in Reference Data → use it directly
-- Reference Data items have: `name`, `id`, `key` (optional), `type`
-- Use `id` for Confluence spaces, `key` for Jira projects/issues
-- **DO NOT** call tools to fetch data already in Reference Data
+**Before planning, check conversation history:**
+- Was this content already discussed? → Use it directly
+- Did user say "this/that/above"? → Refers to previous message
+- Is user adding/modifying previous data? → Don't re-fetch
+
+**Example:**
+```
+Previous: Assistant showed resource details from a service
+Current: User says "add this to another service"
+Action: Use conversation context, call ONLY the action tool needed
+DON'T: Re-fetch data that was already displayed
+```
+
+**General rule:** Conversation context beats tool calls.
+
+## Documentation Creation & Content Synthesis
+
+**When user asks to create documentation:**
+- If previous messages have KB citations → Start with `retrieval.search_internal_knowledge`
+- If creating from scratch → Use `retrieval.search_internal_knowledge` with topic keywords
+
+**Pattern:**
+```json
+{{
+  "tools": [
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "topic keywords"}}}},
+    {{"name": "service.create_document", "args": {{
+      "title": "...",
+      "content": "Content will be synthesized by respond_node from retrieval results"
+    }}}}
+  ]
+}}
+```
+
+**Key principle:** Planner fetches data, respond_node synthesizes final content. Don't hardcode long content in planner.
 
 {jira_guidance}
 {confluence_guidance}
 
-## Slack-Specific Guidance
-- ✅ Use emails: `slack.get_user_info(user="user@company.com")`
-- ✅ Use IDs: `slack.get_user_info(user="U123ABC45")`
-- ❌ NEVER use 24-char database IDs
+## Planning Best Practices
 
-## Error Recovery
-1. First failure: Fix based on error (e.g., add time filter)
-2. Second failure (same error): Ask user for help
-3. Permission error: Inform user immediately
-- ❌ DON'T retry same thing 3+ times
+**Retrieval:**
+- Max 2-3 calls per request
+- Queries under 50 chars
+- Broad keywords only
 
-## When to Ask Clarification
-If query is ambiguous or missing critical info, set `needs_clarification: true`.
+**Error handling:**
+- First fail: Fix and retry
+- Second fail: Ask user
+- Permission error: Inform immediately
 
-**Need clarification**:
-- "Get tickets" (no project, time, assignee AND no Reference Data)
-- "Send message" (to whom? what channel?)
-- "Find document" (which document? what topic?)
+**Clarification (ONLY for Actions):**
+Set `needs_clarification: true` ONLY if:
+- User wants to PERFORM an action (create/update/delete/modify)
+- AND a required parameter is missing (check tool schema for required fields)
+- AND you cannot infer it from conversation context or reference data
 
-**Can proceed**:
-- "my tickets" → Use `assignee = currentUser() AND updated >= -30d`
-- "tickets for PA project" → Use project key directly
-- "give info about me" (with user info in prompt) → `can_answer_directly: true`
+**DO NOT ask for clarification if:**
+- User wants INFORMATION (what/who/how questions) → Use retrieval - it will search and find relevant content
+- User wants LIVE data but query is ambiguous → Try service tools with reasonable defaults, or use retrieval if service tools fail
+- Query mentions a name/topic → Use retrieval to find it
+- User asks "tell me about X" or "what is X" → Use retrieval
+- Optional parameters are missing → Use tool defaults or omit them
 
-## Output Format (JSON only)
+## Reference Data & User Context
+
+**Check Reference Data first:**
+- Previous responses may have needed IDs/keys
+- Use directly instead of calling tools
+
+**User asking about themselves:**
+- Use provided user info directly
+- Set `can_answer_directly: true`
+
+## Output (JSON only)
 {{
   "intent": "Brief description",
   "reasoning": "Why these tools",
@@ -352,19 +1078,152 @@ If query is ambiguous or missing critical info, set `needs_clarification: true`.
   ]
 }}
 
-If `needs_clarification: true`, set `tools: []` and provide `clarifying_question`.
+**Return ONLY valid JSON, no markdown.**"""
 
-## Additional Examples
-- "Q4 results" (no service mentioned) → `retrieval.search_internal_knowledge` with {{"query": "Q4 results"}}
-- "Get my Drive files" → `drive.get_files_list` with {{}}
-- "Search for files in Drive" → `drive.search_files` with {{"query": "..."}}
-- "My Jira projects" → `jira.get_projects` with {{}}
-- "My tickets in PA" → `jira.search_issues` with {{"jql": "project = \\"PA\\" AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d"}}
-- "Create a Confluence page" → Check Reference Data for space_id, or call get_spaces first, then create_page with numeric ID
-- "Find a page" → `confluence.search_pages` with {{"title": "..."}}
-- "my name" (user info in prompt) → `can_answer_directly: true`, tools: []
 
-**IMPORTANT**: When user mentions a specific service (Drive, Jira, Slack, etc.), use that service's tools, NOT `retrieval.search_internal_knowledge`."""
+# ============================================================================
+# JIRA GUIDANCE - CONDENSED
+# ============================================================================
+
+JIRA_GUIDANCE = r"""
+## Jira Rules
+
+**Never fabricate:**
+- ❌ Don't invent accountIds/emails
+- ✅ Use `jira.search_users(query="user email")`
+
+**JQL syntax:**
+- Unresolved: `resolution IS EMPTY`
+- Current user: `assignee = currentUser()`
+- **ALWAYS add time filter:** `AND updated >= -30d`
+- Quote text: `status = "Open"`
+
+**Common time filters:**
+- Week: `updated >= -7d`
+- Month: `updated >= -30d`
+- Quarter: `updated >= -90d`
+"""
+
+
+# ============================================================================
+# CONFLUENCE GUIDANCE - CONDENSED
+# ============================================================================
+
+CONFLUENCE_GUIDANCE = r"""
+## Confluence Rules
+
+**Tool selection:**
+- Create → `confluence.create_page`
+- Update → `confluence.update_page`
+- Search → `confluence.search_pages`
+- Read → `confluence.get_page_content`
+
+**Critical parameters (check tool schema):**
+- `search_pages`: Uses `title` parameter (not `query`)
+- `create_page`: Uses `page_title`, `page_content`, `space_id`
+- `update_page`: Uses `page_id`, `page_title` (optional), `page_content` (optional)
+- `get_page_content`: Uses `page_id`
+
+**Space ID resolution:**
+1. Check Reference Data for `id`
+2. If not found: Call `confluence.get_spaces`, extract numeric `id`
+3. Use numeric ID (not key/name)
+
+## CRITICAL: Content Synthesis for Confluence Pages
+
+### ❌ DON'T: Hardcode Long Content in Planner
+```json
+{{
+  "tools": [{{
+    "name": "confluence.update_page",
+    "args": {{
+      "page_id": "123",
+      "page_content": "<h1>Title</h1><p>Paragraph 1...</p><p>Paragraph 2...</p>..."
+    }}
+  }}]
+}}
+```
+
+### ✅ DO: Let respond_node Synthesize Content
+
+**Pattern 1: Use Placeholders (for simple data)**
+```json
+{{
+  "tools": [{{
+    "name": "confluence.get_page_content",
+    "args": {{"page_id": "456"}}
+  }}, {{
+    "name": "confluence.update_page",
+    "args": {{
+      "page_id": "123",
+      "page_title": "{{{{confluence.get_page_content.data.title}}}}",
+      "page_content": "Content will be synthesized by respond_node from fetched page"
+    }}
+  }}]
+}}
+```
+
+**Pattern 2: Brief Description (for complex synthesis)**
+```json
+{{
+  "tools": [{{
+    "name": "retrieval.search_internal_knowledge",
+    "args": {{"query": "deployment guide"}}
+  }}, {{
+    "name": "confluence.get_page_content",
+    "args": {{"page_id": "page1"}}
+  }}, {{
+    "name": "confluence.update_page",
+    "args": {{
+      "page_id": "summary_page",
+      "page_content": "Combined summary of pages - respond_node will synthesize from tool results"
+    }}
+  }}]
+}}
+```
+
+**How it works:**
+1. Planner fetches the data (get_page_content, retrieval, etc.)
+2. Planner calls update_page with brief placeholder text
+3. **respond_node** sees all tool results and synthesizes the actual HTML content
+4. respond_node updates the page with complete, formatted content
+
+**Key insight:** The `page_content` in planner args is just a **signal** to respond_node. The actual content synthesis happens in respond_node using ALL tool results.
+
+## Example: Update Page with Summary of Multiple Pages
+
+**User request:** "Get pages 123 and 456, summarize them, update page 789"
+
+**Correct plan:**
+```json
+{{
+  "tools": [
+    {{"name": "confluence.get_page_content", "args": {{"page_id": "123"}}}},
+    {{"name": "confluence.get_page_content", "args": {{"page_id": "456"}}}},
+    {{"name": "confluence.update_page", "args": {{
+      "page_id": "789",
+      "page_title": "Combined Summary",
+      "page_content": "Summary of pages 123 and 456 - respond_node will generate from fetched content"
+    }}}}
+  ]
+}}
+```
+
+**What respond_node does:**
+1. Sees tool results for pages 123 and 456 with full content
+2. Synthesizes a comprehensive summary in HTML
+3. Updates page 789 with the synthesized content
+
+**Don't:**
+- ❌ Try to put full HTML in page_content
+- ❌ Use placeholders for long content (they'll fail)
+- ❌ Truncate content to fit token limits
+
+**Do:**
+- ✅ Fetch all needed data with tools
+- ✅ Use brief description in page_content
+- ✅ Let respond_node synthesize the final HTML
+"""
 
 PLANNER_USER_TEMPLATE = """Query: {query}
 
@@ -378,38 +1237,99 @@ PLANNER_USER_TEMPLATE_WITH_CONTEXT = """## Conversation History
 
 Plan the tools using conversation context. Return only valid JSON."""
 
-# Reflection prompt (unchanged, proven logic)
+
+# ============================================================================
+# REFLECTION PROMPT - IMPROVED DECISION MAKING
+# ============================================================================
+
 REFLECT_PROMPT = """Analyze tool execution results and decide next action.
 
-## Results
+## Execution Results
 {execution_summary}
 
-## Query
+## User Query
 {query}
 
-## Retry Status
-Attempt: {retry_count}/{max_retries}
-
-## Iteration Status
-Iteration: {iteration_count}/{max_iterations}
+## Status
+- Retry: {retry_count}/{max_retries}
+- Iteration: {iteration_count}/{max_iterations}
 
 ## Decision Options
-1. **respond_success** - Tools worked AND task is complete
+
+1. **respond_success** - Task completed successfully
+   - Use when: Tools succeeded AND task is complete
+   - Example: User asked to "get tickets", tickets retrieved
+
 2. **respond_error** - Unrecoverable error
-3. **respond_clarify** - Need user clarification
-4. **retry_with_fix** - Fixable error, retry with fix
-5. **continue_with_more_tools** - Tools worked but task needs more steps (e.g., got data but need to update/create)
+   - Use when: Permissions issue, resource not found, rate limit
+   - Example: 403 Forbidden, 404 Not Found
+
+3. **respond_clarify** - Need user input
+   - Use when: Ambiguous query, missing critical info
+   - Example: Unbounded JQL after retry
+
+4. **retry_with_fix** - Fixable error, retry possible
+   - Use when: Syntax error, type error, correctable mistake
+   - Example: Wrong parameter type, invalid JQL syntax
+
+5. **continue_with_more_tools** - Need more steps
+   - Use when: Tools succeeded but task incomplete
+   - Example: User asked to "create and comment", only created
 
 ## Task Completion Check
-- If user asked to "edit/update/modify" but you only "got/read" data → continue_with_more_tools
-- If user asked to "create/make" but you only "searched/found" → continue_with_more_tools
-- If user asked to "get/list" and you got the data → respond_success
-- If all required actions are done → respond_success
 
-## Common Fixes
-- "Unbounded JQL" → Add `updated >= -30d`
-- "User not found" → Search users first
-- "Invalid syntax" → Fix query format
+**Complete** if:
+- User asked to "get/list" AND we got data → respond_success
+- User asked to "create" AND we created → respond_success
+- All requested actions done → respond_success
+
+**Incomplete** if:
+- User asked to "create and comment" but only created → continue_with_more_tools
+- User asked to "update" but only retrieved data → continue_with_more_tools
+- Task has multiple parts and not all done → continue_with_more_tools
+
+## Common Error Fixes
+- "Unbounded JQL" → Add `AND updated >= -30d`
+- "User not found" → Call `jira.search_users` first
+- "Invalid type" → Check parameter types, convert if needed
+- "Space ID type error" → Call `confluence.get_spaces` to get numeric ID
+
+## Handling Empty/Null Results
+
+### When Search Returns Empty
+
+**Pattern**: `{{"results": []}}` or `{{"data": []}}`
+
+**Decision Logic:**
+1. Check if content was in conversation history → respond_success with conversation data
+2. Check if task was "search" → respond_success (found nothing is valid result)
+3. Check if task needs content → respond_clarify (ask for correct name/location)
+
+**Example:**
+- Search for "Page X" → empty results
+- BUT user just discussed "Page X" in previous message
+- → respond_success and use conversation content
+
+### Empty Result Recovery
+```json
+{{
+  "decision": "respond_success",
+  "reasoning": "Search returned empty but content exists in conversation history",
+  "task_complete": true
+}}
+```
+
+**When to use conversation context:**
+- Search returned empty results
+- BUT previous assistant message contains the information user needs
+- User is referencing content that was just displayed
+- → respond_success and let respond_node extract from conversation
+
+**When to clarify:**
+- Search returned empty results
+- No conversation history with relevant content
+- User provided specific name/location that doesn't exist
+- → respond_clarify to ask for correct information
 
 ## Output (JSON only)
 {{
@@ -419,143 +1339,246 @@ Iteration: {iteration_count}/{max_iterations}
   "clarifying_question": "For clarify: what to ask",
   "error_context": "For error: user-friendly explanation",
   "task_complete": true/false,
-  "needs_more_tools": "What tools are needed next (if continue_with_more_tools)"
+  "needs_more_tools": "What tools needed next (if continue)"
 }}"""
 
 
 # ============================================================================
-# Helper Functions
+# PLANNER NODE - IMPROVED ACCURACY
 # ============================================================================
 
-def _has_jira_tools(state: ChatState) -> bool:
-    """Check if Jira tools available"""
-    agent_toolsets = state.get("agent_toolsets", [])
-    for toolset in agent_toolsets:
-        if isinstance(toolset, dict) and "jira" in toolset.get("name", "").lower():
-            return True
-    return False
-
-
-def _has_confluence_tools(state: ChatState) -> bool:
-    """Check if Confluence tools available"""
-    agent_toolsets = state.get("agent_toolsets", [])
-    for toolset in agent_toolsets:
-        if isinstance(toolset, dict) and "confluence" in toolset.get("name", "").lower():
-            return True
-    return False
-
-
-def _check_primary_tool_success(query: str, successful: List[Dict], log: logging.Logger) -> bool:
+async def planner_node(
+    state: ChatState,
+    config: RunnableConfig,
+    writer: StreamWriter
+) -> ChatState:
     """
-    Check if the primary/critical tool succeeded based on user intent.
+    LLM-driven planner with improved accuracy and error handling.
 
-    Examples:
-    - "Create a Jira ticket and add comment" -> primary is create_issue
-    - "Search and update" -> primary is search
-    - "Get and delete" -> primary is get
-
-    Returns True if the primary tool for the user's request succeeded.
+    Features:
+    - Smart tool validation with retry
+    - Better prompt construction
+    - Cascading tool support
+    - Context-aware planning
     """
-    query_lower = query.lower()
-    successful_tools = [r.get("tool_name", "").lower() for r in successful]
+    start_time = time.perf_counter()
+    log = state.get("logger", logger)
+    llm = state.get("llm")
+    query = state.get("query", "")
 
-    # Map intent keywords to primary tool patterns
-    intent_to_primary = {
-        "create": ["create", "make", "add", "new"],
-        "update": ["update", "modify", "change", "edit"],
-        "delete": ["delete", "remove", "clear"],
-        "search": ["search", "find", "get", "list"],
+    safe_stream_write(writer, {
+        "event": "status",
+        "data": {"status": "planning", "message": "Planning..."}
+    }, config)
+
+    # Build system prompt with tool descriptions
+    tool_descriptions = _get_cached_tool_descriptions(state, log)
+    jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
+    confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
+
+    system_prompt = PLANNER_SYSTEM_PROMPT.format(
+        available_tools=tool_descriptions,
+        jira_guidance=jira_guidance,
+        confluence_guidance=confluence_guidance
+    )
+
+    # Build user prompt with context
+    user_prompt = _build_planner_user_prompt(state, query, log)
+
+    # Add retry/continue context if needed
+    if state.get("is_retry"):
+        user_prompt = _build_retry_context(state) + "\n\n" + user_prompt
+        state["is_retry"] = False
+        log.info("🔄 Retry mode active")
+
+    if state.get("is_continue"):
+        user_prompt = _build_continue_context(state, log) + "\n\n" + user_prompt
+        state["is_continue"] = False
+        log.info("➡️ Continue mode active")
+
+    # Plan with validation retry loop
+    plan = await _plan_with_validation_retry(
+        llm, system_prompt, user_prompt, state, log, query
+    )
+
+    # Store plan in state
+    state["execution_plan"] = plan
+    state["planned_tool_calls"] = plan.get("tools", [])
+    state["pending_tool_calls"] = bool(plan.get("tools"))
+    state["query_analysis"] = {
+        "intent": plan.get("intent", ""),
+        "reasoning": plan.get("reasoning", ""),
+        "can_answer_directly": plan.get("can_answer_directly", False),
     }
 
-    # Detect primary intent from query
-    primary_intent = None
-    for intent, keywords in intent_to_primary.items():
-        if any(keyword in query_lower for keyword in keywords):
-            primary_intent = intent
-            break
+    # Handle clarification request
+    if plan.get("needs_clarification"):
+        state["reflection_decision"] = "respond_clarify"
+        state["reflection"] = {
+            "decision": "respond_clarify",
+            "reasoning": "Planner needs clarification",
+            "clarifying_question": plan.get("clarifying_question", "Could you provide more details?")
+        }
+        log.info(f"❓ Requesting clarification: {plan.get('clarifying_question', '')[:50]}...")
 
-    if not primary_intent:
-        # If can't determine intent, assume first successful tool is primary
-        return len(successful) > 0
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    log.info(f"⚡ Planner: {duration_ms:.0f}ms - {len(plan.get('tools', []))} tools")
 
-    # Check if any successful tool matches primary intent
-    for tool in successful_tools:
-        if primary_intent in tool:
-            log.debug(f"Primary tool for '{primary_intent}' intent succeeded: {tool}")
-            return True
-
-    # Fallback: if any tool succeeded, consider it partial success
-    return len(successful) > 0
+    return state
 
 
-def _check_if_task_needs_continue(
-    query: str,
-    executed_tools: List[str],
-    tool_results: List[Dict[str, Any]],
-    log: logging.Logger
-) -> bool:
+# ============================================================================
+# PLANNER HELPER FUNCTIONS
+# ============================================================================
+
+def _detect_kb_citations_in_history(conversations: List[Dict]) -> bool:
+    """Detect if recent responses have KB citations"""
+    for conv in conversations[-3:]:  # Check last 3 messages
+        if conv.get("role") == "bot_response":
+            content = conv.get("content", "")
+            # Check for KB citation patterns
+            if any(pattern in content for pattern in ["[R", "KB\n", "PipesHub-Readme"]):
+                return True
+    return False
+
+
+def _extract_topic_from_kb_context(conversations: List[Dict]) -> str:
+    """Extract main topic from KB-cited responses"""
+    for conv in reversed(conversations[-3:]):
+        if conv.get("role") == "bot_response":
+            content = conv.get("content", "")
+            if "[R" in content or "KB" in content:
+                # Extract first heading or key topic
+                lines = content.split("\n")
+                for line in lines:
+                    if line.startswith("#"):
+                        return line.replace("#", "").strip()
+    return ""
+
+
+
+
+def _detect_content_reference(query: str, conversations: List[Dict], log: logging.Logger) -> bool:
     """
-    Check if task needs more steps by comparing user intent vs what was done.
+    Detect if user is referencing content from previous messages.
 
-    Returns True if task is incomplete and needs more tools.
+    Triggers ONLY when:
+    - User says "add this/that to..." after detailed content was shown
+    - User says "use the above" after content was displayed
+
+    DO NOT trigger for:
+    - "create a page of the above" → This needs NEW page creation, not reuse
+    - "update page with summary of X" → Needs fetching X, not reusing prev content
     """
     query_lower = query.lower()
-    executed_tools_lower = [t.lower() for t in executed_tools]
 
-    # Pattern matching for common incomplete scenarios
-    # User wants to edit/update but only got/read data
-    if any(word in query_lower for word in ["edit", "update", "modify", "change", "alter"]):
-        if any("get" in t or "read" in t or "fetch" in t or "search" in t or "find" in t
-               for t in executed_tools_lower):
-            if not any("update" in t or "edit" in t or "modify" in t or "change" in t or "send" in t
-                      for t in executed_tools_lower):
-                log.debug("Task incomplete: user wants to edit/update but only read data")
-                return True
+    # ✅ Strong reuse signals (definitely using prev content)
+    strong_reuse = [
+        "add this to",
+        "add that to",
+        "send this to",
+        "post this to",
+        "use the above for"
+    ]
 
-    # User wants to create/make but only searched/found
-    if any(word in query_lower for word in ["create", "make", "new", "add", "post", "send"]):
-        if any("search" in t or "find" in t or "get" in t or "fetch" in t
-               for t in executed_tools_lower):
-            if not any("create" in t or "make" in t or "add" in t or "post" in t or "send" in t
-                      for t in executed_tools_lower):
-                log.debug("Task incomplete: user wants to create but only searched")
-                return True
+    # ❌ Weak signals (might need new data)
+    weak_signals = [
+        "create",
+        "make",
+        "generate",  # Creating something NEW
+        "update with summary",  # Needs fetching + synthesis
+        "page of the above",  # Misleading - needs creation
+    ]
 
-    # User wants to delete/remove but only got data
-    if any(word in query_lower for word in ["delete", "remove", "clear"]):
-        if any("get" in t or "read" in t or "fetch" in t
-               for t in executed_tools_lower):
-            if not any("delete" in t or "remove" in t or "clear" in t
-                      for t in executed_tools_lower):
-                log.debug("Task incomplete: user wants to delete but only read data")
-                return True
+    # Check for strong reuse signals
+    has_strong_reuse = any(signal in query_lower for signal in strong_reuse)
+    if not has_strong_reuse:
+        return False
 
-    # If query has multiple actions (e.g., "get and update"), check if all are done
-    action_words = ["get", "fetch", "find", "search", "read", "list",
-                   "create", "make", "add", "post", "send",
-                   "update", "edit", "modify", "change",
-                   "delete", "remove", "clear"]
+    # Check for weak signals that override
+    has_weak_signal = any(signal in query_lower for signal in weak_signals)
+    if has_weak_signal:
+        log.debug("Weak signal detected - not treating as content reuse")
+        return False
 
-    query_actions = [word for word in action_words if word in query_lower]
-    executed_actions = []
-    for tool in executed_tools_lower:
-        for action in action_words:
-            if action in tool:
-                executed_actions.append(action)
-                break
+    # Check if previous message had detailed content
+    if not conversations:
+        return False
 
-    # If query has multiple distinct actions and not all are executed
-    if len(query_actions) > 1:
-        missing_actions = set(query_actions) - set(executed_actions)
-        if missing_actions:
-            log.debug(f"Task incomplete: missing actions {missing_actions}")
-            return True
+    last_bot_message = None
+    for conv in reversed(conversations):
+        if conv.get("role") == "bot_response":
+            last_bot_message = conv
+            break
+
+    if not last_bot_message:
+        return False
+
+    content = last_bot_message.get("content", "")
+
+    # Heuristic: If last response was long and detailed (>500 chars), likely contains reusable content
+    if len(content) > 500:
+        log.debug(f"Previous response has {len(content)} chars - treating as reusable content")
+        return True
 
     return False
+
+
+def _build_planner_user_prompt(state: ChatState, query: str, log: logging.Logger) -> str:
+    """Build user prompt with conversation context and smart content detection"""
+    previous_conversations = state.get("previous_conversations", [])
+
+    # Detect KB content in history
+    has_kb_citations = _detect_kb_citations_in_history(previous_conversations)
+
+    # Detect if user is referencing previously discussed content
+    is_referencing_previous = _detect_content_reference(query, previous_conversations, log)
+
+    # Build base prompt
+    if previous_conversations:
+        conversation_history = _format_conversation_history(previous_conversations, log)
+        user_prompt = PLANNER_USER_TEMPLATE_WITH_CONTEXT.format(
+            conversation_history=conversation_history,
+            query=query
+        )
+        log.debug(f"Using {len(previous_conversations)} previous messages")
+
+        # Add context reuse hint if user references previous content
+        if is_referencing_previous:
+            context_hint = """
+## 🎯 CONTENT REUSE DETECTED
+User is referencing content from previous messages.
+Previous assistant messages contain the information user needs.
+**DON'T re-fetch what was already shown.**
+**USE conversation context directly** - respond_node will extract and format.
+"""
+            user_prompt = context_hint + "\n\n" + user_prompt
+            log.info("📌 Content reference detected - using conversation context")
+
+        # Add retrieval hint if KB citations detected (but not if already using conversation context)
+        elif has_kb_citations and any(word in query.lower() for word in ["create", "page", "document", "above", "summary", "this", "that"]):
+            topic = _extract_topic_from_kb_context(previous_conversations)
+            retrieval_hint = f"""
+## 🔍 RETRIEVAL REQUIRED DETECTED
+Previous response had KB citations about: {topic}
+User wants to create documentation → **USE retrieval.search_internal_knowledge FIRST**
+Query suggestion: "{topic.lower()}"
+"""
+            user_prompt = retrieval_hint + "\n\n" + user_prompt
+            log.info(f"📚 KB content detected - adding retrieval hint for topic: {topic}")
+    else:
+        user_prompt = PLANNER_USER_TEMPLATE.format(query=query)
+
+    # Add user context
+    user_context = _format_user_context(state)
+    if user_context:
+        user_prompt = user_prompt + "\n\n" + user_context
+
+    return user_prompt
 
 
 def _format_user_context(state: ChatState) -> str:
-    """Format user context for planner"""
+    """Format user information for planner"""
     user_info = state.get("user_info", {})
     org_info = state.get("org_info", {})
 
@@ -583,657 +1606,24 @@ def _format_user_context(state: ChatState) -> str:
 
     if user_email or user_name:
         parts.append("")
-        parts.append("### How to Use:")
+        parts.append("### Usage:")
         parts.append("")
 
         if _has_jira_tools(state):
-            parts.append("**For Jira (current user):**")
+            parts.append("**Jira (current user):**")
             parts.append("- ✅ Use `currentUser()` in JQL: `assignee = currentUser()`")
             parts.append("- ❌ DON'T call `jira.search_users` for yourself")
             parts.append("")
-            parts.append("**For Jira (other users):**")
-            parts.append("- Use `jira.search_users(query=\"name_or_email\")` to get accountId")
-            parts.append("")
 
         parts.append("**General:**")
-        if user_email:
-            parts.append(f"- Use email ({user_email}) for user lookups")
-        if user_name:
-            parts.append(f"- User's name: {user_name}")
-        parts.append("- **When user asks about themselves** ('my name', 'who am I', 'my info'): use this info DIRECTLY with `can_answer_directly: true` - DO NOT call tools")
+        parts.append("- **When user asks about themselves**: use this info DIRECTLY with `can_answer_directly: true`")
         parts.append("")
 
-    result = "\n".join(parts)
-    return result if len(result.strip()) > len("## Current User Information") else ""
-
-
-# ============================================================================
-# Phase 4: Query Decomposition
-# ============================================================================
-
-async def _decompose_query_if_needed(query: str, llm, log: logging.Logger) -> Optional[List[Dict[str, str]]]:
-    """
-    Detect vague queries that might need multiple tools and decompose them.
-
-    Returns:
-        List of sub-tasks with their queries, or None if decomposition not needed
-    """
-    query_lower = query.lower()
-
-    # Indicators of vague/multi-intent queries:
-    # 1. Multiple "and" conjunctions suggesting multiple intents
-    # 2. No specific service mentioned but multiple action words
-    # 3. Questions combined with action requests
-
-    # Simple heuristics first (fast path)
-    and_count = query_lower.count(' and ')
-
-    # Check for multiple distinct intents
-    question_words = ['what', 'how', 'why', 'when', 'where', 'find', 'search', 'get', 'show']
-    action_words = ['create', 'make', 'add', 'update', 'delete', 'send', 'post']
-    service_mentions = ['drive', 'jira', 'slack', 'gmail', 'calendar', 'confluence']
-
-    has_question = any(word in query_lower for word in question_words)
-    has_action = any(word in query_lower for word in action_words)
-    has_service = any(service in query_lower for service in service_mentions)
-
-    # Decompose if:
-    # - Multiple "and" conjunctions (likely multiple intents)
-    # - Both question and action intents
-    # - No service mentioned but multiple action/question words
-    needs_decomposition = (
-        (and_count >= 2) or
-        (and_count >= 1 and (has_question and has_action)) or
-        (not has_service and (query_lower.count(' ') >= 8 and (has_question or has_action)))
-    )
-
-    if not needs_decomposition:
-        return None
-
-    # Use LLM to decompose the query
-    try:
-        decomposition_prompt = f"""Analyze this query and break it into distinct sub-tasks if it requires multiple tools.
-
-Query: "{query}"
-
-RULES:
-1. Maximum 3 sub-tasks total
-2. For retrieval/search tasks
-3. Avoid overly specific queries with many details
-
-If this query can be answered with a single tool, return: {{"needs_decomposition": false}}
-
-If this query needs multiple tools (e.g., "What are Q4 results and my Drive files?"), return:
-{{
-  "needs_decomposition": true,
-  "subtasks": [
-    {{"query": "Q4 results", "intent": "knowledge_search"}},
-    {{"query": "my Drive files", "intent": "file_list"}}
-  ]
-}}
-
-Return only valid JSON."""
-
-        response = await asyncio.wait_for(
-            llm.ainvoke([SystemMessage(content="You are a query analysis expert. Return only valid JSON."),
-                        HumanMessage(content=decomposition_prompt)]),
-            timeout=5.0
-        )
-
-        result = json.loads(response.content if hasattr(response, 'content') else str(response))
-
-        if result.get("needs_decomposition") and result.get("subtasks"):
-            return result["subtasks"]
-        return None
-
-    except Exception as e:
-        log.warning(f"Query decomposition failed: {e}")
-        return None
-
-
-async def _plan_with_decomposition(
-    state: ChatState,
-    config: RunnableConfig,
-    writer: StreamWriter,
-    subtasks: List[Dict[str, str]],
-    start_time: float,
-    log: logging.Logger
-) -> ChatState:
-    """
-    Plan tools for decomposed query sub-tasks and combine into single plan.
-    """
-    llm = state.get("llm")
-    all_tools = []
-    combined_intent = []
-    combined_reasoning = []
-
-    # Plan each sub-task
-    for i, subtask in enumerate(subtasks):
-        sub_query = subtask.get("query", "")
-
-        log.info(f"Planning sub-task {i+1}/{len(subtasks)}: {sub_query[:50]}")
-
-        # Build planner prompt for this sub-task
-        tool_descriptions = _get_cached_tool_descriptions(state, log)
-        jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
-        confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
-
-        system_prompt = PLANNER_SYSTEM_PROMPT.format(
-            available_tools=tool_descriptions,
-            jira_guidance=jira_guidance,
-            confluence_guidance=confluence_guidance
-        )
-
-        user_prompt = f"""Sub-task {i+1} of {len(subtasks)}: {sub_query}
-
-Plan tools for this sub-task only. Return JSON with tools needed for this specific sub-task."""
-
-        try:
-            response = await asyncio.wait_for(
-                llm.ainvoke([SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)]),
-                timeout=15.0
-            )
-
-            plan = _parse_planner_response(
-                response.content if hasattr(response, 'content') else str(response),
-                log
-            )
-
-            # Collect tools from this sub-task
-            sub_tools = plan.get("tools", [])
-            all_tools.extend(sub_tools)
-            combined_intent.append(f"Sub-task {i+1}: {plan.get('intent', sub_query[:30])}")
-            combined_reasoning.append(f"Sub-task {i+1}: {plan.get('reasoning', '')}")
-
-        except Exception as e:
-            log.warning(f"Failed to plan sub-task {i+1}: {e}")
-            continue
-
-    # Combine into single plan
-    combined_plan = {
-        "intent": " | ".join(combined_intent),
-        "reasoning": "Decomposed query into multiple sub-tasks. " + " | ".join(combined_reasoning),
-        "can_answer_directly": False,
-        "needs_clarification": False,
-        "tools": all_tools
-    }
-
-    # Validate tools
-    tools = combined_plan.get('tools', [])
-    is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
-
-    if not is_valid and invalid_tools:
-        log.warning(f"Invalid tools in decomposed plan: {invalid_tools}")
-        # Remove invalid tools
-        combined_plan["tools"] = [t for t in tools if t.get('name', '') not in invalid_tools]
-
-    # Store plan
-    state["execution_plan"] = combined_plan
-    state["planned_tool_calls"] = combined_plan.get("tools", [])
-    state["pending_tool_calls"] = bool(combined_plan.get("tools"))
-    state["query_analysis"] = {
-        "intent": combined_plan.get("intent", ""),
-        "reasoning": combined_plan.get("reasoning", ""),
-        "can_answer_directly": combined_plan.get("can_answer_directly", False),
-    }
-
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    log.info(f"⚡ Planner (decomposed): {duration_ms:.0f}ms, {len(combined_plan.get('tools', []))} tools")
-
-    return state
-
-
-# ============================================================================
-# Node 1: Planner
-# ============================================================================
-
-async def planner_node(
-    state: ChatState,
-    config: RunnableConfig,
-    writer: StreamWriter
-) -> ChatState:
-    """LLM-driven planner with query decomposition for vague queries"""
-    start_time = time.perf_counter()
-    log = state.get("logger", logger)
-    llm = state.get("llm")
-    query = state.get("query", "")
-    previous_conversations = state.get("previous_conversations", [])
-
-    # Phase 4: Query Decomposition - Check if query needs decomposition
-    decomposed_subtasks = await _decompose_query_if_needed(query, llm, log)
-    if decomposed_subtasks:
-        log.info(f"Query decomposed into {len(decomposed_subtasks)} sub-tasks")
-        # Plan tools for each sub-task and combine
-        return await _plan_with_decomposition(state, config, writer, decomposed_subtasks, start_time, log)
-
-    safe_stream_write(writer, {
-        "event": "status",
-        "data": {"status": "planning", "message": "Planning..."}
-    }, config)
-
-    # Build prompts
-    tool_descriptions = _get_cached_tool_descriptions(state, log)
-    jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
-    confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
-
-    system_prompt = PLANNER_SYSTEM_PROMPT.format(
-        available_tools=tool_descriptions,
-        jira_guidance=jira_guidance,
-        confluence_guidance=confluence_guidance
-    )
-
-    # User prompt with context
-    if previous_conversations:
-        conversation_history = _format_conversation_history(previous_conversations, log)
-        user_prompt = PLANNER_USER_TEMPLATE_WITH_CONTEXT.format(
-            conversation_history=conversation_history,
-            query=query
-        )
-        log.debug(f"Using {len(previous_conversations)} previous messages")
-    else:
-        user_prompt = PLANNER_USER_TEMPLATE.format(query=query)
-
-    # Add user context
-    user_context = _format_user_context(state)
-    if user_context:
-        user_prompt = user_prompt + "\n\n" + user_context
-
-    # Add retry context if needed
-    if state.get("is_retry") and state.get("execution_errors"):
-        user_prompt = _build_retry_context(state) + user_prompt
-        state["is_retry"] = False
-        log.info("Retry mode active")
-
-    # Add continue context if needed (tool results from previous iteration)
-    if state.get("is_continue") and state.get("all_tool_results"):
-        continue_context = _build_continue_context(state, log)
-        if continue_context:
-            user_prompt = continue_context + "\n\n" + user_prompt
-        state["is_continue"] = False
-        log.info("Continue mode active - using previous tool results")
-
-    # Tool validation retry loop
-    validation_retry_count = state.get("tool_validation_retry_count", 0)
-    max_validation_retries = 2
-    plan = None
-
-    try:
-        invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
-
-        while validation_retry_count <= max_validation_retries:
-            response = await asyncio.wait_for(
-                llm.ainvoke(
-                    [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
-                    config=invoke_config
-                ),
-                timeout=20.0
-            )
-
-            plan = _parse_planner_response(
-                response.content if hasattr(response, 'content') else str(response),
-                log
-            )
-
-            # Validate tool names against available tools
-            tools = plan.get('tools', [])
-            is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
-
-            if is_valid or validation_retry_count >= max_validation_retries:
-                # Valid or max retries reached
-                if not is_valid:
-                    log.error(f"⚠️ Invalid tools after {max_validation_retries} retries: {invalid_tools}. Removing invalid tools.")
-                    # Remove invalid tools from plan
-                    plan["tools"] = [t for t in tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
-                # Reset validation retry count on success or final attempt
-                state["tool_validation_retry_count"] = 0
-                break
-            else:
-                # Invalid tools found, retry with error message
-                validation_retry_count += 1
-                state["tool_validation_retry_count"] = validation_retry_count
-                log.warning(f"⚠️ Invalid tools planned: {invalid_tools}. Retrying with available tools list (attempt {validation_retry_count}/{max_validation_retries})")
-
-                # Build error message with available tools
-                available_tools_list = ", ".join(sorted(available_tool_names)[:MAX_AVAILABLE_TOOLS_DISPLAY])  # Limit to first 20 for prompt size
-                if len(available_tool_names) > MAX_AVAILABLE_TOOLS_DISPLAY:
-                    available_tools_list += f" (and {len(available_tool_names) - MAX_AVAILABLE_TOOLS_DISPLAY} more)"
-
-                error_message = f"""ERROR: The following tools do not exist: {', '.join(invalid_tools)}
-
-Available tools: {available_tools_list}
-
-Please choose tools ONLY from the available tools list above. Do not invent tool names.
-
-Original query: {query}
-"""
-                user_prompt = error_message + "\n\n" + user_prompt
-
-        # Validate plan matches intent
-        intent = plan.get('intent', '').lower()
-        tool_names = [t.get('name', '') for t in tools if isinstance(t, dict)]
-
-        # Log validation warnings
-        if 'create' in intent or 'make' in intent or 'new' in intent:
-            if not any('create' in name.lower() for name in tool_names):
-                log.warning(f"⚠️ Intent suggests CREATE but no create tool planned. Intent: {intent[:50]}, Tools: {tool_names}")
-        elif 'search' in intent or 'find' in intent or 'get' in intent:
-            if any('create' in name.lower() for name in tool_names):
-                log.warning(f"⚠️ Intent suggests READ/SEARCH but create tool planned. Intent: {intent[:50]}, Tools: {tool_names}")
-
-        log.info(f"Plan: {plan.get('intent', 'N/A')[:50]}, {len(tools)} tools: {[t.get('name', '') for t in tools[:3]]}")
-
-    except asyncio.TimeoutError:
-        log.warning("Planner timeout")
-        plan = _create_fallback_plan(query)
-    except Exception as e:
-        log.error(f"Planner error: {e}")
-        plan = _create_fallback_plan(query)
-
-    # Store plan
-    state["execution_plan"] = plan
-    state["planned_tool_calls"] = plan.get("tools", [])
-    state["pending_tool_calls"] = bool(plan.get("tools"))
-    state["query_analysis"] = {
-        "intent": plan.get("intent", ""),
-        "reasoning": plan.get("reasoning", ""),
-        "can_answer_directly": plan.get("can_answer_directly", False),
-    }
-
-    # Handle clarification
-    if plan.get("needs_clarification"):
-        state["reflection_decision"] = "respond_clarify"
-        state["reflection"] = {
-            "decision": "respond_clarify",
-            "reasoning": "Planner needs clarification",
-            "clarifying_question": plan.get("clarifying_question", "Could you provide more details?")
-        }
-        log.info(f"Requesting clarification: {plan.get('clarifying_question', '')[:50]}...")
-
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    log.info(f"⚡ Planner: {duration_ms:.0f}ms")
-
-    return state
-
-
-def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
-    """Build continue context from previous tool results"""
-    tool_results = state.get("all_tool_results", [])
-    if not tool_results:
-        return ""
-
-    # Format tool results for planner context
-    result_parts = []
-    for result in tool_results[-5:]:  # Last 5 results
-        tool_name = result.get("tool_name", "unknown")
-        status = result.get("status", "unknown")
-        result_data = result.get("result", "")
-
-        # Extract key information (IDs, timestamps, etc.)
-        result_str = str(result_data)[:500]  # Limit length
-
-        result_parts.append(f"- {tool_name} ({status}): {result_str}")
-
-    return f"""## Previous Tool Results (use this data for next steps)
-
-{chr(10).join(result_parts)}
-
-**IMPORTANT**: Use the data above to plan your next steps. Extract IDs, timestamps, and other key information from the results.
-"""
-
-
-def _build_retry_context(state: ChatState) -> str:
-    """Build retry context from previous failure"""
-    errors = state.get("execution_errors", [])
-    reflection = state.get("reflection", {})
-    fix_instruction = reflection.get("fix_instruction", "")
-
-    error_summary = errors[0] if errors else {}
-    failed_tool = error_summary.get('tool_name', 'unknown')
-    failed_args = error_summary.get("args", {})
-    error_msg = error_summary.get('error', 'unknown')[:500]
-    failed_args_str = json.dumps(failed_args, indent=2) if failed_args else "No args"
-
-    # Extract key information from error
-    error_lower = error_msg.lower()
-    needs_space_resolution = (
-        "spaceid" in error_lower or "space_id" in error_lower
-    ) and ("not the correct type" in error_lower or "expected type" in error_lower)
-
-    # Build specific guidance
-    specific_guidance = ""
-    if needs_space_resolution and "create_page" in failed_tool.lower():
-        specific_guidance = """
-**Space ID Resolution**:
-1. Check Reference Data for `type: "confluence_space"` - if found, use its `id` field
-2. If not in Reference Data: Call `confluence.get_spaces`, find matching space, extract numeric `id`
-3. Call `confluence.create_page` with numeric `id` (not key) in `space_id` parameter
-4. DO NOT switch to get_spaces as final tool - you still need to CREATE the page
-"""
-
-    return f"""## 🔴 RETRY MODE - PREVIOUS ATTEMPT FAILED
-
-**Failed Tool**: {failed_tool}
-**Error**: {error_msg}
-
-**Previous Args That Failed**:
-```json
-{failed_args_str}
-```
-
-**FIX INSTRUCTION**:
-{fix_instruction}
-{specific_guidance}
-
-**IMPORTANT**:
-- If the user asked to CREATE something, you MUST still use the CREATE tool after fixing the issue
-- Don't switch to a different tool type (READ/SEARCH) when the user wants to CREATE
-- Fix the parameters and retry the SAME tool with corrected values
-
-"""
-
-
-_tool_description_cache: Dict[str, str] = {}
-
-
-def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
-    """Get tool descriptions with caching"""
-    org_id = state.get("org_id", "default")
-    agent_toolsets = state.get("agent_toolsets", [])
-
-    # Get LLM to determine sanitization requirements for cache key
-    llm = state.get("llm")
-    from app.modules.agents.qna.tool_system import (
-        _requires_sanitized_tool_names,
-        get_agent_tools_with_schemas,
-    )
-    llm_type = "anthropic" if llm and _requires_sanitized_tool_names(llm) else "other"
-
-    # Build cache key from toolsets and LLM type (for sanitization)
-    toolset_names = sorted([ts.get("name", "") for ts in agent_toolsets if isinstance(ts, dict)])
-    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{llm_type}_clean"
-
-    if cache_key in _tool_description_cache:
-        return _tool_description_cache[cache_key]
-
-    try:
-        tools = get_agent_tools_with_schemas(state)
-
-        if not tools:
-            # Use sanitized name in fallback if needed
-            fallback_name = "retrieval_search_internal_knowledge" if (llm and _requires_sanitized_tool_names(llm)) else "retrieval.search_internal_knowledge"
-            return f"### {fallback_name}\n  ✅ Use: Questions without service mention; policies; general info\n  ❌ Don't: Service mentioned (Drive/Jira/Gmail); action intent"
-
-        # Use clean formatting function (NO parameters - they're in schemas)
-        result = _format_clean_tool_descriptions(tools, log)
-        _tool_description_cache[cache_key] = result
-        return result
-
-    except Exception as e:
-        log.warning(f"Tool load failed: {e}")
-        # Use sanitized name in fallback if needed (llm already retrieved above)
-        fallback_name = "retrieval_search_internal_knowledge" if (llm and _requires_sanitized_tool_names(llm)) else "retrieval.search_internal_knowledge"
-        return f"### {fallback_name}\n  ✅ Use: Questions without service mention; policies; general info\n  ❌ Don't: Service mentioned (Drive/Jira/Gmail); action intent"
-
-
-def _format_clean_tool_descriptions(tools: List, log: logging.Logger) -> str:
-    """
-    Format tools for planner prompt - includes parameters for better LLM guidance.
-
-    Format:
-    ### [CATEGORY] tool.name
-      ✅ Use: scenario1; scenario2
-      ❌ Don't: anti-pattern1; anti-pattern2
-      📋 Parameters: param1 (type), param2 (type, optional)
-    """
-    import re
-
-    from app.agents.tools.config import ToolCategory
-
-    # Group tools by category for better organization
-    tools_by_category: Dict[str, List] = {}
-
-    for tool in tools[:30]:  # Limit to prevent prompt bloat
-        name = getattr(tool, 'name', str(tool))
-
-        # Get category from metadata via global registry
-        category = ToolCategory.UTILITY  # default
-        try:
-            from app.agents.tools.registry import _global_tools_registry
-            metadata = _global_tools_registry.get_metadata(name)
-            if metadata:
-                category = metadata.category
-        except Exception:
-            pass
-
-        category_name = category.value if hasattr(category, 'value') else str(category)
-
-        # Extract when_to_use and when_not_to_use
-        when_use = []
-        when_not = []
-
-        # Try to get from Tool object
-        when_use = getattr(tool, 'when_to_use', [])
-        when_not = getattr(tool, 'when_not_to_use', [])
-
-        # If not found, try parsing from llm_description
-        if not when_use and not when_not:
-            llm_desc = getattr(tool, 'llm_description', None)
-            if llm_desc and isinstance(llm_desc, str):
-                # Parse structured format
-                when_match = re.search(r'\*\*WHEN TO USE\*\*:?\s*\n(.*?)(?:\*\*WHEN NOT|\Z)', llm_desc, re.DOTALL)
-                if when_match:
-                    when_text = when_match.group(1).strip()
-                    when_use = [line.strip('- ').strip() for line in when_text.split('\n') if line.strip().startswith('-')]
-
-                not_match = re.search(r'\*\*WHEN NOT TO USE\*\*:?\s*\n(.*?)(?:\*\*|\Z)', llm_desc, re.DOTALL)
-                if not_match:
-                    not_text = not_match.group(1).strip()
-                    when_not = [line.strip('- ').strip() for line in not_text.split('\n') if line.strip().startswith('-')]
-
-        # Extract parameter information - check Pydantic schema first, then legacy parameters
-        param_info = []
-        # Check for Pydantic schema (preferred - used by modern tools)
-        args_schema = getattr(tool, 'args_schema', None)
-        if args_schema:
-            # Check if it's a Pydantic BaseModel class (v2)
-            try:
-                from typing import Union, get_args, get_origin
-
-                from pydantic import BaseModel
-
-                # Handle both class and instance
-                schema_class = args_schema if isinstance(args_schema, type) else args_schema.__class__
-
-                # Check if it's a Pydantic v2 model
-                if issubclass(schema_class, BaseModel) and hasattr(schema_class, 'model_fields'):
-                    for field_name, field_info in schema_class.model_fields.items():
-                        # Determine type - handle Optional, Union, etc.
-                        field_type = field_info.annotation
-                        param_type = "string"  # default
-
-                        # Handle Optional types (Union[T, None])
-                        origin = get_origin(field_type) if hasattr(field_type, '__origin__') or hasattr(field_type, '__args__') else None
-                        if origin is Union:
-                            args = get_args(field_type)
-                            # Filter out None type
-                            non_none_args = [arg for arg in args if arg is not type(None)]
-                            if non_none_args:
-                                field_type = non_none_args[0]
-                                origin = get_origin(field_type) if hasattr(field_type, '__origin__') else None
-
-                        # Determine base type
-                        if field_type is int:
-                            param_type = "integer"
-                        elif field_type is float:
-                            param_type = "number"
-                        elif field_type is bool:
-                            param_type = "boolean"
-                        elif origin is list:
-                            param_type = "array"
-                        elif origin is dict:
-                            param_type = "object"
-
-                        # Check if required (not Optional and no default)
-                        param_required = field_info.is_required() and field_info.default is ...
-                        req_str = "required" if param_required else "optional"
-                        param_info.append(f"{field_name} ({param_type}, {req_str})")
-            except Exception as e:
-                log.debug(f"Could not extract params from Pydantic schema for {name}: {e}")
-
-        # Fallback to legacy ToolParameter list if no schema found
-        if not param_info:
-            registry_tool = getattr(tool, 'registry_tool', None)
-            if registry_tool and hasattr(registry_tool, 'parameters') and registry_tool.parameters:
-                for param in registry_tool.parameters:
-                    param_name = getattr(param, 'name', 'unknown')
-                    param_type = getattr(getattr(param, 'type', None), 'name', 'string')
-                    param_required = getattr(param, 'required', False)
-                    req_str = "required" if param_required else "optional"
-                    param_info.append(f"{param_name} ({param_type}, {req_str})")
-
-        # Group by category
-        if category_name not in tools_by_category:
-            tools_by_category[category_name] = []
-
-        # Format entry with parameters
-        tool_lines = [f"\n### [{category_name.upper()}] {name}"]
-
-        if when_use:
-            # Join first 3 use cases with semicolons
-            use_summary = '; '.join(when_use[:3])
-            tool_lines.append(f"  ✅ Use: {use_summary}")
-
-        if when_not:
-            # Join first 2 anti-patterns with semicolons
-            not_summary = '; '.join(when_not[:2])
-            tool_lines.append(f"  ❌ Don't: {not_summary}")
-
-        # Add parameter information (limit to first 5 to keep prompt concise)
-        if param_info:
-            params_str = ', '.join(param_info)
-            tool_lines.append(f"  📋 Parameters: {params_str}")
-        else :
-            tool_lines.append("  📋 Parameters: none")
-        tools_by_category[category_name].append('\n'.join(tool_lines))
-
-    # Format by category
-    result_lines = []
-    # Order categories: SEARCH first (retrieval), then others
-    category_order = ['search', 'communication', 'project_management', 'file_storage', 'calendar', 'documentation', 'utility']
-    for cat in category_order:
-        if cat in tools_by_category:
-            result_lines.extend(tools_by_category[cat])
-            del tools_by_category[cat]
-
-    # Add remaining categories
-    for cat, tool_list in sorted(tools_by_category.items()):
-        result_lines.extend(tool_list)
-
-    return "\n".join(result_lines) if result_lines else ""
+    return "\n".join(parts)
 
 
 def _format_conversation_history(conversations: List[Dict], log: logging.Logger) -> str:
-    """Format conversation history"""
+    """Format conversation history with reference data"""
     if not conversations:
         return ""
 
@@ -1258,6 +1648,7 @@ def _format_conversation_history(conversations: List[Dict], log: logging.Logger)
 
     result = "\n".join(lines)
 
+    # Add reference data if available
     if all_reference_data:
         result += "\n\n## Reference Data (from previous responses - use these IDs/keys directly):\n"
 
@@ -1265,96 +1656,214 @@ def _format_conversation_history(conversations: List[Dict], log: logging.Logger)
         spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
         projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
         issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
-        others = [item for item in all_reference_data if item.get("type") not in ["confluence_space", "jira_project", "jira_issue"]]
 
         if spaces:
-            result += "Confluence Spaces (use `id` for space_id): "
+            result += "**Confluence Spaces** (use `id` for space_id): "
             result += ", ".join([f"{item.get('name', '?')} (id={item.get('id', '?')})" for item in spaces[:5]])
             result += "\n"
 
         if projects:
-            result += "Jira Projects (use `key`): "
+            result += "**Jira Projects** (use `key`): "
             result += ", ".join([f"{item.get('name', '?')} (key={item.get('key', '?')})" for item in projects[:5]])
             result += "\n"
 
         if issues:
-            result += "Jira Issues (use `key`): "
+            result += "**Jira Issues** (use `key`): "
             result += ", ".join([f"{item.get('key', '?')}" for item in issues[:5]])
             result += "\n"
 
-        if others:
-            for item in others[:5]:
-                name = item.get("name", "Unknown")
-                item_id = item.get("id", "")
-                item_key = item.get("key", "")
-                item_type = item.get("type", "")
-                parts = [f"{name} ({item_type})"]
-                if item_key:
-                    parts.append(f"key={item_key}")
-                if item_id:
-                    parts.append(f"id={item_id}")
-                result += f"- {' | '.join(parts)}\n"
-
-        log.debug(f"Included {len(all_reference_data)} reference items")
+        log.debug(f"📎 Included {len(all_reference_data)} reference items")
 
     return result
 
 
-def _validate_planned_tools(
-    planned_tools: List[Dict[str, Any]],
+def _extract_missing_params_from_error(error_msg: str) -> List[str]:
+    """Extract missing parameter names from validation error"""
+    missing = []
+
+    # Pattern: "page_title\n  Field required"
+    pattern = r'(\w+)\s+Field required'
+    matches = re.findall(pattern, error_msg, re.IGNORECASE)
+    missing.extend(matches)
+
+    # Pattern: "Field required [type=missing, input_value={...}, input_type=dict]"
+    # Extract field name from context
+    pattern2 = r'(\w+)\s*\n\s*Field required'
+    matches2 = re.findall(pattern2, error_msg, re.IGNORECASE | re.MULTILINE)
+    missing.extend(matches2)
+
+    return list(set(missing))  # Remove duplicates
+
+
+def _extract_invalid_params_from_args(args: Dict, error_msg: str) -> List[str]:
+    """Detect parameters that were provided but not expected"""
+    # This is harder - would need to compare against schema
+    # For now, just return empty
+    return []
+
+
+def _build_retry_context(state: ChatState) -> str:
+    """Build context for retry with error details"""
+    errors = state.get("execution_errors", [])
+    reflection = state.get("reflection", {})
+    fix_instruction = reflection.get("fix_instruction", "")
+
+    if not errors:
+        return ""
+
+    error_summary = errors[0]
+    failed_tool = error_summary.get('tool_name', 'unknown')
+    failed_args = error_summary.get("args", {})
+    error_msg = error_summary.get('error', 'unknown')[:500]
+
+    # Extract missing/invalid parameters from error
+    missing_params = _extract_missing_params_from_error(error_msg)
+    invalid_params = _extract_invalid_params_from_args(failed_args, error_msg)
+
+    retry_context = f"""## 🔴 RETRY MODE - PREVIOUS ATTEMPT FAILED
+
+**Failed Tool**: {failed_tool}
+**Error**: {error_msg}
+
+**Previous Args**:
+```json
+{json.dumps(failed_args, indent=2)}
+```
+
+**Fix Instruction**: {fix_instruction}
+"""
+
+    # Add parameter hints if validation error
+    if "validation error" in error_msg.lower() or "field required" in error_msg.lower():
+        retry_context += "\n## ⚠️ PARAMETER VALIDATION ERROR\n\n"
+
+        if missing_params:
+            retry_context += f"**Missing required parameters**: {', '.join(missing_params)}\n"
+
+        if invalid_params:
+            retry_context += f"**Invalid parameters used**: {', '.join(invalid_params)}\n"
+
+        retry_context += "\n**CHECK TOOL SCHEMA**: Look at the parameter list for this tool above.\n"
+        retry_context += "**USE EXACT PARAMETER NAMES** from the schema.\n\n"
+
+    retry_context += """
+**IMPORTANT**:
+- If user asked to CREATE, you MUST still use CREATE tool after fixing
+- Fix the parameters and retry with corrected values
+- Don't switch to different tool type
+- Use EXACT parameter names from tool schema
+"""
+
+    return retry_context
+
+
+def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
+    """Build context for continuing with more tools"""
+    tool_results = state.get("all_tool_results", [])
+    if not tool_results:
+        return ""
+
+    # Format last 5 results
+    result_parts = []
+    for result in tool_results[-5:]:
+        tool_name = result.get("tool_name", "unknown")
+        status = result.get("status", "unknown")
+        result_data = str(result.get("result", ""))[:500]
+
+        result_parts.append(f"- {tool_name} ({status}): {result_data}")
+
+    return f"""## 📋 PREVIOUS TOOL RESULTS (use this data for next steps)
+
+{chr(10).join(result_parts)}
+
+**IMPORTANT**: Use the data above to plan next steps. Extract IDs, keys, and other values.
+"""
+
+
+async def _plan_with_validation_retry(
+    llm: Any,
+    system_prompt: str,
+    user_prompt: str,
     state: ChatState,
-    log: logging.Logger
-) -> tuple[bool, List[str], List[str]]:
+    log: logging.Logger,
+    query: str
+) -> Dict[str, Any]:
     """
-    Validate planned tool names against available tools.
+    Plan with tool validation retry loop.
 
-    Handles both sanitized (underscores) and original (dots) tool names for compatibility.
-
-    Returns:
-        (is_valid, invalid_tools, available_tool_names)
+    If planner suggests invalid tools, retry with error message showing available tools.
     """
-    try:
-        from app.modules.agents.qna.tool_system import (
-            _sanitize_tool_name_if_needed,
-            get_agent_tools_with_schemas,
-        )
-        tools = get_agent_tools_with_schemas(state)
-        llm = state.get("llm")
+    validation_retry_count = state.get("tool_validation_retry_count", 0)
+    max_retries = NodeConfig.MAX_VALIDATION_RETRIES
 
-        # Get available tool names (already sanitized if needed by get_agent_tools_with_schemas)
-        available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
+    invoke_config = {"callbacks": [_opik_tracer]} if _opik_tracer else {}
 
-        # Also create a mapping from original to sanitized names for lookup
-        original_to_sanitized = {}
-        for tool in tools:
-            sanitized_name = getattr(tool, 'name', str(tool))
-            original_name = getattr(tool, '_original_name', sanitized_name)
-            if original_name != sanitized_name:
-                original_to_sanitized[original_name] = sanitized_name
+    while validation_retry_count <= max_retries:
+        try:
+            # Call LLM
+            response = await asyncio.wait_for(
+                llm.ainvoke(
+                    [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
+                    config=invoke_config
+                ),
+                timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
+            )
 
-        invalid_tools = []
-        for tool_call in planned_tools:
-            if isinstance(tool_call, dict):
-                tool_name = tool_call.get('name', '')
-                # Normalize planned tool name to match available tools
-                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+            # Parse response
+            plan = _parse_planner_response(
+                response.content if hasattr(response, 'content') else str(response),
+                log
+            )
 
-                # Check both sanitized and original name
-                if normalized_name not in available_tool_names and tool_name not in available_tool_names:
-                    invalid_tools.append(tool_name)
+            # Validate tools
+            tools = plan.get('tools', [])
+            is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
 
-        is_valid = len(invalid_tools) == 0
-        return is_valid, invalid_tools, list(available_tool_names)
-    except Exception as e:
-        log.warning(f"Tool validation failed: {e}")
-        # If validation fails, assume valid to avoid blocking execution
-        return True, [], []
+            if is_valid or validation_retry_count >= max_retries:
+                # Success or max retries reached
+                if not is_valid:
+                    log.error(f"⚠️ Invalid tools after {max_retries} retries: {invalid_tools}. Removing them.")
+                    plan["tools"] = [t for t in tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
+
+                state["tool_validation_retry_count"] = 0
+                return plan
+            else:
+                # Retry with error message
+                validation_retry_count += 1
+                state["tool_validation_retry_count"] = validation_retry_count
+                log.warning(f"⚠️ Invalid tools: {invalid_tools}. Retry {validation_retry_count}/{max_retries}")
+
+                # Build error message
+                available_list = ", ".join(sorted(available_tool_names)[:MAX_AVAILABLE_TOOLS_DISPLAY])
+                if len(available_tool_names) > MAX_AVAILABLE_TOOLS_DISPLAY:
+                    available_list += f" (and {len(available_tool_names) - MAX_AVAILABLE_TOOLS_DISPLAY} more)"
+
+                error_message = f"""❌ ERROR: Invalid tools: {', '.join(invalid_tools)}
+
+**Available tools**: {available_list}
+
+Choose tools ONLY from the available list above.
+
+**Original query**: {query}
+"""
+                user_prompt = error_message + "\n\n" + user_prompt
+
+        except asyncio.TimeoutError:
+            log.warning("⏱️ Planner timeout")
+            return _create_fallback_plan(query)
+        except Exception as e:
+            log.error(f"💥 Planner error: {e}")
+            return _create_fallback_plan(query)
+
+    # Should never reach here
+    return _create_fallback_plan(query)
 
 
 def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]:
-    """Parse planner JSON response"""
+    """Parse planner JSON response with error handling"""
     content = content.strip()
 
+    # Remove markdown code blocks
     if "```json" in content:
         match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
         if match:
@@ -1367,6 +1876,7 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
         plan = json.loads(content)
 
         if isinstance(plan, dict):
+            # Set defaults
             plan.setdefault("intent", "")
             plan.setdefault("reasoning", "")
             plan.setdefault("can_answer_directly", False)
@@ -1383,45 +1893,34 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
                         "args": tool.get("args", {})
                     })
 
-            # Validate and clean retrieval queries
+            # Limit retrieval queries
             retrieval_tools = [t for t in normalized_tools if "retrieval" in t.get("name", "").lower()]
-
-            if len(retrieval_tools) > 3:
-                log.warning(f"Too many retrieval queries ({len(retrieval_tools)}), limiting to 3")
-                # Keep only first 3
+            if len(retrieval_tools) > NodeConfig.MAX_RETRIEVAL_QUERIES:
+                log.warning(f"Too many retrieval queries ({len(retrieval_tools)}), limiting to {NodeConfig.MAX_RETRIEVAL_QUERIES}")
                 other_tools = [t for t in normalized_tools if "retrieval" not in t.get("name", "").lower()]
-                normalized_tools = retrieval_tools[:3] + other_tools
+                normalized_tools = retrieval_tools[:NodeConfig.MAX_RETRIEVAL_QUERIES] + other_tools
 
             # Trim overly long queries
             for tool in normalized_tools:
                 if "retrieval" in tool.get("name", "").lower():
                     query = tool.get("args", {}).get("query", "")
-                    if len(query) > 100:
-                        # Extract first few meaningful words
-                        words = query.split()[:8]
+                    if len(query) > NodeConfig.MAX_QUERY_LENGTH:
+                        words = query.split()[:NodeConfig.MAX_QUERY_WORDS]
                         trimmed = " ".join(words)
-                        log.warning(f"Trimmed long query: '{query[:50]}...' -> '{trimmed}'")
+                        log.warning(f"Trimmed query: '{query[:50]}...' → '{trimmed}'")
                         tool["args"]["query"] = trimmed
 
             plan["tools"] = normalized_tools
-
             return plan
 
     except json.JSONDecodeError as e:
         log.warning(f"Failed to parse planner response: {e}")
 
-    return {
-        "intent": "Parse failed",
-        "reasoning": "Using fallback",
-        "can_answer_directly": False,
-        "needs_clarification": False,
-        "clarifying_question": "",
-        "tools": [{"name": "retrieval.search_internal_knowledge", "args": {"query": ""}}]
-    }
+    return _create_fallback_plan("")
 
 
 def _create_fallback_plan(query: str) -> Dict[str, Any]:
-    """Create fallback plan"""
+    """Create fallback plan when parsing fails"""
     return {
         "intent": "Fallback: Search internal knowledge",
         "reasoning": "Planner failed, using fallback",
@@ -1432,8 +1931,269 @@ def _create_fallback_plan(query: str) -> Dict[str, Any]:
     }
 
 
+def _validate_planned_tools(
+    planned_tools: List[Dict[str, Any]],
+    state: ChatState,
+    log: logging.Logger
+) -> Tuple[bool, List[str], List[str]]:
+    """
+    Validate planned tool names against available tools.
+
+    Returns:
+        (is_valid, invalid_tools, available_tool_names)
+    """
+    try:
+        from app.modules.agents.qna.tool_system import (
+            _sanitize_tool_name_if_needed,
+            get_agent_tools_with_schemas,
+        )
+
+        tools = get_agent_tools_with_schemas(state)
+        llm = state.get("llm")
+
+        # Get available tool names
+        available_tool_names = {getattr(tool, 'name', str(tool)) for tool in tools}
+
+        # Check for invalid tools
+        invalid_tools = []
+        for tool_call in planned_tools:
+            if isinstance(tool_call, dict):
+                tool_name = tool_call.get('name', '')
+                normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
+
+                if normalized_name not in available_tool_names and tool_name not in available_tool_names:
+                    invalid_tools.append(tool_name)
+
+        is_valid = len(invalid_tools) == 0
+        return is_valid, invalid_tools, list(available_tool_names)
+
+    except Exception as e:
+        log.warning(f"Tool validation failed: {e}")
+        return True, [], []
+
+
+def _has_jira_tools(state: ChatState) -> bool:
+    """Check if Jira tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "jira" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_confluence_tools(state: ChatState) -> bool:
+    """Check if Confluence tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "confluence" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+# Tool description caching
+_tool_description_cache: Dict[str, str] = {}
+
+
+def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
+    """Get tool descriptions with caching"""
+    org_id = state.get("org_id", "default")
+    agent_toolsets = state.get("agent_toolsets", [])
+    llm = state.get("llm")
+
+    from app.modules.agents.qna.tool_system import (
+        _requires_sanitized_tool_names,
+        get_agent_tools_with_schemas,
+    )
+
+    llm_type = "anthropic" if llm and _requires_sanitized_tool_names(llm) else "other"
+    toolset_names = sorted([ts.get("name", "") for ts in agent_toolsets if isinstance(ts, dict)])
+    cache_key = f"{org_id}_{hash(tuple(toolset_names))}_{llm_type}"
+
+    if cache_key in _tool_description_cache:
+        return _tool_description_cache[cache_key]
+
+    try:
+        tools = get_agent_tools_with_schemas(state)
+        if not tools:
+            fallback_name = "retrieval_search_internal_knowledge" if llm_type == "anthropic" else "retrieval.search_internal_knowledge"
+            return f"### {fallback_name}\n  ✅ Use: Questions about company info, policies\n  ❌ Don't: External API calls"
+
+        result = _format_tool_descriptions(tools, log)
+        _tool_description_cache[cache_key] = result
+        return result
+
+    except Exception as e:
+        log.warning(f"Tool load failed: {e}")
+        return "### retrieval.search_internal_knowledge\n  ✅ Use: Search company knowledge"
+
+
+def _get_field_type_name(field_info) -> str:
+    """Get type name from Pydantic v2 field"""
+    try:
+        annotation = field_info.annotation
+
+        # Handle Optional types
+        if hasattr(annotation, '__origin__'):
+            origin = annotation.__origin__
+            if origin is Union:
+                # Get non-None type
+                args = [arg for arg in annotation.__args__ if arg is not type(None)]
+                if args:
+                    annotation = args[0]
+
+        # Get type name
+        if hasattr(annotation, '__name__'):
+            return annotation.__name__.lower()
+        else:
+            type_str = str(annotation).lower()
+            # Clean up common type representations
+            type_str = type_str.replace('<class ', '').replace('>', '').replace("'", "")
+            return type_str
+    except Exception:
+        return "any"
+
+
+def _get_field_type_name_v1(field_info) -> str:
+    """Get type name from Pydantic v1 field"""
+    try:
+        type_ = field_info.outer_type_
+
+        # Handle Optional
+        if hasattr(type_, '__origin__') and type_.__origin__ is Union:
+            args = [arg for arg in type_.__args__ if arg is not type(None)]
+            if args:
+                type_ = args[0]
+
+        if hasattr(type_, '__name__'):
+            return type_.__name__.lower()
+        else:
+            return str(type_).lower()
+    except Exception:
+        return "any"
+
+
+def _extract_parameters_from_schema(schema: Any, log: logging.Logger) -> Dict[str, Dict[str, Any]]:
+    """
+    Extract parameter information from Pydantic schema.
+
+    Returns:
+        {
+            "param_name": {
+                "type": "string",
+                "required": True,
+                "description": "..."
+            }
+        }
+    """
+    try:
+        # Handle Pydantic v2 schema
+        if hasattr(schema, 'model_fields'):
+            fields = schema.model_fields
+            required_fields = getattr(schema, '__required_fields__', set())
+
+            params = {}
+            for field_name, field_info in fields.items():
+                # Check if field is required
+                is_required = (
+                    field_name in required_fields or
+                    (hasattr(field_info, 'is_required') and field_info.is_required()) or
+                    (not hasattr(field_info, 'default') or field_info.default is None)
+                )
+
+                param_info = {
+                    "required": is_required,
+                    "description": getattr(field_info, 'description', '') or "",
+                    "type": _get_field_type_name(field_info)
+                }
+                params[field_name] = param_info
+
+            return params
+
+        # Handle Pydantic v1 schema
+        elif hasattr(schema, '__fields__'):
+            fields = schema.__fields__
+            params = {}
+
+            for field_name, field_info in fields.items():
+                param_info = {
+                    "required": field_info.required,
+                    "description": getattr(field_info.field_info, 'description', '') or "",
+                    "type": _get_field_type_name_v1(field_info)
+                }
+                params[field_name] = param_info
+
+            return params
+
+        # Handle dict schema (JSON schema)
+        elif isinstance(schema, dict):
+            properties = schema.get("properties", {})
+            required = schema.get("required", [])
+
+            params = {}
+            for param_name, param_schema in properties.items():
+                param_info = {
+                    "required": param_name in required,
+                    "description": param_schema.get("description", ""),
+                    "type": param_schema.get("type", "any")
+                }
+                params[param_name] = param_info
+
+            return params
+
+    except Exception as e:
+        log.debug(f"Schema extraction failed: {e}")
+
+    return {}
+
+
+def _format_tool_descriptions(tools: List, log: logging.Logger) -> str:
+    """
+    Format tool descriptions for planner with parameter schemas.
+
+    Includes:
+    - Tool name
+    - Description
+    - Required parameters with types
+    - Optional parameters (if space allows)
+    """
+    lines = []
+
+    for tool in tools[:30]:  # Limit to prevent prompt bloat
+        name = getattr(tool, 'name', str(tool))
+        description = getattr(tool, 'description', '')
+
+        # Start with name and description
+        lines.append(f"### {name}")
+        if description:
+            # Truncate long descriptions
+            desc_text = description[:200] if len(description) > 200 else description
+            lines.append(f"  {desc_text}")
+
+        # Extract parameter schema
+        try:
+            schema = getattr(tool, 'args_schema', None)
+            if schema:
+                params_info = _extract_parameters_from_schema(schema, log)
+                if params_info:
+                    lines.append("  **Parameters:**")
+                    for param_name, param_info in params_info.items():
+                        required_marker = "**required**" if param_info.get("required") else "optional"
+                        param_type = param_info.get("type", "any").upper()
+                        param_desc = param_info.get("description", "")
+
+                        # Format: - param_name (required): description [TYPE]
+                        if param_desc:
+                            lines.append(f"  - `{param_name}` ({required_marker}): {param_desc[:80]} [{param_type}]")
+                        else:
+                            lines.append(f"  - `{param_name}` ({required_marker}) [{param_type}]")
+        except Exception as e:
+            log.debug(f"Could not extract schema for {name}: {e}")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ============================================================================
-# Node 2: Execute
+# PART 3: EXECUTE, REFLECT, RESPOND NODES + COMPLETE SYSTEM
+# ============================================================================
+
+# ============================================================================
+# EXECUTE NODE - WITH CASCADING SUPPORT
 # ============================================================================
 
 async def execute_node(
@@ -1441,7 +2201,15 @@ async def execute_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """Execute all planned tools in parallel OR sequentially if cascading"""
+    """
+    Execute planned tools with cascading support.
+
+    Features:
+    - Automatic detection of cascading needs
+    - Sequential execution with placeholder resolution
+    - Parallel execution when no dependencies
+    - Comprehensive error handling
+    """
     start_time = time.perf_counter()
     log = state.get("logger", logger)
 
@@ -1457,49 +2225,33 @@ async def execute_node(
         "data": {"status": "executing", "message": f"Executing {len(planned_tools)} tool(s)..."}
     }, config)
 
-    # Get tools
+    # Get available tools
     try:
-        from app.modules.agents.qna.tool_system import (
-            get_agent_tools_with_schemas,
-        )
+        from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+
         tools = get_agent_tools_with_schemas(state)
         llm = state.get("llm")
 
-        # Build mapping - tools already have sanitized names if needed
+        # Build tool mapping
         tools_by_name = {}
         for t in tools:
             sanitized_name = getattr(t, 'name', str(t))
             tools_by_name[sanitized_name] = t
-            # Also map original name if different (for backward compatibility)
             original_name = getattr(t, '_original_name', sanitized_name)
             if original_name != sanitized_name:
                 tools_by_name[original_name] = t
+
     except Exception as e:
         log.error(f"Failed to get tools: {e}")
         tools_by_name = {}
 
-    # NEW: Detect cascading tools (tools with placeholders like {{...}})
-    has_cascading = _detect_cascading_tools(planned_tools, log)
-
-    if has_cascading:
-        # Execute sequentially to handle dependencies
-        log.info("Detected cascading tools - executing sequentially")
-        tool_results = await _execute_tools_sequentially(
-            planned_tools, tools_by_name, llm, state, log, writer, config
-        )
-    else:
-        # Execute in parallel (original behavior)
-        log.info("No cascading detected - executing in parallel")
-        tool_results = await _execute_tools_in_parallel(
-            planned_tools, tools_by_name, llm, state, log
-        )
-
-    # Update state
-    tool_messages = []
-    success_count = sum(1 for r in tool_results if r.get("status") == "success")
-    failed_count = sum(1 for r in tool_results if r.get("status") == "error")
+    # Execute tools (cascading detection handled internally)
+    tool_results = await ToolExecutor.execute_tools(
+        planned_tools, tools_by_name, llm, state, log, writer, config
+    )
 
     # Build tool messages
+    tool_messages = []
     for result in tool_results:
         if result.get("tool_id"):
             content_str = format_result_for_llm(result.get("result", ""), result.get("tool_name", ""))
@@ -1508,6 +2260,7 @@ async def execute_node(
                 tool_call_id=result.get("tool_id", "")
             ))
 
+    # Update state
     state["tool_results"] = tool_results
     state["all_tool_results"] = tool_results
 
@@ -1517,813 +2270,18 @@ async def execute_node(
 
     state["pending_tool_calls"] = False
 
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    executed_tool_names = [r.get("tool_name", "") for r in tool_results]
-    log.info(f"✅ Executed {len(tool_results)} tools in {duration_ms:.0f}ms ({success_count} succeeded, {failed_count} failed)")
+    # Log summary
+    success_count = sum(1 for r in tool_results if r.get("status") == "success")
+    failed_count = sum(1 for r in tool_results if r.get("status") == "error")
 
-    # Validate executed tools match planned tools
-    planned_tool_names = [t.get("name", "") for t in planned_tools]
-    if planned_tool_names != executed_tool_names:
-        log.warning(f"⚠️ Tool mismatch! Planned: {planned_tool_names}, Executed: {executed_tool_names}")
+    duration_ms = (time.perf_counter() - start_time) * 1000
+    log.info(f"✅ Executed {len(tool_results)} tools in {duration_ms:.0f}ms ({success_count} ✓, {failed_count} ✗)")
 
     return state
 
 
-def _detect_cascading_tools(planned_tools: List[Dict[str, Any]], log: logging.Logger) -> bool:
-    """
-    Detect if tools have dependencies (placeholders like {{...}} in args).
-
-    Returns True if any tool has placeholder references to previous tool results.
-    """
-    placeholder_pattern = re.compile(r'\{\{[^}]+\}\}')
-
-    for tool in planned_tools:
-        args = tool.get("args", {})
-        # Check all arg values for placeholders
-        args_str = json.dumps(args, default=str)
-        if placeholder_pattern.search(args_str):
-            log.info(f"Found cascading tool: {tool.get('name')} has placeholder args")
-            return True
-
-    return False
-
-
-async def _execute_tools_sequentially(
-    planned_tools: List[Dict[str, Any]],
-    tools_by_name: Dict[str, Any],
-    llm: Any,
-    state: ChatState,
-    log: logging.Logger,
-    writer: StreamWriter,
-    config: RunnableConfig
-) -> List[Dict[str, Any]]:
-    """
-    Execute tools sequentially, resolving placeholders from previous results.
-
-    This enables cascading tool calls where one tool's output is used as input to the next.
-    """
-    from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
-
-    tool_results = []
-    # Store results by tool name for placeholder resolution
-    results_by_tool = {}
-
-    for i, tool_call in enumerate(planned_tools):
-        tool_name = tool_call.get("name", "")
-        normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
-        actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
-
-        if actual_tool_name not in tools_by_name:
-            log.warning(f"Tool not found: {tool_name}")
-            error_result = {
-                "tool_name": tool_name,
-                "result": f"Error: Tool '{tool_name}' not found",
-                "status": "error",
-                "tool_id": f"call_{i}_{tool_name}"
-            }
-            tool_results.append(error_result)
-            continue
-
-        # Resolve placeholders in args using previous results
-        tool_args = tool_call.get("args", {})
-        resolved_args = _resolve_placeholders(tool_args, results_by_tool, log)
-
-        # Validate that all placeholders were resolved
-        unresolved_placeholders = []
-        for key, value in resolved_args.items():
-            if isinstance(value, str) and '{{' in value:
-                unresolved_placeholders.append(f"{key}={value}")
-
-        if unresolved_placeholders:
-            log.error(f"Unresolved placeholders in {actual_tool_name}: {unresolved_placeholders}")
-            # Don't execute tool with unresolved placeholders - it will fail
-            error_result = {
-                "tool_name": actual_tool_name,
-                "result": f"Error: Could not resolve placeholders: {', '.join(unresolved_placeholders)}. Available tools: {list(results_by_tool.keys())}",
-                "status": "error",
-                "tool_id": f"call_{i}_{actual_tool_name}"
-            }
-            tool_results.append(error_result)
-            log.warning(f"Skipping {actual_tool_name} due to unresolved placeholders")
-            continue
-
-        tool_id = f"call_{i}_{actual_tool_name}"
-
-        log.debug(f"Executing {actual_tool_name} sequentially with {json.dumps(resolved_args, default=str)[:100]}...")
-
-        # Stream status update
-        safe_stream_write(writer, {
-            "event": "status",
-            "data": {"status": "executing", "message": f"Executing {actual_tool_name}..."}
-        }, config)
-
-        # Execute single tool
-        result = await _execute_single_tool(
-            tool=tools_by_name[actual_tool_name],
-            tool_name=actual_tool_name,
-            tool_args=resolved_args,
-            tool_id=tool_id,
-            state=state,
-            log=log
-        )
-
-        if isinstance(result, dict) and "tool_result" in result:
-            tool_result = result["tool_result"]
-            tool_results.append(tool_result)
-
-            # CRITICAL: Only store successful results for placeholder resolution
-            # Failed tools should not be available for placeholder resolution
-            if tool_result.get("status") != "success":
-                log.debug(f"Skipping failed tool {actual_tool_name} from placeholder resolution (status: {tool_result.get('status')})")
-                log.info(f"Sequential execution: {actual_tool_name} failed")
-                continue  # Skip storing this result
-
-            # Store result for placeholder resolution (only for successful tools)
-            result_data = tool_result.get("result", {})
-
-            # If result is a tuple (success, data), extract data
-            if isinstance(result_data, tuple) and len(result_data) == 2:
-                success, data = result_data
-                # Always try to parse JSON strings to dict for easier navigation
-                if isinstance(data, str):
-                    try:
-                        parsed = json.loads(data)
-                        if isinstance(parsed, dict):
-                            # Store parsed dict for easy navigation
-                            results_by_tool[actual_tool_name] = parsed
-                            log.debug(f"Stored parsed result for {actual_tool_name}: {list(parsed.keys())}")
-                        else:
-                            results_by_tool[actual_tool_name] = data
-                    except (json.JSONDecodeError, TypeError):
-                        # If not JSON, store as-is
-                        results_by_tool[actual_tool_name] = data
-                else:
-                    results_by_tool[actual_tool_name] = data
-            else:
-                # Not a tuple, store directly but parse if it's a JSON string
-                if isinstance(result_data, str):
-                    try:
-                        parsed = json.loads(result_data)
-                        if isinstance(parsed, dict):
-                            results_by_tool[actual_tool_name] = parsed
-                            log.debug(f"Stored parsed result for {actual_tool_name}: {list(parsed.keys())}")
-                        else:
-                            results_by_tool[actual_tool_name] = result_data
-                    except (json.JSONDecodeError, TypeError):
-                        results_by_tool[actual_tool_name] = result_data
-                else:
-                    results_by_tool[actual_tool_name] = result_data
-
-            log.info(f"Sequential execution: {actual_tool_name} succeeded")
-            # Debug: log what we stored for placeholder resolution
-            if actual_tool_name in results_by_tool:
-                stored = results_by_tool[actual_tool_name]
-                if isinstance(stored, dict):
-                    log.debug(f"Stored result keys for {actual_tool_name}: {list(stored.keys())}")
-                else:
-                    log.debug(f"Stored result type for {actual_tool_name}: {type(stored).__name__}")
-        else:
-            log.error(f"Unexpected result format from {actual_tool_name}")
-
-    return tool_results
-
-
-def _navigate_field_path(value: Any, field_path: List[str], log: logging.Logger) -> Optional[Any]:
-    """
-    Navigate through a field path, handling arrays intelligently.
-    
-    Handles:
-    - Direct dict fields: data.id
-    - Array results: data.results.id (gets from first item)
-    - Array indices: data.results[0].id
-    - Nested structures: data.results[0].nested.field
-    
-    Args:
-        value: Starting value (usually a dict)
-        field_path: List of field names to navigate
-        log: Logger for debugging
-        
-    Returns:
-        Extracted value or None if path doesn't exist
-    """
-    current_value = value
-    
-    i = 0
-    while i < len(field_path):
-        if current_value is None:
-            break
-            
-        field = field_path[i]
-        
-        # Handle dict
-        if isinstance(current_value, dict):
-            current_value = current_value.get(field)
-            
-            # If we got an array, handle it intelligently
-            if isinstance(current_value, list) and len(current_value) > 0:
-                # Check if there are more fields to navigate
-                if i + 1 < len(field_path):
-                    # Try to get the next field from the first array item
-                    next_field = field_path[i + 1]
-                    first_item = current_value[0]
-                    
-                    if isinstance(first_item, dict) and next_field in first_item:
-                        # Found the field in first item, navigate there
-                        current_value = first_item.get(next_field)
-                        i += 2  # Skip both current field (array) and next field
-                        continue
-                    else:
-                        # Field not in first item, try parsing as index
-                        try:
-                            index = int(next_field)
-                            if 0 <= index < len(current_value):
-                                current_value = current_value[index]
-                                i += 2  # Skip array field and index
-                                continue
-                        except ValueError:
-                            pass
-                
-                # No more fields or couldn't navigate further, use first item
-                current_value = current_value[0]
-                
-        # Handle array (direct array access)
-        elif isinstance(current_value, list):
-            if len(current_value) > 0:
-                # Try to parse field as index
-                try:
-                    index = int(field)
-                    if 0 <= index < len(current_value):
-                        current_value = current_value[index]
-                    else:
-                        return None
-                except ValueError:
-                    # Not a numeric index, try to get field from first item
-                    first_item = current_value[0]
-                    if isinstance(first_item, dict) and field in first_item:
-                        current_value = first_item.get(field)
-                    else:
-                        # Try to find field in any item
-                        for item in current_value:
-                            if isinstance(item, dict) and field in item:
-                                current_value = item.get(field)
-                                break
-                        else:
-                            return None
-            else:
-                return None
-                
-        # Handle string (try parsing JSON)
-        elif isinstance(current_value, str):
-            try:
-                parsed = json.loads(current_value)
-                if isinstance(parsed, dict):
-                    current_value = parsed.get(field)
-                elif isinstance(parsed, list) and len(parsed) > 0:
-                    current_value = parsed[0]
-                    if isinstance(current_value, dict):
-                        current_value = current_value.get(field)
-                else:
-                    return None
-            except (json.JSONDecodeError, TypeError):
-                return None
-        else:
-            return None
-        
-        i += 1
-    
-    return current_value
-
-
-def _parse_placeholder(placeholder: str, results_by_tool: Dict[str, Any], log: logging.Logger) -> tuple[Optional[str], List[str]]:
-    """
-    Parse a placeholder like "jira.create_issue.data.key" into tool_ref and field_path.
-    
-    Returns:
-        (tool_ref, field_path) or (None, []) if parsing fails
-    """
-    # Get available tool names (sorted by length, longest first for better matching)
-    available_tool_names = sorted(results_by_tool.keys(), key=len, reverse=True)
-    
-    # Try to find matching tool name at the start of the placeholder
-    for tool_name in available_tool_names:
-        # Check if placeholder starts with tool name
-        if placeholder.startswith(tool_name + '.'):
-            # Extract field path after tool name
-            remaining = placeholder[len(tool_name) + 1:]  # +1 for the dot
-            field_path = remaining.split('.') if remaining else []
-            return tool_name, field_path
-    
-    # If no match found, fall back to splitting by first dot (legacy format)
-    parts = placeholder.split('.', 1)  # Split only on first dot
-    if len(parts) < 2:
-        log.warning(f"Invalid placeholder format: {placeholder}")
-        return None, []
-    
-    tool_ref = parts[0]
-    field_path = parts[1].split('.') if parts[1] else []
-    return tool_ref, field_path
-
-
-def _resolve_placeholders(
-    args: Dict[str, Any],
-    results_by_tool: Dict[str, Any],
-    log: logging.Logger
-) -> Dict[str, Any]:
-    """
-    Resolve placeholders like {{CREATE_ISSUE_RESULT.key}} with actual values from previous tool results.
-
-    Supported placeholder formats:
-    - {{TOOL_NAME.field}} - extracts field from tool result
-    - {{TOOL_NAME_data.field}} - extracts field from result.data
-
-    Example:
-    - {{jira.create_issue.data.key}} -> "PA-690"
-    - {{CREATE_ISSUE_RESULT.key}} -> "PA-690" (if result has key)
-    """
-    # Recursively resolve placeholders in the args dict
-    resolved_args = {}
-
-    for key, value in args.items():
-        if isinstance(value, str):
-            # Check if value contains placeholders
-            placeholder_pattern = re.compile(r'\{\{([^}]+)\}\}')
-            matches = placeholder_pattern.findall(value)
-
-            if matches:
-                # Has placeholders - resolve them
-                resolved_value = value
-                for match in matches:
-                    # Parse placeholder using helper function
-                    tool_ref, field_path = _parse_placeholder(match, results_by_tool, log)
-                    if tool_ref is None:
-                        continue
-
-                    # Try to find matching tool result
-                    matched_value = None
-
-                    # First try exact match (most common case)
-                    if tool_ref in results_by_tool:
-                        tool_result = results_by_tool[tool_ref]
-                        try:
-                            matched_value = _navigate_field_path(tool_result, field_path, log)
-                            if matched_value is not None:
-                                log.info(f"Resolved placeholder {{{{{match}}}}} -> {matched_value} (exact match)")
-                        except Exception as e:
-                            log.warning(f"Error extracting field from placeholder {{{{{match}}}}}: {e}")
-
-                    # If exact match failed, try fuzzy matching
-                    if matched_value is None:
-                        for tool_name, tool_result in results_by_tool.items():
-                            # Check if tool_ref matches tool_name (case-insensitive, ignore dots/underscores)
-                            normalized_ref = tool_ref.lower().replace('_', '').replace('.', '').replace('result', '').replace('data', '')
-                            normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
-
-                            # Match if normalized versions are similar
-                            if normalized_ref == normalized_tool or normalized_ref in normalized_tool or normalized_tool in normalized_ref:
-                                try:
-                                    matched_value = _navigate_field_path(tool_result, field_path, log)
-                                    if matched_value is not None:
-                                        log.info(f"Resolved placeholder {{{{{match}}}}} -> {matched_value} (fuzzy match: {tool_name})")
-                                        break
-                                except Exception as e:
-                                    log.warning(f"Error extracting field from placeholder {{{{{match}}}}}: {e}")
-
-                    # If still not resolved, try alternative paths for array results
-                    if matched_value is None and len(field_path) >= 2:
-                        # Try alternative: if path is "data.id" but data.results exists, try "data.results[0].id"
-                        if tool_ref in results_by_tool:
-                            tool_result = results_by_tool[tool_ref]
-                            try:
-                                # Check if we have data.results structure
-                                if isinstance(tool_result, dict) and "data" in tool_result:
-                                    data = tool_result["data"]
-                                    if isinstance(data, dict) and "results" in data:
-                                        results = data["results"]
-                                        if isinstance(results, list) and len(results) > 0:
-                                            # Try to get the field from first result item
-                                            first_result = results[0]
-                                            if isinstance(first_result, dict):
-                                                # Try different field names from the path
-                                                for field_name in field_path[-1:]:  # Try last field name
-                                                    if field_name in first_result:
-                                                        matched_value = first_result.get(field_name)
-                                                        log.info(f"Resolved placeholder {{{{{match}}}}} -> {matched_value} (array fallback: data.results[0].{field_name})")
-                                                        break
-                            except Exception as e:
-                                log.debug(f"Array fallback failed for {{{{{match}}}}}: {e}")
-
-                    if matched_value is not None:
-                        # Replace placeholder with actual value
-                        placeholder_full = f"{{{{{match}}}}}"
-                        resolved_value = resolved_value.replace(placeholder_full, str(matched_value))
-                    else:
-                        # Debug: log available tools for troubleshooting
-                        available_tools = list(results_by_tool.keys())
-                        log.warning(f"Could not resolve placeholder: {{{{{match}}}}}. Available tools: {available_tools}")
-                        log.debug(f"Looking for tool_ref: '{tool_ref}', field_path: {field_path}")
-
-                resolved_args[key] = resolved_value
-            else:
-                # No placeholders, keep as is
-                resolved_args[key] = value
-        elif isinstance(value, dict):
-            # Recursively resolve placeholders in nested dicts
-            resolved_args[key] = _resolve_placeholders(value, results_by_tool, log)
-        elif isinstance(value, list):
-            # Handle lists - resolve placeholders in each item
-            resolved_list = []
-            for item in value:
-                if isinstance(item, dict):
-                    resolved_list.append(_resolve_placeholders(item, results_by_tool, log))
-                elif isinstance(item, str) and '{{' in item:
-                    # Resolve placeholders in list items
-                    placeholder_pattern = re.compile(r'\{\{([^}]+)\}\}')
-                    matches = placeholder_pattern.findall(item)
-                    resolved_item = item
-                    for match in matches:
-                        # Parse placeholder using helper function
-                        tool_ref, field_path = _parse_placeholder(match, results_by_tool, log)
-                        if tool_ref is None:
-                            continue
-                        
-                        matched_value = None
-
-                        # First try exact match
-                        if tool_ref in results_by_tool:
-                            tool_result = results_by_tool[tool_ref]
-                            try:
-                                value_to_extract = tool_result
-                                for field in field_path:
-                                    if isinstance(value_to_extract, dict):
-                                        value_to_extract = value_to_extract.get(field)
-                                    elif isinstance(value_to_extract, str):
-                                        try:
-                                            parsed = json.loads(value_to_extract)
-                                            if isinstance(parsed, dict):
-                                                value_to_extract = parsed.get(field)
-                                            else:
-                                                break
-                                        except (json.JSONDecodeError, TypeError):
-                                            break
-                                    else:
-                                        break
-
-                                if value_to_extract is not None:
-                                    matched_value = value_to_extract
-                            except Exception:
-                                pass
-
-                        # If exact match failed, try fuzzy matching
-                        if matched_value is None:
-                            for tool_name, tool_result in results_by_tool.items():
-                                normalized_ref = tool_ref.lower().replace('_', '').replace('.', '').replace('result', '').replace('data', '')
-                                normalized_tool = tool_name.lower().replace('_', '').replace('.', '')
-
-                                if normalized_ref == normalized_tool or normalized_ref in normalized_tool or normalized_tool in normalized_ref:
-                                    try:
-                                        value_to_extract = tool_result
-                                        for field in field_path:
-                                            if isinstance(value_to_extract, dict):
-                                                value_to_extract = value_to_extract.get(field)
-                                            elif isinstance(value_to_extract, str):
-                                                try:
-                                                    parsed = json.loads(value_to_extract)
-                                                    if isinstance(parsed, dict):
-                                                        value_to_extract = parsed.get(field)
-                                                    else:
-                                                        break
-                                                except (json.JSONDecodeError, TypeError):
-                                                    break
-                                            else:
-                                                break
-
-                                        if value_to_extract is not None:
-                                            matched_value = value_to_extract
-                                            break
-                                    except Exception:
-                                        pass
-
-                            if matched_value is not None:
-                                placeholder_full = f"{{{{{match}}}}}"
-                                resolved_item = resolved_item.replace(placeholder_full, str(matched_value))
-
-                    resolved_list.append(resolved_item)
-                else:
-                    resolved_list.append(item)
-            resolved_args[key] = resolved_list
-        else:
-            # Other types, keep as is
-            resolved_args[key] = value
-
-    return resolved_args
-
-
-async def _execute_tools_in_parallel(
-    planned_tools: List[Dict[str, Any]],
-    tools_by_name: Dict[str, Any],
-    llm: Any,
-    state: ChatState,
-    log: logging.Logger
-) -> List[Dict[str, Any]]:
-    """Execute tools in parallel (original behavior)"""
-    from app.modules.agents.qna.tool_system import _sanitize_tool_name_if_needed
-
-    tasks = []
-
-    for i, tool_call in enumerate(planned_tools[:NodeConfig.MAX_PARALLEL_TOOLS]):
-        tool_name = tool_call.get("name", "")
-        normalized_name = _sanitize_tool_name_if_needed(tool_name, llm) if llm else tool_name
-        actual_tool_name = normalized_name if normalized_name in tools_by_name else tool_name
-
-        if actual_tool_name not in tools_by_name:
-            log.warning(f"Tool not found: {tool_name}")
-            tasks.append(_create_error_result(tool_name, f"call_{i}_{tool_name}", f"Tool '{tool_name}' not found"))
-            continue
-
-        tool_args = tool_call.get("args", {})
-        tool_id = f"call_{i}_{actual_tool_name}"
-
-        tasks.append(_execute_single_tool(
-            tool=tools_by_name[actual_tool_name],
-            tool_name=actual_tool_name,
-            tool_args=tool_args,
-            tool_id=tool_id,
-            state=state,
-            log=log
-        ))
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    # Extract tool_result from each result
-    tool_results = []
-    for result in results:
-        if isinstance(result, Exception):
-            log.error(f"Tool execution exception: {result}")
-            continue
-        if isinstance(result, dict) and "tool_result" in result:
-            tool_results.append(result["tool_result"])
-
-    return tool_results
-
-
-async def _execute_single_tool(
-    tool: object,
-    tool_name: str,
-    tool_args: Dict,
-    tool_id: str,
-    state: ChatState,
-    log: logging.Logger
-) -> Dict[str, Any]:
-    """Execute single tool with timeout"""
-    start_time = time.perf_counter()
-
-    try:
-        # Normalize args structure
-        if isinstance(tool_args, dict) and "kwargs" in tool_args and len(tool_args) == 1:
-            tool_args = tool_args["kwargs"]
-
-        log.debug(f"Executing {tool_name} with {json.dumps(tool_args, default=str)[:100]}...")
-
-        # CRITICAL: Validate and normalize args using Pydantic schema BEFORE calling tool
-        # This ensures model_validator normalizes field names (e.g., issueKey -> issue_key)
-        validated_args = tool_args
-        args_schema = None
-
-        # Try to get schema from StructuredTool first (if it's a LangChain tool)
-        if hasattr(tool, 'args_schema'):
-            args_schema = tool.args_schema
-        elif hasattr(tool, 'args') and hasattr(tool.args, 'schema'):
-            # LangChain StructuredTool stores schema in tool.args.schema
-            try:
-                args_schema = tool.args.schema
-            except AttributeError:
-                pass
-
-        # Fallback: Get schema from registry
-        if args_schema is None:
-            try:
-                from app.agents.tools.registry import _global_tools_registry
-                tool_metadata = _global_tools_registry.get_metadata(tool_name)
-                if tool_metadata and hasattr(tool_metadata, 'tool') and hasattr(tool_metadata.tool, 'args_schema'):
-                    args_schema = tool_metadata.tool.args_schema
-            except Exception as e:
-                log.debug(f"Could not get schema from registry for {tool_name}: {e}")
-
-        # Validate and normalize using Pydantic schema if available
-        if args_schema:
-            try:
-                from pydantic import ValidationError
-                # Validate and normalize - this triggers model_validator(mode='before')
-                validated_model = args_schema.model_validate(tool_args)
-                # Convert validated Pydantic model to dict for kwargs
-                validated_args = validated_model.model_dump(exclude_unset=True)
-                log.debug(f"✅ Validated/normalized args for {tool_name}: {json.dumps(validated_args, default=str)[:100]}")
-            except ValidationError as e:
-                duration_ms = int((time.perf_counter() - start_time) * 1000)
-                error_details = {
-                    "status": "error",
-                    "message": f"Validation error for {tool_name}: {str(e)}",
-                    "tool": tool_name,
-                    "args": tool_args,
-                    "validation_errors": e.errors() if hasattr(e, 'errors') else []
-                }
-                log.error(f"❌ Pydantic validation failed for {tool_name} after {duration_ms}ms: {e}")
-                return {
-                    "tool_result": {
-                        "tool_name": tool_name,
-                        "result": json.dumps(error_details, indent=2),
-                        "status": "error",
-                        "tool_id": tool_id,
-                        "args": tool_args,
-                        "duration_ms": duration_ms
-                    },
-                    "tool_message": ToolMessage(
-                        content=json.dumps({
-                            "status": "error",
-                            "message": f"Validation error for {tool_name}: {str(e)}",
-                            "tool": tool_name
-                        }, indent=2),
-                        tool_call_id=tool_id
-                    )
-                }
-            except Exception as validation_error:
-                log.warning(f"⚠️ Unexpected error during validation for {tool_name}: {validation_error}")
-                # Continue with original args if validation fails unexpectedly
-
-        # Execute with validated/normalized args
-        async def run_tool() -> object:
-            if hasattr(tool, 'arun'):
-                # For StructuredTool, pass validated_args as dict
-                # LangChain will handle it (but we've already validated/normalized)
-                return await tool.arun(validated_args)
-            elif hasattr(tool, '_run'):
-                loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, functools.partial(tool._run, **validated_args))
-            else:
-                loop = asyncio.get_running_loop()
-                return await loop.run_in_executor(None, functools.partial(tool.run, **validated_args))
-
-        result = await asyncio.wait_for(run_tool(), timeout=NodeConfig.TOOL_TIMEOUT_SECONDS)
-
-        # Log before success detection
-        log.info(f"🔍 Tool {tool_name} result before success detection - type: {type(result).__name__}")
-        if isinstance(result, tuple):
-            log.info(f"🔍 Tool {tool_name} result tuple length: {len(result)}, first element: {result[0] if len(result) > 0 else 'N/A'}")
-
-        is_success = _detect_tool_success(result)
-        log.info(f"🔍 Tool {tool_name} success detection result: {is_success}")
-
-        # Log raw tool result
-        log.info(f"🔍 Tool {tool_name} raw result type: {type(result).__name__}")
-        if isinstance(result, tuple):
-            log.debug(f"🔍 Tool {tool_name} raw result tuple: success={result[0] if len(result) > 0 else 'N/A'}, data_type={type(result[1]).__name__ if len(result) > 1 else 'N/A'}")
-            if len(result) > 1:
-                result_data = result[1]
-                if isinstance(result_data, str):
-                    log.debug(f"🔍 Tool {tool_name} raw result data (first 500 chars): {result_data[:500]}")
-                else:
-                    log.debug(f"🔍 Tool {tool_name} raw result data: {json.dumps(result_data, default=str, indent=2)[:1000]}")
-        else:
-            if isinstance(result, str):
-                log.debug(f"🔍 Tool {tool_name} raw result (first 500 chars): {result[:500]}")
-            else:
-                log.debug(f"🔍 Tool {tool_name} raw result: {json.dumps(result, default=str, indent=2)[:1000]}")
-
-        # Handle retrieval output
-        content = result
-        if "retrieval" in tool_name.lower():
-            content = _process_retrieval_output(result, state, log)
-        else:
-            content = clean_tool_result(result)
-
-        # Log cleaned content
-        log.debug(f"🔍 Tool {tool_name} cleaned content type: {type(content).__name__}")
-        if isinstance(content, str):
-            log.debug(f"🔍 Tool {tool_name} cleaned content (first 500 chars): {content[:500]}")
-        else:
-            log.debug(f"🔍 Tool {tool_name} cleaned content: {json.dumps(content, default=str, indent=2)[:1000]}")
-
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        status = "success" if is_success else "error"
-
-        log.info(f"{'✅' if is_success else '❌'} {tool_name}: {duration_ms:.0f}ms")
-
-        content_str = format_result_for_llm(content, tool_name)
-
-
-        return {
-            "tool_result": {
-                "tool_name": tool_name,
-                "result": content,
-                "status": status,
-                "tool_id": tool_id,
-                "args": tool_args,
-                "duration_ms": duration_ms
-            },
-            "tool_message": ToolMessage(content=content_str, tool_call_id=tool_id)
-        }
-
-    except asyncio.TimeoutError:
-        duration_ms = (time.perf_counter() - start_time) * 1000
-
-        # Special handling for retrieval timeouts
-        if "retrieval" in tool_name.lower():
-            error_msg = f"Search timed out after {duration_ms:.0f}ms - query may be too complex. Try a simpler query."
-        else:
-            error_msg = f"Timeout after {duration_ms:.0f}ms"
-
-        log.error(f"❌ {tool_name} timed out")
-        return _create_error_result_sync(tool_name, tool_id, error_msg)
-
-    except Exception as e:
-        duration_ms = (time.perf_counter() - start_time) * 1000
-        log.error(f"❌ {tool_name} failed after {duration_ms:.0f}ms: {e}")
-        return _create_error_result_sync(tool_name, tool_id, f"{type(e).__name__}: {str(e)}")
-
-
-async def _create_error_result(tool_name: str, tool_id: str, error: str) -> Dict:
-    """Create error result"""
-    return _create_error_result_sync(tool_name, tool_id, error)
-
-
-def _create_error_result_sync(tool_name: str, tool_id: str, error: str) -> Dict:
-    """Create error result (sync)"""
-    return {
-        "tool_result": {
-            "tool_name": tool_name,
-            "result": f"Error: {error}",
-            "status": "error",
-            "tool_id": tool_id
-        },
-        "tool_message": ToolMessage(content=f"Error: {error}", tool_call_id=tool_id)
-    }
-
-
-def _detect_tool_success(result: object) -> bool:
-    """Detect if tool succeeded"""
-    if result is None:
-        return False
-
-    if isinstance(result, tuple) and len(result) >= 1:
-        if isinstance(result[0], bool):
-            return result[0]
-
-    if isinstance(result, dict):
-        if "success" in result and isinstance(result["success"], bool):
-            return result["success"]
-        if "error" in result and result["error"] not in (None, "", "null"):
-            return False
-        if "ok" in result and isinstance(result["ok"], bool):
-            return result["ok"]
-
-    result_str = str(result).lower()
-    error_indicators = [
-        "error:", '"error": "', "'error': '",
-        "failed", "failure", "exception",
-        "traceback", "status_code: 4", "status_code: 5"
-    ]
-
-    if '"error": null' in result_str or "'error': none" in result_str:
-        return not any(ind in result_str for ind in error_indicators)
-
-    return not any(ind in result_str for ind in error_indicators)
-
-
-def _process_retrieval_output(result: object, state: ChatState, log: logging.Logger) -> str:
-    """Process retrieval tool output"""
-    try:
-        from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
-
-        retrieval_output = None
-
-        if isinstance(result, dict) and "content" in result and "final_results" in result:
-            retrieval_output = RetrievalToolOutput(**result)
-        elif isinstance(result, str):
-            try:
-                data = json.loads(result)
-                if isinstance(data, dict) and "content" in data and "final_results" in data:
-                    retrieval_output = RetrievalToolOutput(**data)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        if retrieval_output:
-            state["final_results"] = retrieval_output.final_results
-            state["virtual_record_id_to_result"] = retrieval_output.virtual_record_id_to_result
-
-            if retrieval_output.virtual_record_id_to_result:
-                state["tool_records"] = list(retrieval_output.virtual_record_id_to_result.values())
-
-            log.info(f"Retrieved {len(retrieval_output.final_results)} knowledge blocks")
-            return retrieval_output.content
-
-    except Exception as e:
-        log.warning(f"Could not process retrieval output: {e}")
-
-    return str(result)
-
-
 # ============================================================================
-# Node 3: Reflect
+# REFLECT NODE - SMART DECISION MAKING
 # ============================================================================
 
 async def reflect_node(
@@ -2331,87 +2289,83 @@ async def reflect_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """Analyze results and decide next action"""
+    """
+    Analyze tool results and decide next action.
+
+    Features:
+    - Partial success detection
+    - Primary tool success detection
+    - Smart error categorization
+    - Context-aware retry decisions
+    """
     start_time = time.perf_counter()
     log = state.get("logger", logger)
 
     tool_results = state.get("all_tool_results", [])
     retry_count = state.get("retry_count", 0)
-    max_retries = state.get("max_retries", 1)
+    max_retries = state.get("max_retries", NodeConfig.MAX_RETRIES)
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", NodeConfig.MAX_ITERATIONS)
 
     # Count successes and failures
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
-    iteration_count = state.get("iteration_count", 0)
-    max_iterations = state.get("max_iterations", 3)
 
-    log.info(f"Tool execution summary: {len(successful)} succeeded, {len(failed)} failed")
+    log.info(f"📊 Tool results: {len(successful)} ✓, {len(failed)} ✗")
 
-    # NEW: Detailed logging for debugging
+    # Log details for debugging
     for r in successful:
-        log.debug(f"✅ Success: {r.get('tool_name')} - {str(r.get('result', ''))[:100]}")
+        log.debug(f"  ✅ {r.get('tool_name')}")
     for r in failed:
-        log.debug(f"❌ Failed: {r.get('tool_name')} - {str(r.get('result', ''))[:100]}")
+        log.debug(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:100]}")
 
-    # Check if we have retrieval results (internal knowledge)
-    has_retrieval_success = any(
-        "retrieval" in r.get("tool_name", "").lower()
-        for r in successful
-    )
+    # ========================================================================
+    # DECISION 1: Partial Success (some succeeded, some failed)
+    # ========================================================================
 
-    # CRITICAL FIX: If we have ANY successful results, proceed to respond
-    # Don't treat partial success as complete failure
-    # Exception: If ALL tools failed, then it's an error
     if len(successful) > 0 and len(failed) > 0:
-        # Partial success - some tools succeeded, some failed
-        log.info(f"Partial success: {len(successful)} succeeded, {len(failed)} failed")
+        log.info("🔀 Partial success detected")
 
-        # Check if the failed tools are critical or secondary
-        # For cascading tools, if primary tool (e.g., create_issue) succeeded
-        # but secondary tool (e.g., add_comment) failed, still proceed
+        # Check if primary tool succeeded
         query = state.get("query", "").lower()
         primary_succeeded = _check_primary_tool_success(query, successful, log)
 
-        if primary_succeeded or has_retrieval_success:
-            log.info("Primary tool or retrieval succeeded - proceeding despite failures")
+        # Check if we have retrieval results
+        has_retrieval = any("retrieval" in r.get("tool_name", "").lower() for r in successful)
+
+        if primary_succeeded or has_retrieval:
+            log.info("✅ Primary tool or retrieval succeeded - proceeding")
             state["reflection_decision"] = "respond_success"
             state["reflection"] = {
                 "decision": "respond_success",
-                "reasoning": f"Primary task completed: {len(successful)} tools succeeded (ignoring {len(failed)} secondary failures)",
+                "reasoning": f"Primary task completed ({len(successful)} succeeded, ignoring {len(failed)} secondary failures)",
                 "task_complete": True
             }
-            log.info("Reflect: respond_success (partial success - primary completed)")
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: respond_success (partial) - {duration_ms:.0f}ms")
             return state
 
-    # EXISTING: Partial success with retrieval
-    if has_retrieval_success and len(successful) > 0:
-        log.info(f"Partial success: {len(successful)} succeeded, {len(failed)} failed (has retrieval data)")
-        state["reflection_decision"] = "respond_success"
-        state["reflection"] = {
-            "decision": "respond_success",
-            "reasoning": f"Proceeding with {len(successful)} successful results despite {len(failed)} timeouts",
-            "task_complete": True
-        }
-        log.info("Reflect: respond_success (partial success with retrieval data)")
-        return state
+    # ========================================================================
+    # DECISION 2: All Succeeded - Check if Task Complete
+    # ========================================================================
 
-    # Fast path: all succeeded - but check if task is complete
     if not failed:
-        # All tools succeeded - check if task is complete
         query = state.get("query", "").lower()
         executed_tools = [r.get("tool_name", "") for r in tool_results]
 
-        # Fast path pattern matching for task completion
+        # Check if task needs more steps
         needs_continue = _check_if_task_needs_continue(query, executed_tools, tool_results, log)
 
         if needs_continue and iteration_count < max_iterations:
             state["reflection_decision"] = "continue_with_more_tools"
             state["reflection"] = {
                 "decision": "continue_with_more_tools",
-                "reasoning": "Tools succeeded but task needs more steps",
+                "reasoning": "Tools succeeded but task incomplete",
                 "task_complete": False
             }
-            log.info(f"Reflect: continue_with_more_tools (task incomplete, iteration {iteration_count + 1}/{max_iterations})")
+            log.info(f"➡️ Continue needed (iteration {iteration_count + 1}/{max_iterations})")
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: continue - {duration_ms:.0f}ms")
             return state
         else:
             state["reflection_decision"] = "respond_success"
@@ -2420,44 +2374,43 @@ async def reflect_node(
                 "reasoning": "All succeeded" if not needs_continue else "Max iterations reached",
                 "task_complete": not needs_continue
             }
-            log.info("Reflect: respond_success (fast path)")
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: respond_success (all done) - {duration_ms:.0f}ms")
             return state
 
-    # Check if primary task succeeded (e.g., create succeeded even if add_comment failed)
-    # The first planned tool is usually the primary action
-    planned_tools = state.get("planned_tool_calls", [])
-    primary_action_succeeded = False
+    # ========================================================================
+    # DECISION 3: Check Primary Tool Success (for cascading)
+    # ========================================================================
 
-    if planned_tools and len(planned_tools) > 0:
+    planned_tools = state.get("planned_tool_calls", [])
+    if planned_tools and len(planned_tools) > 0 and len(successful) > 0:
         primary_tool_name = planned_tools[0].get("name", "").lower()
 
-        # Check if the primary tool succeeded
+        # Check if primary (first) tool succeeded
         for result in successful:
             tool_name = result.get("tool_name", "").lower()
-            # Normalize tool names (handle sanitized names with underscores)
             normalized_primary = primary_tool_name.replace('.', '_')
             normalized_tool = tool_name.replace('.', '_')
 
             if tool_name == primary_tool_name or normalized_tool == normalized_primary:
-                primary_action_succeeded = True
-                log.info(f"Primary action tool succeeded: {tool_name} (was first planned tool: {primary_tool_name})")
-                break
+                log.info(f"✅ Primary action succeeded: {tool_name}")
+                state["reflection_decision"] = "respond_success"
+                state["reflection"] = {
+                    "decision": "respond_success",
+                    "reasoning": "Primary action succeeded (dependent tools failed but task complete)",
+                    "task_complete": True
+                }
+                duration_ms = (time.perf_counter() - start_time) * 1000
+                log.info(f"⚡ Reflect: respond_success (primary) - {duration_ms:.0f}ms")
+                return state
 
-    # If primary action succeeded, don't treat dependent failures as unrecoverable
-    if primary_action_succeeded:
-        log.info(f"Primary action succeeded despite {len(failed)} dependent tool failure(s) - proceeding with success")
-        state["reflection_decision"] = "respond_success"
-        state["reflection"] = {
-            "decision": "respond_success",
-            "reasoning": f"Primary action succeeded, {len(failed)} dependent tool(s) failed but task is complete",
-            "task_complete": True
-        }
-        log.info("Reflect: respond_success (primary action succeeded)")
-        return state
+    # ========================================================================
+    # DECISION 4: Fast Path Error Detection
+    # ========================================================================
 
-    # Fast path: unrecoverable errors (only if primary action didn't succeed)
     error_text = " ".join(str(r.get("result", "")) for r in failed).lower()
 
+    # Unrecoverable errors
     unrecoverable = [
         "permission", "unauthorized", "forbidden", "403",
         "not found", "does not exist", "404",
@@ -2478,90 +2431,62 @@ async def reflect_node(
             "reasoning": "Unrecoverable error",
             "error_context": error_context
         }
-        log.info("Reflect: respond_error (fast path)")
+        log.info(f"❌ Unrecoverable error: {error_context}")
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        log.info(f"⚡ Reflect: respond_error - {duration_ms:.0f}ms")
         return state
 
-    # Fast path: unbounded JQL
-    if "unbounded" in error_text:
-        if retry_count < max_retries:
+    # ========================================================================
+    # DECISION 5: Recoverable Errors (Retry Logic)
+    # ========================================================================
+
+    if retry_count < max_retries:
+        # Unbounded JQL
+        if "unbounded" in error_text:
             state["reflection_decision"] = "retry_with_fix"
             state["reflection"] = {
                 "decision": "retry_with_fix",
                 "reasoning": "Unbounded JQL",
                 "fix_instruction": "Add time filter: `AND updated >= -30d`"
             }
-            log.info("Reflect: retry_with_fix (unbounded)")
-            return state
-        else:
-            state["reflection_decision"] = "respond_clarify"
-            state["reflection"] = {
-                "decision": "respond_clarify",
-                "reasoning": "Unbounded JQL after retry",
-                "clarifying_question": "I need a time range. What period? (last 7 days, 30 days, 3 months, or specific dates?)"
-            }
-            log.info("Reflect: respond_clarify (unbounded after retry)")
+            log.info("🔄 Retry: Unbounded JQL")
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: retry_with_fix - {duration_ms:.0f}ms")
             return state
 
-    # Fast path: other recoverable errors
-    if retry_count < max_retries:
+        # Type errors
+        if "not the correct type" in error_text or "expected type" in error_text:
+            state["reflection_decision"] = "retry_with_fix"
+            state["reflection"] = {
+                "decision": "retry_with_fix",
+                "reasoning": "Parameter type error",
+                "fix_instruction": "Check parameter types and convert to correct format (e.g., numeric ID instead of string key)"
+            }
+            log.info("🔄 Retry: Type error")
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: retry_with_fix - {duration_ms:.0f}ms")
+            return state
+
+        # Syntax errors
         if any(x in error_text for x in ["syntax", "invalid", "malformed", "parse error"]):
             state["reflection_decision"] = "retry_with_fix"
             state["reflection"] = {
                 "decision": "retry_with_fix",
                 "reasoning": "Syntax error",
-                "fix_instruction": "Fix query syntax based on error"
+                "fix_instruction": "Fix query syntax based on error message"
             }
-            log.info("Reflect: retry_with_fix (syntax)")
+            log.info("🔄 Retry: Syntax error")
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            log.info(f"⚡ Reflect: retry_with_fix - {duration_ms:.0f}ms")
             return state
 
-        # Handle parameter type errors (e.g., space_id should be numeric ID but got key)
-        if "not the correct type" in error_text or "expected type" in error_text or "expected type is long" in error_text.lower():
-            # Check if it's a Confluence space_id issue
-            if "spaceid" in error_text.lower() or "space_id" in error_text.lower() or ("space" in error_text.lower() and "long" in error_text.lower()):
-                # Check if the failed tool was create_page
-                failed_tool = failed[0].get("tool_name", "") if failed else ""
-                if "create_page" in failed_tool.lower():
-                    state["reflection_decision"] = "retry_with_fix"
-                    state["reflection"] = {
-                        "decision": "retry_with_fix",
-                        "reasoning": "Space ID type error - need to resolve space key to numeric ID",
-                        "fix_instruction": "The space_id is a key but API needs numeric ID. Check Reference Data for confluence_space with matching name/key and use its 'id' field. If not found, call get_spaces to get the numeric ID, then call create_page with that ID. DO NOT switch to get_spaces as final tool - you still need to CREATE the page."
-                    }
-                    log.info("Reflect: retry_with_fix (space_id resolution needed)")
-                    return state
-                elif "search_pages" in failed_tool.lower():
-                    state["reflection_decision"] = "retry_with_fix"
-                    state["reflection"] = {
-                        "decision": "retry_with_fix",
-                        "reasoning": "Space ID type error in search",
-                        "fix_instruction": "For confluence.search_pages, space_id is optional. Remove the space_id parameter and search without it, or first call confluence.get_spaces to get the numeric ID."
-                    }
-                    log.info("Reflect: retry_with_fix (search space_id)")
-                    return state
+    # ========================================================================
+    # DECISION 6: LLM-Based Reflection (Complex Cases)
+    # ========================================================================
 
-            # Generic parameter type error
-            state["reflection_decision"] = "retry_with_fix"
-            state["reflection"] = {
-                "decision": "retry_with_fix",
-                "reasoning": "Parameter type error",
-                "fix_instruction": "Check parameter types. If API expects a different type, check tool documentation and adjust the parameter value accordingly."
-            }
-            log.info("Reflect: retry_with_fix (parameter type)")
-            return state
-
-        if "user" in error_text and ("not found" in error_text or "no user" in error_text):
-            state["reflection_decision"] = "retry_with_fix"
-            state["reflection"] = {
-                "decision": "retry_with_fix",
-                "reasoning": "User not found",
-                "fix_instruction": "Search users first to get correct ID"
-            }
-            log.info("Reflect: retry_with_fix (user not found)")
-            return state
-
-    # Slow path: LLM reflection
     llm = state.get("llm")
 
+    # Build summary
     summary_parts = []
     for r in tool_results:
         status = "SUCCESS" if r.get("status") == "success" else "FAILED"
@@ -2589,20 +2514,20 @@ async def reflect_node(
                 SystemMessage(content=prompt),
                 HumanMessage(content="Analyze and decide.")
             ]),
-            timeout=8.0
+            timeout=NodeConfig.REFLECTION_TIMEOUT_SECONDS
         )
 
         reflection = _parse_reflection_response(response.content, log)
 
     except asyncio.TimeoutError:
-        log.warning("Reflect timeout")
+        log.warning("⏱️ Reflect timeout")
         reflection = {
             "decision": "respond_error",
             "reasoning": "Analysis timeout",
             "error_context": "Unable to complete request"
         }
     except Exception as e:
-        log.error(f"Reflection failed: {e}")
+        log.error(f"💥 Reflection failed: {e}")
         reflection = {
             "decision": "respond_error",
             "reasoning": str(e),
@@ -2613,15 +2538,16 @@ async def reflect_node(
     state["reflection_decision"] = reflection.get("decision", "respond_error")
 
     duration_ms = (time.perf_counter() - start_time) * 1000
-    log.info(f"Reflect: {state['reflection_decision']} (LLM, {duration_ms:.0f}ms)")
+    log.info(f"⚡ Reflect: {state['reflection_decision']} (LLM) - {duration_ms:.0f}ms")
 
     return state
 
 
 def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, Any]:
-    """Parse reflection JSON"""
+    """Parse reflection JSON response"""
     content = content.strip()
 
+    # Remove markdown
     if "```json" in content:
         match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
         if match:
@@ -2640,7 +2566,6 @@ def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, A
             reflection.setdefault("clarifying_question", "")
             reflection.setdefault("error_context", "")
             reflection.setdefault("task_complete", True)
-            reflection.setdefault("needs_more_tools", "")
             return reflection
 
     except json.JSONDecodeError as e:
@@ -2653,8 +2578,81 @@ def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, A
     }
 
 
+def _check_primary_tool_success(query: str, successful: List[Dict], log: logging.Logger) -> bool:
+    """
+    Check if primary tool succeeded based on user intent.
+
+    Examples:
+    - "Create ticket and comment" → primary is create
+    - "Search and update" → primary is search
+    """
+    query_lower = query.lower()
+    successful_tools = [r.get("tool_name", "").lower() for r in successful]
+
+    # Map intent to tool patterns
+    intent_patterns = {
+        "create": ["create", "make", "add", "new"],
+        "update": ["update", "modify", "change", "edit"],
+        "delete": ["delete", "remove", "clear"],
+        "search": ["search", "find", "get", "list"],
+    }
+
+    # Detect primary intent
+    primary_intent = None
+    for intent, keywords in intent_patterns.items():
+        if any(keyword in query_lower for keyword in keywords):
+            primary_intent = intent
+            break
+
+    if not primary_intent:
+        return len(successful) > 0  # Fallback: any success
+
+    # Check if primary intent tool succeeded
+    for tool in successful_tools:
+        if primary_intent in tool:
+            log.debug(f"✅ Primary '{primary_intent}' tool succeeded: {tool}")
+            return True
+
+    return len(successful) > 0  # Fallback
+
+
+def _check_if_task_needs_continue(
+    query: str,
+    executed_tools: List[str],
+    tool_results: List[Dict[str, Any]],
+    log: logging.Logger
+) -> bool:
+    """
+    Check if task needs more steps.
+
+    Returns True if task is incomplete.
+    """
+    query_lower = query.lower()
+    executed_lower = [t.lower() for t in executed_tools]
+
+    # User wants to edit/update but only got data
+    if any(word in query_lower for word in ["edit", "update", "modify", "change"]):
+        has_read = any(x in t for x in ["get", "read", "fetch", "search", "find"] for t in executed_lower)
+        has_write = any(x in t for x in ["update", "edit", "modify", "send"] for t in executed_lower)
+
+        if has_read and not has_write:
+            log.debug("Task incomplete: wants to update but only read")
+            return True
+
+    # User wants to create but only searched
+    if any(word in query_lower for word in ["create", "make", "new", "add"]):
+        has_search = any(x in t for x in ["search", "find", "get", "fetch"] for t in executed_lower)
+        has_create = any(x in t for x in ["create", "make", "add", "post", "send"] for t in executed_lower)
+
+        if has_search and not has_create:
+            log.debug("Task incomplete: wants to create but only searched")
+            return True
+
+    return False
+
+
 # ============================================================================
-# Node 4: Prepare Retry
+# PREPARE RETRY NODE
 # ============================================================================
 
 async def prepare_retry_node(
@@ -2662,7 +2660,7 @@ async def prepare_retry_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """Prepare for retry"""
+    """Prepare for retry after fixable error"""
     log = state.get("logger", logger)
 
     state["retry_count"] = state.get("retry_count", 0) + 1
@@ -2690,13 +2688,13 @@ async def prepare_retry_node(
         "data": {"status": "retrying", "message": "Retrying..."}
     }, config)
 
-    log.info(f"Prepare retry {state['retry_count']}/{state.get('max_retries', 1)}: {len(errors)} errors")
+    log.info(f"🔄 Retry {state['retry_count']}/{state.get('max_retries', NodeConfig.MAX_RETRIES)}: {len(errors)} errors")
 
     return state
 
 
 # ============================================================================
-# Node 5: Prepare Continue
+# PREPARE CONTINUE NODE
 # ============================================================================
 
 async def prepare_continue_node(
@@ -2704,46 +2702,27 @@ async def prepare_continue_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """Prepare for continue with more tools (multi-step task)"""
+    """Prepare to continue with more tools"""
     log = state.get("logger", logger)
 
-    # Increment iteration count (separate from retry_count)
     state["iteration_count"] = state.get("iteration_count", 0) + 1
     state["is_continue"] = True
 
-    # Keep tool results for next planning step (don't clear them)
-    # The planner will use these results to plan next steps
+    # Keep tool results for next planning
 
     safe_stream_write(writer, {
         "event": "status",
-        "data": {"status": "continuing", "message": "Continuing with next steps..."}
+        "data": {"status": "continuing", "message": "Continuing..."}
     }, config)
 
-    max_iterations = state.get("max_iterations", 3)
-    log.info(f"Prepare continue {state['iteration_count']}/{max_iterations}: task needs more steps")
+    max_iterations = state.get("max_iterations", NodeConfig.MAX_ITERATIONS)
+    log.info(f"➡️ Continue {state['iteration_count']}/{max_iterations}")
 
     return state
 
 
-def route_after_reflect(state: ChatState) -> Literal["prepare_retry", "prepare_continue", "respond"]:
-    """Route based on reflection"""
-    decision = state.get("reflection_decision", "respond_success")
-    retry_count = state.get("retry_count", 0)
-    max_retries = state.get("max_retries", 1)
-    iteration_count = state.get("iteration_count", 0)
-    max_iterations = state.get("max_iterations", 3)
-
-    if decision == "retry_with_fix" and retry_count < max_retries:
-        return "prepare_retry"
-
-    if decision == "continue_with_more_tools" and iteration_count < max_iterations:
-        return "prepare_continue"
-
-    return "respond"
-
-
 # ============================================================================
-# Node 5: Respond
+# RESPOND NODE - FINAL RESPONSE GENERATION
 # ============================================================================
 
 async def respond_node(
@@ -2751,7 +2730,15 @@ async def respond_node(
     config: RunnableConfig,
     writer: StreamWriter
 ) -> ChatState:
-    """Generate final response with streaming"""
+    """
+    Generate final response with streaming.
+
+    Features:
+    - Streaming response generation
+    - Citation extraction for retrieval results
+    - Reference data extraction for API results
+    - Proper error handling
+    """
     start_time = time.perf_counter()
     log = state.get("logger", logger)
     llm = state.get("llm")
@@ -2785,7 +2772,7 @@ async def respond_node(
     tool_results = state.get("all_tool_results", [])
 
     if execution_plan.get("can_answer_directly") and not tool_results:
-        response = await _generate_direct_response_streaming(state, llm, log, writer, config)
+        response = await _generate_direct_response(state, llm, log, writer, config)
         completion = {
             "answer": response,
             "citations": [],
@@ -2797,27 +2784,10 @@ async def respond_node(
         state["completion_data"] = completion
         return state
 
-    # Get citation data
-    final_results = state.get("final_results", [])
-    if not isinstance(final_results, list):
-        final_results = []
-
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
-    tool_records = state.get("tool_records", [])
-
-    log.info(f"Citation data: {len(final_results)} results, {len(virtual_record_map)} records")
-
-    # Check tool outcomes
-    successful_count = sum(1 for r in tool_results if r.get("status") == "success")
-    failed_count = sum(1 for r in tool_results if r.get("status") == "error")
-
-    log.info(f"Tool execution: {successful_count} succeeded, {failed_count} failed")
-
-    # Handle reflection decisions
+    # Handle clarification
     reflection_decision = state.get("reflection_decision", "respond_success")
     reflection = state.get("reflection", {})
 
-    # Clarification
     if reflection_decision == "respond_clarify":
         clarifying_question = reflection.get("clarifying_question", "Could you provide more details?")
         clarify_response = {
@@ -2835,36 +2805,26 @@ async def respond_node(
         state["completion_data"] = clarify_response
         return state
 
-    # Error - only treat as error if reflection explicitly says so AND no tools succeeded
-    # If we have successful tools, reflection should have set respond_success
-    has_failed = failed_count > 0
-    has_no_success = successful_count == 0 and not final_results
-    all_failed = has_failed and successful_count == 0 and len(tool_results) > 0
+    # Handle errors
+    successful_count = sum(1 for r in tool_results if r.get("status") == "success")
 
-    # Only treat as error if:
-    # 1. Reflection explicitly says respond_error AND no tools succeeded, OR
-    # 2. All tools failed (no success at all)
-    if (reflection_decision == "respond_error" and has_no_success) or all_failed:
+    if reflection_decision == "respond_error" and successful_count == 0:
         error_context = reflection.get("error_context", "")
 
-        failed_tool_errors = []
+        # Build error message
+        failed_errors = []
         for r in tool_results:
             if r.get("status") == "error":
                 tool_name = r.get("tool_name", "unknown")
                 error_result = r.get("result", "Unknown error")
-                if isinstance(error_result, dict):
-                    error_msg = error_result.get("error", str(error_result))
-                else:
-                    error_msg = str(error_result)
-                if isinstance(error_msg, tuple):
-                    error_msg = str(error_msg[0]) if len(error_msg) > 0 else str(error_msg)
-                failed_tool_errors.append(f"{tool_name}: {error_msg[:150]}")
+                error_str = str(error_result)[:150]
+                failed_errors.append(f"{tool_name}: {error_str}")
 
         if error_context:
             error_msg = f"I wasn't able to complete that request. {error_context}\n\nPlease try again."
-        elif failed_tool_errors:
-            error_details = "\n".join(failed_tool_errors[:2])
-            error_msg = f"I encountered an error. {error_details}\n\nPlease check settings or try again."
+        elif failed_errors:
+            error_details = "\n".join(failed_errors[:2])
+            error_msg = f"I encountered an error:\n{error_details}\n\nPlease check settings or try again."
         else:
             error_msg = "I wasn't able to complete that request. Please try again."
 
@@ -2872,8 +2832,7 @@ async def respond_node(
             "answer": error_msg,
             "citations": [],
             "confidence": "Low",
-            "answerMatchType": "Tool Execution Failed",
-            "reason": f"{failed_count} tool(s) failed" if failed_count > 0 else "Unable to process"
+            "answerMatchType": "Tool Execution Failed"
         }
 
         safe_stream_write(writer, {
@@ -2886,7 +2845,14 @@ async def respond_node(
         state["completion_data"] = error_response
         return state
 
-    # Success - generate response
+    # Generate success response
+    final_results = state.get("final_results", [])
+    virtual_record_map = state.get("virtual_record_id_to_result", {})
+    tool_records = state.get("tool_records", [])
+
+    log.info(f"📚 Citation data: {len(final_results)} results, {len(virtual_record_map)} records")
+
+    # Build messages
     messages = create_response_messages(state)
 
     if tool_results or final_results:
@@ -2898,12 +2864,13 @@ async def respond_node(
                 messages.append(HumanMessage(content=context))
 
     try:
-        log.info("Using stream_llm_response...")
+        log.info("🎯 Using stream_llm_response...")
 
         answer_text = ""
         citations = []
         reason = None
         confidence = None
+        reference_data = []
 
         async for stream_event in stream_llm_response(
             llm=llm,
@@ -2928,7 +2895,7 @@ async def respond_node(
                 reference_data = event_data.get("referenceData", [])
 
         if not answer_text or len(answer_text.strip()) == 0:
-            log.warning("Empty response, using fallback")
+            log.warning("⚠️ Empty response, using fallback")
             answer_text = "I wasn't able to generate a response. Please try rephrasing."
 
             fallback_response = {
@@ -2955,15 +2922,15 @@ async def respond_node(
             }
             if reference_data:
                 completion_data["referenceData"] = reference_data
-                log.debug(f"Stored {len(reference_data)} reference items")
+                log.debug(f"📎 Stored {len(reference_data)} reference items")
 
             state["response"] = answer_text
             state["completion_data"] = completion_data
 
-        log.info(f"Generated response: {len(answer_text)} chars, {len(citations)} citations")
+        log.info(f"✅ Generated response: {len(answer_text)} chars, {len(citations)} citations")
 
     except Exception as e:
-        log.error(f"Response generation failed: {e}", exc_info=True)
+        log.error(f"💥 Response generation failed: {e}", exc_info=True)
         error_msg = "I encountered an issue. Please try again."
         error_response = {
             "answer": error_msg,
@@ -2980,14 +2947,14 @@ async def respond_node(
         state["completion_data"] = error_response
 
     duration_ms = (time.perf_counter() - start_time) * 1000
-    log.info(f"✅ respond_node: {duration_ms:.0f}ms")
+    log.info(f"⚡ respond_node: {duration_ms:.0f}ms")
 
     return state
 
 
-async def _generate_direct_response_streaming(
+async def _generate_direct_response(
     state: ChatState,
-    llm: object,
+    llm: Any,
     log: logging.Logger,
     writer: StreamWriter,
     config: RunnableConfig
@@ -2996,6 +2963,7 @@ async def _generate_direct_response_streaming(
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
 
+    # Build context
     context_lines = []
     for conv in previous[-3:]:
         role = conv.get("role", "")
@@ -3006,13 +2974,12 @@ async def _generate_direct_response_streaming(
             context_lines.append(f"Assistant: {content}...")
 
     context = "\n".join(context_lines) if context_lines else ""
-
     user_context = _format_user_context(state)
     user_info_section = f"\n\n{user_context}" if user_context else ""
 
     system_content = "You are a helpful, friendly AI assistant. Respond naturally and concisely."
     if user_context:
-        system_content += "\n\nIMPORTANT: User information is provided. When user asks about themselves ('my name', 'who am I'), use the info DIRECTLY."
+        system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
 
     user_content = query
     if context:
@@ -3060,8 +3027,9 @@ async def _generate_direct_response_streaming(
             }, config)
 
         return full_content
+
     except Exception as e:
-        log.error(f"Direct response failed: {e}")
+        log.error(f"💥 Direct response failed: {e}")
         fallback = "I'm here to help! How can I assist you today?"
         safe_stream_write(writer, {
             "event": "answer_chunk",
@@ -3071,7 +3039,7 @@ async def _generate_direct_response_streaming(
 
 
 def _build_tool_results_context(tool_results: List[Dict], final_results: List[Dict]) -> str:
-    """Build context from tool results"""
+    """Build context from tool results for response generation"""
     successful = [r for r in tool_results if r.get("status") == "success"]
     failed = [r for r in tool_results if r.get("status") == "error"]
     has_retrieval = bool(final_results)
@@ -3083,193 +3051,50 @@ def _build_tool_results_context(tool_results: List[Dict], final_results: List[Di
     if failed and not successful:
         parts.append("\n## ⚠️ Tools Failed\n")
         for r in failed[:3]:
-            err = r.get("result", "Unknown error")
-            if isinstance(err, dict):
-                err = err.get("error", str(err))
-            err_str = str(err)
-            if isinstance(err, tuple):
-                err_str = str(err[0]) if len(err) > 0 else str(err)
-            parts.append(f"- {r.get('tool_name', 'unknown')}: {err_str[:200]}\n")
-        parts.append("\nCRITICAL: DO NOT fabricate data. Acknowledge failure and explain error.\n")
-        return "".join(parts)
-
-    # Empty results
-    def _is_empty_result(result: object) -> bool:
-        if result is None:
-            return True
-        if isinstance(result, list) and len(result) == 0:
-            return True
-        if isinstance(result, dict):
-            for key in ["issues", "items", "results", "data", "records", "values"]:
-                if key in result and isinstance(result[key], list) and len(result[key]) == 0:
-                    return True
-            for key in ["total", "count", "size"]:
-                if key in result and result[key] == 0:
-                    return True
-        return False
-
-    empty_results = [r for r in successful if _is_empty_result(r.get("result"))]
-    if empty_results and len(empty_results) == len(successful):
-        parts.append("\n## 📭 No Results Found\n\n")
-        parts.append("Search completed but found zero items.\n\n")
-        parts.append("Explain what was searched and suggest ways to modify the query.\n")
+            err = str(r.get("result", "Unknown error"))[:200]
+            parts.append(f"- {r.get('tool_name', 'unknown')}: {err}\n")
+        parts.append("\n❌ DO NOT fabricate data. Explain error to user.\n")
         return "".join(parts)
 
     # Has data
     if has_retrieval:
-        parts.append("\n## ⚠️ Internal Knowledge Available\n\n")
-        parts.append(f"You have {len(final_results)} knowledge blocks in the context above.\n")
+        parts.append("\n## 📚 Internal Knowledge Available\n\n")
+        parts.append(f"You have {len(final_results)} knowledge blocks.\n")
         parts.append("Cite IMMEDIATELY after facts: [R1-1], [R2-3]\n\n")
 
     if non_retrieval:
-        parts.append("\n## API Tool Results\n\n")
+        parts.append("\n## 🔧 API Tool Results\n\n")
         parts.append("Transform data into professional markdown.\n")
-        parts.append("DO NOT show raw IDs - store in referenceData.\n\n")
+        parts.append("Store IDs/keys in referenceData.\n\n")
 
         for r in non_retrieval[:5]:
             tool_name = r.get('tool_name', 'unknown')
-            content = r.get("result", "")
-
-
-            # Extract data from tuple if it's a (bool, str) tuple
-            if isinstance(content, tuple) and len(content) == TOOL_RESULT_TUPLE_LENGTH:
-                success, data = content
-                content = data  # Use just the data part, not the tuple
+            content = ToolResultExtractor.extract_data_from_result(r.get("result", ""))
 
             if isinstance(content, (dict, list)):
                 content_str = json.dumps(content, indent=2, default=str)
-            elif isinstance(content, str):
-                # If it's a JSON string, try to parse and format it nicely
-                try:
-                    parsed = json.loads(content)
-                    content_str = json.dumps(parsed, indent=2, default=str)
-                except (json.JSONDecodeError, TypeError):
-                    content_str = content
             else:
                 content_str = str(content)
 
             parts.append(f"### {tool_name}\n")
             parts.append(f"```json\n{content_str}\n```\n\n")
 
-    parts.append("\n---\n## SYNTHESIS INSTRUCTIONS\n\n")
+    parts.append("\n---\n## 📝 RESPONSE INSTRUCTIONS\n\n")
 
     if has_retrieval and non_retrieval:
-        # Both internal knowledge and API data
-        parts.append("""**COMBINED RESPONSE REQUIRED**:
-You have both internal knowledge (cite with [R1-X]) and API data (no citations needed).
-
-1. Use internal knowledge with inline citations
-2. Transform API data into professional markdown
-3. Store technical IDs/keys in referenceData for follow-up queries
-4. If API data is empty, explain and suggest query modifications
-
-**JSON FORMAT**:
-```json
-{
-  "answer": "Answer with [R1-1] citations for internal knowledge. API data formatted nicely.",
-  "reason": "How you derived the answer",
-  "confidence": "High",
-  "answerMatchType": "Derived From Blocks",
-  "blockNumbers": ["R1-1", "R1-2"],
-  "referenceData": [{"name": "Item", "id": "123", "key": "ABC", "type": "jira_project"}]
-}
-```
-""")
+        parts.append("**COMBINED RESPONSE**: Use internal knowledge (with citations) + API data (formatted).\n")
     elif has_retrieval:
-        # Only internal knowledge
-        parts.append("""**INTERNAL KNOWLEDGE RESPONSE**:
-Use the knowledge blocks from the system context to answer comprehensively.
-
-**CRITICAL - Citation Rules**:
-1. Put citation IMMEDIATELY after each fact: "Revenue grew 29% [R1-1]."
-2. One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]
-3. Include ALL cited blocks in blockNumbers array
-4. Do NOT put citations at end of paragraph - inline after each fact
-
-**JSON FORMAT**:
-```json
-{
-  "answer": "Detailed answer with [R1-1] citations inline after each fact.",
-  "reason": "How you derived the answer from the blocks",
-  "confidence": "High",
-  "answerMatchType": "Derived From Blocks",
-  "blockNumbers": ["R1-1", "R1-2"]
-}
-```
-""")
+        parts.append("**INTERNAL KNOWLEDGE**: Use knowledge blocks with inline citations [R1-1].\n")
     else:
-        # Only API data
-        parts.append("""**API DATA RESPONSE**:
-Transform the tool results above into professional, user-friendly markdown.
+        parts.append("**API DATA**: Transform into professional markdown. Show user-facing IDs (keys), hide internal IDs.\n")
 
-**WHAT TO SHOW vs HIDE (CRITICAL)**:
+    parts.append("\nReturn ONLY JSON: {\"answer\": \"...\", \"confidence\": \"High\", \"referenceData\": [...]}\n")
 
-✅ **ALWAYS SHOW** (User-facing identifiers):
-- **Jira ticket keys** (PA-123, ESP-456) - users NEED these to reference tickets!
-- **Jira project keys** (PA, ESP) - short identifiers users work with
-- Names, summaries, descriptions, status, priority, assignee names, dates
-
-❌ **NEVER SHOW** (Internal technical IDs):
-- Internal numeric IDs (10039, 16446)
-- UUIDs/accountIds (712020:2c136d9b-19dd-472b-ba99-091bec4a987b)
-- Database hashes, file system IDs
-
-**JIRA TICKETS EXAMPLE**:
-```markdown
-| Ticket | Summary | Status | Priority | Assignee |
-|--------|---------|--------|----------|----------|
-| PA-123 | Fix login bug | In Progress | High | John Smith |
-| PA-124 | Add dark mode | Open | Medium | Jane Doe |
-```
-Notice: PA-123 (ticket key) is shown, but internal ID "16446" is NOT shown.
-
-**HANDLING EMPTY RESULTS**:
-If tool results show zero items or empty data:
-- DO NOT just say "no results found"
-- Explain what was searched and why it may be empty
-- Suggest specific ways to modify the query (different time range, different filters, etc.)
-- Ask the user for clarification if needed
-
-**MARKDOWN FORMATTING** (MUST FOLLOW):
-- Use headers: # for title, ## for sections, ### for subsections
-- Use **bold** for emphasis and important terms
-- Use bullet points (-) or numbered lists (1.) for lists
-- For tabular data, use PROPERLY FORMATTED markdown tables:
-  ```
-  | Name | Type | Description |
-  |------|------|-------------|
-  | Item 1 | Type A | Some description |
-  ```
-  IMPORTANT: Each row must have the SAME number of | separators. No extra |.
-- Add horizontal rules (---) to separate sections
-- Include a summary at the end
-
-**JSON FORMAT**:
-```json
-{
-  "answer": "# Jira Tickets\\n\\n| Ticket | Summary | Status |\\n|--------|---------|--------|\\n| PA-123 | Fix bug | Open |",
-  "confidence": "High",
-  "answerMatchType": "Derived From Tool Execution",
-  "referenceData": [
-    {"name": "Fix bug", "id": "16446", "key": "PA-123", "type": "jira_issue"}
-  ]
-}
-```
-
-**referenceData** - CRITICAL for follow-up queries:
-- For Jira issues: include "key" (e.g., "PA-123"), "id", "summary"
-- For Jira projects: include "key" (e.g., "PA"), "id", "name"
-- For users: include "accountId", "displayName"
-""")
-
-    parts.append("\nReturn ONLY the JSON object, no markdown wrapping.\n")
-
-    context = "".join(parts)
-    return context
+    return "".join(parts)
 
 
 # ============================================================================
-# Routing Functions
+# ROUTING FUNCTIONS
 # ============================================================================
 
 def should_execute_tools(state: ChatState) -> Literal["execute", "respond"]:
@@ -3286,14 +3111,63 @@ def should_execute_tools(state: ChatState) -> Literal["execute", "respond"]:
     return "execute"
 
 
+def route_after_reflect(state: ChatState) -> Literal["prepare_retry", "prepare_continue", "respond"]:
+    """Route based on reflection decision"""
+    decision = state.get("reflection_decision", "respond_success")
+    retry_count = state.get("retry_count", 0)
+    max_retries = state.get("max_retries", NodeConfig.MAX_RETRIES)
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", NodeConfig.MAX_ITERATIONS)
+
+    if decision == "retry_with_fix" and retry_count < max_retries:
+        return "prepare_retry"
+
+    if decision == "continue_with_more_tools" and iteration_count < max_iterations:
+        return "prepare_continue"
+
+    return "respond"
+
+
 def check_for_error(state: ChatState) -> Literal["error", "continue"]:
     """Check for errors"""
     return "error" if state.get("error") else "continue"
 
-
 # ============================================================================
 # Modern ReAct Agent Node (with Cascading Tool Support)
 # ============================================================================
+
+def _process_retrieval_output(result: object, state: ChatState, log: logging.Logger) -> str:
+    """Process retrieval tool output"""
+    try:
+        from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
+
+        retrieval_output = None
+
+        if isinstance(result, dict) and "content" in result and "final_results" in result:
+            retrieval_output = RetrievalToolOutput(**result)
+        elif isinstance(result, str):
+            try:
+                data = json.loads(result)
+                if isinstance(data, dict) and "content" in data and "final_results" in data:
+                    retrieval_output = RetrievalToolOutput(**data)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        if retrieval_output:
+            state["final_results"] = retrieval_output.final_results
+            state["virtual_record_id_to_result"] = retrieval_output.virtual_record_id_to_result
+
+            if retrieval_output.virtual_record_id_to_result:
+                state["tool_records"] = list(retrieval_output.virtual_record_id_to_result.values())
+
+            log.info(f"Retrieved {len(retrieval_output.final_results)} knowledge blocks")
+            return retrieval_output.content
+
+    except Exception as e:
+        log.warning(f"Could not process retrieval output: {e}")
+
+    return str(result)
+
 
 async def react_agent_node(
     state: ChatState,
@@ -3845,7 +3719,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
 
 
 # ============================================================================
-# Exports
+# EXPORTS
 # ============================================================================
 
 __all__ = [
@@ -3854,11 +3728,15 @@ __all__ = [
     "respond_node",
     "reflect_node",
     "prepare_retry_node",
-    "react_agent_node",  # NEW: ReAct agent node
+    "prepare_continue_node",
     "should_execute_tools",
     "route_after_reflect",
     "check_for_error",
     "NodeConfig",
     "clean_tool_result",
     "format_result_for_llm",
+    "ToolResultExtractor",
+    "PlaceholderResolver",
+    "ToolExecutor",
+    "react_agent_node",
 ]

@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Dict, Optional, Tuple
+from typing import Any, Coroutine, Dict, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -61,6 +61,13 @@ class SearchPagesInput(BaseModel):
 class GetSpaceInput(BaseModel):
     """Schema for getting space"""
     space_id: str = Field(description="Space ID")
+
+
+class UpdatePageInput(BaseModel):
+    """Schema for updating a Confluence page"""
+    page_id: str = Field(description="Page ID")
+    page_title: Optional[str] = Field(default=None, description="New page title (optional)")
+    page_content: Optional[str] = Field(default=None, description="New page content in storage format (optional)")
 
 
 # Register Confluence toolset
@@ -614,6 +621,125 @@ class Confluence:
 
         except Exception as e:
             logger.error(f"Error getting space: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="confluence",
+        tool_name="update_page",
+        description="Update a Confluence page (title and/or content)",
+        args_schema=UpdatePageInput,  # NEW: Pydantic schema
+        returns="JSON with success status and updated page details",
+        when_to_use=[
+            "User wants to update/edit a Confluence page",
+            "User mentions 'Confluence' + wants to modify page",
+            "User asks to edit/update page content or title"
+        ],
+        when_not_to_use=[
+            "User wants to create page (use create_page)",
+            "User wants to read page (use get_page_content)",
+            "User only wants to change title (use update_page_title)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Update Confluence page content",
+            "Edit a page in Confluence",
+            "Modify page content",
+            "Update page with new information"
+        ],
+        category=ToolCategory.DOCUMENTATION
+    )
+    def update_page(
+        self,
+        page_id: str,
+        page_title: Optional[str] = None,
+        page_content: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Update a page in Confluence.
+
+        Args:
+            page_id: The ID of the page to update
+            page_title: Optional new title for the page
+            page_content: Optional new content for the page in storage format
+
+        Returns:
+            Tuple of (success, json_response)
+        """
+        try:
+            # Convert page_id to int with proper error handling
+            try:
+                page_id_int = int(page_id)
+            except ValueError:
+                return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
+
+            # Validate that at least one field is being updated
+            if page_title is None and page_content is None:
+                return False, json.dumps({"error": "At least one of page_title or page_content must be provided"})
+
+            # Get current page to preserve spaceId and version
+            current_response = self._run_async(
+                self.client.get_page_by_id(
+                    id=page_id_int,
+                    body_format="storage"
+                )
+            )
+
+            if current_response.status != HttpStatusCode.SUCCESS.value:
+                error_text = current_response.text() if hasattr(current_response, 'text') else str(current_response)
+                return False, json.dumps({
+                    "error": f"Failed to get current page: HTTP {current_response.status}",
+                    "details": error_text
+                })
+
+            current_data = current_response.json()
+
+            # Extract required fields
+            page_id_str = current_data.get("id")  # CRITICAL: Must include id
+            space_id = current_data.get("spaceId")
+            status = current_data.get("status")  # CRITICAL: Must include status
+            version = current_data.get("version", {})
+            version_number = version.get("number", 1)
+
+            # Build update body with ALL required fields
+            body: Dict[str, Any] = {
+                "id": page_id_str,  # ✅ REQUIRED by API
+                "status": status,   # ✅ REQUIRED by API
+                "spaceId": space_id,  # ✅ REQUIRED by API
+                "version": {
+                    "number": version_number + 1
+                }
+            }
+
+            # Update title if provided
+            if page_title is not None:
+                body["title"] = page_title
+            else:
+                # Preserve existing title
+                body["title"] = current_data.get("title", "")
+
+            # Update content if provided
+            if page_content is not None:
+                body["body"] = {
+                    "storage": {
+                        "value": page_content,
+                        "representation": "storage"
+                    }
+                }
+            else:
+                # Preserve existing body
+                body["body"] = current_data.get("body", {})
+
+            response = self._run_async(
+                self.client.update_page(
+                    id=page_id_int,
+                    body=body
+                )
+            )
+            return self._handle_response(response, "Page updated successfully")
+
+        except Exception as e:
+            logger.error(f"Error updating page: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
