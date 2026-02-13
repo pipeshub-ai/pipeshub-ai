@@ -30,7 +30,11 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text, generate_tab_separated_row
+from app.utils.indexing_helpers import (
+    format_rows_with_index,
+    generate_simple_row_text,
+    generate_tab_separated_row,
+)
 from app.utils.logger import create_logger
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,

@@ -955,7 +955,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                         # Extract column headers from the block group
                         column_headers = data.get("column_headers", [])
                         column_headers_joined = _get_joined_column_headers(column_headers)
-                        
+
 
                         # Process table rows
                         child_results = []
