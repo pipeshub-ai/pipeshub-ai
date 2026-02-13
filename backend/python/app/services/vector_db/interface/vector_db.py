@@ -85,6 +85,11 @@ class IVectorDBService(ABC):
         raise NotImplementedError("scroll() is not implemented")
 
     @abstractmethod
+    def delete_points(self, collection_name: str, filter: Filter) -> None:
+        """Delete all points matching the filter (server-side)."""
+        raise NotImplementedError("delete_points() is not implemented")
+
+    @abstractmethod
     def query_nearest_points(
         self,
         collection_name: str,
