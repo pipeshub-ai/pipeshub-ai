@@ -2,6 +2,7 @@ import { Etcd3 } from 'etcd3';
 import { DistributedKeyValueStore } from '../keyValueStore';
 import { ConfigurationManagerStoreConfig } from '../../../modules/configuration_manager/config/config';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../errors/etcd.errors';
+import { Logger } from '../../services/logger.service';
 export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStore<T>
 {
   private client: Etcd3;
@@ -107,5 +108,13 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
     } catch (error) {
       return false;
     }
+  }
+
+  async publishCacheInvalidation(key: string): Promise<void> {
+    Logger.getInstance({
+      service: 'Etcd3DistributedKeyValueStore',
+    }).warn(
+      `Cache invalidation for key ${key} is not implemented for etcd`,
+    );
   }
 }
