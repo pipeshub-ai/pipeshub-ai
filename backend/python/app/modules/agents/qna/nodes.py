@@ -77,7 +77,7 @@ class NodeConfig:
     """Centralized node behavior configuration"""
     MAX_PARALLEL_TOOLS: int = 10
     TOOL_TIMEOUT_SECONDS: float = 60.0
-    RETRIEVAL_TIMEOUT_SECONDS: float = 45.0  # Faster timeout for retrieval
+    RETRIEVAL_TIMEOUT_SECONDS: float = 60.0  # Faster timeout for retrieval
     PLANNER_TIMEOUT_SECONDS: float = 20.0
     REFLECTION_TIMEOUT_SECONDS: float = 8.0
 
@@ -951,6 +951,8 @@ class ToolExecutor:
             # Handle retrieval output
             if "retrieval" in tool_name.lower():
                 content = ToolExecutor._process_retrieval_output(result, state, log)
+                if content :
+                    success = True
             else:
                 content = clean_tool_result(result)
 
@@ -1260,12 +1262,21 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 
 **Decision Tree (Follow in Order):**
 1. **Simple greeting/thanks?** → `can_answer_directly: true`
-2. **User asks about the conversation itself?** (meta-questions like "what did we discuss", "what did I ask", "summarize our conversation") → `can_answer_directly: true` - answer from conversation history
-3. **User references previous discussion?** → Use conversation context, minimal tools
-4. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
-5. **User wants LIVE/REAL-TIME data from a connected service?** → Use service tools
-6. **User wants INFORMATION ABOUT something?** (from knowledge base/docs) → Use `retrieval.search_internal_knowledge`
-7. **Documentation creation with KB citations in history?** → Start with `retrieval.search_internal_knowledge`
+2. **User asks about the conversation itself?** (meta-questions like "what did we discuss", "summarize our conversation") → `can_answer_directly: true`
+3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
+4. **User wants LIVE/REAL-TIME data from a service?** (explicitly mentions service name like "list Jira issues") → Use service tools
+5. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
+
+## CRITICAL: Retrieval is the Default
+
+**⚠️ RULE: When in doubt, USE RETRIEVAL. Never clarify for read/info queries.**
+**⚠️ RULE: If you have 0 tools planned and needs_clarification=false and can_answer_directly=false, you MUST add retrieval.**
+
+Examples of retrieval queries:
+- "Tell me about X" → retrieval
+- "What is X" → retrieval  
+- "Find X" → retrieval
+- "Show me X" (where X is a concept/document/topic) → retrieval
 
 ## Tool Selection Principles
 
@@ -1589,6 +1600,32 @@ Set `needs_clarification: true` ONLY if:
 - Query mentions a name/topic → Use retrieval to find it
 - User asks "tell me about X" or "what is X" → Use retrieval
 - Optional parameters are missing → Use tool defaults or omit them
+
+## ⚠️ CRITICAL: Clarification Rules (VERY RESTRICTIVE)
+
+**NEVER ask for clarification on information/knowledge queries.**
+
+Set `needs_clarification: true` ONLY if ALL of these are true:
+1. User wants to PERFORM a WRITE action (create/update/delete)
+2. AND a REQUIRED parameter is missing AND cannot be inferred
+3. AND the missing parameter is something only the user can provide
+
+**ALWAYS use retrieval instead of clarification when:**
+- Query is about information/knowledge (even if vague)
+- Query mentions any topic, name, concept, or keyword
+- Query could potentially be answered from internal knowledge
+- You're unsure what the user means → SEARCH FIRST, clarify later
+
+**Examples - NEVER clarify these (use retrieval):**
+- "tell me about X" → retrieval(query="X")
+- "what is the process" → retrieval(query="process")
+- "missing info" → retrieval(query="missing info")
+- Any query that could be a document name or topic → retrieval
+
+**The ONLY time to clarify:**
+- "Create a Jira ticket" (missing: project, summary, description)
+- "Update the page" (missing: which page, what content)
+- "Send an email" (missing: recipient, subject, body)
 
 ## Reference Data & User Context (CRITICAL)
 
