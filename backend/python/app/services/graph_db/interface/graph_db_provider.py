@@ -1057,7 +1057,6 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         org_id: str,
         depth: int,
-        include_parent: bool = True,
         user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
@@ -1065,7 +1064,7 @@ class IGraphDBProvider(ABC):
     ) -> List['Record']:
         """
         Get all child records of a parent record (folder) up to a specified depth.
-        Uses graph traversal on record relations.
+        Uses graph traversal on record relations. Parent record is always included.
 
         Args:
             parent_record_id (str): Record ID of the parent (folder)
@@ -1074,7 +1073,6 @@ class IGraphDBProvider(ABC):
             depth (int): Depth for traversing children
                         (-1 = unlimited, 0 = only parent, 1 = direct children,
                          2 = children + grandchildren, etc.)
-            include_parent (bool): Whether to include the parent record itself
             user_key (Optional[str]): User key for permission filtering. When provided,
                         only records the user has permission to access are returned.
                         Uses the same permission model as knowledge hub (10 permission paths).

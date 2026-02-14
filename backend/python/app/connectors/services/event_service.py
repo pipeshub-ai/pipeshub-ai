@@ -203,7 +203,6 @@ class EventService:
                         connector_id=connector_id,
                         org_id=org_id,
                         depth=depth,
-                        include_parent=True,
                         user_key=user_key,
                         limit=batch_size,
                         offset=offset

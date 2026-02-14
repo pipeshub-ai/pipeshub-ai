@@ -722,7 +722,7 @@ class DataSourceEntitiesProcessor:
             raise
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
-        self.logger.info(f"!!!!!!!!!!!! Processing record: {record.record_name} ({record.id})")
+        self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
