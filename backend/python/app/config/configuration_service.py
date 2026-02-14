@@ -390,6 +390,16 @@ class ConfigurationService:
             # Log but don't fail the operation - cache will eventually be consistent
             self.logger.warning("⚠️ Failed to publish cache invalidation for key %s: %s", key, str(e))
 
+    async def close(self) -> None:
+        """Shut down the configuration service and release resources."""
+        if not hasattr(self, 'store') or self.store is None:
+            return
+        try:
+            await self.store.close()
+            self.logger.info("✅ ConfigurationService closed successfully")
+        except Exception as e:
+            self.logger.warning("Error closing ConfigurationService: %s", str(e))
+
     def _etcd_watch_callback(self, event) -> None:
         """Handle etcd watch events to update cache.
 

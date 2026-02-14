@@ -410,12 +410,13 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Set closing flag to stop reconnection attempts
         self._is_closing = True
 
-        # Cancel Pub/Sub task
+        # Cancel Pub/Sub task (may be on a different event loop if started from a background thread)
         if self._pubsub_task and not self._pubsub_task.done():
             self._pubsub_task.cancel()
             try:
                 await self._pubsub_task
-            except asyncio.CancelledError:
+            except (asyncio.CancelledError, RuntimeError):
+                # RuntimeError if the task belongs to a different event loop
                 pass
         self._pubsub_task = None
         self._pubsub_callback = None
