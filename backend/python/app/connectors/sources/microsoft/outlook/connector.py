@@ -3131,18 +3131,18 @@ class OutlookConnector(BaseConnector):
             Constructed web URL or None if data not available
         """
         group_data = self._group_cache.get(group_id)
-        
+
         # If not cached, fetch from API
         if not group_data:
             if not self.external_users_client:
                 return None
-                
+
             try:
                 response = await self.external_users_client.groups_group_get_group(
                     group_id=group_id,
                     select=['mail', 'mailNickname']
                 )
-                
+
                 if not response.success or not response.data:
                     return None
 
@@ -3151,7 +3151,7 @@ class OutlookConnector(BaseConnector):
                     'mail': self._safe_get_attr(response.data, 'mail'),
                     'mailNickname': self._safe_get_attr(response.data, 'mail_nickname') or self._safe_get_attr(response.data, 'mailNickname')
                 }
-                
+
                 if group_data['mail'] and group_data['mailNickname']:
                     self._group_cache[group_id] = group_data
             except Exception as e:
