@@ -35,7 +35,7 @@ class StartupService:
             self.logger.info("✅ Connector token refresh service initialized")
 
             # Initialize toolset token refresh service (separate from connectors)
-            self._toolset_token_refresh_service = ToolsetTokenRefreshService(key_value_store)
+            self._toolset_token_refresh_service = ToolsetTokenRefreshService(configuration_service)
             await self._toolset_token_refresh_service.start()
             self.logger.info("✅ Toolset token refresh service initialized")
 

@@ -637,9 +637,8 @@ async def get_configured_toolsets(
     user_id = user_context["user_id"]
 
     # Get user's configured toolset keys
-    kv_store = request.app.container.key_value_store()
     try:
-        user_config_keys = await kv_store.list_keys_in_directory(_get_user_toolsets_prefix(user_id))
+        user_config_keys = await config_service.list_keys_in_directory(_get_user_toolsets_prefix(user_id))
     except Exception as e:
         logger.error(f"Failed to list toolset configurations for user {user_id}: {e}")
         raise HTTPException(
@@ -853,10 +852,9 @@ async def get_oauth_authorization_url(
     if not oauth_config.scope and oauth_flow_config.get("scopes"):
         oauth_config.scope = " ".join(oauth_flow_config["scopes"])
 
-    container = request.app.container
     oauth_provider = OAuthProvider(
         config=oauth_config,
-        key_value_store=container.key_value_store(),
+        configuration_service=config_service,
         credentials_path=config_path
     )
 
@@ -977,11 +975,10 @@ async def handle_oauth_callback(
         )
 
         # Exchange code for token
-        container = request.app.container
         oauth_config = get_oauth_config(oauth_flow_config)
         oauth_provider = OAuthProvider(
             config=oauth_config,
-            key_value_store=container.key_value_store(),
+            configuration_service=config_service,
             credentials_path=config_path
         )
 
@@ -1010,8 +1007,7 @@ async def handle_oauth_callback(
         # ============================================================
         # Refresh configuration cache (same pattern as connectors)
         try:
-            kv_store = container.key_value_store()
-            updated_config = await kv_store.get_key(config_path)
+            updated_config = await config_service.get_config(config_path)
             if isinstance(updated_config, dict):
                 # Update metadata fields
                 updated_config["isAuthenticated"] = True
@@ -1041,7 +1037,6 @@ async def handle_oauth_callback(
                 if "tokenResponsePath" in oauth_flow_config:
                     updated_config["auth"]["tokenResponsePath"] = oauth_flow_config["tokenResponsePath"]
 
-                await kv_store.create_key(config_path, updated_config)
                 await config_service.set_config(config_path, updated_config)
                 logger.info(f"Refreshed config cache for toolset {toolset_type}")
         except Exception as cache_err:

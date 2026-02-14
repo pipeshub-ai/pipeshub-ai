@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Dict, Optional
 if TYPE_CHECKING:
     from app.connectors.core.base.token_service.oauth_service import OAuthConfig
 
-from app.config.key_value_store import KeyValueStore
+from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.utils.oauth_config import get_oauth_config
 
@@ -23,8 +23,8 @@ MIN_PATH_PARTS_COUNT = 4  # Minimum path parts: services, toolsets, user_id, too
 class ToolsetTokenRefreshService:
     """Service for managing token refresh across all OAuth toolsets"""
 
-    def __init__(self, key_value_store: KeyValueStore) -> None:
-        self.key_value_store = key_value_store
+    def __init__(self, configuration_service: ConfigurationService) -> None:
+        self.configuration_service = configuration_service
         self.logger = logging.getLogger(__name__)
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
         self._running = False
@@ -73,7 +73,7 @@ class ToolsetTokenRefreshService:
             True if toolset has refresh_token, False otherwise
         """
         try:
-            config = await self.key_value_store.get_key(config_path)
+            config = await self.configuration_service.get_config(config_path)
 
             if not config:
                 self.logger.debug(f"⚠️ No config found for toolset: {config_path}")
@@ -123,7 +123,7 @@ class ToolsetTokenRefreshService:
             # Get all toolset config paths from etcd
             # Toolsets are stored under /services/toolsets/{user_id}/{toolset_type}
             try:
-                all_keys = await self.key_value_store.list_keys_in_directory("/services/toolsets/")
+                all_keys = await self.configuration_service.list_keys_in_directory("/services/toolsets/")
                 self.logger.info(f"🔍 Found {len(all_keys)} toolset keys in etcd (scanning /services/toolsets/)")
 
                 if all_keys:
@@ -155,7 +155,7 @@ class ToolsetTokenRefreshService:
                         user_id = path_parts[2]
 
                         # Get config to check authentication
-                        config = await self.key_value_store.get_key(config_path)
+                        config = await self.configuration_service.get_config(config_path)
                         if not config:
                             self.logger.debug(f"⚠️ No config found for toolset: {config_path}")
                             skipped_no_config += 1
@@ -352,7 +352,7 @@ class ToolsetTokenRefreshService:
             redirect_path = oauth_config_obj.redirect_uri
             # Try to get base URL from endpoints config
             try:
-                endpoints = await self.key_value_store.get_key("/services/endpoints")
+                endpoints = await self.configuration_service.get_config("/services/endpoints")
                 if isinstance(endpoints, dict):
                     fallback_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
                     oauth_flow_config["redirectUri"] = f"{fallback_url.rstrip('/')}/{redirect_path}"
@@ -428,7 +428,7 @@ class ToolsetTokenRefreshService:
             Exception: If refresh fails
         """
         # 1. Load toolset config
-        config = await self.key_value_store.get_key(config_path)
+        config = await self.configuration_service.get_config(config_path)
 
         if not config:
             raise ValueError(f"No config found for toolset {config_path}")
@@ -469,7 +469,7 @@ class ToolsetTokenRefreshService:
         from app.connectors.core.base.token_service.oauth_service import OAuthProvider
         oauth_provider = OAuthProvider(
             config=oauth_config,
-            key_value_store=self.key_value_store,
+            configuration_service=self.configuration_service,
             credentials_path=config_path
         )
 
@@ -482,7 +482,7 @@ class ToolsetTokenRefreshService:
             # 6. Update stored credentials
             config["credentials"] = new_token.to_dict()
             config["updatedAt"] = int(datetime.now().timestamp() * 1000)  # Epoch timestamp in ms
-            await self.key_value_store.create_key(config_path, config)
+            await self.configuration_service.create_config(config_path, config)
             self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
 
             return new_token
@@ -514,7 +514,7 @@ class ToolsetTokenRefreshService:
             - token: OAuthToken if found, None otherwise
             - has_credentials: True if toolset has valid credentials
         """
-        config = await self.key_value_store.get_key(config_path)
+        config = await self.configuration_service.get_config(config_path)
 
         if not config:
             return None, False
