@@ -36,6 +36,7 @@ import { EditFolderDialog } from './components/dialogs/edit-dialogs';
 import { CreateFolderDialog, DeleteConfirmDialog } from './components/dialogs';
 import KbPermissionsDialog from './components/dialogs/kb-permissions-dialog';
 import { renderKBDetail } from './components/kb-details';
+import { getReindexButtonText } from './components/buttons';
 
 // Import types and services
 import type {
@@ -821,7 +822,8 @@ export default function Collections() {
       return;
     }
     try {
-      const response = await KnowledgeBaseAPI.reindexRecord(recordId);
+      // Collections (KB): depth 0 (single record only)
+      const response = await KnowledgeBaseAPI.reindexRecord(recordId, false, 0);
       if (response.success) {
         setSuccess('File indexing started successfully');
         await loadKBContents(currentKB.id, stableRoute.folderId, true, true);
@@ -909,7 +911,7 @@ export default function Collections() {
         ? [
           {
             key: 'reindex',
-            label: 'Reindex',
+            label: getReindexButtonText(contextItem?.indexingStatus ?? ''),
             icon: refreshIcon,
             onClick: () => {
               handleRetryIndexing(contextItem.id);
