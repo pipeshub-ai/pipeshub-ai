@@ -8,7 +8,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import Dict
 
-from app.config.key_value_store import KeyValueStore
+from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.services.base_arango_service import BaseArangoService
 from app.utils.oauth_config import get_oauth_config
@@ -17,8 +17,8 @@ from app.utils.oauth_config import get_oauth_config
 class TokenRefreshService:
     """Service for managing token refresh across all connectors"""
 
-    def __init__(self, key_value_store: KeyValueStore, arango_service: BaseArangoService) -> None:
-        self.key_value_store = key_value_store
+    def __init__(self, configuration_service: ConfigurationService, arango_service: BaseArangoService) -> None:
+        self.configuration_service = configuration_service
         self.arango_service = arango_service
         self.logger = logging.getLogger(__name__)
         self._refresh_tasks: Dict[str, asyncio.Task] = {}
@@ -66,7 +66,7 @@ class TokenRefreshService:
         """
         try:
             config_key = f"/services/connectors/{connector_id}/config"
-            config = await self.key_value_store.get_key(config_key)
+            config = await self.configuration_service.get_config(config_key)
 
             if not config:
                 return False
@@ -184,7 +184,7 @@ class TokenRefreshService:
         """
         try:
             oauth_config_path = f"/services/oauth/{connector_type.lower().replace(' ', '')}"
-            oauth_configs = await self.key_value_store.get_key(oauth_config_path)
+            oauth_configs = await self.configuration_service.get_config(oauth_config_path)
 
             if not oauth_configs or not isinstance(oauth_configs, list):
                 self.logger.warning(f"No OAuth configs found for connector type {connector_type}")
@@ -443,7 +443,7 @@ class TokenRefreshService:
         """
         # 1. Load connector config
         config_key = f"/services/connectors/{connector_id}/config"
-        config = await self.key_value_store.get_key(config_key)
+        config = await self.configuration_service.get_config(config_key)
 
         if not config:
             raise ValueError(f"No config found for connector {connector_id}")
@@ -464,7 +464,7 @@ class TokenRefreshService:
         from app.connectors.core.base.token_service.oauth_service import OAuthProvider
         oauth_provider = OAuthProvider(
             config=oauth_config,
-            key_value_store=self.key_value_store,
+            configuration_service=self.configuration_service,
             credentials_path=config_key
         )
 
@@ -476,7 +476,7 @@ class TokenRefreshService:
 
             # 6. Update stored credentials
             config['credentials'] = new_token.to_dict()
-            await self.key_value_store.create_key(config_key, config)
+            await self.configuration_service.set_config(config_key, config)
             self.logger.info(f"💾 Updated stored credentials for connector {connector_id}")
 
             return new_token
@@ -506,7 +506,7 @@ class TokenRefreshService:
             - has_credentials: True if connector has valid credentials
         """
         config_key = f"/services/connectors/{connector_id}/config"
-        config = await self.key_value_store.get_key(config_key)
+        config = await self.configuration_service.get_config(config_key)
 
         if not config:
             return None, False

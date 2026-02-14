@@ -452,7 +452,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         while retry_count < max_retries:
             try:
                 await self._get_client().publish(self.CACHE_INVALIDATION_CHANNEL, key)
-                logger.debug("Published cache invalidation for key: %s", key)
+                logger.info("Published cache invalidation for key: %s", key)
                 return
             except Exception as e:
                 retry_count += 1

@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from app.config.key_value_store import KeyValueStore
+from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
@@ -214,7 +214,7 @@ class AtlassianOAuthProvider(OAuthProvider):
         client_id: str,
         client_secret: str,
         redirect_uri: str,
-        key_value_store: KeyValueStore,
+        configuration_service: ConfigurationService,
         credentials_path: str,
         scopes: Optional[List[str]] = None,
     ) -> None:
@@ -225,7 +225,7 @@ class AtlassianOAuthProvider(OAuthProvider):
             client_secret: OAuth 2.0 client secret
             redirect_uri: Callback URL registered with Atlassian
             scopes: List of scopes to request (uses basic scopes if not provided)
-            key_value_store: Key-value store implementation
+            configuration_service: Configuration service instance
         """
         if scopes is None:
             scopes = AtlassianScope.get_full_access()
@@ -243,7 +243,7 @@ class AtlassianOAuthProvider(OAuthProvider):
             }
         )
 
-        super().__init__(config, key_value_store, credentials_path)
+        super().__init__(config, configuration_service, credentials_path)
         self._accessible_resources: Optional[List[AtlassianCloudResource]] = None
 
     @staticmethod

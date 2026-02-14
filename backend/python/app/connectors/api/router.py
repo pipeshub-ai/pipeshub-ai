@@ -4267,7 +4267,7 @@ async def get_oauth_authorization_url(
 
         oauth_provider = OAuthProvider(
             config=oauth_config,
-            key_value_store=container.key_value_store(),
+            configuration_service=config_service,
             credentials_path=config_path
         )
 
@@ -4478,7 +4478,7 @@ async def handle_oauth_callback(
         oauth_config = get_oauth_config(oauth_flow_config)
         oauth_provider = OAuthProvider(
             config=oauth_config,
-            key_value_store=container.key_value_store(),
+            configuration_service=config_service,
             credentials_path=config_path
         )
 
@@ -4518,8 +4518,7 @@ async def handle_oauth_callback(
         # ============================================================
         # Refresh configuration cache
         try:
-            kv_store = container.key_value_store()
-            updated_config = await kv_store.get_key(config_path)
+            updated_config = await config_service.get_config(config_path, use_cache=False)
             if isinstance(updated_config, dict):
                 await config_service.set_config(config_path, updated_config)
                 logger.info(f"Refreshed config cache for instance {connector_id}")
@@ -4542,7 +4541,7 @@ async def handle_oauth_callback(
                 from app.connectors.core.base.token_service.token_refresh_service import (
                     TokenRefreshService,
                 )
-                temp_service = TokenRefreshService(container.key_value_store(), arango_service)
+                temp_service = TokenRefreshService(config_service, arango_service)
                 await temp_service.schedule_token_refresh(connector_id, connector_type, token)
                 logger.info("✅ Scheduled token refresh using temporary service")
         except Exception as sched_err:

@@ -290,6 +290,7 @@ class ConfigurationService:
     async def set_config(self, key: str, value: Union[str, int, float, bool, dict, list]) -> bool:
         """Set configuration value with optional encryption"""
         try:
+            self.logger.info("📝 set_config called for key: %s (store type: %s)", key, type(self.store).__name__)
 
             # Store in KV store
             try:
@@ -302,7 +303,7 @@ class ConfigurationService:
             if success:
                 # Update cache with value
                 self.cache[key] = value
-                self.logger.debug("✅ Successfully set config for key: %s", key)
+                self.logger.info("✅ Successfully set config for key: %s, now publishing cache invalidation", key)
 
                 # Publish cache invalidation for other processes (Redis only)
                 await self._publish_cache_invalidation(key)
@@ -376,11 +377,15 @@ class ConfigurationService:
         For etcd, the watch mechanism handles cross-process invalidation.
         """
         if self._kv_store_type != "redis":
+            self.logger.debug("⏭️ Skipping cache invalidation publish: KV store type is '%s', not 'redis'", self._kv_store_type)
             return
 
         try:
             if hasattr(self.store, 'publish_cache_invalidation'):
+                self.logger.info("📤 Publishing cache invalidation for key: %s", key)
                 await self.store.publish_cache_invalidation(key)
+            else:
+                self.logger.warning("⚠️ Store %s does not have publish_cache_invalidation method", type(self.store).__name__)
         except Exception as e:
             # Log but don't fail the operation - cache will eventually be consistent
             self.logger.warning("⚠️ Failed to publish cache invalidation for key %s: %s", key, str(e))

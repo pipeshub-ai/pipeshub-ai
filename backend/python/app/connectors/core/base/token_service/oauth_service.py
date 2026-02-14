@@ -11,8 +11,8 @@ from urllib.parse import urlencode
 
 from aiohttp import ClientSession
 
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.key_value_store import KeyValueStore
 
 
 class GrantType(Enum):
@@ -111,9 +111,9 @@ class OAuthToken:
 class OAuthProvider:
     """OAuth Provider for handling OAuth 2.0 flows"""
 
-    def __init__(self, config: OAuthConfig, key_value_store: KeyValueStore, credentials_path: str, connector_name: Optional[str] = None) -> None:
+    def __init__(self, config: OAuthConfig, configuration_service: ConfigurationService, credentials_path: str, connector_name: Optional[str] = None) -> None:
         self.config = config
-        self.key_value_store = key_value_store
+        self.configuration_service = configuration_service
         self._session: Optional[ClientSession] = None
         self.credentials_path = credentials_path
         self.token = None
@@ -258,13 +258,13 @@ class OAuthProvider:
             token.refresh_token = refresh_token
 
         # Update the stored credentials with the new token
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
 
         # Store the new token (which includes the new refresh_token if provided)
         config['credentials'] = token.to_dict()
-        await self.key_value_store.create_key(self.credentials_path, config)
+        await self.configuration_service.set_config(self.credentials_path, config)
 
         return token
 
@@ -284,11 +284,11 @@ class OAuthProvider:
     async def revoke_token(self) -> bool:
         """Revoke access token"""
         # Default implementation - override in specific providers
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
         config['credentials'] = None
-        await self.key_value_store.create_key(self.credentials_path, config)
+        await self.configuration_service.set_config(self.credentials_path, config)
         return True
 
 
@@ -319,18 +319,18 @@ class OAuthProvider:
                 "code_challenge": code_challenge,
                 "code_challenge_method": "S256"
             })
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
         # Replace entire oauth session data - this clears any old state, codes, etc.
         # This is important for re-authentication to ensure fresh start
         config['oauth'] = session_data
 
-        await self.key_value_store.create_key(self.credentials_path, config)
+        await self.configuration_service.set_config(self.credentials_path, config)
         return self._get_authorization_url(state=state, **extra)
 
     async def handle_callback(self, code: str, state: str) -> OAuthToken:
-        config = await self.key_value_store.get_key(self.credentials_path)
+        config = await self.configuration_service.get_config(self.credentials_path)
         if not isinstance(config, dict):
             config = {}
 
@@ -394,7 +394,7 @@ class OAuthProvider:
                 "used_codes": used_codes  # Keep used codes to prevent replay attacks
             }
 
-            await self.key_value_store.create_key(self.credentials_path, config)
+            await self.configuration_service.set_config(self.credentials_path, config)
 
             return token
         except Exception:
@@ -402,5 +402,5 @@ class OAuthProvider:
             used_codes.append(code)
             oauth_data["used_codes"] = used_codes
             config['oauth'] = oauth_data
-            await self.key_value_store.create_key(self.credentials_path, config)
+            await self.configuration_service.set_config(self.credentials_path, config)
             raise

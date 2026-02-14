@@ -19,13 +19,12 @@ class CredentialKeys(Enum):
     REFRESH_TOKEN = "refresh_token"
 
 class GoogleTokenHandler:
-    def __init__(self, logger, config_service, arango_service,key_value_store) -> None:
+    def __init__(self, logger, config_service, arango_service) -> None:
         self.logger = logger
         self.token_expiry = None
         self.service = None
         self.config_service = config_service
         self.arango_service = arango_service
-        self.key_value_store = key_value_store
 
     async def _get_connector_config(self, connector_id: str) -> Dict:
         """Fetch connector config from etcd for the given app."""
@@ -277,7 +276,7 @@ class GoogleTokenHandler:
 
             provider = OAuthProvider(
                 config=oauth_config,
-                key_value_store=self.key_value_store,  # type: ignore
+                configuration_service=self.config_service,
                 credentials_path=config_key
             )
 
