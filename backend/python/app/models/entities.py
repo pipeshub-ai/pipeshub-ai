@@ -197,6 +197,7 @@ class Record(BaseModel):
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
     is_shared_with_me: Optional[bool] = False
+    shared_with_me_record_group_id: Optional[str] = None
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 

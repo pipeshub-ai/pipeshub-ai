@@ -871,13 +871,13 @@ class ArangoHTTPClient:
                 else:
                     error_data = await resp.json()
                     error_msg = error_data.get("errorMessage", await resp.text())
-                    
+
                     # Check if schema is already configured (error code 1207 or duplicate message)
                     error_num = error_data.get("errorNum", 0)
                     if error_num == 1207 or "duplicate" in error_msg.lower():
                         self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
                         return True
-                    
+
                     self.logger.warning(f"Failed to update schema for '{name}': {error_msg}")
                     return False
 
