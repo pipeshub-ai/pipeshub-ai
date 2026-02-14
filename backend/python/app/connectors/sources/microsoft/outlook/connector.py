@@ -244,6 +244,9 @@ class OutlookConnector(BaseConnector):
         self._user_cache_timestamp: Optional[int] = None
         self._user_cache_ttl: int = 3600  # 1 hour TTL in seconds
 
+        # Group cache for web URL construction
+        self._group_cache: Dict[str, Dict[str, str]] = {}  # group_id -> {'mail': ..., 'mailNickname': ...}
+
         self.email_delta_sync_point = SyncPoint(
             connector_id=self.connector_id,
             org_id=self.data_entities_processor.org_id,
@@ -570,6 +573,15 @@ class OutlookConnector(BaseConnector):
                         description=self._safe_get_attr(group, 'description'),
                     )
 
+                    # Cache group mail properties for URL construction
+                    group_mail = self._safe_get_attr(group, 'mail')
+                    group_mail_nickname = self._safe_get_attr(group, 'mail_nickname') or self._safe_get_attr(group, 'mailNickname')
+                    if group_id and group_mail and group_mail_nickname:
+                        self._group_cache[group_id] = {
+                            'mail': group_mail,
+                            'mailNickname': group_mail_nickname
+                        }
+
                     # Create RecordGroup for group mailbox
                     group_record_group = self._transform_group_to_record_group(group)
 
@@ -654,7 +666,7 @@ class OutlookConnector(BaseConnector):
             while True:
                 response = await self.external_users_client.groups_list_groups(
                     next_url=next_url,
-                    select=['id', 'displayName', 'description', 'mail', 'groupTypes', 'createdDateTime']
+                    select=['id', 'displayName', 'description', 'mail', 'mailNickname', 'groupTypes', 'createdDateTime']
                 )
 
                 if not response.success:
@@ -1076,6 +1088,14 @@ class OutlookConnector(BaseConnector):
             # Get thread ID from the thread object
             thread_id = self._safe_get_attr(thread, 'id')
 
+            # Group conversations don't have individual recipients - access is controlled by group membership
+            to_emails = []
+            cc_emails = []
+
+            # Construct web URL for group conversation
+            group_id = group.source_user_group_id
+            weburl = await self._construct_group_mail_weburl(group_id)
+
             # Create MailRecord for the post
             mail_record = MailRecord(
                 id=record_id,
@@ -1089,13 +1109,14 @@ class OutlookConnector(BaseConnector):
                 connector_id=self.connector_id,
                 source_created_at=self._parse_datetime(self._safe_get_attr(post, 'received_date_time')),
                 source_updated_at=self._parse_datetime(self._safe_get_attr(post, 'received_date_time')),
+                weburl=weburl,
                 mime_type=MimeTypes.HTML.value,
-                external_record_group_id=group.source_user_group_id,
+                external_record_group_id=group_id,
                 record_group_type=RecordGroupType.GROUP_MAILBOX,
                 subject=thread_topic or 'Group Conversation',
                 from_email=sender_email,
-                to_emails=[],
-                cc_emails=[],
+                to_emails=to_emails,
+                cc_emails=cc_emails,
                 bcc_emails=[],
                 thread_id=thread_id,
                 is_parent=False,
@@ -2047,6 +2068,7 @@ class OutlookConnector(BaseConnector):
             # Track unique emails
             processed_emails = set()
             inbox_owner_email_lower = inbox_owner_email.lower()
+            owner_found = False
 
             # Process individual recipients
             for recipient in all_recipients:
@@ -2055,8 +2077,10 @@ class OutlookConnector(BaseConnector):
                     if email_address and email_address not in processed_emails:
                         processed_emails.add(email_address)
 
+                        # Inbox owner always gets OWNER permission, others get READ
                         if email_address.lower() == inbox_owner_email_lower:
                             permission_type = PermissionType.OWNER
+                            owner_found = True
                         else:
                             permission_type = PermissionType.READ
 
@@ -2070,6 +2094,15 @@ class OutlookConnector(BaseConnector):
                 except Exception as e:
                     self.logger.warning(f"Failed to extract email from recipient {recipient}: {e}")
                     continue
+
+            # If inbox owner not found in recipients, add OWNER permission
+            if not owner_found and inbox_owner_email:
+                owner_permission = Permission(
+                    email=inbox_owner_email,
+                    type=PermissionType.OWNER,
+                    entity_type=EntityType.USER,
+                )
+                permissions.append(owner_permission)
 
             return permissions
 
@@ -3086,6 +3119,62 @@ class OutlookConnector(BaseConnector):
         except Exception:
             return ""
 
+    async def _construct_group_mail_weburl(self, group_id: str) -> Optional[str]:
+        """
+        Construct web URL for group mail from cached group data or by fetching from API.
+        Format: https://outlook.office365.com/groups/{domain}/{mailNickname}/mail
+
+        Args:
+            group_id: Group ID to look up
+
+        Returns:
+            Constructed web URL or None if data not available
+        """
+        group_data = self._group_cache.get(group_id)
+
+        # If not cached, fetch from API
+        if not group_data:
+            if not self.external_users_client:
+                return None
+
+            try:
+                response = await self.external_users_client.groups_group_get_group(
+                    group_id=group_id,
+                    select=['mail', 'mailNickname']
+                )
+
+                if not response.success or not response.data:
+                    return None
+
+                # Cache the result for future use
+                group_data = {
+                    'mail': self._safe_get_attr(response.data, 'mail'),
+                    'mailNickname': self._safe_get_attr(response.data, 'mail_nickname') or self._safe_get_attr(response.data, 'mailNickname')
+                }
+
+                if group_data['mail'] and group_data['mailNickname']:
+                    self._group_cache[group_id] = group_data
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch group data for {group_id}: {e}")
+                return None
+
+        mail = group_data.get('mail')
+        mail_nickname = group_data.get('mailNickname')
+
+        if not mail or not mail_nickname:
+            return None
+
+        try:
+            # Extract domain from email address
+            if '@' not in mail:
+                return None
+            domain = mail.split('@')[1]
+
+            # Construct URL
+            return f"https://outlook.office365.com/groups/{domain}/{mail_nickname}/mail"
+        except Exception as e:
+            self.logger.warning(f"Failed to construct group mail weburl for group {group_id}: {e}")
+            return None
 
     @classmethod
     async def create_connector(cls, logger: Logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str) -> 'OutlookConnector':
