@@ -152,7 +152,7 @@ class GoogleClient(IClient):
                 credential_scopes = scopes if scopes else []
 
                 oauth_scopes = saved_credentials.get('scope')
-                if oauth_scopes:
+                if oauth_scopes is not None:
                     if isinstance(oauth_scopes, str):
                         credential_scopes = [s.strip() for s in oauth_scopes.split()] if oauth_scopes.strip() else []
                     elif isinstance(oauth_scopes, list):
