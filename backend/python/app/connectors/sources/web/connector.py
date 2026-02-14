@@ -720,7 +720,7 @@ class WebConnector(BaseConnector):
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for Web connector yet."""
-        
+
         try:
             if not record_results:
                 self.logger.info("No records to reindex")
