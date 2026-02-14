@@ -66,6 +66,9 @@ class Connectors(Enum):
 
     UNKNOWN = "UNKNOWN"
 
+    RSS = "RSS"
+
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
@@ -84,6 +87,8 @@ class AppGroups(Enum):
     LINEAR = "Linear"
     ZAMMAD = "Zammad"
     LOCAL_STORAGE = "Local Storage"
+    RSS = "RSS"
+
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"

@@ -49,6 +49,7 @@ from app.connectors.sources.microsoft.sharepoint_online.connector import (
 from app.connectors.sources.minio.connector import MinIOConnector
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.connectors.sources.notion.connector import NotionConnector
+from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.s3.connector import S3Connector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
 from app.connectors.sources.web.connector import WebConnector
@@ -75,6 +76,7 @@ class ConnectorFactory:
         "nextcloud": NextcloudConnector,
         "servicenow": ServiceNowConnector,
         "web": WebConnector,
+        "rss": RSSConnector,
         "bookstack": BookStackConnector,
         "s3": S3Connector,
         "minio": MinIOConnector,

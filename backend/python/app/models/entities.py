@@ -42,6 +42,7 @@ class RecordGroupType(str, Enum):
     SHELF = "SHELF"
     BOOK = "BOOK"
     CHAPTER = "CHAPTER"
+    RSS_FEED = "RSS_FEED"
 
 class RecordType(str, Enum):
     FILE = "FILE"

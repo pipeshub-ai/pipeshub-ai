@@ -44,6 +44,8 @@ dependencies = [
     "evernote3>=1.25.14",
     "fastapi==0.115.6",
     "fastembed==0.5.1",
+    "feedparser>=6.0.0",
+    "trafilatura>=2.0.0",
     "html-to-markdown==2.3.0",
     "html2text==2025.4.15",
     "httpx==0.28.1",
