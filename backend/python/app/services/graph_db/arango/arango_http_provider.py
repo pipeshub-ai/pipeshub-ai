@@ -6160,6 +6160,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.LINKS.value,
+                CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
                 CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
             ]

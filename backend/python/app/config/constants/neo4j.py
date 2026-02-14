@@ -24,6 +24,8 @@ class Neo4jLabel(Enum):
     WEBPAGES = "Webpage"
     COMMENTS = "Comment"
     TICKETS = "Ticket"
+    LINKS = "Link"
+    PROJECTS = "Project"
 
     # Users and groups
     USERS = "User"
@@ -87,6 +89,8 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     CollectionNames.WEBPAGES.value: Neo4jLabel.WEBPAGES.value,
     CollectionNames.COMMENTS.value: Neo4jLabel.COMMENTS.value,
     CollectionNames.TICKETS.value: Neo4jLabel.TICKETS.value,
+    CollectionNames.LINKS.value: Neo4jLabel.LINKS.value,
+    CollectionNames.PROJECTS.value: Neo4jLabel.PROJECTS.value,
     CollectionNames.USERS.value: Neo4jLabel.USERS.value,
     CollectionNames.GROUPS.value: Neo4jLabel.GROUPS.value,
     CollectionNames.PEOPLE.value: Neo4jLabel.PEOPLE.value,
