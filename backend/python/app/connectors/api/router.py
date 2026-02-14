@@ -4518,7 +4518,8 @@ async def handle_oauth_callback(
         # ============================================================
         # Refresh configuration cache
         try:
-            updated_config = await config_service.get_config(config_path, use_cache=False)
+            kv_store = container.key_value_store()
+            updated_config = await kv_store.get_key(config_path)
             if isinstance(updated_config, dict):
                 await config_service.set_config(config_path, updated_config)
                 logger.info(f"Refreshed config cache for instance {connector_id}")
