@@ -2452,6 +2452,10 @@ async def _prepare_connector_config(
         "connectorScope": scope
     })
 
+    # Persist scope and created_by at top level so connectors can read them in init()
+    prepared_config["scope"] = scope
+    prepared_config["created_by"] = user_id
+
     return prepared_config
 
 
@@ -3478,6 +3482,9 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        # Preserve scope and created_by from instance so connectors always have them in init()
+        new_config.setdefault("scope", instance.get("scope", "personal"))
+        new_config.setdefault("created_by", instance.get("createdBy"))
 
         # Clear credentials and OAuth state only if auth config is being updated
         # Filters and sync updates don't require re-authentication
