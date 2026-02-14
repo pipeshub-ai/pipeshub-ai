@@ -159,6 +159,7 @@ class EventService:
             depth = payload.get("depth", 0)
             status_filters = payload.get("statusFilters", ["FAILED"])
             connector_id = payload.get("connectorId")
+            user_key = payload.get("userKey")
 
             if not org_id:
                 raise ValueError("orgId is required")
@@ -203,6 +204,7 @@ class EventService:
                         org_id=org_id,
                         depth=depth,
                         include_parent=True,
+                        user_key=user_key,
                         limit=batch_size,
                         offset=offset
                     )
@@ -213,6 +215,7 @@ class EventService:
                         connector_id=connector_id,
                         org_id=org_id,
                         depth=depth,
+                        user_key=user_key,
                         limit=batch_size,
                         offset=offset
                     )

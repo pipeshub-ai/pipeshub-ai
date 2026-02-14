@@ -1165,8 +1165,13 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Always use depth 100 for full reindex (including all children)
-        depth = 100
+        # Parse optional depth from request body (0 = only this record; 100/full from all-records tree)
+        depth = 0
+        try:
+            request_body = await request.json()
+            depth = request_body.get("depth", 0)
+        except (json.JSONDecodeError, TypeError):
+            depth = 0
 
         logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
@@ -1287,6 +1292,7 @@ async def reindex_record_group(
         # Publish reindex event (router is responsible for event publishing)
         connector_id = result.get("connectorId")
         connector_name = result.get("connectorName")
+        user_key = result.get("userKey")
         depth = result.get("depth", depth)
 
         try:
@@ -1297,7 +1303,8 @@ async def reindex_record_group(
                 "orgId": org_id,
                 "recordGroupId": record_group_id,
                 "depth": depth,
-                "connectorId": connector_id
+                "connectorId": connector_id,
+                "userKey": user_key
             }
 
             # Publish event directly using KafkaService

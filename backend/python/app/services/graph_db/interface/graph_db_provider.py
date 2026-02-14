@@ -1018,15 +1018,19 @@ class IGraphDBProvider(ABC):
         connector_id: str,
         org_id: str,
         depth: int,
+        user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
     ) -> List['Record']:
         """
         Get all records belonging to a record group up to a specified depth.
+        Uses belongsTo edges for nested record group traversal and optional
+        permission checks via the knowledge hub permission model.
+
         Includes:
-        - Records directly in the group
-        - Records in nested record groups up to depth levels
+        - Records directly in the group (via belongsTo edges)
+        - Records in nested record groups up to depth levels (via belongsTo edges)
 
         Args:
             record_group_id (str): Record group ID
@@ -1034,6 +1038,9 @@ class IGraphDBProvider(ABC):
             org_id (str): Organization ID (for security filtering)
             depth (int): Depth for traversing children and nested record groups
                         (-1 = unlimited, 0 = only direct records, 1 = direct + 1 level nested, etc.)
+            user_key (Optional[str]): User key for permission filtering. When provided,
+                        only records the user has permission to access are returned.
+                        Uses the same permission model as knowledge hub (10 permission paths).
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
             transaction (Optional[str]): Optional transaction ID
@@ -1051,6 +1058,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         depth: int,
         include_parent: bool = True,
+        user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
@@ -1067,6 +1075,9 @@ class IGraphDBProvider(ABC):
                         (-1 = unlimited, 0 = only parent, 1 = direct children,
                          2 = children + grandchildren, etc.)
             include_parent (bool): Whether to include the parent record itself
+            user_key (Optional[str]): User key for permission filtering. When provided,
+                        only records the user has permission to access are returned.
+                        Uses the same permission model as knowledge hub (10 permission paths).
             limit (Optional[int]): Maximum number of records to return (for pagination)
             offset (int): Number of records to skip (for pagination)
             transaction (Optional[str]): Optional transaction ID

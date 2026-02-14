@@ -1169,6 +1169,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "connectorName": connector_name,
                 "depth": depth,
                 "recordGroupId": record_group_id,
+                "userKey": user_key
             }
         except Exception as e:
             self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
@@ -1451,22 +1452,23 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Dict:
         """
         Reindex a single record with permission checks and event publishing.
-        Always reindexes with depth 100 (including all children) via batch reindex.
+        Depth comes from caller: 0 = only this record (record-details, collections/KB);
+        >0 = include children (e.g. all-records tree uses 100). KB (UPLOAD) records use
+        record-events and ignore depth; connector records use sync-events with depth.
 
         Args:
             record_id: Record ID to reindex
             user_id: External user ID
             org_id: Organization ID
             request: Optional request (unused in provider; for signature compatibility)
-            depth: Depth for children (always 100 from router, normalized to MAX_REINDEX_DEPTH if needed)
+            depth: Depth for children (0 = only this record; -1 or >MAX = normalized to MAX_REINDEX_DEPTH)
 
         Returns:
             Dict: success, recordId, recordName, connector, eventPublished, userRole; or error code/reason
         """
         try:
-            # Depth is always 100 from router, so we always use batch reindex
-            # Normalize depth to MAX_REINDEX_DEPTH if it's -1 or exceeds limit
-            if depth == -1 or depth > MAX_REINDEX_DEPTH:
+            # Normalize depth only when including children (-1 or >MAX -> MAX_REINDEX_DEPTH); depth 0 stays 0
+            if depth != 0 and (depth == -1 or depth > MAX_REINDEX_DEPTH):
                 depth = MAX_REINDEX_DEPTH
 
             record = await self.get_document(record_id, CollectionNames.RECORDS.value)
@@ -1550,7 +1552,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         "recordId": record_id,
                         "depth": depth,
                         "connectorId": connector_id,
-                        "connector": connector_for_event  # Add connector field for consumer fallback
+                        "connector": connector_for_event,  # Add connector field for consumer fallback
+                        "userKey": user_key
                     }
 
                     event_data = {
@@ -2635,6 +2638,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         org_id: str,
         depth: int,
+        user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
@@ -2662,7 +2666,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving records for record group {record_group_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
             )
 
             # Validate depth - must be >= -1
@@ -2744,41 +2748,84 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 type_doc_expr = "null"
 
-            # Main query: Unified traversal approach
+            # Main query: Unified traversal approach using belongsTo edges
             # Collect all record groups (starting + nested) then get records from all groups
+            # Build permission check fragments conditionally
+            if user_key:
+                rg_permission_aql = self._get_permission_role_aql("recordGroup", "nestedRg", "u")
+                record_permission_aql = self._get_permission_role_aql("record", "record", "u")
+                bind_vars["user_key"] = user_key
+
+                rg_permission_filter = f"""
+                    LET u = DOCUMENT("users", @user_key)
+
+                    {rg_permission_aql}
+
+                    LET rg_normalized_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+
+                    FILTER rg_normalized_role != null AND rg_normalized_role != ""
+                """
+
+                record_permission_filter = f"""
+                    LET u = DOCUMENT("users", @user_key)
+
+                    {record_permission_aql}
+
+                    LET rec_normalized_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+
+                    FILTER rec_normalized_role != null AND rec_normalized_role != ""
+                """
+            else:
+                rg_permission_filter = ""
+                record_permission_filter = ""
+
             query = f"""
             LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
             FILTER recordGroup != null
             FILTER recordGroup.orgId == @org_id
 
             // Collect all record groups: starting group + nested groups up to max_depth
-            // When max_depth is 0, only include the starting record group
-            // When max_depth > 0, traverse nested groups (1..@max_depth)
+            // Using belongsTo edges (child -> parent direction, so INBOUND from parent)
             LET allRecordGroups = @max_depth > 0 ? UNION_DISTINCT(
                 [recordGroup],
-                FOR nestedRg, rgEdge, path IN 1..@max_depth INBOUND recordGroup._id @@inherit_permissions
-                    FILTER IS_SAME_COLLECTION("recordGroups", nestedRg)
-                    FILTER nestedRg.orgId == @org_id OR nestedRg.orgId == null
+                (FOR nestedRg IN (
+                    FOR v IN 1..@max_depth INBOUND recordGroup._id {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", v)
+                        FILTER v.orgId == @org_id OR v.orgId == null
+                        RETURN v
+                )
+                    LET nestedRg = nestedRg
+                    {rg_permission_filter}
                     RETURN nestedRg
+                )
             ) : [recordGroup]
 
-            // Get all records from all record groups in a single unified traversal
-            // Using OPTIONS for better performance with uniqueVertices
-            // Note: A record could be connected to multiple record groups, so we need deduplication
+            // Get all records from all record groups via belongsTo edges
             LET allRecordsRaw = (
                 FOR rg IN allRecordGroups
-                    FOR record, edge IN 1..1 INBOUND rg._id @@inherit_permissions
-                        OPTIONS {{bfs: true, uniqueVertices: "global"}}
-                        FILTER IS_SAME_COLLECTION("records", record)
-                        FILTER record.connectorId == @connector_id
-                        FILTER record.isDeleted != true
-                        FILTER record.orgId == @org_id OR record.orgId == null
-                        FILTER record.origin == "CONNECTOR"
+                    FOR record IN (
+                        FOR edge IN {CollectionNames.BELONGS_TO.value}
+                            FILTER edge._to == rg._id
+                            FILTER STARTS_WITH(edge._from, "records/")
+                            LET rec = DOCUMENT(edge._from)
+                            FILTER rec != null
+                            FILTER rec.connectorId == @connector_id
+                            FILTER rec.isDeleted != true
+                            FILTER rec.orgId == @org_id OR rec.orgId == null
+                            FILTER rec.origin == "CONNECTOR"
+                            RETURN rec
+                    )
+                        LET record = record
+                        {record_permission_filter}
                         {folder_filter}
                         RETURN record
             )
 
-            // Deduplicate records by _id (equivalent to UNION_DISTINCT in original)
+            // Deduplicate records by _id
             LET allRecords = (
                 FOR record IN allRecordsRaw
                     COLLECT recordId = record._id INTO groups
@@ -2802,7 +2849,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             bind_vars.update({
                 "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
-                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "@is_of_type": CollectionNames.IS_OF_TYPE.value,
             })
 
@@ -2841,6 +2887,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         depth: int,
         include_parent: bool = True,
+        user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
         transaction: Optional[str] = None
@@ -2867,7 +2914,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"include_parent: {include_parent}, limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, include_parent: {include_parent}, "
+                f"limit: {limit}, offset: {offset}"
             )
 
             # Validate depth - must be >= -1
@@ -2904,6 +2952,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if limit is not None:
                 bind_vars["limit"] = limit
                 bind_vars["offset"] = offset
+
+            # Build permission check fragments conditionally
+            if user_key:
+                record_permission_aql = self._get_permission_role_aql("record", "record", "u")
+                bind_vars["user_key"] = user_key
+
+                permission_filter = f"""
+                    LET u = DOCUMENT("users", @user_key)
+
+                    {record_permission_aql}
+
+                    LET normalized_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+
+                    FILTER normalized_role != null AND normalized_role != ""
+                """
+            else:
+                permission_filter = ""
 
             # Single unified query that handles all depth cases
             # When max_depth=0, the child traversal (1..@max_depth) returns empty
@@ -2959,8 +3026,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // Combine parent and children
             LET allResults = APPEND(parentResult, childResults)
 
-            // Sort by depth then by key, and apply pagination
+            // Sort by depth then by key, apply permission filter, and paginate
             FOR result IN allResults
+                LET record = result.record
+                {permission_filter}
                 SORT result.depth, result.record._key
                 {limit_clause}
                 RETURN result
@@ -12487,7 +12556,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{
                     id: rg._key,
                     name: rg.groupName,
-                    nodeType: "recordGroup",
+                    nodeType: (rg.groupType == "KB" || rg.connectorName == "KB") ? "kb" : "recordGroup",
                     parentId: rg.parentId,
                     origin: rg.connectorName == "KB" ? "KB" : "CONNECTOR",
                     connector: rg.connectorName,
