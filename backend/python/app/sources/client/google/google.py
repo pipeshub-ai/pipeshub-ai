@@ -13,13 +13,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.google_token_handler import (
     CredentialKeys,
 )
-from app.connectors.sources.google.common.scopes import (
-    GOOGLE_PARSER_SCOPES,
-    GOOGLE_SERVICE_SCOPES,
-    SERVICES_WITH_PARSER_SCOPES,
-)
 from app.sources.client.iclient import IClient
-from app.sources.client.utils.utils import merge_scopes
 
 try:
     from google.oauth2 import service_account  # type: ignore
@@ -49,31 +43,6 @@ class GoogleClient(IClient):
     def __init__(self, client: object) -> None:
         """Initialize with a Google Drive client object"""
         self.client = client
-
-    @staticmethod
-    def _get_optimized_scopes(service_name: str, additional_scopes: Optional[List[str]] = None) -> List[str]:
-        """
-        Get optimized scopes for a specific service.
-
-        Args:
-            service_name: Name of the Google service
-            additional_scopes: Additional scopes to merge
-
-        Returns:
-            List of optimized scopes for the service
-        """
-        # Get base scopes for the service
-        base_scopes = GOOGLE_SERVICE_SCOPES.get(service_name, [])
-
-        # Add parser scopes only if the service needs them
-        if service_name in SERVICES_WITH_PARSER_SCOPES:
-            base_scopes = merge_scopes(base_scopes, GOOGLE_PARSER_SCOPES)
-
-        # Add additional scopes if provided
-        if additional_scopes:
-            base_scopes = merge_scopes(base_scopes, additional_scopes)
-
-        return base_scopes
 
     def get_client(self) -> object:
         """Return the Google Drive client object"""
@@ -142,16 +111,51 @@ class GoogleClient(IClient):
                 if not saved_credentials:
                     raise ValueError("Failed to get individual token")
 
-                # Get optimized scopes for the service
-                optimized_scopes = GoogleClient._get_optimized_scopes(service_name, scopes)
+                # Validate required credential fields for OAuth token refresh
+                client_id = saved_credentials.get(CredentialKeys.CLIENT_ID.value)
+                client_secret = saved_credentials.get(CredentialKeys.CLIENT_SECRET.value)
+                access_token = saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value)
+                refresh_token = saved_credentials.get(CredentialKeys.REFRESH_TOKEN.value)
+                oauth_scopes = saved_credentials.get('scope')
+                if oauth_scopes:
+                    credential_scopes = []
+                    if isinstance(oauth_scopes, str):
+                        credential_scopes = [s.strip() for s in oauth_scopes.split()] if oauth_scopes.strip() else []
+                    elif isinstance(oauth_scopes, list):
+                        credential_scopes = oauth_scopes
+                    logger.info("Using authorized scopes from credentials")
+                else:
+                    logger.warning(f"No scope found in stored credentials for {connector_instance_id}")
+
+                if not client_id or not client_secret:
+                    logger.error(f"Missing OAuth client credentials (client_id: {bool(client_id)}, client_secret: {bool(client_secret)}). These are required for token refresh. Please re-authenticate the connector.")
+                    raise ValueError(
+                        f"Missing OAuth client credentials. Client ID present: {bool(client_id)}, "
+                        f"Client Secret present: {bool(client_secret)}. These are required for token refresh. "
+                    )
+
+                # Refresh token is REQUIRED for long-term operation
+                if not refresh_token:
+                    logger.error(f"❌ Missing refresh_token for {connector_instance_id}")
+                    raise ValueError(
+                        "Missing refresh_token. Please re-authenticate the connector. "
+                        "Connectors require a refresh token for automatic token renewal."
+                    )
+
+                # Access token - if missing, Google will auto-refresh on first API call
+                if not access_token:
+                    logger.warning(
+                        f"No access_token found for connector {connector_instance_id}. "
+                        f"Token will be refreshed automatically on first API call."
+                    )
 
                 google_credentials = Credentials(
-                    token=saved_credentials.get(CredentialKeys.ACCESS_TOKEN.value),
-                    refresh_token=saved_credentials.get(CredentialKeys.REFRESH_TOKEN.value),
+                    token=access_token,
+                    refresh_token=refresh_token,
                     token_uri="https://oauth2.googleapis.com/token",
-                    client_id=saved_credentials.get(CredentialKeys.CLIENT_ID.value),
-                    client_secret=saved_credentials.get(CredentialKeys.CLIENT_SECRET.value),
-                    scopes=optimized_scopes,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=credential_scopes,
                 )
 
                 # Create Google Drive service using the credentials
@@ -173,17 +177,25 @@ class GoogleClient(IClient):
                         "Admin email not found in credentials",
                         details={"service_name": service_name},
                     )
+                oauth_scopes = saved_credentials.get('scope')
+                if oauth_scopes:
+                    credential_scopes = []
+                    if isinstance(oauth_scopes, str):
+                        credential_scopes = [s.strip() for s in oauth_scopes.split()] if oauth_scopes.strip() else []
+                    elif isinstance(oauth_scopes, list):
+                        credential_scopes = oauth_scopes
+                    logger.info("Using authorized scopes from credentials")
+                else:
+                    # Fallback: this should rarely happen
+                    logger.warning(f"No scope found in stored credentials for {connector_instance_id}")
             except Exception as e:
                 raise AdminAuthError("Failed to get enterprise token: " + str(e))
 
             try:
-                # Get optimized scopes for the service
-                optimized_scopes = GoogleClient._get_optimized_scopes(service_name, scopes)
-
                 google_credentials = (
                         service_account.Credentials.from_service_account_info(
                             saved_credentials,
-                            scopes=optimized_scopes,
+                            scopes=credential_scopes,
                             # Impersonate the specific user when provided; otherwise default to admin
                             subject=(user_email or admin_email)
                         )
@@ -258,7 +270,7 @@ class GoogleClient(IClient):
             if oauth_config_id and not (client_id and client_secret):
                 try:
                     # Get connector type from config or derive from service_name
-                    connector_type = service_name.upper().replace(" ", "_")
+                    connector_type = service_name.lower().replace(" ", "")
                     oauth_config_path = f"/services/oauth/{connector_type}"
                     oauth_configs = await config_service.get_config(oauth_config_path, default=[])
 
