@@ -1,0 +1,19 @@
+code_review:
+  comment_severity_threshold: LOW
+  max_review_comments: -1
+
+pull_request_opened:
+  summary: true
+  code_review: true
+  include_drafts: false
+
+ignore_patterns:
+  - "*.min.js"
+  - "*.generated.*"
+  - "node_modules/**"
+  - "venv/**"
+  - "__pycache__/**"
+  - "*.pyc"
+  - "dist/**"
+  - "build/**"
+  - ".git/**"

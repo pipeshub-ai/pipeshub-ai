@@ -50,7 +50,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
         setattr(get_initialized_container, "_initialized", True)
         # Start token refresh service at app startup
         try:
-            await startup_service.initialize(container.key_value_store(), await container.arango_service())
+            await startup_service.initialize(container.config_service(), await container.arango_service())
         except Exception as e:
             container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container

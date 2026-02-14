@@ -208,7 +208,7 @@ async def test_run() -> None:
     config = {
         "auth": service_account_credentials
     }
-    await key_value_store.create_key(f"/services/connectors/{connector_id}/config", config)
+    await config_service.set_config(f"/services/connectors/{connector_id}/config", config)
 
     connector: BaseConnector = await GoogleDriveTeamConnector.create_connector(
         logger, data_store_provider, config_service, connector_id
