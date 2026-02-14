@@ -270,6 +270,13 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error shutting down startup services: {e}")
 
+        # Close configuration service (stops Redis Pub/Sub subscription)
+        try:
+            config_service = container.config_service()
+            await config_service.close()
+        except Exception as e:
+            logger.warning(f"Error closing configuration service: {e}")
+
         logger.info("✅ All container resources shut down successfully")
 
     except Exception as e:

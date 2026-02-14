@@ -196,6 +196,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error stopping Kafka consumers: {str(e)}")
 
+    # Close configuration service (stops Redis Pub/Sub subscription)
+    try:
+        config_service = app_container.config_service()
+        await config_service.close()
+    except Exception as e:
+        logger.error(f"❌ Error closing configuration service: {str(e)}")
+
 
 # Create FastAPI app with lifespan
 app = FastAPI(

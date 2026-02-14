@@ -461,9 +461,13 @@ export class Application {
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
-      this.notificationContainer
-        .get<NotificationService>(NotificationService)
-        .shutdown();
+      try {
+        this.notificationContainer
+          .get<NotificationService>(NotificationService)
+          .shutdown();
+      } catch (err) {
+        this.logger.warn('NotificationService not available during shutdown');
+      }
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
       await UserManagerContainer.dispose();
