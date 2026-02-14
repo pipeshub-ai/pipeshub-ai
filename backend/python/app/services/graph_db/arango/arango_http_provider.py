@@ -13878,10 +13878,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                     FILTER groupToRgEdge.type == 'GROUP' or groupToRgEdge.type == 'ROLE'
 
-                // Hop 3: Parent RecordGroup -> Child RecordGroup (belongs_to)
+                // Hop 3: Parent RecordGroup -> Child RecordGroup (inherit_permissions)
                 FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
 
-                // Hop 4: Child RecordGroup -> Record (belongs_to)
+                // Hop 4: Child RecordGroup -> Record (inherit_permissions)
                 FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                     FILTER record._key == @recordId
                     {app_record_filter}
@@ -14187,16 +14187,28 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     break
 
             # Format permissions from access paths
-            permissions = []
-            for access in access_result:
-                permission = {
-                    "id": record.get("id") or record.get("_key"),
-                    "name": record.get("recordName"),
-                    "type": record.get("recordType"),
-                    "relationship": access.get("role"),
-                    "accessType": access.get("type"),
-                }
-                permissions.append(permission)
+            # Select the highest permission from all access paths (matching neo4j)
+            role_priority = {
+                "OWNER": 6,
+                "ORGANIZER": 5,
+                "FILEORGANIZER": 4,
+                "WRITER": 3,
+                "COMMENTER": 2,
+                "READER": 1,
+            }
+
+            best_access = max(
+                access_result,
+                key=lambda a: role_priority.get(a.get("role", ""), 0)
+            )
+
+            permissions = [{
+                "id": record.get("id") or record.get("_key"),
+                "name": record.get("recordName"),
+                "type": record.get("recordType"),
+                "relationship": best_access.get("role"),
+                "accessType": best_access.get("type"),
+            }]
 
             return {
                 "record": {
