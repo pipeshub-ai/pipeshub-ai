@@ -512,6 +512,31 @@ class ConnectorRegistry:
                     f"Failed to create organization relationship for {connector_type}"
                 )
 
+            # For personal scope: create user-app edge for creator only (no other user should have access)
+            if scope == ConnectorScope.PERSONAL.value:
+                creator_doc = await arango_service.get_user_by_user_id(created_by)
+                if creator_doc and creator_doc.get("_key"):
+                    creator_key = creator_doc["_key"]
+                    user_app_edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{creator_key}",
+                        "_to": f"{CollectionNames.APPS.value}/{instance_key}",
+                        "syncState": "NOT_STARTED",
+                        "lastSyncUpdate": current_timestamp,
+                        "createdAtTimestamp": current_timestamp,
+                        "updatedAtTimestamp": current_timestamp,
+                    }
+                    await arango_service.batch_create_edges(
+                        [user_app_edge],
+                        CollectionNames.USER_APP_RELATION.value,
+                    )
+                    self.logger.debug(
+                        f"Created user-app relation for creator {creator_key} and personal connector {instance_key}"
+                    )
+                else:
+                    self.logger.warning(
+                        f"Creator user not found for created_by {created_by}; skipping user-app edge for personal connector"
+                    )
+
             self.logger.info(
                 f"Created connector instance '{instance_name}' of type {connector_type} "
                 f"with scope {scope} for user {created_by}"
@@ -915,12 +940,14 @@ class ConnectorRegistry:
                 query += " FILTER doc.scope == @scope"
                 bind_vars["scope"] = scope
 
-            # Add access control
+            # Add access control: personal = only creator; team = all org (everyone can see)
             if not is_admin:
-                # Non-admins can only see their own connectors or team connectors they created
+                # Non-admins: all team connectors + only their own personal connectors
                 query += """
-                FILTER (doc.createdBy == @user_id)
+                FILTER (doc.scope == @team_scope) OR (doc.scope == @personal_scope AND doc.createdBy == @user_id)
                 """
+                bind_vars["team_scope"] = ConnectorScope.TEAM.value
+                bind_vars["personal_scope"] = ConnectorScope.PERSONAL.value
                 bind_vars["user_id"] = user_id
             else:
                 # Admins can see all team connectors + their personal connectors
@@ -1285,6 +1312,7 @@ class ConnectorRegistry:
         app_group: str,
         user_id: str,
         org_id: str,
+        is_admin: bool,
         scope: Optional[str] = None,
         page: int = 1,
         limit: int = 20
@@ -1296,6 +1324,7 @@ class ConnectorRegistry:
             app_group: Group name to filter by
             user_id: User ID requesting the instances
             org_id: Organization ID
+            is_admin: Whether the user is an admin (for access control)
             scope: Optional scope filter (personal/team)
             page: Page number (1-indexed)
             limit: Number of items per page
@@ -1303,7 +1332,15 @@ class ConnectorRegistry:
         Returns:
             Dictionary with connector instances and pagination info
         """
-        result = await self.get_all_connector_instances(user_id, org_id, scope, page, limit * 2)
+        result = await self.get_all_connector_instances(
+            user_id=user_id,
+            org_id=org_id,
+            is_admin=is_admin,
+            scope=scope,
+            page=page,
+            limit=limit * 2,
+            search=None
+        )
 
         group_instances = [
             instance for instance in result["connectors"]
