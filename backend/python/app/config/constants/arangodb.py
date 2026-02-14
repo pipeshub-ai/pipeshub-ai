@@ -94,7 +94,6 @@ class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
 
-
 class LegacyCollectionNames(Enum):
     KNOWLEDGE_BASE = "knowledgeBase"
     PERMISSIONS_TO_KNOWLEDGE_BASE = "permissionsToKnowledgeBase"
@@ -103,14 +102,11 @@ class LegacyCollectionNames(Enum):
     PERMISSIONS = "permissions"
     PERMISSIONS_TO_KB = "permissionsToKB"
 
-
 class LegacyGraphNames(Enum):
     FILE_ACCESS_GRAPH = "fileAccessGraph"
 
-
 class GraphNames(Enum):
     KNOWLEDGE_GRAPH = "knowledgeGraph"
-
 
 class CollectionNames(Enum):
     # Records and Record relations
@@ -132,7 +128,7 @@ class CollectionNames(Enum):
     FILES = "files"
     LINKS = "links"
     MAILS = "mails"
-    # MESSAGES = "messages"
+    #MESSAGES = "messages"
     WEBPAGES = "webpages"
     COMMENTS = "comments"
     TICKETS = "tickets"
@@ -165,6 +161,7 @@ class CollectionNames(Enum):
     SUBCATEGORIES3 = "subcategories3"
     INTER_CATEGORY_RELATIONS = "interCategoryRelations"
 
+
     # Other
     CHANNEL_HISTORY = "channelHistory"
     PAGE_TOKENS = "pageTokens"
@@ -180,14 +177,13 @@ class CollectionNames(Enum):
     # WEBPAGE_COMMENT_RECORD="webpageCommentRecord"
 
     # NOTION_DATABASE_RECORD="notionDatabaseRecord"
-    BELONGS_TO_RECORD_GROUP = "belongsToRecordGroup"
+    BELONGS_TO_RECORD_GROUP="belongsToRecordGroup"
 
     # Storage mappings
     VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
-
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
@@ -214,7 +210,6 @@ class ExtensionTypes(Enum):
     SVG = "svg"
     HEIC = "heic"
     HEIF = "heif"
-
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -256,7 +251,6 @@ class MimeTypes(Enum):
     ZIP = "application/zip"
     GIF = "image/gif"
 
-
 class ProgressStatus(Enum):
     NOT_STARTED = "NOT_STARTED"
     PAUSED = "PAUSED"
@@ -288,7 +282,6 @@ class RecordTypes(Enum):
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
 
-
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
     SIBLING = "SIBLING"
@@ -307,12 +300,10 @@ class RecordRelations(Enum):
 
 class EntityRelations(Enum):
     """Standard edge types for entity relationships"""
-
     ASSIGNED_TO = "ASSIGNED_TO"
     REPORTED_BY = "REPORTED_BY"
     CREATED_BY = "CREATED_BY"
     LEAD_BY = "LEAD_BY"
-
 
 class EventTypes(Enum):
     NEW_RECORD = "newRecord"
@@ -322,18 +313,15 @@ class EventTypes(Enum):
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
 
-
 class AccountType(Enum):
     INDIVIDUAL = "individual"
     ENTERPRISE = "enterprise"
     BUSINESS = "business"
     ADMIN = "admin"
 
-
 class ConnectorScopes(Enum):
     PERSONAL = "personal"
     TEAM = "team"
-
 
 RECORD_TYPE_COLLECTION_MAPPING = {
     "FILE": CollectionNames.FILES.value,

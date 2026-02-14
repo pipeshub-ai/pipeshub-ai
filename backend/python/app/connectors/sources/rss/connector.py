@@ -686,8 +686,7 @@ class RSSConnector(BaseConnector):
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records — not implemented for RSS connector."""
-        pass
-
+        raise NotImplementedError("RSS connector does not support reindexing")
     async def get_filter_options(
         self,
         filter_key: str,
@@ -697,14 +696,12 @@ class RSSConnector(BaseConnector):
         cursor: Optional[str] = None,
     ) -> FilterOptionsResponse:
         """RSS connector does not support dynamic filter options."""
-        raise NotImplementedError(
-            "RSS connector does not support dynamic filter options"
-        )
+        raise NotImplementedError("RSS connector does not support dynamic filter options")
 
     async def handle_webhook_notification(self, notification: Dict) -> None:
         """RSS connector doesn't support webhooks."""
-        pass
+        raise NotImplementedError("RSS connector does not support webhooks")
 
     async def get_signed_url(self, record: Record) -> Optional[str]:
-        """Return the article URL as the signed URL."""
-        return record.weburl if record.weburl else None
+        """RSS connector does not support signed URLs."""
+        raise NotImplementedError("RSS connector does not support signed URLs")

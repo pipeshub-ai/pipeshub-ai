@@ -19,7 +19,7 @@ from app.models.blocks import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
-EnumType = TypeVar("EnumType", bound=Enum)
+EnumType = TypeVar('EnumType', bound=Enum)
 
 
 class RecordGroupType(str, Enum):
@@ -39,11 +39,10 @@ class RecordGroupType(str, Enum):
     MAILBOX = "MAILBOX"
     GROUP_MAILBOX = "GROUP_MAILBOX"
     WEB = "WEB"
-    RSS_FEED = "RSS_FEED"
     SHELF = "SHELF"
     BOOK = "BOOK"
     CHAPTER = "CHAPTER"
-
+    RSS_FEED = "RSS_FEED"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -70,15 +69,12 @@ class RecordType(str, Enum):
 
 class LinkPublicStatus(str, Enum):
     """Status of link accessibility"""
-
     TRUE = "true"
     FALSE = "false"
     UNKNOWN = "unknown"
 
-
 class IndexingStatus(str, Enum):
     """Status of record indexing for search and AI features"""
-
     NOT_STARTED = "NOT_STARTED"
     IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
@@ -94,7 +90,6 @@ class IndexingStatus(str, Enum):
 
 class Priority(str, Enum):
     """Standard priority values for all connectors"""
-
     LOWEST = "LOWEST"
     LOW = "LOW"
     MEDIUM = "MEDIUM"
@@ -107,7 +102,6 @@ class Priority(str, Enum):
 
 class Status(str, Enum):
     """Standard status values for all connectors"""
-
     NEW = "NEW"
     OPEN = "OPEN"
     IN_PROGRESS = "IN_PROGRESS"
@@ -125,7 +119,6 @@ class Status(str, Enum):
 
 class ItemType(str, Enum):
     """Standard item type values for all connectors"""
-
     TASK = "TASK"
     BUG = "BUG"
     STORY = "STORY"
@@ -144,7 +137,6 @@ class ItemType(str, Enum):
 
 class DeliveryStatus(str, Enum):
     """Standard delivery status values for all connectors"""
-
     ON_TRACK = "ON_TRACK"
     AT_RISK = "AT_RISK"
     OFF_TRACK = "OFF_TRACK"
@@ -159,102 +151,45 @@ class RelatedExternalRecord(BaseModel):
     This model ensures type safety and validation for related external records.
     Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
     """
-
     external_record_id: str = Field(description="External ID of the related record")
     record_type: RecordType = Field(description="Type of the related record")
     relation_type: RecordRelations = Field(
         default=RecordRelations.LINKED_TO,
-        description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)",
+        description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"
     )
 
 
 class Record(BaseModel):
     # Core record properties
-    id: str = Field(
-        description="Unique identifier for the record",
-        default_factory=lambda: str(uuid4()),
-    )
-    org_id: str = Field(
-        description="Unique identifier for the organization", default=""
-    )
+    id: str = Field(description="Unique identifier for the record", default_factory=lambda: str(uuid4()))
+    org_id: str = Field(description="Unique identifier for the organization", default="")
     record_name: str = Field(description="Human-readable name for the record")
     record_type: RecordType = Field(description="Type/category of the record")
     record_status: ProgressStatus = Field(default=ProgressStatus.NOT_STARTED)
-    parent_record_type: Optional[RecordType] = Field(
-        default=None, description="Type of the parent record"
-    )
-    record_group_type: Optional[RecordGroupType] = Field(
-        default=None, description="Type of the record group"
-    )
-    external_record_id: str = Field(
-        description="Unique identifier for the record in the external system"
-    )
-    external_revision_id: Optional[str] = Field(
-        default=None,
-        description="Unique identifier for the revision of the record in the external system",
-    )
-    external_record_group_id: Optional[str] = Field(
-        default=None,
-        description="Unique identifier for the record group in the external system",
-    )
-    record_group_id: Optional[str] = Field(
-        default=None, description="Internal identifier for the record group (UUID)"
-    )
-    parent_external_record_id: Optional[str] = Field(
-        default=None,
-        description="Unique identifier for the parent record in the external system",
-    )
+    parent_record_type: Optional[RecordType] = Field(default=None, description="Type of the parent record")
+    record_group_type: Optional[RecordGroupType] = Field(default=None, description="Type of the record group")
+    external_record_id: str = Field(description="Unique identifier for the record in the external system")
+    external_revision_id: Optional[str] = Field(default=None, description="Unique identifier for the revision of the record in the external system")
+    external_record_group_id: Optional[str] = Field(default=None, description="Unique identifier for the record group in the external system")
+    record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the record group (UUID)")
+    parent_external_record_id: Optional[str] = Field(default=None, description="Unique identifier for the parent record in the external system")
     version: int = Field(description="Version of the record")
     origin: OriginTypes = Field(description="Origin of the record")
-    connector_name: Connectors = Field(
-        description="Name of the connector used to create the record"
-    )
-    connector_id: str = Field(
-        description="Unique identifier for the connector configuration instance"
-    )
-    virtual_record_id: Optional[str] = Field(
-        description="Virtual record identifier", default=None
-    )
-    summary_document_id: Optional[str] = Field(
-        description="Summary document identifier", default=None
-    )
-    md5_hash: Optional[str] = Field(
-        default=None, description="MD5 hash of the record content"
-    )
-    size_in_bytes: Optional[int] = Field(
-        default=None, description="Size of the record content in bytes"
-    )
-    mime_type: str = Field(
-        default=MimeTypes.UNKNOWN.value, description="MIME type of the record"
-    )
-    inherit_permissions: bool = Field(
-        default=True, description="Inherit permissions from parent record"
-    )  # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
-    indexing_status: str = Field(
-        default=IndexingStatus.QUEUED.value,
-        description="Indexing status for the record",
-    )
-    extraction_status: str = Field(
-        default=IndexingStatus.NOT_STARTED.value,
-        description="Extraction status for the record",
-    )
+    connector_name: Connectors = Field(description="Name of the connector used to create the record")
+    connector_id: str = Field(description="Unique identifier for the connector configuration instance")
+    virtual_record_id: Optional[str] = Field(description="Virtual record identifier", default=None)
+    summary_document_id: Optional[str] = Field(description="Summary document identifier", default=None)
+    md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record content")
+    size_in_bytes: Optional[int] = Field(default=None, description="Size of the record content in bytes")
+    mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
+    inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
+    indexing_status: str = Field(default=IndexingStatus.QUEUED.value, description="Indexing status for the record")
+    extraction_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Extraction status for the record")
     # Epoch Timestamps
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the record creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the record update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the record creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the record update in the source system",
-    )
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
 
     # Source information
     weburl: Optional[str] = None
@@ -263,24 +198,14 @@ class Record(BaseModel):
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
     is_shared_with_me: Optional[bool] = False
-    hide_weburl: bool = Field(
-        default=False, description="Flag indicating if web URL should be hidden"
-    )
-    is_internal: bool = Field(
-        default=False, description="Flag indicating if record is internal"
-    )
+    hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
+    is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
     # Processing flags
-    is_vlm_ocr_processed: Optional[bool] = Field(
-        default=False,
-        description="Flag indicating if VLM OCR processing has been used to process the record",
-    )
+    is_vlm_ocr_processed: Optional[bool] = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
 
     # Content blocks
-    block_containers: BlocksContainer = Field(
-        default_factory=BlocksContainer,
-        description="List of block containers in this record",
-    )
+    block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: Optional[SemanticMetadata] = None
     # Relationships
     parent_record_id: Optional[str] = None
@@ -288,18 +213,10 @@ class Record(BaseModel):
     related_record_ids: Optional[List[str]] = Field(default_factory=list)
 
     # Related external records (for connectors to specify relations by external IDs)
-    related_external_records: Optional[List[RelatedExternalRecord]] = Field(
-        default_factory=list,
-        description="List of related external records to create LINKED_TO relations (not persisted)",
-    )
+    related_external_records: Optional[List[RelatedExternalRecord]] = Field(default_factory=list, description="List of related external records to create LINKED_TO relations (not persisted)")
     # Hierarchy fields
-    is_dependent_node: bool = Field(
-        default=False, description="True for dependent records, False for root records"
-    )
-    parent_node_id: Optional[str] = Field(
-        default=None, description="Internal record ID of the parent node"
-    )
-
+    is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
+    parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
@@ -370,16 +287,10 @@ class Record(BaseModel):
             created_at=arango_base_record.get("createdAtTimestamp", None),
             updated_at=arango_base_record.get("updatedAtTimestamp", None),
             source_created_at=arango_base_record.get("sourceCreatedAtTimestamp", None),
-            source_updated_at=arango_base_record.get(
-                "sourceLastModifiedTimestamp", None
-            ),
+            source_updated_at=arango_base_record.get("sourceLastModifiedTimestamp", None),
             virtual_record_id=arango_base_record.get("virtualRecordId", None),
-            indexing_status=arango_base_record.get(
-                "indexingStatus", IndexingStatus.QUEUED.value
-            ),
-            extraction_status=arango_base_record.get(
-                "extractionStatus", IndexingStatus.NOT_STARTED.value
-            ),
+            indexing_status=arango_base_record.get("indexingStatus", IndexingStatus.QUEUED.value),
+            extraction_status=arango_base_record.get("extractionStatus", IndexingStatus.NOT_STARTED.value),
             preview_renderable=arango_base_record.get("previewRenderable", True),
             is_shared=arango_base_record.get("isShared", False),
             is_vlm_ocr_processed=arango_base_record.get("isVLMOcrProcessed", False),
@@ -393,7 +304,6 @@ class Record(BaseModel):
 
     def to_kafka_record(self) -> Dict:
         raise NotImplementedError("Implement this method in the subclass")
-
 
 class FileRecord(Record):
     is_file: bool
@@ -424,17 +334,11 @@ class FileRecord(Record):
         }
 
     @staticmethod
-    def from_arango_record(
-        arango_base_file_record: Dict, arango_base_record: Dict
-    ) -> "FileRecord":
+    def from_arango_record(arango_base_file_record: Dict, arango_base_record: Dict) -> "FileRecord":
         # Handle connectorName which might be missing for KB uploaded files
         conn_name_value = arango_base_record.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -461,9 +365,7 @@ class FileRecord(Record):
             is_dependent_node=arango_base_record.get("isDependentNode", False),
             parent_node_id=arango_base_record.get("parentNodeId", None),
             is_file=arango_base_file_record.get("isFile", True),
-            size_in_bytes=size
-            if (size := arango_base_record.get("sizeInBytes")) is not None
-            else arango_base_file_record.get("sizeInBytes", None),
+            size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes", None),
             extension=arango_base_file_record["extension"],
             path=arango_base_file_record.get("path"),
             etag=arango_base_file_record["etag"],
@@ -501,7 +403,6 @@ class FileRecord(Record):
             "isFile": self.is_file,
         }
 
-
 class MessageRecord(Record):
     content: Optional[str] = None
 
@@ -519,7 +420,6 @@ class MessageRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
-
 class MailRecord(Record):
     subject: Optional[str] = None
     from_email: Optional[str] = None
@@ -531,6 +431,7 @@ class MailRecord(Record):
     internet_message_id: Optional[str] = None
     conversation_index: Optional[str] = None
     label_ids: Optional[List[str]] = None
+
 
     def to_arango_record(self) -> Dict:
         return {
@@ -547,6 +448,7 @@ class MailRecord(Record):
             "conversationIndex": self.conversation_index,
             "labelIds": self.label_ids or [],
         }
+
 
     def to_kafka_record(self) -> Dict:
         return {
@@ -565,11 +467,7 @@ class MailRecord(Record):
         """Create MailRecord from ArangoDB documents (records + mails collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -606,7 +504,6 @@ class MailRecord(Record):
             label_ids=mail_doc.get("labelIds", []),
         )
 
-
 class WebpageRecord(Record):
     def to_kafka_record(self) -> Dict:
         return {
@@ -636,11 +533,7 @@ class WebpageRecord(Record):
         """Create WebpageRecord from ArangoDB documents (records + webpages collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -667,7 +560,6 @@ class WebpageRecord(Record):
             virtual_record_id=record_doc.get("virtualRecordId"),
         )
 
-
 class LinkRecord(Record):
     """
     Link record for URLs and attachments.
@@ -678,13 +570,10 @@ class LinkRecord(Record):
     - is_public: Whether the link is publicly accessible (no auth required)
     - linked_record_id: Internal record ID of a record that has the same weburl (optional)
     """
-
     url: str
     title: Optional[str] = None
     is_public: LinkPublicStatus = Field(description="Link public accessibility status")
-    linked_record_id: Optional[str] = Field(
-        default=None, description="Internal record ID of linked record with same weburl"
-    )
+    linked_record_id: Optional[str] = Field(default=None, description="Internal record ID of linked record with same weburl")
 
     def to_kafka_record(self) -> Dict:
         return {
@@ -719,11 +608,7 @@ class LinkRecord(Record):
         """Create LinkRecord from ArangoDB documents (records + links collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -753,7 +638,6 @@ class LinkRecord(Record):
             linked_record_id=link_doc.get("linkedRecordId"),
         )
 
-
 class CommentRecord(Record):
     """
     Comment record for page comments (footer and inline).
@@ -763,7 +647,6 @@ class CommentRecord(Record):
     - resolution_status: Status of the comment (e.g., "resolved", "open", None)
     - comment_selection: For inline comments, the original text selection (HTML)
     """
-
     author_source_id: str
     resolution_status: Optional[str] = None
     comment_selection: Optional[str] = None
@@ -796,11 +679,7 @@ class CommentRecord(Record):
         """Create CommentRecord from ArangoDB documents (records + comments collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -828,13 +707,10 @@ class CommentRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
-            author_source_id=comment_doc.get("authorSourceId")
-            or comment_doc.get("authorId")
-            or "unknown",
+            author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
         )
-
 
 class TicketRecord(Record):
     status: Optional[Union[Status, str]] = None
@@ -880,9 +756,7 @@ class TicketRecord(Record):
         }
 
     @staticmethod
-    def _safe_enum_parse(
-        value: Optional[str], enum_class: Type[EnumType]
-    ) -> Optional[Union[EnumType, str]]:
+    def _safe_enum_parse(value: Optional[str], enum_class: Type[EnumType]) -> Optional[Union[EnumType, str]]:
         """Safely parse enum value, returning original string if invalid (preserves connector-specific values)"""
         if not value:
             return None
@@ -902,11 +776,7 @@ class TicketRecord(Record):
         """Create TicketRecord from ArangoDB documents (records + tickets collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -935,13 +805,9 @@ class TicketRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId", None),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
-            priority=TicketRecord._safe_enum_parse(
-                ticket_doc.get("priority"), Priority
-            ),
+            priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
-            delivery_status=TicketRecord._safe_enum_parse(
-                ticket_doc.get("deliveryStatus"), DeliveryStatus
-            ),
+            delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), DeliveryStatus),
             assignee=ticket_doc.get("assignee"),
             reporter_email=ticket_doc.get("reporterEmail"),
             assignee_email=ticket_doc.get("assigneeEmail"),
@@ -954,6 +820,7 @@ class TicketRecord(Record):
         )
 
     def to_kafka_record(self) -> Dict:
+
         return {
             "recordId": self.id,
             "orgId": self.org_id,
@@ -972,10 +839,8 @@ class TicketRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
-
 class ProjectRecord(Record):
     """Record class for projects"""
-
     status: Optional[str] = None
     priority: Optional[str] = None
     lead_id: Optional[str] = None
@@ -998,11 +863,7 @@ class ProjectRecord(Record):
         """Create ProjectRecord from ArangoDB documents (records + projects collections)"""
         conn_name_value = record_doc.get("connectorName")
         try:
-            connector_name = (
-                Connectors(conn_name_value)
-                if conn_name_value
-                else Connectors.KNOWLEDGE_BASE
-            )
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
         except ValueError:
             connector_name = Connectors.KNOWLEDGE_BASE
 
@@ -1055,7 +916,6 @@ class ProjectRecord(Record):
             "sourceLastModifiedTimestamp": self.source_updated_at,
         }
 
-
 class SharePointListRecord(Record):
     """Record class for SharePoint lists"""
 
@@ -1080,7 +940,6 @@ class SharePointListRecord(Record):
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
         }
-
 
 class SharePointListItemRecord(Record):
     """Record class for SharePoint list items"""
@@ -1107,7 +966,6 @@ class SharePointListItemRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
-
 class SharePointDocumentLibraryRecord(Record):
     """Record class for SharePoint document libraries"""
 
@@ -1132,7 +990,6 @@ class SharePointDocumentLibraryRecord(Record):
             "externalGroupId": self.external_record_group_id,
             "parentExternalRecordId": self.parent_external_record_id,
         }
-
 
 class SharePointPageRecord(Record):
     """Record class for SharePoint pages"""
@@ -1165,66 +1022,25 @@ class SharePointPageRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
-
 class RecordGroup(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the record group",
-        default_factory=lambda: str(uuid4()),
-    )
-    org_id: str = Field(
-        description="Unique identifier for the organization", default=""
-    )
+    id: str = Field(description="Unique identifier for the record group", default_factory=lambda: str(uuid4()))
+    org_id: str = Field(description="Unique identifier for the organization", default="")
     name: str = Field(description="Name of the record group")
-    short_name: Optional[str] = Field(
-        default=None, description="Short name of the record group"
-    )
-    description: Optional[str] = Field(
-        default=None, description="Description of the record group"
-    )
-    external_group_id: Optional[str] = Field(
-        description="External identifier for the record group"
-    )
-    parent_external_group_id: Optional[str] = Field(
-        default=None, description="External identifier for the parent record group"
-    )
-    parent_record_group_id: Optional[str] = Field(
-        default=None, description="Internal identifier for the parent record group"
-    )
-    connector_name: Connectors = Field(
-        description="Name of the connector used to create the record group"
-    )
-    connector_id: str = Field(
-        description="Unique identifier for the connector configuration instance"
-    )
-    web_url: Optional[str] = Field(
-        default=None, description="Web URL of the record group"
-    )
-    group_type: Optional[RecordGroupType] = Field(
-        description="Type of the record group"
-    )
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the record group creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the record group update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the record group creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the record group update in the source system",
-    )
-    inherit_permissions: Optional[bool] = Field(
-        default=False, description="Permissions for the record group"
-    )
-    is_internal: Optional[bool] = Field(
-        default=False,
-        description="Flag indicating if the record group is for internal use",
-    )
+    short_name: Optional[str] = Field(default=None, description="Short name of the record group")
+    description: Optional[str] = Field(default=None, description="Description of the record group")
+    external_group_id: Optional[str] = Field(description="External identifier for the record group")
+    parent_external_group_id: Optional[str] = Field(default=None, description="External identifier for the parent record group")
+    parent_record_group_id: Optional[str] = Field(default=None, description="Internal identifier for the parent record group")
+    connector_name: Connectors = Field(description="Name of the connector used to create the record group")
+    connector_id: str = Field(description="Unique identifier for the connector configuration instance")
+    web_url: Optional[str] = Field(default=None, description="Web URL of the record group")
+    group_type: Optional[RecordGroupType] = Field(description="Type of the record group")
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the record group update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
+    inherit_permissions: Optional[bool] = Field(default=False, description="Permissions for the record group")
+    is_internal: Optional[bool] = Field(default=False, description="Flag indicating if the record group is for internal use")
 
     def to_arango_base_record_group(self) -> Dict:
         doc = {
@@ -1256,9 +1072,7 @@ class RecordGroup(BaseModel):
             short_name=arango_base_record_group.get("shortName", None),
             description=arango_base_record_group.get("description", None),
             external_group_id=arango_base_record_group["externalGroupId"],
-            parent_external_group_id=arango_base_record_group.get(
-                "parentExternalGroupId", None
-            ),
+            parent_external_group_id=arango_base_record_group.get("parentExternalGroupId", None),
             connector_name=arango_base_record_group["connectorName"],
             connector_id=arango_base_record_group.get("connectorId"),
             group_type=arango_base_record_group["groupType"],
@@ -1266,182 +1080,67 @@ class RecordGroup(BaseModel):
             web_url=arango_base_record_group.get("webUrl", None),
             created_at=arango_base_record_group["createdAtTimestamp"],
             updated_at=arango_base_record_group["updatedAtTimestamp"],
-            source_created_at=arango_base_record_group.get(
-                "sourceCreatedAtTimestamp", None
-            ),
-            source_updated_at=arango_base_record_group.get(
-                "sourceLastModifiedTimestamp", None
-            ),
+            source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp", None),
+            source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp", None),
         )
 
-
 class Anyone(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the anyone",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the anyone", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the anyone")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
-
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class AnyoneWithLink(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the anyone with link",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the anyone with link", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the anyone with link")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone with link creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone with link update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone with link creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone with link update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
-
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class AnyoneSameOrg(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the anyone same org",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the anyone same org", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the anyone same org")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone same org creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone same org update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone same org creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone same org update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
-
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone same org creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone same org update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone same org creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone same org update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class Org(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the organization",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the organization", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the organization")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the organization creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the organization update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the organization creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the organization update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
-
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the organization creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the organization update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the organization creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the organization update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class Domain(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the domain",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the domain", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the domain")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the domain creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the domain update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the domain creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the domain update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
-
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the domain creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the domain update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the domain creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the domain update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
 class AnyOneWithLink(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the anyone with link",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the anyone with link", default_factory=lambda: str(uuid4()))
     name: str = Field(description="Name of the anyone with link")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone with link creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the anyone with link update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone with link creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the anyone with link update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the anyone with link update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the anyone with link update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
 
 class User(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the user",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the user", default_factory=lambda: str(uuid4()))
     email: str
     source_user_id: Optional[str] = None
     org_id: Optional[str] = None
@@ -1452,6 +1151,7 @@ class User(BaseModel):
     last_name: Optional[str] = None
     full_name: Optional[str] = None
     title: Optional[str] = None
+
 
     def to_arango_base_record(self) -> Dict[str, Any]:
         return {
@@ -1467,7 +1167,7 @@ class User(BaseModel):
         return self.email
 
     @staticmethod
-    def from_arango_user(data: Dict[str, Any]) -> "User":
+    def from_arango_user(data: Dict[str, Any]) -> 'User':
         return User(
             id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
@@ -1502,7 +1202,7 @@ class UserGroup(BaseModel):
             "updated_at_timestamp": self.updated_at_timestamp,
             "last_sync_timestamp": self.last_sync_timestamp,
             "source_created_at_timestamp": self.source_created_at_timestamp,
-            "source_last_modified_timestamp": self.source_last_modified_timestamp,
+            "source_last_modified_timestamp": self.source_last_modified_timestamp
         }
 
     def validate(self) -> bool:
@@ -1514,17 +1214,10 @@ class UserGroup(BaseModel):
 
 class Person(BaseModel):
     """Lightweight entity for external email addresses (not organization members)."""
-
-    id: str = Field(
-        description="Unique identifier", default_factory=lambda: str(uuid4())
-    )
+    id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
     email: str = Field(description="Email address")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(), description="Creation timestamp"
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(), description="Update timestamp"
-    )
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Creation timestamp")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Update timestamp")
 
     def to_arango_person(self) -> Dict[str, Any]:
         return {
@@ -1535,7 +1228,7 @@ class Person(BaseModel):
         }
 
     @staticmethod
-    def from_arango_person(data: Dict[str, Any]) -> "Person":
+    def from_arango_person(data: Dict[str, Any]) -> 'Person':
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
@@ -1547,34 +1240,15 @@ class Person(BaseModel):
 class AppUser(BaseModel):
     app_name: Connectors = Field(description="Name of the app")
     connector_id: str = Field(description="Unique identifier for the connector")
-    id: str = Field(
-        description="Unique identifier for the user",
-        default_factory=lambda: str(uuid4()),
-    )
-    source_user_id: str = Field(
-        description="Unique identifier for the user in the source system"
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
+    id: str = Field(description="Unique identifier for the user", default_factory=lambda: str(uuid4()))
+    source_user_id: str = Field(description="Unique identifier for the user in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
     email: str = Field(description="Email of the user")
     full_name: str = Field(description="Name of the user")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the user creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the user update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the user creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the user update in the source system",
-    )
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
     is_active: bool = Field(default=False, description="Whether the user is active")
     title: Optional[str] = Field(default=None, description="Title of the user")
 
@@ -1591,7 +1265,7 @@ class AppUser(BaseModel):
         }
 
     @staticmethod
-    def from_arango_user(data: Dict[str, Any]) -> "AppUser":
+    def from_arango_user(data: Dict[str, Any]) -> 'AppUser':
         return AppUser(
             id=data.get("id", data.get("_key")),
             email=data.get("email", ""),
@@ -1600,46 +1274,22 @@ class AppUser(BaseModel):
             is_active=data.get("isActive", False),
             full_name=data.get("fullName", None),
             source_user_id=data.get("sourceUserId", ""),
-            app_name=Connectors(
-                data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()
-            ),
+            app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()),
             connector_id=data.get("connectorId", ""),
         )
 
-
 class AppUserGroup(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the user group",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the user group", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
     connector_id: str = Field(description="Unique identifier for the connector")
-    source_user_group_id: str = Field(
-        description="Unique identifier for the user group in the source system"
-    )
+    source_user_group_id: str = Field(description="Unique identifier for the user group in the source system")
     name: str = Field(description="Name of the user group")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the user group creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the user group update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the user group creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the user group update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
-    description: Optional[str] = Field(
-        default=None, description="Description of the user group"
-    )
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the user group update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the user group update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
+    description: Optional[str] = Field(default=None, description="Description of the user group")
 
     def to_arango_base_user_group(self) -> Dict[str, Any]:
         """
@@ -1657,6 +1307,7 @@ class AppUserGroup(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+
         }
 
     @staticmethod
@@ -1674,37 +1325,17 @@ class AppUserGroup(BaseModel):
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
 
-
 class AppRole(BaseModel):
-    id: str = Field(
-        description="Unique identifier for the role",
-        default_factory=lambda: str(uuid4()),
-    )
+    id: str = Field(description="Unique identifier for the role", default_factory=lambda: str(uuid4()))
     app_name: Connectors = Field(description="Name of the app")
     connector_id: str = Field(description="Unique identifier for the connector")
-    source_role_id: str = Field(
-        description="Unique identifier for the role in the source system"
-    )
+    source_role_id: str = Field(description="Unique identifier for the role in the source system")
     name: str = Field(description="Name of the role")
-    created_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the role creation",
-    )
-    updated_at: int = Field(
-        default=get_epoch_timestamp_in_ms(),
-        description="Epoch timestamp in milliseconds of the role update",
-    )
-    source_created_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the role creation in the source system",
-    )
-    source_updated_at: Optional[int] = Field(
-        default=None,
-        description="Epoch timestamp in milliseconds of the role update in the source system",
-    )
-    org_id: str = Field(
-        default="", description="Unique identifier for the organization"
-    )
+    created_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role creation")
+    updated_at: int = Field(default=get_epoch_timestamp_in_ms(), description="Epoch timestamp in milliseconds of the role update")
+    source_created_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role creation in the source system")
+    source_updated_at: Optional[int] = Field(default=None, description="Epoch timestamp in milliseconds of the role update in the source system")
+    org_id: str = Field(default="", description="Unique identifier for the organization")
 
     def to_arango_base_role(self) -> Dict[str, Any]:
         """
@@ -1721,6 +1352,7 @@ class AppRole(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+
         }
 
     @staticmethod
@@ -1737,7 +1369,6 @@ class AppRole(BaseModel):
             source_created_at=arango_doc.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_doc.get("sourceLastModifiedTimestamp"),
         )
-
 
 # Rebuild models to resolve forward references after all imports are complete
 # Call rebuild function after all models are defined to avoid circular import issues
