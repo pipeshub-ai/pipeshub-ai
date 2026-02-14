@@ -275,7 +275,7 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
             config_service = container.config_service()
             await config_service.close()
         except Exception as e:
-            logger.warning(f"Error closing configuration service: {e}")
+            logger.error(f"Error closing configuration service: {e}")
 
         logger.info("✅ All container resources shut down successfully")
 

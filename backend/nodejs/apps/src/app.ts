@@ -466,7 +466,8 @@ export class Application {
           .get<NotificationService>(NotificationService)
           .shutdown();
       } catch (err) {
-        this.logger.warn('NotificationService not available during shutdown');
+        this.logger.warn('NotificationService not available during shutdown', 
+          { error: err instanceof Error ? err.message : String(err) });
       }
       await NotificationContainer.dispose();
       await StorageContainer.dispose();

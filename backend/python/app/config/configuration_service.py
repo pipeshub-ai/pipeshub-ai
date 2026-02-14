@@ -391,8 +391,7 @@ class ConfigurationService:
             self.logger.warning("⚠️ Failed to publish cache invalidation for key %s: %s", key, str(e))
 
     async def close(self) -> None:
-        """Shut down the configuration service and release resources.
-        """
+        """Shut down the configuration service and release resources."""
         if not hasattr(self, 'store') or self.store is None:
             return
         try:

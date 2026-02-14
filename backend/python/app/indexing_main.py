@@ -323,7 +323,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         config_service = app_container.config_service()
         await config_service.close()
     except Exception as e:
-        logger.error(f"❌ Error closing configuration service: {str(e)}")
+        logger.error(f"❌ Error closing configuration service: {e}")
 
 
 app = FastAPI(
