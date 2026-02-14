@@ -5354,10 +5354,11 @@ async def delete_connector_instance(
         )
 
         if not deletion_result.get("success"):
-            logger.error(f"Failed to delete connector data: {deletion_result.get('error')}")
+            error_msg = deletion_result.get("error", "Unknown error occurred during deletion")
+            logger.error(f"Failed to delete connector data: {error_msg}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=deletion_result.get("error", "Failed to delete connector data")
+                detail=f"Failed to delete connector data: {error_msg}"
             )
 
         # 6. Publish BULK_DELETE_RECORDS event to Kafka for Qdrant cleanup

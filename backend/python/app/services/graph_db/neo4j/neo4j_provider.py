@@ -29,6 +29,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.neo4j import (
     COLLECTION_TO_LABEL,
+    EDGE_COLLECTION_TO_RELATIONSHIP,
     Neo4jLabel,
     build_node_id,
     collection_to_label,
@@ -4874,6 +4875,313 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Remove user access to record failed: {str(e)}")
             raise
 
+    # ==================== Connector Deletion Helper Methods ====================
+
+    async def _collect_connector_entities(self, connector_id: str, transaction: Optional[str] = None) -> Dict:
+        """Collect all entity IDs for a connector."""
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+
+        query = """
+        MATCH (r:Record {connectorId: $connector_id})
+        WITH collect(r.id) AS record_ids, 
+             [vid IN collect(r.virtualRecordId) WHERE vid IS NOT NULL] AS virtual_record_ids
+
+        OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
+        WITH record_ids, virtual_record_ids, collect(rg.id) AS record_group_ids
+
+        OPTIONAL MATCH (role:Role {connectorId: $connector_id})
+        WITH record_ids, virtual_record_ids, record_group_ids, collect(role.id) AS role_ids
+
+        OPTIONAL MATCH (grp:Group {connectorId: $connector_id})
+        WITH record_ids, virtual_record_ids, record_group_ids, role_ids, collect(grp.id) AS group_ids
+
+        RETURN {
+          record_keys: record_ids,
+          record_ids: [id IN record_ids | 'records/' + id],
+          virtual_record_ids: virtual_record_ids,
+          record_group_keys: record_group_ids,
+          role_keys: role_ids,
+          group_keys: group_ids,
+          all_node_ids: 
+            [id IN record_ids | 'records/' + id] +
+            [id IN record_group_ids | 'recordGroups/' + id] +
+            [id IN role_ids | 'roles/' + id] +
+            [id IN group_ids | 'groups/' + id] +
+            ['apps/' + $connector_id]
+        } AS result
+        """
+
+        results = await self.client.execute_query(
+            query,
+            parameters={"connector_id": connector_id},
+            txn_id=transaction
+        )
+
+        if not results or len(results) == 0:
+            return {
+                "record_keys": [],
+                "record_ids": [],
+                "virtual_record_ids": [],
+                "record_group_keys": [],
+                "role_keys": [],
+                "group_keys": [],
+                "all_node_ids": []
+            }
+
+        result = results[0]["result"]
+        
+        self.logger.info(
+            f"📊 Collected entities for connector {connector_id}: "
+            f"records={len(result['record_keys'])}, "
+            f"recordGroups={len(result['record_group_keys'])}, "
+            f"roles={len(result['role_keys'])}, "
+            f"groups={len(result['group_keys'])}"
+        )
+
+        return result
+
+    async def _get_all_edge_collections(self) -> List[str]:
+        """Get all relationship types."""
+        edge_collections = list(EDGE_COLLECTION_TO_RELATIONSHIP.keys())
+        self.logger.debug(f"📋 Retrieved {len(edge_collections)} edge collection types")
+        return edge_collections
+
+    async def _delete_all_edges_for_nodes(
+        self,
+        transaction: str,
+        node_ids: List[str],
+        edge_collections: List[str]
+    ) -> Tuple[int, List[str]]:
+        """Delete all relationships connected to nodes."""
+        if not node_ids:
+            return (0, [])
+
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+
+        query = """
+        UNWIND $node_ids AS node_id_str
+        WITH split(node_id_str, '/')[1] AS node_id
+        MATCH (n {id: node_id})-[r]-()
+        DELETE r
+        RETURN count(DISTINCT r) AS deleted_count
+        """
+
+        try:
+            results = await self.client.execute_query(
+                query,
+                parameters={"node_ids": node_ids},
+                txn_id=transaction
+            )
+
+            deleted_count = results[0]["deleted_count"] if results else 0
+            
+            self.logger.info(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
+            
+            return (deleted_count, [])
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete relationships: {str(e)}")
+            return (0, edge_collections)
+
+    async def _collect_isoftype_targets(self, transaction: str, record_ids: List[str]) -> Tuple[List[Dict], bool]:
+        """Collect isOfType target nodes before deleting relationships."""
+        if not record_ids:
+            return ([], True)
+
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+
+        query = """
+        UNWIND $record_ids AS record_id_str
+        WITH split(record_id_str, '/') AS parts
+        WHERE size(parts) = 2 AND parts[0] = 'records'
+        WITH parts[1] AS record_id
+
+        MATCH (record:Record {id: record_id})-[:IS_OF_TYPE]->(typeNode)
+        WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
+        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket'])
+        RETURN {
+          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket']]),
+          key: typeNode.id,
+          full_id: typeNode.id
+        } AS target
+        """
+
+        try:
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_ids": record_ids},
+                txn_id=transaction
+            )
+
+            targets = [result["target"] for result in results] if results else []
+            
+            self.logger.info(f"📋 Collected {len(targets)} isOfType target nodes")
+            
+            return (targets, True)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to collect isOfType targets: {str(e)}")
+            return ([], False)
+
+    async def _delete_isoftype_targets_from_collected(
+        self,
+        transaction: str,
+        targets: List[Dict],
+        edge_collections: List[str]
+    ) -> Tuple[int, List[str]]:
+        """Delete isOfType target nodes using pre-collected targets."""
+        if not targets:
+            return (0, [])
+
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+
+        type_node_ids = [target["full_id"] for target in targets]
+        _, failed_edge_collections = await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
+        if failed_edge_collections:
+            raise Exception(
+                f"CRITICAL: Failed to delete edges from isOfType target nodes in {len(failed_edge_collections)} collections: {failed_edge_collections}. "
+                f"Transaction will be rolled back."
+            )
+
+        targets_by_collection: Dict[str, List[str]] = {}
+        for target in targets:
+            coll = target["collection"]
+            key = target["key"]
+            if coll not in targets_by_collection:
+                targets_by_collection[coll] = []
+            targets_by_collection[coll].append(key)
+
+        total_deleted = 0
+        total_expected = len(targets)
+        failed_collections = []
+
+        for collection, keys in targets_by_collection.items():
+            expected_count = len(keys)
+            deleted, failed_batches = await self._delete_nodes_by_keys(transaction, keys, collection)
+            total_deleted += deleted
+
+            if failed_batches > 0:
+                failed_collections.append(f"{collection} (failed batches: {failed_batches})")
+            elif deleted < expected_count:
+                failed_collections.append(f"{collection} (deleted {deleted}/{expected_count})")
+
+        if failed_collections:
+            raise Exception(
+                f"CRITICAL: Failed to delete isOfType targets from {len(failed_collections)} collections: {failed_collections}. "
+                f"Expected {total_expected} but deleted {total_deleted}. Transaction will be rolled back."
+            )
+
+        if total_deleted < total_expected:
+            raise Exception(
+                f"CRITICAL: Partial deletion of isOfType targets. Expected {total_expected} but deleted {total_deleted}. "
+                f"Transaction will be rolled back."
+            )
+
+        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        return (total_deleted, [])
+
+    async def _delete_nodes_by_keys(
+        self,
+        transaction: str,
+        keys: List[str],
+        collection: str,
+        batch_size: int = 1000
+    ) -> Tuple[int, int]:
+        """Delete documents by their ID values using batching."""
+        if not keys:
+            return (0, 0)
+
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+
+        # Convert collection name to Neo4j label
+        label = collection_to_label(collection)
+
+        total_deleted = 0
+        failed_batches = 0
+        total_batches = (len(keys) + batch_size - 1) // batch_size
+
+        for i in range(0, len(keys), batch_size):
+            batch_keys = keys[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+
+            query = f"""
+            MATCH (n:{label})
+            WHERE n.id IN $keys
+            DETACH DELETE n
+            RETURN count(n) AS deleted_count
+            """
+
+            try:
+                results = await self.client.execute_query(
+                    query,
+                    parameters={"keys": batch_keys},
+                    txn_id=transaction
+                )
+
+                deleted_in_batch = results[0]["deleted_count"] if results else 0
+                total_deleted += deleted_in_batch
+
+                if deleted_in_batch < len(batch_keys):
+                    self.logger.warning(
+                        f"⚠️ Batch {batch_num}/{total_batches}: Only deleted {deleted_in_batch}/{len(batch_keys)} nodes from {collection}"
+                    )
+
+            except Exception as e:
+                self.logger.error(f"❌ Failed to delete batch {batch_num}/{total_batches} from {collection}: {str(e)}")
+                failed_batches += 1
+
+        if failed_batches == 0:
+            self.logger.info(f"✅ Deleted {total_deleted} nodes from {collection} in {total_batches} batch(es)")
+        else:
+            self.logger.error(f"❌ Failed {failed_batches}/{total_batches} batches for {collection}")
+
+        return (total_deleted, failed_batches)
+
+    async def _delete_nodes_by_connector_id(
+        self,
+        transaction: str,
+        connector_id: str,
+        collection: str
+    ) -> Tuple[int, bool]:
+        """Delete all nodes with matching connectorId."""
+        if not self.client:
+            raise RuntimeError("Neo4j client not connected")
+
+        # Convert collection name to Neo4j label
+        label = collection_to_label(collection)
+
+        query = f"""
+        MATCH (n:{label} {{connectorId: $connector_id}})
+        WITH count(n) AS expected_count
+        
+        MATCH (n:{label} {{connectorId: $connector_id}})
+        DETACH DELETE n
+        RETURN count(n) AS deleted_count
+        """
+
+        try:
+            results = await self.client.execute_query(
+                query,
+                parameters={"connector_id": connector_id},
+                txn_id=transaction
+            )
+
+            deleted_count = results[0]["deleted_count"] if results else 0
+
+            if deleted_count > 0:
+                self.logger.info(f"✅ Deleted {deleted_count} nodes from {collection} by connectorId")
+
+            return (deleted_count, True)
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete nodes from {collection} by connectorId: {str(e)}")
+            return (0, False)
+
     async def delete_connector_instance(
         self,
         connector_id: str,
@@ -4881,179 +5189,204 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Delete a connector instance and all its related data.
-
-        This method performs a comprehensive deletion using Cypher queries to:
-        - Collect all virtual record IDs for Qdrant cleanup
-        - Delete all records, record groups, roles, groups, drives
-        - Delete all relationships connected to these nodes
-        - Delete the connector app node itself
-
-        Args:
-            connector_id: The connector instance ID
-            org_id: The organization ID for validation
-            transaction: Optional transaction context
-
-        Returns:
-            Dict containing deletion statistics and virtual_record_ids for Qdrant cleanup
+        Delete a connector instance and all its related data with strict transaction handling.
+        Validates all deletion counts and rolls back on any failure.
         """
+        created_transaction = False
+        
         try:
             self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
 
-            # Step 1: Verify connector exists
-            verify_query = """
-            MATCH (app:App {id: $connector_id})
-            RETURN app
-            """
-            connector_result = await self.client.execute_query(
-                verify_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
+            connector = await self.get_document(
+                key=connector_id,
+                collection=CollectionNames.APPS.value
             )
-
-            if not connector_result or len(connector_result) == 0:
+            
+            if not connector:
                 return {
                     "success": False,
                     "error": f"Connector instance {connector_id} not found"
                 }
 
-            # Step 2: Collect virtual record IDs for Qdrant cleanup and count entities
-            stats_query = """
-            MATCH (r:Record {connectorId: $connector_id})
-            WITH collect(r.virtualRecordId) AS virtualRecordIds, collect(r.id) AS recordIds
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            edge_collections = await self._get_all_edge_collections()
 
-            OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
-            WITH virtualRecordIds, recordIds, collect(rg.id) AS recordGroupIds
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.ROLES.value,
+                CollectionNames.GROUPS.value,
+                CollectionNames.SYNC_POINTS.value,
+                CollectionNames.FILES.value,
+                CollectionNames.MAILS.value,
+                CollectionNames.WEBPAGES.value,
+                CollectionNames.COMMENTS.value,
+                CollectionNames.TICKETS.value,
+                CollectionNames.APPS.value,
+            ]
 
-            OPTIONAL MATCH (role:Role {connectorId: $connector_id})
-            WITH virtualRecordIds, recordIds, recordGroupIds, collect(role.id) AS roleIds
+            if transaction is None:
+                transaction = await self.begin_transaction(
+                    read=edge_collections + node_collections,
+                    write=edge_collections + node_collections
+                )
+                created_transaction = True
 
-            OPTIONAL MATCH (grp:Group {connectorId: $connector_id})
-            WITH virtualRecordIds, recordIds, recordGroupIds, roleIds, collect(grp.id) AS groupIds
+            try:
+                isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
+                    transaction,
+                    collected["record_ids"]
+                )
+                if not isoftype_collect_success:
+                    raise Exception(
+                        "CRITICAL: Failed to collect isOfType targets. "
+                        "Cannot safely delete type nodes (files, mails, etc.). Transaction will be rolled back."
+                    )
 
-            OPTIONAL MATCH (d:Drive {connectorId: $connector_id})
-            WITH virtualRecordIds, recordIds, recordGroupIds, roleIds, groupIds, collect(d.id) AS driveIds
+                deleted_edges, failed_edge_collections = await self._delete_all_edges_for_nodes(
+                    transaction,
+                    collected["all_node_ids"],
+                    edge_collections
+                )
+                if failed_edge_collections:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
+                        f"Transaction will be rolled back to maintain data consistency."
+                    )
 
-            RETURN {
-                virtualRecordIds: [vid IN virtualRecordIds WHERE vid IS NOT NULL],
-                recordCount: size(recordIds),
-                recordGroupCount: size(recordGroupIds),
-                roleCount: size(roleIds),
-                groupCount: size(groupIds),
-                driveCount: size(driveIds)
-            } AS stats
-            """
-            stats_result = await self.client.execute_query(
-                stats_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
+                    transaction,
+                    isoftype_targets,
+                    edge_collections
+                )
 
-            stats = stats_result[0]["stats"] if stats_result else {
-                "virtualRecordIds": [],
-                "recordCount": 0,
-                "recordGroupCount": 0,
-                "roleCount": 0,
-                "groupCount": 0,
-                "driveCount": 0
-            }
+                deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_keys"],
+                    CollectionNames.RECORDS.value
+                )
+                if len(collected["record_keys"]) > 0:
+                    if deleted_records == 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0. "
+                            f"Transaction will be rolled back."
+                        )
+                    elif deleted_records < len(collected["record_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_records}/{len(collected['record_keys'])} records. "
+                            f"Transaction will be rolled back to maintain data consistency."
+                        )
+                    if failed_record_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_record_batches} batch(es) of records. "
+                            f"Transaction will be rolled back."
+                        )
 
-            # Step 3: Delete all records and their relationships
-            delete_records_query = """
-            MATCH (r:Record {connectorId: $connector_id})
-            DETACH DELETE r
-            """
-            await self.client.execute_query(
-                delete_records_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                deleted_rg, failed_rg_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_group_keys"],
+                    CollectionNames.RECORD_GROUPS.value
+                )
+                if len(collected["record_group_keys"]) > 0:
+                    if deleted_rg < len(collected["record_group_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_rg}/{len(collected['record_group_keys'])} record groups. "
+                            f"Transaction will be rolled back."
+                        )
+                    if failed_rg_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_rg_batches} batch(es) of record groups. "
+                            f"Transaction will be rolled back."
+                        )
 
-            # Step 4: Delete record groups and their relationships
-            delete_rg_query = """
-            MATCH (rg:RecordGroup {connectorId: $connector_id})
-            DETACH DELETE rg
-            """
-            await self.client.execute_query(
-                delete_rg_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                deleted_roles, failed_roles_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["role_keys"],
+                    CollectionNames.ROLES.value
+                )
+                if len(collected["role_keys"]) > 0:
+                    if deleted_roles < len(collected["role_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_roles}/{len(collected['role_keys'])} roles. "
+                            f"Transaction will be rolled back."
+                        )
+                    if failed_roles_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_roles_batches} batch(es) of roles. "
+                            f"Transaction will be rolled back."
+                        )
 
-            # Step 5: Delete roles and their relationships
-            delete_roles_query = """
-            MATCH (role:Role {connectorId: $connector_id})
-            DETACH DELETE role
-            """
-            await self.client.execute_query(
-                delete_roles_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                deleted_groups, failed_groups_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["group_keys"],
+                    CollectionNames.GROUPS.value
+                )
+                if len(collected["group_keys"]) > 0:
+                    if deleted_groups < len(collected["group_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_groups}/{len(collected['group_keys'])} groups. "
+                            f"Transaction will be rolled back."
+                        )
+                    if failed_groups_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_groups_batches} batch(es) of groups. "
+                            f"Transaction will be rolled back."
+                        )
 
-            # Step 6: Delete groups and their relationships
-            delete_groups_query = """
-            MATCH (grp:Group {connectorId: $connector_id})
-            DETACH DELETE grp
-            """
-            await self.client.execute_query(
-                delete_groups_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.SYNC_POINTS.value
+                )
+                if not sync_success:
+                    raise Exception(
+                        "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                    )
 
-            # Step 7: Delete drives and their relationships
-            delete_drives_query = """
-            MATCH (d:Drive {connectorId: $connector_id})
-            DETACH DELETE d
-            """
-            await self.client.execute_query(
-                delete_drives_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    [connector_id],
+                    CollectionNames.APPS.value
+                )
+                if deleted_app == 0:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist. "
+                        f"Transaction will be rolled back."
+                    )
+                if failed_app_batches > 0:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete app in {failed_app_batches} batch(es). "
+                        f"Transaction will be rolled back."
+                    )
 
-            # Step 8: Delete sync points
-            delete_sync_query = """
-            MATCH (sp:SyncPoint {connectorId: $connector_id})
-            DETACH DELETE sp
-            """
-            await self.client.execute_query(
-                delete_sync_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                if created_transaction:
+                    await self.commit_transaction(transaction)
 
-            # Step 9: Delete the connector app and its relationships
-            delete_app_query = """
-            MATCH (app:App {id: $connector_id})
-            DETACH DELETE app
-            """
-            await self.client.execute_query(
-                delete_app_query,
-                parameters={"connector_id": connector_id},
-                transaction=transaction
-            )
+                self.logger.info(
+                    f"✅ Connector instance {connector_id} deleted successfully. "
+                    f"Records: {deleted_records}/{len(collected['record_keys'])}, "
+                    f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
+                    f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
+                    f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
+                    f"Edges: {deleted_edges}, "
+                    f"isOfType targets: {deleted_isoftype}"
+                )
 
-            self.logger.info(
-                f"✅ Connector instance {connector_id} deleted successfully. "
-                f"Records: {stats['recordCount']}, "
-                f"RecordGroups: {stats['recordGroupCount']}, "
-                f"Roles: {stats['roleCount']}, "
-                f"Groups: {stats['groupCount']}, "
-                f"Drives: {stats['driveCount']}"
-            )
+                return {
+                    "success": True,
+                    "deleted_records_count": deleted_records,
+                    "deleted_record_groups_count": deleted_rg,
+                    "deleted_roles_count": deleted_roles,
+                    "deleted_groups_count": deleted_groups,
+                    "virtual_record_ids": collected["virtual_record_ids"],
+                    "connector_id": connector_id
+                }
 
-            return {
-                "success": True,
-                "deleted_records_count": stats["recordCount"],
-                "deleted_record_groups_count": stats["recordGroupCount"],
-                "deleted_roles_count": stats["roleCount"],
-                "deleted_groups_count": stats["groupCount"],
-                "deleted_drives_count": stats["driveCount"],
-                "virtual_record_ids": stats["virtualRecordIds"],
-                "connector_id": connector_id
-            }
+            except Exception as tx_error:
+                if created_transaction:
+                    self.logger.error(f"🔄 Rolling back transaction due to error: {str(tx_error)}")
+                    await self.rollback_transaction(transaction)
+                raise tx_error
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
