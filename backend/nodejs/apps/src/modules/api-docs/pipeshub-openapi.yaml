@@ -178,7 +178,7 @@ tags:
     description: Configure AI model providers for LLM, embedding, OCR, SLM, reasoning, and multimodal capabilities.
   - name: AI Models Providers
     description: Manage individual AI model providers - add, update, delete, and set defaults.
-  - name: Connector Configuration
+  - name: Connector OAuth Configuration
     description: Configure OAuth credentials for data source connectors (Google Workspace, Atlassian, OneDrive, SharePoint).
   - name: Public URLs
     description: Configure public URLs for frontend application and connector callbacks.
@@ -393,28 +393,7 @@ components:
 
   schemas:
     # ==================== COMMON SCHEMAS ====================
-    Error:
-      type: object
-      properties:
-        message:
-          type: string
-          description: Error message
-        code:
-          type: integer
-          description: Error code
-        details:
-          type: object
-          description: Additional error details
 
-    SuccessResponse:
-      type: object
-      properties:
-        message:
-          type: string
-          description: Success message
-        data:
-          type: object
-          description: Response data
 
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
@@ -859,79 +838,9 @@ components:
           description: HTTP status code
           example: 401
 
-    UserActivityType:
-      type: string
-      description: |
-        Types of user activities logged by the system for security auditing.
-      enum:
-        - LOGIN
-        - LOGOUT
-        - OTP_GENERATE
-        - WRONG_OTP
-        - WRONG_PASSWORD
-        - REFRESH_TOKEN
-        - PASSWORD_CHANGED
-      example: "LOGIN"
 
-    LoginMode:
-      type: string
-      description: Authentication method used for login
-      enum:
-        - OTP
-        - PASSWORD
-        - AUTH SERVICE
-        - GOOGLE OAUTH
-        - MICROSOFT OAUTH
-        - AZUREAD OAUTH
-        - OAUTH
-        - SSO
-      example: "PASSWORD"
 
     # ==================== OAUTH PROVIDER SCHEMAS ====================
-    OAuthAuthorizeRequest:
-      type: object
-      description: |
-        OAuth 2.0 Authorization Request parameters (RFC 6749 Section 4.1.1).
-        Passed as query parameters to the authorization endpoint.
-      properties:
-        response_type:
-          type: string
-          enum: [code]
-          description: Must be "code" for authorization code grant
-        client_id:
-          type: string
-          description: The OAuth app's client ID
-        redirect_uri:
-          type: string
-          format: uri
-          description: URI to redirect after authorization (must match registered URI)
-        scope:
-          type: string
-          description: Space-separated list of requested scopes
-          example: "openid profile email read:records"
-        state:
-          type: string
-          description: Random string for CSRF protection (returned in callback)
-          minLength: 1
-        code_challenge:
-          type: string
-          description: |
-            PKCE code challenge (RFC 7636). Base64url-encoded SHA256 hash of code_verifier.
-            Required for public clients, recommended for all clients.
-          pattern: '^[A-Za-z0-9\-_]{43,128}$'
-        code_challenge_method:
-          type: string
-          enum: [S256, plain]
-          description: PKCE challenge method. S256 (SHA256) is recommended.
-        nonce:
-          type: string
-          description: Random string to associate client session with ID token (for OIDC)
-      required:
-        - response_type
-        - client_id
-        - redirect_uri
-        - scope
-        - state
 
     OAuthConsentRequest:
       type: object
@@ -1326,63 +1235,6 @@ components:
           description: RSA exponent (base64url encoded)
           example: "AQAB"
 
-    OAuthConsentData:
-      type: object
-      description: Data returned for rendering the authorization consent page
-      properties:
-        app:
-          type: object
-          description: OAuth app information
-          properties:
-            name:
-              type: string
-              description: App name
-            description:
-              type: string
-              description: App description
-            logoUrl:
-              type: string
-              format: uri
-              description: App logo URL
-            homepageUrl:
-              type: string
-              format: uri
-              description: App homepage
-            privacyPolicyUrl:
-              type: string
-              format: uri
-              description: Privacy policy URL
-        scopes:
-          type: array
-          items:
-            type: object
-            properties:
-              name:
-                type: string
-                description: Scope name
-              description:
-                type: string
-                description: Human-readable scope description
-              category:
-                type: string
-                description: Scope category
-          description: Requested scopes with descriptions
-        user:
-          type: object
-          description: Current user information
-          properties:
-            email:
-              type: string
-              format: email
-            name:
-              type: string
-        redirectUri:
-          type: string
-          format: uri
-          description: Redirect URI
-        state:
-          type: string
-          description: State parameter
 
     # ==================== OAUTH APP MANAGEMENT SCHEMAS ====================
     CreateOAuthAppRequest:
@@ -1910,15 +1762,7 @@ components:
         - orgId
 
     # ==================== STORAGE SCHEMAS ====================
-    StorageVendor:
-      type: string
-      enum: [s3, azureBlob, local]
-      description: Supported storage vendors
 
-    DocumentPermission:
-      type: string
-      enum: [owner, editor, commentator, readonly]
-      description: Document access permission levels
 
     Document:
       type: object
@@ -3684,103 +3528,9 @@ components:
           description: Whether more pages exist
 
     # ==================== CONFIGURATION MANAGER SCHEMAS ====================
-    StorageType:
-      type: string
-      enum: [local, s3, azureBlob]
-      description: Type of storage backend
 
-    S3StorageConfig:
-      type: object
-      description: AWS S3 storage configuration for file uploads and document storage
-      required:
-        - storageType
-        - s3AccessKeyId
-        - s3SecretAccessKey
-        - s3Region
-        - s3BucketName
-      properties:
-        storageType:
-          type: string
-          enum: [s3]
-          description: Storage type identifier. Must be "s3" for AWS S3 storage.
-          example: s3
-        s3AccessKeyId:
-          type: string
-          description: AWS IAM access key ID with S3 permissions
-          example: AKIAIOSFODNN7EXAMPLE
-        s3SecretAccessKey:
-          type: string
-          description: AWS IAM secret access key
-          example: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
-        s3Region:
-          type: string
-          description: AWS region where the S3 bucket is located
-          example: us-east-1
-        s3BucketName:
-          type: string
-          description: Name of the S3 bucket for storing files
-          example: my-pipeshub-bucket
 
-    AzureBlobStorageConfig:
-      type: object
-      description: Azure Blob Storage configuration. Provide either a connection string OR individual account credentials.
-      required:
-        - storageType
-        - containerName
-      properties:
-        storageType:
-          type: string
-          enum: [azureBlob]
-          description: Storage type identifier. Must be "azureBlob" for Azure Blob Storage.
-          example: azureBlob
-        containerName:
-          type: string
-          description: Azure Blob container name for storing files
-          example: pipeshub-files
-        azureBlobConnectionString:
-          type: string
-          description: Full Azure Blob Storage connection string. If provided, accountName and accountKey are not required.
-          example: DefaultEndpointsProtocol=https;AccountName=myaccount;AccountKey=mykey;EndpointSuffix=core.windows.net
-        endpointProtocol:
-          type: string
-          description: Protocol for Azure Blob endpoint. Defaults to "https".
-          default: https
-          example: https
-        accountName:
-          type: string
-          description: Azure storage account name. Required if not using connection string.
-          example: mystorageaccount
-        accountKey:
-          type: string
-          description: Azure storage account access key. Required if not using connection string.
-          example: base64encodedaccountkey==
-        endpointSuffix:
-          type: string
-          description: Azure endpoint suffix. Defaults to "core.windows.net".
-          default: core.windows.net
-          example: core.windows.net
 
-    LocalStorageConfig:
-      type: object
-      description: Local filesystem storage configuration for development or on-premise deployments
-      required:
-        - storageType
-      properties:
-        storageType:
-          type: string
-          enum: [local]
-          description: Storage type identifier. Must be "local" for local filesystem storage.
-          example: local
-        mountName:
-          type: string
-          default: PipesHub
-          description: Mount point name for local storage directory
-          example: PipesHub
-        baseUrl:
-          type: string
-          format: uri
-          description: Base URL for accessing locally stored files
-          example: http://localhost:3000/storage
 
     SMTPConfig:
       type: object
@@ -4423,20 +4173,6 @@ components:
         <li><b>once</b>: Run once at a specific future datetime</li>
         </ul>
 
-    CrawlingStatus:
-      type: string
-      enum: [idle, running, paused, stopped, error, completed, failed]
-      description: |
-        Current execution status of a crawling job.<br>
-        <ul>
-        <li><b>idle</b>: Job is scheduled but not currently running</li>
-        <li><b>running</b>: Job is actively processing data</li>
-        <li><b>paused</b>: Job has been manually paused by user</li>
-        <li><b>stopped</b>: Job has been permanently stopped</li>
-        <li><b>error</b>: Job encountered an error during execution</li>
-        <li><b>completed</b>: Job finished successfully</li>
-        <li><b>failed</b>: Job failed after exhausting all retry attempts</li>
-        </ul>
 
     # Base schedule configuration (common fields)
     BaseScheduleConfig:
@@ -4935,6 +4671,7 @@ components:
     LoginWithOTPTemplateData:
       type: object
       description: Template data for OTP login email
+      additionalProperties: false
       properties:
         name:
           type: string
@@ -4952,6 +4689,7 @@ components:
     ResetPasswordTemplateData:
       type: object
       description: Template data for password reset email
+      additionalProperties: false
       properties:
         name:
           type: string
@@ -4969,6 +4707,7 @@ components:
     AccountCreationTemplateData:
       type: object
       description: Template data for organization account creation welcome email
+      additionalProperties: false
       properties:
         orgName:
           type: string
@@ -4986,6 +4725,7 @@ components:
     AppUserInviteTemplateData:
       type: object
       description: Template data for user invitation email
+      additionalProperties: false
       properties:
         invitee:
           type: string
@@ -5008,6 +4748,7 @@ components:
     SuspiciousLoginTemplateData:
       type: object
       description: Template data for suspicious login attempt security alert email
+      additionalProperties: false
       properties:
         link:
           type: string
@@ -5065,6 +4806,7 @@ paths:
       operationId: initAuth
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -5140,6 +4882,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -5206,6 +4949,7 @@ paths:
       operationId: generateLoginOtp
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -5265,6 +5009,7 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -5301,6 +5046,7 @@ paths:
       operationId: forgotPassword
       security: []
       requestBody:
+        description: "Request body for Request password reset email"
         content:
           application/json:
             schema:
@@ -5344,6 +5090,7 @@ paths:
       security:
         - scopedToken: []
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -5416,6 +5163,7 @@ paths:
       operationId: exchangeOAuthCode
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -5558,6 +5306,7 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: "Request body for Submit authorization consent"
         content:
           application/json:
             schema:
@@ -5612,6 +5361,7 @@ paths:
       operationId: oauthToken
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -5668,6 +5418,7 @@ paths:
       operationId: oauthRevoke
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -5707,6 +5458,7 @@ paths:
       operationId: oauthIntrospect
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -5942,6 +5694,7 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: "Request body for Create OAuth app"
         content:
           application/json:
             schema:
@@ -6061,6 +5814,7 @@ paths:
             pattern: '^[a-fA-F0-9]{24}$'
           description: OAuth app ID
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -6423,6 +6177,7 @@ paths:
       operationId: createOrgAuthConfig
       security: []
       requestBody:
+        description: "Request body for Create organization authentication configuration"
         content:
           application/json:
             schema:
@@ -6544,6 +6299,7 @@ paths:
       security:
         - bearerAuth: []
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -6649,6 +6405,7 @@ paths:
       operationId: samlCallback
       security: []
       requestBody:
+        description: "Request payload"
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -6848,6 +6605,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -6868,7 +6626,7 @@ paths:
                   type: string
                   pattern: '^\+?[0-9]{10,15}$'
                   description: Mobile phone number with country code
-                  example: "+1-555-123-4567"
+                  example: "+15551234567"
                 designation:
                   type: string
                   description: Job title or designation
@@ -7023,6 +6781,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7051,7 +6810,7 @@ paths:
                   type: string
                   pattern: '^\+?[0-9]{10,15}$'
                   description: Mobile phone with country code
-                  example: "+1-555-123-4567"
+                  example: "+15551234567"
                 designation:
                   type: string
                   description: Job title or role
@@ -7365,6 +7124,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7447,6 +7207,7 @@ paths:
         - scopedToken: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7594,6 +7355,7 @@ paths:
             pattern: '^[a-fA-F0-9]{24}$'
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7649,6 +7411,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7713,6 +7476,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7785,6 +7549,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -7925,6 +7690,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -8068,6 +7834,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -8407,6 +8174,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -8628,6 +8396,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -8850,6 +8619,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -8945,6 +8715,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -9024,6 +8795,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -9101,7 +8873,7 @@ paths:
         <li>Dashboard team list</li>
         <li>Access control checks</li>
         </ul>
-      operationId: getCurrentUserTeams
+      operationId: getUserTeams
       security:
         - bearerAuth: []
       parameters:
@@ -9315,6 +9087,7 @@ paths:
       security: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -9473,6 +9246,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -9492,7 +9266,7 @@ paths:
                   type: string
                   pattern: '^\+?[0-9]{10,15}$'
                   description: Contact phone number (international format)
-                  example: "+1-555-123-4567"
+                  example: "+15551234567"
                 permanentAddress:
                   $ref: '#/components/schemas/Address'
       responses:
@@ -9611,6 +9385,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -9825,6 +9600,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -9906,6 +9682,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -10054,6 +9831,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -10165,6 +9943,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -10242,6 +10021,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -10545,6 +10325,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -10658,6 +10439,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -11012,6 +10794,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -11100,6 +10883,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -11200,6 +10984,7 @@ paths:
             example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -11402,6 +11187,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -11578,6 +11364,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -11923,6 +11710,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -12071,6 +11859,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -12188,6 +11977,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -12276,6 +12066,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -12337,6 +12128,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -12405,6 +12197,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           multipart/form-data:
             schema:
@@ -12492,6 +12285,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -12531,6 +12325,7 @@ paths:
           schema:
             type: string
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -12563,6 +12358,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Reindex failed connector records"
         content:
           application/json:
             schema:
@@ -12601,6 +12397,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Resync connector"
         content:
           application/json:
             schema:
@@ -12684,6 +12481,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -12786,6 +12584,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Update permissions"
         content:
           application/json:
             schema:
@@ -12833,6 +12632,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Remove permissions"
         content:
           application/json:
             schema:
@@ -12855,6 +12655,69 @@ paths:
           description: Unauthorized
         '403':
           description: Insufficient permissions
+
+  # -------------------- Record Move --------------------
+  /knowledgeBase/{kbId}/record/{recordId}/move:
+    put:
+      tags:
+        - Records
+      summary: Move a record to another folder
+      description: |
+        Move a record (file or folder) to a different parent folder within the same knowledge base.<br><br>
+        <b>Required Permission:</b> WRITER or higher<br><br>
+        <b>Moving to Root:</b><br>
+        Set <code>newParentId</code> to <code>null</code> to move the record to the root level of the knowledge base.
+      operationId: moveRecord
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Knowledge base ID
+          schema:
+            type: string
+            format: uuid
+        - name: recordId
+          in: path
+          required: true
+          description: Record ID to move
+          schema:
+            type: string
+      requestBody:
+        required: true
+        description: "Target parent folder for the record"
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - newParentId
+              properties:
+                newParentId:
+                  type: string
+                  nullable: true
+                  description: ID of the new parent folder, or null to move to root level
+            examples:
+              moveToFolder:
+                summary: Move into a folder
+                value:
+                  newParentId: "folder-abc123"
+              moveToRoot:
+                summary: Move to root level
+                value:
+                  newParentId: null
+      responses:
+        '200':
+          description: Record moved successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient permissions
+        '404':
+          description: Record or knowledge base not found
 
   # -------------------- Knowledge Hub Browse Endpoints --------------------
   /knowledgeBase/knowledge-hub/nodes:
@@ -13007,6 +12870,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13079,6 +12943,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13318,6 +13183,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13362,6 +13228,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13408,6 +13275,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13452,6 +13320,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13507,6 +13376,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13636,6 +13506,7 @@ paths:
             type: string
             format: objectId
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13703,6 +13574,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13765,6 +13637,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13780,7 +13653,7 @@ paths:
                 value:
                   query: "API documentation examples"
                   filters:
-                    apps: ["550e8400-e29b-41d4-a716-446655440000"]
+                    apps: ["drive"]
                   limit: 20
       responses:
         '200':
@@ -13954,6 +13827,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -13988,6 +13862,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request body for Revoke search access"
         content:
           application/json:
             schema:
@@ -14121,6 +13996,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -14213,6 +14089,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Update agent template"
         content:
           application/json:
             schema:
@@ -14330,6 +14207,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -14465,6 +14343,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Update agent"
         content:
           application/json:
             schema:
@@ -14586,6 +14465,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Update agent permissions"
         content:
           application/json:
             schema:
@@ -14631,6 +14511,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Share agent"
         content:
           application/json:
             schema:
@@ -14666,6 +14547,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Revoke agent access"
         content:
           application/json:
             schema:
@@ -14748,6 +14630,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -14786,6 +14669,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request body for Create agent conversation with streaming"
         content:
           application/json:
             schema:
@@ -14886,6 +14770,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -14925,6 +14810,7 @@ paths:
             format: objectId
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -14972,6 +14858,7 @@ paths:
             type: string
             format: objectId
       requestBody:
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -15202,6 +15089,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -15508,6 +15396,7 @@ paths:
           description: Unique connector instance ID
       requestBody:
         required: true
+        description: "Request body for Update connector instance name"
         content:
           application/json:
             schema:
@@ -15593,6 +15482,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -15642,6 +15532,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -15686,6 +15577,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -15742,6 +15634,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -15775,6 +15668,62 @@ paths:
           description: Permission denied
         '404':
           description: Connector not found
+
+  # -------------------- Legacy Token Exchange --------------------
+  /connectors/getTokenFromCode:
+    post:
+      tags:
+        - Connector OAuth
+      summary: Exchange authorization code for tokens (legacy)
+      description: |
+        Exchange a Google Workspace authorization code for access and refresh tokens.<br><br>
+        <b>Note:</b> This is a legacy endpoint specific to Google Workspace connectors.
+        For new integrations, use the standard OAuth flow via
+        <code>/connectors/{connectorId}/oauth/authorize</code> and the callback.<br><br>
+        <b>Flow:</b><br>
+        <ol>
+        <li>User completes Google Workspace OAuth consent in the browser</li>
+        <li>Browser receives authorization code</li>
+        <li>Frontend sends the code to this endpoint</li>
+        <li>Backend exchanges code for tokens and stores them</li>
+        </ol>
+        <b>Admin Only:</b> Requires admin privileges.
+      operationId: getTokenFromCode
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        description: "Authorization code from Google OAuth consent"
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - code
+              properties:
+                code:
+                  type: string
+                  description: Authorization code from Google OAuth consent flow
+      responses:
+        '200':
+          description: Tokens exchanged and stored successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '400':
+          description: Invalid or expired authorization code
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+        '404':
+          description: Google Workspace configuration not found
 
   # -------------------- Connector OAuth --------------------
   /connectors/{connectorId}/oauth/authorize:
@@ -15943,6 +15892,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -16268,6 +16218,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -16356,6 +16307,7 @@ paths:
             type: string
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -16452,6 +16404,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Local Storage"
         content:
           application/json:
             schema:
@@ -16496,6 +16449,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure AWS S3 Storage"
         content:
           application/json:
             schema:
@@ -16553,6 +16507,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Azure Blob Storage"
         content:
           application/json:
             schema:
@@ -16674,6 +16629,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Create or update SMTP configuration"
         content:
           application/json:
             schema:
@@ -16751,6 +16707,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Azure AD authentication"
         content:
           application/json:
             schema:
@@ -16794,6 +16751,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Microsoft authentication"
         content:
           application/json:
             schema:
@@ -16812,6 +16770,7 @@ paths:
       tags:
         - Authentication Configuration
       summary: Get Microsoft authentication configuration
+      description: "Get Microsoft authentication configuration."
       operationId: getMicrosoftAuthConfig
       security:
         - bearerAuth: []
@@ -16836,6 +16795,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Google authentication"
         content:
           application/json:
             schema:
@@ -16854,6 +16814,7 @@ paths:
       tags:
         - Authentication Configuration
       summary: Get Google authentication configuration
+      description: "Get Google authentication configuration."
       operationId: getGoogleAuthConfig
       security:
         - bearerAuth: []
@@ -16878,6 +16839,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure SAML SSO authentication"
         content:
           application/json:
             schema:
@@ -16896,6 +16858,7 @@ paths:
       tags:
         - Authentication Configuration
       summary: Get SAML SSO configuration
+      description: "Get SAML SSO configuration."
       operationId: getSsoAuthConfig
       security:
         - bearerAuth: []
@@ -16920,6 +16883,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure generic OAuth provider"
         content:
           application/json:
             schema:
@@ -16938,7 +16902,8 @@ paths:
       tags:
         - Authentication Configuration
       summary: Get generic OAuth configuration
-      operationId: getOAuthConfig
+      description: "Get generic OAuth configuration."
+      operationId: getGenericOAuthConfig
       security:
         - bearerAuth: []
       responses:
@@ -17059,6 +17024,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Bulk create AI models configuration"
         content:
           application/json:
             schema:
@@ -17192,6 +17158,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Add new AI model provider"
         content:
           application/json:
             schema:
@@ -17233,6 +17200,7 @@ paths:
           description: Unique model key (UUID)
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -17314,7 +17282,7 @@ paths:
   /configurationManager/connectors/googleWorkspaceCredentials:
     post:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Upload Google Workspace credentials
       description: "Upload Google Workspace credentials (service account JSON for business, or OAuth tokens for individual users). File must be valid JSON."
       operationId: createGoogleWorkspaceCredentials
@@ -17322,6 +17290,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Upload Google Workspace credentials"
         content:
           multipart/form-data:
             schema:
@@ -17369,7 +17338,7 @@ paths:
   /configurationManager/connectors/googleWorkspaceOauthConfig:
     post:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Configure Google Workspace OAuth
       description: Set up OAuth credentials for Google Workspace connector. Required for user authentication with Google Drive, Gmail, etc.
       operationId: setGoogleWorkspaceOauthConfig
@@ -17377,6 +17346,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Google Workspace OAuth"
         content:
           application/json:
             schema:
@@ -17393,8 +17363,9 @@ paths:
 
     get:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Get Google Workspace OAuth configuration
+      description: "Get Google Workspace OAuth configuration."
       operationId: getGoogleWorkspaceOauthConfig
       security:
         - bearerAuth: []
@@ -17411,7 +17382,7 @@ paths:
   /configurationManager/connectors/atlassian/config:
     post:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Configure Atlassian OAuth
       description: Set up OAuth credentials for Atlassian (Confluence/Jira) connector.
       operationId: setAtlassianConfig
@@ -17419,6 +17390,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure Atlassian OAuth"
         content:
           application/json:
             schema:
@@ -17435,8 +17407,9 @@ paths:
 
     get:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Get Atlassian OAuth configuration
+      description: "Get Atlassian OAuth configuration."
       operationId: getAtlassianConfig
       security:
         - bearerAuth: []
@@ -17453,7 +17426,7 @@ paths:
   /configurationManager/connectors/onedrive/config:
     post:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Configure OneDrive connector
       description: Set up Microsoft credentials for OneDrive connector.
       operationId: setOneDriveConfig
@@ -17461,6 +17434,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure OneDrive connector"
         content:
           application/json:
             schema:
@@ -17477,8 +17451,9 @@ paths:
 
     get:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Get OneDrive configuration
+      description: "Get OneDrive configuration."
       operationId: getOneDriveConfig
       security:
         - bearerAuth: []
@@ -17495,7 +17470,7 @@ paths:
   /configurationManager/connectors/sharepoint/config:
     post:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Configure SharePoint connector
       description: Set up Microsoft credentials for SharePoint connector.
       operationId: setSharePointConfig
@@ -17503,6 +17478,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Configure SharePoint connector"
         content:
           application/json:
             schema:
@@ -17519,8 +17495,9 @@ paths:
 
     get:
       tags:
-        - Connector Configuration
+        - Connector OAuth Configuration
       summary: Get SharePoint configuration
+      description: "Get SharePoint configuration."
       operationId: getSharePointConfig
       security:
         - bearerAuth: []
@@ -17546,6 +17523,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Set frontend public URL"
         content:
           application/json:
             schema:
@@ -17564,6 +17542,7 @@ paths:
       tags:
         - Public URLs
       summary: Get frontend public URL
+      description: "Get frontend public URL."
       operationId: getFrontendPublicUrl
       security:
         - bearerAuth: []
@@ -17588,6 +17567,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Set connector public URL"
         content:
           application/json:
             schema:
@@ -17606,6 +17586,7 @@ paths:
       tags:
         - Public URLs
       summary: Get connector public URL
+      description: "Get connector public URL."
       operationId: getConnectorPublicUrl
       security:
         - bearerAuth: []
@@ -17639,6 +17620,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Update platform settings"
         content:
           application/json:
             schema:
@@ -17747,6 +17729,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request body for Update custom system prompt"
         content:
           application/json:
             schema:
@@ -17765,6 +17748,7 @@ paths:
       tags:
         - Platform Settings
       summary: Get custom system prompt
+      description: "Get custom system prompt."
       operationId: getCustomSystemPrompt
       security:
         - bearerAuth: []
@@ -17838,6 +17822,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -17900,6 +17885,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -17967,6 +17953,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -18070,6 +18057,7 @@ paths:
           example: "507f1f77bcf86cd799439011"
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -18712,6 +18700,7 @@ paths:
         - scopedToken: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19030,6 +19019,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19107,6 +19097,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19228,6 +19219,7 @@ paths:
         - bearerAuth: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19336,6 +19328,7 @@ paths:
           description: Type of model to health check
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19413,6 +19406,7 @@ paths:
         - scopedToken: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19495,6 +19489,7 @@ paths:
         - scopedToken: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19548,6 +19543,62 @@ paths:
                     type: string
                   message:
                     type: string
+
+  /query/api/v1/tools:
+    get:
+      tags:
+        - Query Service
+      summary: "[Query Service] List available agent tools"
+      description: |
+        Retrieve all available tools that can be used by AI agents.<br><br>
+
+        <b>Service:</b> Query Service<br>
+        <b>Port:</b> 8000<br>
+        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
+
+        <b>Overview:</b><br>
+        Returns a list of tools registered in the system, including their parameters,
+        descriptions, and tags. Tools are loaded from ArangoDB.<br><br>
+
+        <b>Use Cases:</b><br>
+        <ul>
+        <li>Agent configuration UI - show available tools to assign to agents</li>
+        <li>Tool discovery for building custom agent workflows</li>
+        </ul>
+      operationId: queryListTools
+      servers:
+        - url: http://localhost:8000
+          description: Query Service
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Tools retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      description: Tool name identifier
+                    description:
+                      type: string
+                      description: Human-readable tool description
+                    parameters:
+                      type: object
+                      description: Tool parameter definitions
+                    tags:
+                      type: array
+                      items:
+                        type: string
+                      description: Tool categorization tags
+        '401':
+          description: Unauthorized
+        '500':
+          description: Failed to retrieve tools from database
 
   # -------------------- INDEXING SERVICE (Port 8091) --------------------
   # Base URL: http://localhost:8091
@@ -19672,9 +19723,34 @@ paths:
           description: Invalid webhook payload
 
   /connector/gmail/webhook:
+    get:
+      tags:
+        - Webhooks
+      summary: "[Connector Service] Gmail webhook verification"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        GET handler for Gmail Pub/Sub webhook verification.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> None required - uses Google Pub/Sub verification<br><br>
+
+        <b>Note:</b> Google Pub/Sub may send GET requests for subscription verification.
+      operationId: gmailWebhookVerify
+      security: []
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      responses:
+        '200':
+          description: Verification acknowledged
+
     post:
       tags:
-        - Connector Service
+        - Webhooks
       summary: "[Connector Service] Gmail webhook"
       description: |
         ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
@@ -19697,6 +19773,36 @@ paths:
       responses:
         '200':
           description: Webhook processed
+
+  /connector/admin/webhook:
+    post:
+      tags:
+        - Webhooks
+      summary: "[Connector Service] Google Workspace Admin webhook"
+      description: |
+        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
+
+        Webhook endpoint for Google Workspace Admin push notifications.<br><br>
+
+        <b>Service:</b> Connector Service<br>
+        <b>Port:</b> 8088<br>
+        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
+
+        <b>Authentication:</b> Verified via Google Workspace webhook signature<br><br>
+
+        <b>Note:</b> This endpoint receives notifications about user and group
+        changes from Google Workspace Admin directory (e.g., user created,
+        deleted, suspended, group membership changes).
+      operationId: adminWebhook
+      security: []
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      responses:
+        '200':
+          description: Webhook processed
+        '401':
+          description: Unauthorized webhook request
 
   /connector/api/v1/internal/stream/record/{record_id}:
     get:
@@ -19764,6 +19870,7 @@ paths:
         - scopedToken: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -19875,6 +19982,7 @@ paths:
         - scopedToken: []
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -20044,6 +20152,7 @@ paths:
           description: Docling Service (Internal)
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -20106,6 +20215,7 @@ paths:
           description: Docling Service (Internal)
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
@@ -20163,6 +20273,7 @@ paths:
           description: Docling Service (Internal)
       requestBody:
         required: true
+        description: "Request payload"
         content:
           application/json:
             schema:
