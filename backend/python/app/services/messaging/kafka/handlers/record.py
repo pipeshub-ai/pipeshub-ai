@@ -288,54 +288,11 @@ class RecordEventHandler(BaseEventService):
 
 
 
-            # Signed URL handling
-            if payload and payload.get("signedUrlRoute"):
-                try:
-                    jwt_payload  = {
-                        "orgId": payload["orgId"],
-                        "scopes": ["storage:token"],
-                    }
-                    token = await generate_jwt(self.config_service, jwt_payload)
-                    self.logger.debug(f"Generated JWT token for message {message_id}")
+            # Try signed URL first if available, fallback to connector streaming if it fails
+            signed_url_success = False
 
-                    response = await make_api_call(
-                        route=payload["signedUrlRoute"], token=token
-                    )
-                    self.logger.debug(
-                        f"Received signed URL response for message {message_id}"
-                    )
-
-                    event_data_for_processor = {
-                        "eventType": event_type,
-                        "payload": payload # The original payload
-                    }
-
-                    if response.get("is_json"):
-                        signed_url = response["data"]["signedUrl"]
-                        buffer = await self._download_from_signed_url(signed_url=signed_url, record_id=record_id, doc=doc, from_route=True)
-                        if not buffer:
-                            raise Exception("Failed to download file from signed URL")
-
-                        event_data_for_processor["payload"]["buffer"] = buffer
-                    else:
-                        event_data_for_processor["payload"]["buffer"] = response["data"]
-
-                    # Yield events from the event processor
-                    async for event in self.event_processor.on_event(event_data_for_processor):
-                        yield event
-
-                    processing_time = (datetime.now() - start_time).total_seconds()
-                    self.logger.info(
-                        f"✅ Successfully processed document for event: {event_type}. "
-                        f"Record: {record_id}, Time: {processing_time:.2f}s"
-                    )
-                    return
-                except Exception as e:
-                    error_occurred = True
-                    error_msg = str(e)
-                    raise Exception(error_msg)
-
-            elif payload and payload.get("signedUrl"):
+            if payload and payload.get("signedUrl"):
+                self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
                     response = await self._download_from_signed_url(signed_url=payload["signedUrl"], record_id=record_id, doc=doc)
                     if not response:
@@ -355,12 +312,17 @@ class RecordEventHandler(BaseEventService):
                         f"✅ Successfully processed document for event: {event_type}. "
                         f"Record: {record_id}, Time: {processing_time:.2f}s"
                     )
+                    signed_url_success = True
                     return
                 except Exception as e:
-                    error_occurred = True
-                    error_msg = str(e)
-                    raise Exception(error_msg)
-            else:
+                    self.logger.warning(
+                        f"⚠️ Failed to download from signed URL for record {record_id}: {str(e)}. "
+                        f"Falling back to connector streaming..."
+                    )
+                    # Don't raise - fall through to connector streaming fallback
+
+            if not signed_url_success:
+                self.logger.info(f"🔍 No signed URL received for record {record_id}")
                 try:
                     jwt_payload  = {
                         "orgId": payload["orgId"],
@@ -511,46 +473,13 @@ class RecordEventHandler(BaseEventService):
             sock_read=1200,  # 20 minutes per chunk read
         )
 
-        headers = {}
-
-        # Check storage type - don't add JWT for S3 pre-signed URLs
-        storage_is_s3 = True
-        if self.config_service:
-            try:
-                storage_config = await self.config_service.get_config(
-                    config_node_constants.STORAGE.value, default={}
-                )
-                storage_type = storage_config.get("storageType") if isinstance(storage_config, dict) else None
-                if not storage_type:
-                    raise Exception("Missing storage type configuration")
-                storage_is_s3 = storage_type == "s3"
-                if storage_is_s3:
-                    self.logger.debug(f"S3 storage detected, skipping JWT header for signed URL download for record {record_id}")
-            except Exception as e:
-                self.logger.error(f"Failed to get storage config: {e}")
-                raise Exception(f"Failed to get storage config: {e}")
-
-        if self.config_service and from_route and not storage_is_s3:
-            try:
-                org_id = doc.get("orgId")
-                if org_id:
-                    jwt_payload = {
-                        "orgId": org_id,
-                        "scopes": ["connector:signedUrl"],
-                    }
-                    jwt_token = await generate_jwt(self.config_service, jwt_payload)
-                    headers["Authorization"] = f"Bearer {jwt_token}"
-                    self.logger.debug(f"Generated JWT token for downloading signed URL for record {record_id}")
-            except Exception as e:
-                self.logger.warning(f"Failed to generate JWT token for signed URL download: {e}")
-
         for attempt in range(max_retries):
             delay = base_delay * (2**attempt)  # Exponential backoff
             file_buffer = BytesIO()
             try:
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     try:
-                        async with session.get(signed_url, headers=headers) as response:
+                        async with session.get(signed_url) as response:
                             if response.status != HttpStatusCode.SUCCESS.value:
                                 raise aiohttp.ClientError(
                                     f"Failed to download file: {response.status}"

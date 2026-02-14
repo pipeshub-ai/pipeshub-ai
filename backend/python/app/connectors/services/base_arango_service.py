@@ -29,7 +29,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service import config_node_constants
 from app.connectors.services.kafka_service import KafkaService
 from app.models.entities import (
     AppRole,
@@ -5260,17 +5260,9 @@ class BaseArangoService:
             if not mime_type:
                 mime_type = record.get("mimeType", "")
 
-            endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
-                )
-            signed_url_route = ""
+
             file_content = ""
-            if record.get("origin") == OriginTypes.UPLOAD.value:
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-                signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
-            else:
-                connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
-                signed_url_route = f"{connector_url}/api/v1/{record['orgId']}/{user_id}/{record['connectorName'].lower()}/record/{record['_key']}/signedUrl"
+            if record.get("origin") != OriginTypes.UPLOAD.value:
 
                 if record.get("recordType") == "MAIL":
                     mime_type = "text/gmail_content"
@@ -5305,7 +5297,6 @@ class BaseArangoService:
                 "recordName": record.get("recordName", ""),
                 "recordType": record.get("recordType", ""),
                 "version": record.get("version", 1),
-                "signedUrlRoute": signed_url_route,
                 "origin": record.get("origin", ""),
                 "extension": extension,
                 "mimeType": mime_type,
@@ -8866,8 +8857,7 @@ class BaseArangoService:
             connector_id (Optional[str]): Connector ID (optional)
 
         Returns:
-            Optional[str]: Current sync state of the drive ('NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'COMPLETED', 'FAILED')
-                          or None if drive not found
+            Optional[str]: Current sync state of the drive ('NOT_STARTED', 'IN_PROGRESS', 'PAUSED', 'COMPLETED', 'FAILED') or None if drive not found
         """
         try:
             self.logger.info("🔍 Getting sync state for drive %s", drive_id)
@@ -8940,7 +8930,7 @@ class BaseArangoService:
             self.logger.error("❌ Error checking edge existence: %s", str(e))
             return False
 
-    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Dict:
+    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict) -> Dict:
         """
         Creates  NewRecordEvent to Kafka,
         """
@@ -8948,9 +8938,7 @@ class BaseArangoService:
             record_id = record_doc["_key"]
             self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
 
-            signed_url_route = (
-                f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
-            )
+
             timestamp = get_epoch_timestamp_in_ms()
 
             # Construct the payload matching the Node.js NewRecordEvent interface
@@ -8960,7 +8948,6 @@ class BaseArangoService:
                 "recordName": record_doc.get("recordName"),
                 "recordType": record_doc.get("recordType"),
                 "version": record_doc.get("version", 1),
-                "signedUrlRoute": signed_url_route,
                 "origin": record_doc.get("origin"),
                 "extension": file_doc.get("extension", ""),
                 "mimeType": file_doc.get("mimeType", ""),
@@ -8992,16 +8979,6 @@ class BaseArangoService:
 
             self.logger.info(f"🚀 Publishing creation events for {len(created_files_data)} new records.")
 
-            # Get storage endpoint
-            try:
-                endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
-                )
-                self.logger.info(f"This the the endpoint {endpoints}")
-                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-            except Exception as config_error:
-                self.logger.error(f"❌ Failed to get storage config: {str(config_error)}")
-                storage_url = "http://localhost:3000"  # Fallback
 
             # Create events with enhanced error handling
             successful_events = 0
@@ -9015,7 +8992,7 @@ class BaseArangoService:
                     if record_doc and file_doc:
                         # Create payload with error handling
                         create_payload = await self._create_new_record_event_payload(
-                            record_doc, file_doc, storage_url
+                            record_doc, file_doc
                         )
 
                         if create_payload:  # Only publish if payload creation succeeded
@@ -9046,13 +9023,6 @@ class BaseArangoService:
     ) -> Dict:
         """Create update record event payload matching Node.js format"""
         try:
-            endpoints = await self.config_service.get_config(
-                    config_node_constants.ENDPOINTS.value
-                )
-            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
-
-            signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
-
             # Get extension and mimeType from file record
             extension = ""
             mime_type = ""
@@ -9066,7 +9036,6 @@ class BaseArangoService:
                 "version": record.get("version", 1),
                 "extension": extension,
                 "mimeType": mime_type,
-                "signedUrlRoute": signed_url_route,
                 "updatedAtTimestamp": str(record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms())),
                 "sourceLastModifiedTimestamp": str(record.get("sourceLastModifiedTimestamp", record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()))),
                 "virtualRecordId": record.get("virtualRecordId"),
