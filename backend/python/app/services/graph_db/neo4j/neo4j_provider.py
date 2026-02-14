@@ -5001,9 +5001,9 @@ class Neo4jProvider(IGraphDBProvider):
 
         MATCH (record:Record {id: record_id})-[:IS_OF_TYPE]->(typeNode)
         WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
-        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket'])
+        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project'])
         RETURN {
-          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket']]),
+          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project']]),
           key: typeNode.id,
           full_id: typeNode.id
         } AS target
@@ -5198,7 +5198,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
 
             connector = await self.get_document(
-                key=connector_id,
+                document_key=connector_id,
                 collection=CollectionNames.APPS.value
             )
             
@@ -5222,6 +5222,8 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.LINKS.value,
+                CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,
             ]
 
@@ -6195,6 +6197,19 @@ class Neo4jProvider(IGraphDBProvider):
             WITH u, rec, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess,
                  [x IN COLLECT({type: "ANYONE", source: null, role: anyone.role}) WHERE x.role IS NOT NULL] AS anyoneAccess
 
+            // For KB records, collect KB RecordGroup source IDs to deduplicate generic RG access paths
+            WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess,
+                 [kb IN (kbDirectAccess + kbTeamAccess) WHERE kb.source IS NOT NULL | kb.source.id] AS kbSourceIds
+
+            // Filter out generic RecordGroup entries that redundantly match the same KB RecordGroup
+            WITH directAccess, groupAccess,
+                 [x IN recordGroupAccess WHERE NOT x.source.id IN kbSourceIds] AS recordGroupAccess,
+                 [x IN nestedRgAccess WHERE NOT x.source.id IN kbSourceIds] AS nestedRgAccess,
+                 [x IN directUserRgAccess WHERE NOT x.source.id IN kbSourceIds] AS directUserRgAccess,
+                 [x IN inheritedRgAccess WHERE NOT x.source.id IN kbSourceIds] AS inheritedRgAccess,
+                 [x IN groupInheritedRgAccess WHERE NOT x.source.id IN kbSourceIds] AS groupInheritedRgAccess,
+                 orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess
+
             // Combine all access paths
             WITH directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess, anyoneAccess,
                  directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess + anyoneAccess AS allAccess
@@ -6311,17 +6326,28 @@ class Neo4jProvider(IGraphDBProvider):
                         }
                     break
 
-            # Format permissions from access paths
-            permissions = []
-            for access in access_result:
-                permission = {
-                    "id": record.get("id") or record.get("_key"),
-                    "name": record.get("recordName"),
-                    "type": record.get("recordType"),
-                    "relationship": access.get("role"),
-                    "accessType": access.get("type"),
-                }
-                permissions.append(permission)
+            # Select the highest permission from all access paths
+            role_priority = {
+                "OWNER": 6,
+                "ORGANIZER": 5,
+                "FILEORGANIZER": 4,
+                "WRITER": 3,
+                "COMMENTER": 2,
+                "READER": 1,
+            }
+
+            best_access = max(
+                access_result,
+                key=lambda a: role_priority.get(a.get("role", ""), 0)
+            )
+
+            permissions = [{
+                "id": record.get("id") or record.get("_key"),
+                "name": record.get("recordName"),
+                "type": record.get("recordType"),
+                "relationship": best_access.get("role"),
+                "accessType": best_access.get("type"),
+            }]
 
             record["id"] = record.pop("_key")
             return {
