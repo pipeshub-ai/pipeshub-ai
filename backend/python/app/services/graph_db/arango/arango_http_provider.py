@@ -7225,10 +7225,76 @@ class ArangoHTTPProvider(IGraphDBProvider):
         """
         Get children of a recordGroup by executing separate queries for child recordGroups
         and direct records, then combining results in Python.
+        Special handling for internal recordGroups: fetches all records with permission check
         """
         rg_doc_id = f"recordGroups/{parent_id}"
         rg_permission_role_aql = self._get_permission_role_aql("recordGroup", "node", "u")
         record_permission_role_aql = self._get_permission_role_aql("record", "record", "u")
+
+        # Query for internal records (when isInternal == true)
+        internal_records_query = f"""
+        LET rg = DOCUMENT(@rg_doc_id)
+        FILTER rg != null
+        LET u = DOCUMENT("users", @user_key)
+        FILTER u != null
+
+        LET internal_records = rg.isInternal == true ? (
+            FOR edge IN belongsTo
+                FILTER edge._to == @rg_doc_id AND STARTS_WITH(edge._from, "records/")
+                LET record = DOCUMENT(edge._from)
+                FILTER record != null AND record.isDeleted != true
+
+                {record_permission_role_aql}
+
+                LET normalized_role = IS_ARRAY(permission_role)
+                    ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                    : permission_role
+
+                FILTER normalized_role != null AND normalized_role != ""
+
+                LET file_info = FIRST(FOR fe IN isOfType FILTER fe._from == record._id LET f = DOCUMENT(fe._to) RETURN f)
+                LET is_folder = file_info != null AND file_info.isFile == false
+                LET has_children = (LENGTH(
+                    FOR ce IN recordRelations
+                        FILTER ce._from == record._id
+                        AND ce.relationshipType IN ["PARENT_CHILD", "ATTACHMENT"]
+                        AND ce.isDeleted != true
+                        LIMIT 1
+                        RETURN 1
+                ) > 0)
+
+                RETURN {{
+                    id: record._key,
+                    name: record.recordName,
+                    nodeType: is_folder ? "folder" : "record",
+                    parentId: @rg_doc_id,
+                    origin: record.connectorName == "KB" ? "KB" : "CONNECTOR",
+                    connector: record.connectorName,
+                    connectorId: record.connectorName != "KB" ? record.connectorId : null,
+                    kbId: record.connectorName == "KB" ? record.externalGroupId : null,
+                    externalGroupId: record.externalGroupId,
+                    recordType: record.recordType,
+                    recordGroupType: null,
+                    indexingStatus: record.indexingStatus,
+                    createdAt: record.sourceCreatedAtTimestamp != null ? record.sourceCreatedAtTimestamp : 0,
+                    updatedAt: record.sourceLastModifiedTimestamp != null ? record.sourceLastModifiedTimestamp : 0,
+                    sizeInBytes: record.sizeInBytes != null ? record.sizeInBytes : file_info.fileSizeInBytes,
+                    mimeType: record.mimeType,
+                    extension: file_info.extension,
+                    webUrl: record.webUrl,
+                    hasChildren: has_children,
+                    previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
+                    userRole: normalized_role
+                }}
+        ) : []
+        RETURN internal_records
+        """
+        internal_records_result = await self.http_client.execute_aql(
+            internal_records_query,
+            bind_vars={"rg_doc_id": rg_doc_id, "user_key": user_key},
+            txn_id=transaction
+        )
+        internal_records = internal_records_result[0] if internal_records_result else []
 
         child_rgs_query = f"""
         LET rg = DOCUMENT(@rg_doc_id)
@@ -7365,7 +7431,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
         direct_records = direct_records_result[0] if direct_records_result else []
 
-        all_children = child_rgs + direct_records
+        # Combine results: use internal_records if available, otherwise use child_rgs + direct_records
+        if internal_records:
+            all_children = internal_records
+        else:
+            all_children = child_rgs + direct_records
 
         filtered_children = [
             node for node in all_children
