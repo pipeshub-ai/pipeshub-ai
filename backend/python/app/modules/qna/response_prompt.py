@@ -1,17 +1,24 @@
 """
-Response Synthesis Prompt System — FIXED
+Response Synthesis Prompt System — OPTION B IMPLEMENTATION
 
-Fix: build_internal_context_for_response() now uses pre-assigned block_number from
-each result (set by _sync_block_numbers_from_chatbot_format in retrieval.py) instead
-of recomputing its own numbering. This eliminates the double-numbering bug.
+Uses get_message_content() - the EXACT same function the chatbot uses - to format
+blocks with R-markers. This ensures identical formatting and block numbering between
+chatbot and agent.
 
-Also: Reduced citation instruction duplication. The chatbot's qna_prompt_instructions_1/2
-templates already have complete citation rules. The response_prompt only needs a reminder,
-not a full second copy.
+Flow:
+1. Multiple parallel retrieval calls return raw results (no formatting)
+2. Results are merged and deduplicated in nodes.py (merge_and_number_retrieval_results)
+3. get_message_content() formats blocks and assigns block numbers (same as chatbot)
+4. Block numbers are synced back to results for citation processing
+5. Formatted content is included in the system prompt
+
+This approach ensures the agent sees the exact same block format as the chatbot.
 """
 
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
+
+from app.utils.chat_helpers import get_message_content
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -185,9 +192,10 @@ def build_internal_context_for_response(final_results, virtual_record_id_to_resu
     """
     Build internal knowledge context formatted for response synthesis.
 
-    FIX: This function now checks for pre-assigned block_number on each result
-    (set by _sync_block_numbers_from_chatbot_format() in retrieval.py) and uses
-    it instead of recomputing. This prevents the numbering mismatch.
+    OPTION B: This function uses pre-assigned block_number on each result
+    (set by merge_and_number_retrieval_results() in nodes.py after all
+    parallel retrieval calls are merged). This ensures consistent numbering
+    across all merged results and prevents R-number collisions.
     """
     if not final_results:
         return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
@@ -325,6 +333,54 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
     return "\n".join(history_parts)
 
 
+def _sync_block_numbers_from_get_message_content(final_results: List[Dict[str, Any]]) -> None:
+    """
+    Sync block_number on each result to match what get_message_content() assigned.
+    
+    get_message_content() assigns block numbers internally as it formats blocks.
+    This function replicates that numbering logic to ensure result["block_number"]
+    matches the R-markers in the formatted text.
+    
+    Logic (from chat_helpers.py get_message_content()):
+        seen_virtual_record_ids = set()
+        record_number = 1
+        for i, result in enumerate(flattened_results):
+            virtual_record_id = result.get("virtual_record_id")
+            if virtual_record_id not in seen_virtual_record_ids:
+                if i > 0:
+                    record_number += 1
+                seen_virtual_record_ids.add(virtual_record_id)
+            block_number = f"R{record_number}-{block_index}"
+    """
+    seen_virtual_record_ids = set()
+    record_number = 1
+
+    for i, result in enumerate(final_results):
+        virtual_record_id = result.get("virtual_record_id")
+        if not virtual_record_id:
+            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
+
+        if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
+            if i > 0:
+                record_number += 1
+            seen_virtual_record_ids.add(virtual_record_id)
+
+        block_index = result.get("block_index", 0)
+        result["block_number"] = f"R{record_number}-{block_index}"
+        
+        # Also sync child results in table blocks
+        from app.models.blocks import GroupType
+        block_type = result.get("block_type", "")
+        if block_type == GroupType.TABLE.value:
+            content = result.get("content", ("", []))
+            if isinstance(content, tuple) and len(content) == 2:
+                table_summary, child_results = content
+                if isinstance(child_results, list):
+                    for child in child_results:
+                        child_block_index = child.get("block_index", 0)
+                        child["block_number"] = f"R{record_number}-{child_block_index}"
+
+
 def build_user_context(user_info, org_info) -> str:
     """Build user context for personalization"""
     if not user_info or not org_info:
@@ -364,9 +420,38 @@ def build_response_prompt(state, max_iterations=30) -> str:
     virtual_record_map = state.get("virtual_record_id_to_result", {})
 
     if final_results:
-        internal_context = build_internal_context_for_response(
-            final_results, virtual_record_map, include_full_content=True
+        # Use get_message_content() - the EXACT same function the chatbot uses
+        # This ensures identical formatting and block numbering
+        import logging
+        user_data = state.get("user_data", "")
+        query = state.get("query", "")
+        logger_instance = state.get("logger") or logging.getLogger(__name__)
+        
+        # Get formatted content using get_message_content (same as chatbot)
+        message_content = get_message_content(
+            final_results,
+            virtual_record_map,
+            user_data,
+            query,
+            logger_instance,
+            mode="json"
         )
+        
+        # Convert message_content (list of dicts) to string for system prompt
+        # get_message_content returns: [{"type": "text", "text": "..."}, ...]
+        formatted_parts = []
+        for item in message_content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                formatted_parts.append(item.get("text", ""))
+            elif isinstance(item, str):
+                formatted_parts.append(item)
+        
+        internal_context = "\n".join(formatted_parts)
+        
+        # Sync block numbers from get_message_content() back to results
+        # This ensures process_citations() and other functions see matching numbers
+        _sync_block_numbers_from_get_message_content(final_results)
+        
     elif has_knowledge_tool_result:
         internal_context = (
             "## Internal Knowledge Available\n\n"

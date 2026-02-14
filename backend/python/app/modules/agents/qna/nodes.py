@@ -3444,6 +3444,86 @@ async def prepare_continue_node(
 
 
 # ============================================================================
+# MERGE AND NUMBER RETRIEVAL RESULTS (OPTION B)
+# ============================================================================
+
+def merge_and_number_retrieval_results(
+    final_results: List[Dict[str, Any]], 
+    log: logging.Logger
+) -> List[Dict[str, Any]]:
+    """
+    Merge and deduplicate retrieval results from multiple parallel calls.
+    
+    OPTION B: This function is called ONCE after all parallel retrieval
+    calls are complete. It:
+    1. Deduplicates blocks by (virtual_record_id, block_index)
+    2. Sorts consistently by virtual_record_id, then block_index
+    
+    NOTE: Block numbering is done by get_message_content() (same as chatbot).
+    This function only merges and sorts - no numbering here.
+    
+    Args:
+        final_results: List of result dicts from multiple retrieval calls
+        log: Logger instance
+        
+    Returns:
+        Deduplicated and sorted results (block numbers assigned later by get_message_content)
+    """
+    if not final_results:
+        return []
+    
+    # Step 1: Deduplicate by (virtual_record_id, block_index)
+    seen_blocks = {}
+    for result in final_results:
+        virtual_record_id = result.get("virtual_record_id")
+        if not virtual_record_id:
+            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
+        
+        if not virtual_record_id:
+            continue
+            
+        block_index = result.get("block_index", 0)
+        block_key = (virtual_record_id, block_index)
+        
+        # Keep the first occurrence (or the one with highest score if available)
+        if block_key not in seen_blocks:
+            seen_blocks[block_key] = result
+        else:
+            # If duplicate, keep the one with higher score
+            existing_score = seen_blocks[block_key].get("score", 0.0)
+            new_score = result.get("score", 0.0)
+            if new_score > existing_score:
+                seen_blocks[block_key] = result
+    
+    # Step 2: Convert back to list and sort consistently
+    deduplicated = list(seen_blocks.values())
+    deduplicated = sorted(
+        deduplicated,
+        key=lambda x: (
+            x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
+            x.get("block_index", 0)
+        )
+    )
+    
+    # Step 3: Count unique records for logging
+    seen_virtual_record_ids = set()
+    for result in deduplicated:
+        virtual_record_id = result.get("virtual_record_id")
+        if not virtual_record_id:
+            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
+        if virtual_record_id:
+            seen_virtual_record_ids.add(virtual_record_id)
+    
+    log.info(
+        f"✅ Merged {len(deduplicated)} blocks from {len(seen_virtual_record_ids)} records "
+        f"(deduplicated from {len(final_results)} raw results). "
+        f"Block numbering will be done by get_message_content()."
+    )
+    
+    return deduplicated
+
+
+# ============================================================================
 # RESPOND NODE - FINAL RESPONSE GENERATION
 # ============================================================================
 
@@ -3571,6 +3651,14 @@ async def respond_node(
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
     tool_records = state.get("tool_records", [])
+
+    # ================================================================
+    # OPTION B: Merge and number retrieval results ONCE after all
+    # parallel calls are complete. This prevents R-number collisions.
+    # ================================================================
+    if final_results:
+        final_results = merge_and_number_retrieval_results(final_results, log)
+        state["final_results"] = final_results
 
     log.info(f"📚 Citation data: {len(final_results)} results, {len(virtual_record_map)} records")
 

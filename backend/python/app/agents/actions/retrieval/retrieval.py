@@ -1,17 +1,11 @@
 """
-Internal Knowledge Retrieval Tool — FIXED
+Internal Knowledge Retrieval Tool — OPTION B IMPLEMENTATION
 
-Fix: Uses get_message_content() from chat_helpers.py (the SAME function the chatbot uses)
-to format blocks with R-markers. Then syncs block_number on each result dict so that
-downstream code (build_internal_context_for_response, process_citations) sees matching numbers.
-
-Previously broken because:
-1. retrieval.py assigned block_number BEFORE calling get_message_content()
-2. get_message_content() assigned its OWN record_number internally  
-3. response_prompt.py recomputed block_number a THIRD time
-→ Three conflicting numbering schemes → LLM confused → UUID citations
-
-Now: get_message_content() is the SINGLE source of truth (matches chatbot exactly).
+OPTION B: Skip get_message_content() in individual retrieval calls.
+- Returns raw final_results without formatting
+- Block numbering happens ONCE after all parallel calls are merged
+- Prevents R-number collisions from multiple independent calls
+- Cleaner architecture for multi-call agent flow
 """
 
 import json
@@ -29,7 +23,7 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.chat_helpers import get_flattened_results, get_message_content
+from app.utils.chat_helpers import get_flattened_results
 
 logger = logging.getLogger(__name__)
 
@@ -242,78 +236,28 @@ class Retrieval:
             final_results = final_results[:adjusted_limit]
 
             # ================================================================
-            # FIX: Do NOT assign block_number here before get_message_content().
+            # OPTION B: Return raw results without formatting.
             #
-            # OLD BROKEN CODE (REMOVE THIS):
-            #   virtual_record_id_to_record_number = {}
-            #   record_number = 1
-            #   for result in final_results:
-            #       ...
-            #       result["block_number"] = f"R{assigned_record_number}-{block_index}"
+            # Block numbering will happen ONCE after all parallel retrieval
+            # calls are merged in nodes.py (merge_and_number_retrieval_results()).
+            # This prevents R-number collisions from multiple independent calls.
             #
-            # This was NUMBERING #1 which conflicted with get_message_content()'s
-            # internal NUMBERING #2.
+            # The content field is just a summary for the tool result display.
+            # Actual formatting happens in build_internal_context_for_response()
+            # after merge and numbering.
             # ================================================================
-
-            # ================================================================
-            # FIX: Use get_message_content() — the EXACT same function the
-            # chatbot uses (chatbot.py line ~320, streaming endpoint line ~380).
-            #
-            # This function:
-            #   1. Renders qna_prompt_instructions_1 (task/tools/context header)
-            #   2. For each result: assigns block_number = f"R{record_number}-{block_index}"
-            #      and formats as "* Block Number: R1-0\n* Block Type: text\n* Block Content: ..."
-            #   3. Renders qna_prompt_instructions_2 (instructions/output format/examples)
-            #
-            # The prompt templates (qna_prompt_instructions_1, _2) already contain
-            # perfect citation instructions with examples like [R1-2][R2-5].
-            # ================================================================
-            user_data = self.state.get("user_data", "")
-
-            message_content = get_message_content(
-                final_results,
-                virtual_record_id_to_result,
-                user_data,
-                search_query,
-                logger_instance,
-                mode="json"
+            
+            # Simple summary for tool result (not used for LLM context)
+            agent_content = (
+                f"Retrieved {len(final_results)} knowledge blocks from "
+                f"{len(virtual_record_id_to_result)} documents. "
+                f"Results will be formatted and numbered after merge."
             )
 
-            # get_message_content() returns a list of content dicts:
-            #   [{"type": "text", "text": "..."}, {"type": "text", "text": "..."}, ...]
-            # Extract the text parts into a single string for the tool result.
-            formatted_parts = []
-            for item in message_content:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    formatted_parts.append(item.get("text", ""))
-                elif isinstance(item, str):
-                    formatted_parts.append(item)
-
-            agent_content = "\n".join(formatted_parts)
-
-            # ================================================================
-            # FIX: Sync block_number on each result dict so it matches what
-            # get_message_content() put in the formatted text.
-            #
-            # This is needed because:
-            # - process_citations() uses result["block_number"]
-            # - build_internal_context_for_response() uses result["block_number"]
-            # - Both need to see the SAME R-markers as the formatted text
-            #
-            # The logic below replicates get_message_content()'s record_number
-            # tracking exactly (from chat_helpers.py):
-            #   record_number = 1
-            #   for i, result in enumerate(flattened_results):
-            #       if virtual_record_id not in seen:
-            #           if i > 0: record_number += 1
-            #           seen.add(virtual_record_id)
-            #       block_number = f"R{record_number}-{block_index}"
-            # ================================================================
-            _sync_block_numbers_from_chatbot_format(final_results)
-
             logger_instance.info(
-                f"✅ Formatted retrieval content (chatbot-style): {len(agent_content)} chars, "
-                f"{len(final_results)} blocks from {len(virtual_record_id_to_result)} documents"
+                f"✅ Retrieved {len(final_results)} raw blocks from "
+                f"{len(virtual_record_id_to_result)} documents "
+                f"(will be merged and numbered after all calls complete)"
             )
 
             output = RetrievalToolOutput(
@@ -337,47 +281,3 @@ class Retrieval:
                 "message": f"Retrieval error: {str(e)}"
             })
 
-
-def _sync_block_numbers_from_chatbot_format(final_results: List[Dict[str, Any]]) -> None:
-    """
-    Assign block_number on each result using the EXACT same logic as
-    get_message_content() in chat_helpers.py.
-
-    This ensures result["block_number"] matches the R-markers that
-    get_message_content() put in the formatted text.
-
-    Logic (from chat_helpers.py get_message_content()):
-    
-        seen_virtual_record_ids = set()
-        seen_blocks = set()
-        record_number = 1
-        for i, result in enumerate(flattened_results):
-            virtual_record_id = result.get("virtual_record_id")
-            if virtual_record_id not in seen_virtual_record_ids:
-                if i > 0:
-                    # close previous record tag
-                    record_number = record_number + 1
-                seen_virtual_record_ids.add(virtual_record_id)
-                ...
-            # For each unique block:
-            block_number = f"R{record_number}-{block_index}"
-    
-    So: first record = R1, second = R2, third = R3, etc.
-    record_number starts at 1, increments when a new virtual_record_id 
-    is encountered (but NOT for the very first one, only when i > 0).
-    """
-    seen_virtual_record_ids = set()
-    record_number = 1
-
-    for i, result in enumerate(final_results):
-        virtual_record_id = result.get("virtual_record_id")
-        if not virtual_record_id:
-            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
-
-        if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
-            if i > 0:
-                record_number += 1
-            seen_virtual_record_ids.add(virtual_record_id)
-
-        block_index = result.get("block_index", 0)
-        result["block_number"] = f"R{record_number}-{block_index}"
