@@ -182,6 +182,31 @@ def generate_simple_row_text(row_data: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
+def generate_tab_separated_row(row_data: Dict[str, Any]) -> str:
+    """
+    Generate tab-separated row values with proper escaping.
+
+    Args:
+        row_data: Dictionary with column names as keys and cell values as values
+
+    Returns:
+        Tab-separated string of values
+    """
+    values = []
+    for value in row_data.values():
+        if value is None:
+            value_str = "null"
+        elif isinstance(value, str):
+            # Escape tabs, newlines to prevent format breaking
+            value_str = value.replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+        elif isinstance(value, bool):
+            value_str = str(value).lower()  # "true"/"false"
+        else:
+            value_str = str(value)
+        values.append(value_str)
+    return "\t".join(values)
+
+
 def _normalize_bbox(
     bbox: Tuple[float, float, float, float],
     page_width: float,

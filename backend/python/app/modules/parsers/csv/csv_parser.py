@@ -30,7 +30,11 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     table_summary_prompt,
 )
-from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.indexing_helpers import (
+    format_rows_with_index,
+    generate_simple_row_text,
+    generate_tab_separated_row,
+)
 from app.utils.logger import create_logger
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
@@ -831,6 +835,7 @@ class CSVParser:
                     for idx, (row, row_text) in enumerate(zip(batch, row_texts), start=start_idx):
                         block_index = len(blocks)
                         actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
+                        row_data_tab = generate_tab_separated_row(row)
 
                         blocks.append(
                             Block(
@@ -839,6 +844,7 @@ class CSVParser:
                                 format=DataFormat.JSON,
                                 data={
                                     "row_natural_language_text": row_text,
+                                    "row_data": row_data_tab,
                                     "row_number": actual_row_number,
                                 },
                                 parent_index=table_group_index,
@@ -851,6 +857,7 @@ class CSVParser:
                     block_index = len(blocks)
                     actual_row_number = line_numbers[idx] if idx < len(line_numbers) else idx + 1
                     row_text = generate_simple_row_text(row)
+                    row_data_tab = generate_tab_separated_row(row)
 
                     blocks.append(
                         Block(
@@ -859,6 +866,7 @@ class CSVParser:
                             format=DataFormat.JSON,
                             data={
                                 "row_natural_language_text": row_text,
+                                "row_data": row_data_tab,
                                 "row_number": actual_row_number,
                             },
                             parent_index=table_group_index,
@@ -869,7 +877,7 @@ class CSVParser:
             num_of_rows = table_row_count
             num_of_cols = len(column_headers)
             num_of_cells = num_of_rows * num_of_cols
-
+            column_headers_tab = "\t".join(column_headers)
             table_group = BlockGroup(
                 index=table_group_index,
                 type=GroupType.TABLE,
@@ -882,7 +890,7 @@ class CSVParser:
                 ),
                 data={
                     "table_summary": table_summary,
-                    "column_headers": column_headers,
+                    "column_headers": column_headers_tab,
                 },
                 children=BlockGroupChildren.from_indices(block_indices=table_row_block_indices),
             )

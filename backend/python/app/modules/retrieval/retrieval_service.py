@@ -498,7 +498,7 @@ class RetrievalService:
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     if block_type == GroupType.TABLE.value:
-                        _,child_results = result.get("content")
+                        _,_,child_results = result.get("content")
                         for child in child_results:
                             final_search_results.append(child)
                     else:

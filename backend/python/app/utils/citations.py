@@ -119,7 +119,7 @@ def normalize_citations_and_chunks(answer_text: str, final_results: List[Dict[st
             block_index = doc.get("block_index")
             block_type = doc.get("block_type")
             if block_type == GroupType.TABLE.value:
-                _,child_results = doc.get("content")
+                _,_,child_results = doc.get("content")
                 if child_results:
                     for child in child_results:
                         child_block_index = child.get("block_index")
@@ -453,7 +453,7 @@ def normalize_citations_and_chunks_for_agent(
             block_index = doc.get("block_index")
             block_type = doc.get("block_type")
             if block_type == GroupType.TABLE.value:
-                _, child_results = doc.get("content")
+                _,_, child_results = doc.get("content")
                 if child_results:
                     for child in child_results:
                         child_block_index = child.get("block_index")
