@@ -7990,25 +7990,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         transaction: Optional[str] = None
     ) -> Optional[str]:
-        """Get user's permission on a KB."""
+        """Get user's permission on a KB. Returns highest role from direct and team-based access."""
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
-            # Check for direct user permission
+            role_priority = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1,
+            }
+
+            # Check direct and team permissions, return highest role (OWNER > WRITER > READER > COMMENTER)
             query = """
             LET user_from = CONCAT('users/', @user_id)
             LET kb_to = CONCAT('recordGroups/', @kb_id)
 
-            // Check for direct user permission
+            // Direct user permission (with priority)
             LET direct_perm = FIRST(
                 FOR perm IN @@permissions_collection
                     FILTER perm._from == user_from
                     FILTER perm._to == kb_to
                     FILTER perm.type == "USER"
-                    RETURN perm.role
+                    RETURN { role: perm.role, priority: @role_priority[perm.role] || 0 }
             )
 
-            RETURN direct_perm
+            // Team-based: user -> teams via USER, team -> KB via TEAM
+            LET user_teams = (
+                FOR user_team_perm IN @@permissions_collection
+                    FILTER user_team_perm._from == user_from
+                    FILTER user_team_perm.type == "USER"
+                    FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                    RETURN {
+                        team_id: SPLIT(user_team_perm._to, '/')[1],
+                        role: user_team_perm.role,
+                        priority: @role_priority[user_team_perm.role] || 0
+                    }
+            )
+
+            LET team_roles = (
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm._to == kb_to
+                        FILTER kb_team_perm.type == "TEAM"
+                        RETURN { role: team_info.role, priority: team_info.priority }
+            )
+
+            // Combine direct + team roles and return highest permission
+            LET all_roles = UNION(
+                direct_perm != null ? [direct_perm] : [],
+                team_roles
+            )
+            LET best = FIRST(
+                FOR r IN all_roles
+                    SORT r.priority DESC
+                    LIMIT 1
+                    RETURN r.role
+            )
+            RETURN best
             """
 
             result = await self.http_client.execute_aql(
@@ -8016,6 +8056,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "kb_id": kb_id,
                     "user_id": user_id,
+                    "role_priority": role_priority,
                     "@permissions_collection": CollectionNames.PERMISSION.value,
                 },
                 txn_id=transaction
@@ -10702,8 +10743,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }}
             """
 
-            cursor = self.db.aql.execute(atomic_query, bind_vars=bind_vars)
-            result = next(cursor, None)
+            results = await self.http_client.execute_aql(atomic_query, bind_vars=bind_vars)
+            result = results[0] if results else None
 
             if not result:
                 return {"success": False, "reason": "Query execution failed", "code": "500"}
