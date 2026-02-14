@@ -59,7 +59,7 @@
     "arangojs": "^10.1.1",
     "async-mutex": "^0.5.0",
     "aws-sdk": "^2.1534.0",
-    "axios": "^1.12.0",
+    "axios": "^1.13.5",
     "axios-retry": "^4.5.0",
     "bcryptjs": "^3.0.2",
     "bullmq": "^5.56.1",
