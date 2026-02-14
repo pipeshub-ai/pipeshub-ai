@@ -111,10 +111,9 @@ export class Etcd3DistributedKeyValueStore<T> implements DistributedKeyValueStor
   }
 
   async publishCacheInvalidation(key: string): Promise<void> {
-    Logger.getInstance({
-      service: 'Etcd3DistributedKeyValueStore',
-    }).warn(
+    Logger.getInstance().warn(
       `Cache invalidation for key ${key} is not implemented for etcd`,
+      { service: 'Etcd3DistributedKeyValueStore' },
     );
   }
 }
