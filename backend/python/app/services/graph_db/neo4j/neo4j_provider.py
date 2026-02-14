@@ -2255,7 +2255,6 @@ class Neo4jProvider(IGraphDBProvider):
         connector_id: str,
         org_id: str,
         depth: int,
-        include_parent: bool = True,
         user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
@@ -2263,7 +2262,7 @@ class Neo4jProvider(IGraphDBProvider):
     ) -> List[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
-        Uses graph traversal on RECORD_RELATIONS relationship.
+        Uses graph traversal on RECORD_RELATIONS relationship. Parent record is always included.
 
         Args:
             parent_record_id: Record ID of the parent (folder)
@@ -2271,7 +2270,7 @@ class Neo4jProvider(IGraphDBProvider):
             org_id: Organization ID (for security filtering)
             depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
                    1 = direct children, 2 = children + grandchildren, etc.)
-            include_parent: Whether to include the parent record itself
+            user_key: Optional user key for permission filtering
             limit: Maximum number of records to return (for pagination)
             offset: Number of records to skip (for pagination)
             transaction: Optional transaction ID
@@ -2283,8 +2282,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, include_parent: {include_parent}, "
-                f"limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
             )
 
             # Validate depth - must be >= -1
@@ -2292,10 +2290,6 @@ class Neo4jProvider(IGraphDBProvider):
                 raise ValueError(
                     f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
                 )
-
-            # Early return if depth=0 and include_parent=false (nothing to return)
-            if depth == 0 and not include_parent:
-                return []
 
             # Determine max traversal depth (use 100 as practical unlimited)
             max_depth = 100 if depth == -1 else depth
@@ -2319,59 +2313,24 @@ class Neo4jProvider(IGraphDBProvider):
                 permission_block = ""
                 user_with = ""
 
-            # Build parent collection part
-            parent_part = ""
-            if include_parent:
-                parent_part = """
-                // Collect parent record
-                OPTIONAL MATCH (startRecord)-[:IS_OF_TYPE]->(parentTypeDoc)
-                WHERE startRecord.connectorId = $connector_id
-                AND (startRecord.orgId = $org_id OR startRecord.orgId IS NULL)
-                AND startRecord.isDeleted <> true
-                AND parentTypeDoc IS NOT NULL
-
-                WITH startRecord, CASE WHEN parentTypeDoc IS NOT NULL THEN [{record: startRecord, typeDoc: parentTypeDoc, recordDepth: 0}] ELSE [] END AS parentResults""" + user_with + """
-                """
-
-            # Build children collection part
-            if max_depth > 0:
-                children_part = f"""
-                // Get all children using graph traversal
-                OPTIONAL MATCH path = (startRecord)-[:RECORD_RELATION*1..{max_depth}]->(child:Record)
-                WHERE all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
-                AND child.connectorId = $connector_id
-                AND (child.orgId = $org_id OR child.orgId IS NULL)
-                AND child.isDeleted <> true
-
-                OPTIONAL MATCH (child)-[:IS_OF_TYPE]->(childTypeDoc)
-                WHERE childTypeDoc IS NOT NULL
-
-                WITH parentResults{user_with},
-                     collect(CASE WHEN child IS NOT NULL AND childTypeDoc IS NOT NULL
-                             THEN {{record: child, typeDoc: childTypeDoc, recordDepth: length(path)}}
-                             ELSE null END) AS childResultsRaw
-
-                WITH parentResults{user_with},
-                     [x IN childResultsRaw WHERE x IS NOT NULL] AS childResults
-                """
-            else:
-                children_part = f"""
-                WITH parentResults{user_with}, [] AS childResults
-                """
-
+            # Single unified query using *0..max_depth traversal
+            # Depth 0 = parent, Depth 1+ = children at various levels
             query = f"""
                 MATCH (startRecord:Record {{id: $parent_record_id}})
                 WHERE startRecord IS NOT NULL
                 {user_match}
 
-                {parent_part}
+                // Single traversal for parent (depth 0) and all children (depth 1+)
+                OPTIONAL MATCH path = (startRecord)-[:RECORD_RELATION*0..{max_depth}]->(record:Record)
+                WHERE (length(path) = 0 OR all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']))
+                AND record.connectorId = $connector_id
+                AND (record.orgId = $org_id OR record.orgId IS NULL)
+                AND record.isDeleted <> true
 
-                {children_part}
+                OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(typeDoc)
+                WHERE typeDoc IS NOT NULL
 
-                // Combine parent and children
-                WITH parentResults + childResults AS allResults{user_with}
-                UNWIND allResults AS item
-                WITH item.record AS record, item.typeDoc AS typeDoc, item.recordDepth AS recordDepth{user_with}
+                WITH record, typeDoc, length(path) AS recordDepth{user_with}
 
                 {permission_block}
 
@@ -4884,7 +4843,7 @@ class Neo4jProvider(IGraphDBProvider):
 
         query = """
         MATCH (r:Record {connectorId: $connector_id})
-        WITH collect(r.id) AS record_ids, 
+        WITH collect(r.id) AS record_ids,
              [vid IN collect(r.virtualRecordId) WHERE vid IS NOT NULL] AS virtual_record_ids
 
         OPTIONAL MATCH (rg:RecordGroup {connectorId: $connector_id})
@@ -4903,7 +4862,7 @@ class Neo4jProvider(IGraphDBProvider):
           record_group_keys: record_group_ids,
           role_keys: role_ids,
           group_keys: group_ids,
-          all_node_ids: 
+          all_node_ids:
             [id IN record_ids | 'records/' + id] +
             [id IN record_group_ids | 'recordGroups/' + id] +
             [id IN role_ids | 'roles/' + id] +
@@ -4930,7 +4889,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
         result = results[0]["result"]
-        
+
         self.logger.info(
             f"📊 Collected entities for connector {connector_id}: "
             f"records={len(result['record_keys'])}, "
@@ -4976,9 +4935,9 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             deleted_count = results[0]["deleted_count"] if results else 0
-            
+
             self.logger.info(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
-            
+
             return (deleted_count, [])
 
         except Exception as e:
@@ -5017,9 +4976,9 @@ class Neo4jProvider(IGraphDBProvider):
             )
 
             targets = [result["target"] for result in results] if results else []
-            
+
             self.logger.info(f"📋 Collected {len(targets)} isOfType target nodes")
-            
+
             return (targets, True)
 
         except Exception as e:
@@ -5158,7 +5117,7 @@ class Neo4jProvider(IGraphDBProvider):
         query = f"""
         MATCH (n:{label} {{connectorId: $connector_id}})
         WITH count(n) AS expected_count
-        
+
         MATCH (n:{label} {{connectorId: $connector_id}})
         DETACH DELETE n
         RETURN count(n) AS deleted_count
@@ -5193,7 +5152,7 @@ class Neo4jProvider(IGraphDBProvider):
         Validates all deletion counts and rolls back on any failure.
         """
         created_transaction = False
-        
+
         try:
             self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
 
@@ -5201,7 +5160,7 @@ class Neo4jProvider(IGraphDBProvider):
                 document_key=connector_id,
                 collection=CollectionNames.APPS.value
             )
-            
+
             if not connector:
                 return {
                     "success": False,
@@ -6708,28 +6667,33 @@ class Neo4jProvider(IGraphDBProvider):
             MATCH (recordGroup:RecordGroup {id: $record_group_id})
             WHERE recordGroup.orgId = $org_id
 
-            // Direct user -> record group permission
-            OPTIONAL MATCH (userDoc)-[directPerm:PERMISSION]->(recordGroup)
+            // Direct user -> record group permission (including parent hierarchy 0-10 levels)
+            OPTIONAL MATCH (recordGroup)-[:INHERIT_PERMISSIONS*0..10]->(rg:RecordGroup)
+            OPTIONAL MATCH (userDoc)-[directPerm:PERMISSION]->(rg)
             WHERE directPerm.type = 'USER'
             WITH userDoc, recordGroup, collect(directPerm.role) AS directPermissions
 
-            // User -> group/role -> record group permission
+            // User -> group/role -> record group permission (including parent hierarchy)
+            OPTIONAL MATCH (recordGroup)-[:INHERIT_PERMISSIONS*0..10]->(rg2:RecordGroup)
             OPTIONAL MATCH (userDoc)-[userToGroup:PERMISSION]->(grp)
             WHERE userToGroup.type = 'USER' AND (grp:Group OR grp:Role)
-            WITH userDoc, recordGroup, directPermissions, collect(grp) AS userGroups
+            WITH userDoc, recordGroup, directPermissions, collect(grp) AS userGroups, collect(DISTINCT rg2) AS recordGroupHierarchy
 
             UNWIND CASE WHEN size(userGroups) > 0 THEN userGroups ELSE [null] END AS grp
-            OPTIONAL MATCH (grp)-[grpPerm:PERMISSION]->(recordGroup)
+            UNWIND CASE WHEN size(recordGroupHierarchy) > 0 THEN recordGroupHierarchy ELSE [null] END AS rg2
+            OPTIONAL MATCH (grp)-[grpPerm:PERMISSION]->(rg2)
             WHERE grpPerm.type IN ['GROUP', 'ROLE']
             WITH userDoc, recordGroup, directPermissions, collect(grpPerm.role) AS groupPermissions
 
-            // User -> org -> record group permission
+            // User -> org -> record group permission (including parent hierarchy)
+            OPTIONAL MATCH (recordGroup)-[:INHERIT_PERMISSIONS*0..10]->(rg3:RecordGroup)
             OPTIONAL MATCH (userDoc)-[belongsTo:BELONGS_TO]->(org)
             WHERE belongsTo.entityType = 'ORGANIZATION'
-            WITH userDoc, recordGroup, directPermissions, groupPermissions, collect(org) AS userOrgs
+            WITH userDoc, recordGroup, directPermissions, groupPermissions, collect(org) AS userOrgs, collect(DISTINCT rg3) AS recordGroupHierarchy2
 
             UNWIND CASE WHEN size(userOrgs) > 0 THEN userOrgs ELSE [null] END AS org
-            OPTIONAL MATCH (org)-[orgPerm:PERMISSION]->(recordGroup)
+            UNWIND CASE WHEN size(recordGroupHierarchy2) > 0 THEN recordGroupHierarchy2 ELSE [null] END AS rg3
+            OPTIONAL MATCH (org)-[orgPerm:PERMISSION]->(rg3)
             WHERE orgPerm.type = 'ORG'
             WITH directPermissions, groupPermissions, collect(orgPerm.role) AS orgPermissions
 

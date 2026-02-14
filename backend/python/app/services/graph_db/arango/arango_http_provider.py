@@ -817,30 +817,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FILTER recordGroup != null
             FILTER recordGroup.orgId == @org_id
             LET directPermission = (
-                FOR perm IN @@permission
-                    FILTER perm._from == userDoc._id
-                    FILTER perm._to == recordGroup._id
-                    FILTER perm.type == "USER"
-                    RETURN perm.role
+                FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
+                    FOR perm IN @@permission
+                        FILTER perm._from == userDoc._id
+                        FILTER perm._to == rg._id
+                        FILTER perm.type == "USER"
+                        RETURN perm.role
             )
             LET groupPermission = (
-                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id @@permission
-                    FILTER userToGroupEdge.type == "USER"
-                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
-                    FOR perm IN @@permission
-                        FILTER perm._from == group._id
-                        FILTER perm._to == recordGroup._id
-                        FILTER perm.type IN ["GROUP", "ROLE"]
-                        RETURN perm.role
+                FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
+                    FOR group, userToGroupEdge IN 1..1 ANY userDoc._id @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                        FOR perm IN @@permission
+                            FILTER perm._from == group._id
+                            FILTER perm._to == rg._id
+                            FILTER perm.type IN ["GROUP", "ROLE"]
+                            RETURN perm.role
             )
             LET orgPermission = (
-                FOR org, belongsEdge IN 1..1 ANY userDoc._id @@belongs_to
-                    FILTER belongsEdge.entityType == "ORGANIZATION"
-                    FOR perm IN @@permission
-                        FILTER perm._from == org._id
-                        FILTER perm._to == recordGroup._id
-                        FILTER perm.type == "ORG"
-                        RETURN perm.role
+                FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
+                    FOR org, belongsEdge IN 1..1 ANY userDoc._id @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR perm IN @@permission
+                            FILTER perm._from == org._id
+                            FILTER perm._to == rg._id
+                            FILTER perm.type == "ORG"
+                            RETURN perm.role
             )
             LET allPermissions = UNION_DISTINCT(directPermission, groupPermission, orgPermission)
             LET hasPermission = LENGTH(allPermissions) > 0
@@ -855,6 +858,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
                 "user_key": user_key,
                 "record_group_id": record_group_id,
                 "org_id": org_id,
@@ -2798,7 +2802,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         FILTER v.orgId == @org_id OR v.orgId == null
                         RETURN v
                 )
-                    LET nestedRg = nestedRg
                     {rg_permission_filter}
                     RETURN nestedRg
                 )
@@ -2819,7 +2822,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER rec.origin == "CONNECTOR"
                             RETURN rec
                     )
-                        LET record = record
                         {record_permission_filter}
                         {folder_filter}
                         RETURN record
@@ -2886,7 +2888,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         connector_id: str,
         org_id: str,
         depth: int,
-        include_parent: bool = True,
         user_key: Optional[str] = None,
         limit: Optional[int] = None,
         offset: int = 0,
@@ -2894,7 +2895,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> List[Record]:
         """
         Get all child records of a parent record (folder) up to a specified depth.
-        Uses graph traversal on recordRelations edge collection.
+        Uses graph traversal on recordRelations edge collection. Parent record is always included.
 
         Args:
             parent_record_id: Record ID of the parent (folder)
@@ -2902,7 +2903,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             org_id: Organization ID (for security filtering)
             depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
                    1 = direct children, 2 = children + grandchildren, etc.)
-            include_parent: Whether to include the parent record itself
+            user_key: Optional user key for permission filtering
             limit: Maximum number of records to return (for pagination)
             offset: Number of records to skip (for pagination)
             transaction: Optional transaction ID
@@ -2914,8 +2915,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.info(
                 f"Retrieving child records for parent {parent_record_id}, "
                 f"connector {connector_id}, org {org_id}, depth {depth}, "
-                f"user_key: {user_key}, include_parent: {include_parent}, "
-                f"limit: {limit}, offset: {offset}"
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
             )
 
             # Validate depth - must be >= -1
@@ -2923,10 +2923,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise ValueError(
                     f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
                 )
-
-            # Early return if depth=0 and include_parent=false (nothing to return)
-            if depth == 0 and not include_parent:
-                return []
 
             # Handle limit/offset for pagination
             limit_clause = ""
@@ -2938,7 +2934,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
 
             # Determine max traversal depth (use 100 as practical unlimited)
-            # For depth=0, we set max_depth=0 so the child traversal returns nothing
             max_depth = 100 if depth == -1 else depth
 
             bind_vars = {
@@ -2946,7 +2941,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "max_depth": max_depth,
                 "connector_id": connector_id,
                 "org_id": org_id,
-                "include_parent": include_parent,
             }
 
             if limit is not None:
@@ -2972,64 +2966,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 permission_filter = ""
 
-            # Single unified query that handles all depth cases
-            # When max_depth=0, the child traversal (1..@max_depth) returns empty
-            # When include_parent=false, parentResult is empty
+            # Single unified query using 0..max_depth traversal
+            # Depth 0 = parent, Depth 1+ = children at various levels
             query = f"""
             LET startRecord = DOCUMENT(@record_id)
             FILTER startRecord != null
 
-            // Get parent record with its typed record if include_parent is true
-            LET parentResult = @include_parent ? (
-                LET parentTypedRecord = FIRST(
-                    FOR rec IN 1..1 OUTBOUND startRecord {CollectionNames.IS_OF_TYPE.value}
+            // Single traversal for parent (depth 0) and all children (depth 1+)
+            FOR v, e, p IN 0..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
+                OPTIONS {{bfs: true, uniqueVertices: "global"}}
+
+                FILTER v.connectorId == @connector_id
+                FILTER v.orgId == @org_id OR v.orgId == null
+                FILTER v.isDeleted != true
+
+                LET typedRecord = FIRST(
+                    FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
                         LIMIT 1
                         RETURN rec
                 )
-                // Only return parent if it matches filters and has typed record
-                FILTER parentTypedRecord != null
-                FILTER startRecord.connectorId == @connector_id
-                FILTER startRecord.orgId == @org_id OR startRecord.orgId == null
-                FILTER startRecord.isDeleted != true
-                RETURN {{
-                    record: startRecord,
-                    typedRecord: parentTypedRecord,
-                    depth: 0
-                }}
-            ) : []
 
-            // Get all children using graph traversal
-            // When max_depth=0, this returns empty (1..0 is invalid range)
-            LET childResults = @max_depth > 0 ? (
-                FOR v, e, p IN 1..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
-                    OPTIONS {{bfs: true, uniqueVertices: "global"}}
+                FILTER typedRecord != null
 
-                    FILTER v.connectorId == @connector_id
-                    FILTER v.orgId == @org_id OR v.orgId == null
-                    FILTER v.isDeleted != true
-
-                    LET typedRecord = FIRST(
-                        FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
-                            LIMIT 1
-                            RETURN rec
-                    )
-
-                    FILTER typedRecord != null
-
-                    RETURN {{
-                        record: v,
-                        typedRecord: typedRecord,
-                        depth: LENGTH(p.vertices) - 1
-                    }}
-            ) : []
-
-            // Combine parent and children
-            LET allResults = APPEND(parentResult, childResults)
-
-            // Sort by depth then by key, apply permission filter, and paginate
-            FOR result IN allResults
-                LET record = result.record
+                LET record = v
                 {permission_filter}
+
+                LET result = {{
+                    record: v,
+                    typedRecord: typedRecord,
+                    depth: LENGTH(p.edges)
+                }}
+
                 SORT result.depth, result.record._key
                 {limit_clause}
                 RETURN result
@@ -5986,12 +5953,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         total_deleted = 0
         total_expected = len(targets)
         failed_collections = []
-        
+
         for collection, keys in targets_by_collection.items():
             expected_count = len(keys)
             deleted, failed_batches = await self._delete_nodes_by_keys(transaction, keys, collection)
             total_deleted += deleted
-            
+
             # Check for failures: either failed batches OR incomplete deletion
             if failed_batches > 0:
                 failed_collections.append(f"{collection} (failed batches: {failed_batches})")
