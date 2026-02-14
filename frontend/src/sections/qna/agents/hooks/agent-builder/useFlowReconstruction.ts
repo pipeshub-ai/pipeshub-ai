@@ -307,7 +307,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             position: calculateOptimalPosition('llm', index, counts.llm),
             data: {
               id: nodeId,
-              type: `llm-${matchingModel?.modelKey || modelKey?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
+              type: `llm-${matchingModel?.modelKey || `${matchingModel?.provider}-${matchingModel?.modelName}-${matchingModel?.modelKey}` || 'default'}`,
               label: modelName.trim() || 'AI Model',
               description: `${formattedProvider(provider)} language model`,
               icon: brainIcon,
@@ -338,7 +338,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           position: calculateOptimalPosition('llm', 0, 1),
           data: {
             id: nodeId,
-            type: `llm-${defaultModel.modelKey || 'default'}`,
+            type: `llm-${defaultModel.modelKey || `${defaultModel.provider}-${defaultModel.modelName}-default`}`,
             label: defaultModel.modelName.trim() || 'AI Model',
             description: `${formattedProvider(defaultModel.provider || 'AI')} language model`,
             icon: brainIcon,

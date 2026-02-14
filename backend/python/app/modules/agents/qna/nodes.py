@@ -20,6 +20,7 @@ import re
 import time
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import StreamWriter
@@ -43,10 +44,17 @@ TOOL_TIMEOUT_SECONDS = 60.0
 RETRIEVAL_TIMEOUT_SECONDS = 45.0  # Faster timeout for retrieval
 
 # Response formatting constants
-USER_QUERY_MAX_LENGTH = 300
-BOT_RESPONSE_MAX_LENGTH = 800
+# NOTE: Truncation limits are set high to preserve context. Only truncate if absolutely necessary.
+USER_QUERY_MAX_LENGTH = 10000  # Increased significantly to preserve full user queries
+BOT_RESPONSE_MAX_LENGTH = 20000  # Increased significantly to preserve full bot responses
 MAX_TOOL_RESULT_PREVIEW_LENGTH = 500
 MAX_AVAILABLE_TOOLS_DISPLAY = 20
+MAX_CONVERSATION_HISTORY = 20  # Number of user+bot message pairs to include (sliding window)
+
+# Content detection constants
+MIN_CONTENT_LENGTH_FOR_REUSE = 500  # Minimum chars for content to be considered reusable
+MIN_PLACEHOLDER_PARTS = 2  # Minimum parts in placeholder for fuzzy matching
+MAX_TOOL_DESCRIPTION_LENGTH = 200  # Maximum length for tool descriptions in prompts
 
 # Opik tracer initialization
 _opik_tracer = None
@@ -93,9 +101,12 @@ REMOVE_FIELDS = {
     "expand", "expansions", "schema", "$schema",
     "avatarUrls", "avatarUrl", "iconUrl", "iconUri", "thumbnailUrl",
     "avatar", "icon", "thumbnail", "profilePicture",
-    "nextPageToken", "prevPageToken", "pageToken",
-    "cursor", "offset", "pagination",
-    "startAt", "maxResults", "total",
+    # KEEP pagination fields for pagination awareness:
+    # "nextPageToken", "prevPageToken", "pageToken",  # Keep these!
+    # "cursor", "offset",  # Keep for pagination context
+    # "pagination",  # Keep pagination info
+    # "startAt", "maxResults", "total",  # Keep for pagination awareness
+    # "isLast",  # Keep for pagination awareness
     "trace", "traceId", "requestId", "correlationId",
     "debug", "debugInfo", "stack", "stackTrace",
     "headers", "cookies", "request", "response",
@@ -171,7 +182,7 @@ class ToolResultExtractor:
     """Reliable extraction of data from tool results"""
 
     @staticmethod
-    def extract_success_status(result: Any) -> bool:
+    def extract_success_status(result: Union[Dict[str, Any], str, Tuple[bool, Any], None]) -> bool:
         """
         Reliably detect if a tool execution succeeded.
 
@@ -215,7 +226,7 @@ class ToolResultExtractor:
         return not any(ind in result_str for ind in error_indicators)
 
     @staticmethod
-    def extract_data_from_result(result: Any) -> Any:
+    def extract_data_from_result(result: Union[Dict[str, Any], str, Tuple[bool, Any], List[Any], None]) -> Union[Dict[str, Any], str, List[Any], None]:
         """
         Extract the actual data from a tool result.
 
@@ -242,32 +253,95 @@ class ToolResultExtractor:
         return result
 
     @staticmethod
-    def extract_field_from_data(data: Any, field_path: List[str]) -> Optional[Any]:
+    def extract_field_from_data(data: Union[Dict[str, Any], List[Any], str, None], field_path: List[str]) -> Optional[Union[Dict[str, Any], List[Any], str, int, float, bool]]:
         """
         Extract a specific field from data using a field path.
 
         Examples:
         - ["data", "key"] → data.key
-        - ["data", "results", "0", "id"] → data.results[0].id
+        - ["data", "0", "accountId"] → data[0].accountId
+        - ["data", "results", "0", "id"] → data.results[0].id (with fallback if results doesn't exist)
 
         Handles:
         - Nested dicts
-        - Arrays (auto-extracts from first item)
+        - Arrays with numeric indices
+        - Auto-fallback when incorrect paths are used (e.g., .results when it doesn't exist)
         - JSON strings
         """
         current = data
+        i = 0
 
-        for field in field_path:
+        while i < len(field_path):
             if current is None:
                 return None
 
+            field = field_path[i]
+
             # Handle dict
             if isinstance(current, dict):
-                current = current.get(field)
+                # Check if field exists
+                if field in current:
+                    current = current.get(field)
+                else:
+                    # Fallback: if we're looking for "results" but it doesn't exist,
+                    # and we have "data" that's a list, skip "results" and use data[index] directly
+                    if field == "results" and "data" in current and isinstance(current.get("data"), list):
+                        # Skip "results" and check if next field is an index
+                        if i + 1 < len(field_path):
+                            try:
+                                index = int(field_path[i + 1])
+                                data_list = current.get("data")
+                                if 0 <= index < len(data_list):
+                                    current = data_list[index]
+                                    i += 2  # Skip both "results" and the index
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                    # Bidirectional alias fallback: content ↔ body (common in Confluence/API responses)
+                    # Try the alias if the requested field doesn't exist
+                    elif field == "content" and "body" in current:
+                        current = current.get("body")
+                    elif field == "body" and "content" in current:
+                        current = current.get("content")
+                    else:
+                        return None
 
-                # If we got an array, use first item for next navigation
-                if isinstance(current, list) and len(current) > 0:
-                    current = current[0]
+                # After getting a field from dict, check if result is a list
+                # and if the next field is an index
+                if isinstance(current, list):
+                    # Check if list is empty first
+                    if len(current) == 0:
+                        # If we're trying to access an index in an empty list, return None
+                        if i + 1 < len(field_path):
+                            try:
+                                next_index = int(field_path[i + 1])
+                                # Empty list, can't access index
+                                return None
+                            except (ValueError, TypeError):
+                                pass
+                        return None  # Empty list, nothing to extract
+
+                    # If next field is a numeric index, use it
+                    if i + 1 < len(field_path):
+                        try:
+                            next_index = int(field_path[i + 1])
+                            if 0 <= next_index < len(current):
+                                current = current[next_index]
+                                i += 2  # Skip both current field (already processed) and index
+                                continue
+                            else:
+                                # Index out of bounds
+                                return None
+                        except (ValueError, TypeError):
+                            pass
+                    # If we're at the end of the path and current is a list, return the list
+                    if i + 1 >= len(field_path):
+                        return current
+                    # Otherwise, auto-extract from first item for next navigation
+                    if len(current) > 0:
+                        current = current[0]
+                    else:
+                        return None
 
             # Handle array with index
             elif isinstance(current, list):
@@ -281,7 +355,16 @@ class ToolResultExtractor:
                 except ValueError:
                     # Not an index, try to get field from first item
                     if len(current) > 0 and isinstance(current[0], dict):
-                        current = current[0].get(field)
+                        # Try direct field access first
+                        if field in current[0]:
+                            current = current[0].get(field)
+                        # Bidirectional alias fallback: content ↔ body
+                        elif field == "content" and "body" in current[0]:
+                            current = current[0].get("body")
+                        elif field == "body" and "content" in current[0]:
+                            current = current[0].get("content")
+                        else:
+                            return None
                     else:
                         return None
 
@@ -290,13 +373,44 @@ class ToolResultExtractor:
                 try:
                     parsed = json.loads(current)
                     if isinstance(parsed, dict):
-                        current = parsed.get(field)
+                        # Try direct field access first
+                        if field in parsed:
+                            current = parsed.get(field)
+                        # Bidirectional alias fallback: content ↔ body
+                        elif field == "content" and "body" in parsed:
+                            current = parsed.get("body")
+                        elif field == "body" and "content" in parsed:
+                            current = parsed.get("content")
+                        else:
+                            return None
                     else:
                         return None
                 except (json.JSONDecodeError, TypeError):
                     return None
             else:
                 return None
+
+            i += 1
+
+        # Post-processing: If we extracted a Confluence body/content object with storage format,
+        # automatically extract the value if we're at the end of the path
+        # This handles cases like: data.body → automatically extract body.storage.value
+        # or data.content → automatically extract content.storage.value
+        if isinstance(current, dict):
+            # Handle Confluence storage format: {"storage": {"value": "..."}}
+            if "storage" in current:
+                storage = current.get("storage", {})
+                if isinstance(storage, dict) and "value" in storage:
+                    # This is a Confluence storage format object, return the actual content
+                    return storage.get("value")
+            # Handle direct value fields (some APIs return content/body as {"value": "..."})
+            # Check if it's a simple dict with just a "value" key
+            elif "value" in current and len(current) == 1:
+                return current.get("value")
+
+        # If current is already a string (direct content), return it as-is
+        if isinstance(current, str):
+            return current
 
         return current
 
@@ -382,7 +496,7 @@ class PlaceholderResolver:
         placeholder: str,
         results_by_tool: Dict[str, Any],
         log: logging.Logger
-    ) -> Optional[Any]:
+    ) -> Optional[Union[Dict[str, Any], List[Any], str, int, float, bool]]:
         """
         Resolve a single placeholder to its value.
 
@@ -419,7 +533,20 @@ class PlaceholderResolver:
             log.info(f"✅ Resolved {{{{{placeholder}}}}} → {str(extracted)[:50]}...")
         else:
             log.warning(f"❌ Could not extract field from placeholder: {{{{{placeholder}}}}}")
+            log.debug(f"Field path: {field_path}")
             log.debug(f"Available data: {str(tool_data)[:200]}")
+            # Try to show the structure for debugging
+            if isinstance(tool_data, dict):
+                log.debug(f"Top-level keys: {list(tool_data.keys())}")
+                if "data" in tool_data and isinstance(tool_data["data"], dict):
+                    log.debug(f"Data keys: {list(tool_data['data'].keys())}")
+                    if "results" in tool_data["data"]:
+                        results = tool_data["data"]["results"]
+                        if isinstance(results, list):
+                            if len(results) == 0:
+                                log.warning("⚠️ Search returned empty results - cannot access index [0]")
+                            elif len(results) > 0:
+                                log.debug(f"First result keys: {list(results[0].keys()) if isinstance(results[0], dict) else 'not a dict'}")
 
         return extracted
 
@@ -434,11 +561,52 @@ class PlaceholderResolver:
 
         Examples:
         - "jira.create_issue.data.key" → ("jira.create_issue", ["data", "key"])
+        - "jira.search_users.data[0].accountId" → ("jira.search_users", ["data", "0", "accountId"])
+        - "jira.search_users.data.results[0].accountId" → ("jira.search_users", ["data", "0", "accountId"]) (removes .results)
         - "create_issue.key" → ("jira.create_issue", ["key"]) if fuzzy match
 
         Returns:
             (tool_name, field_path) or (None, []) if can't parse
         """
+        # Helper function to parse field path with array indices
+        def parse_field_path(path_str: str) -> List[str]:
+            """Parse field path handling array indices like [0]"""
+            if not path_str:
+                return []
+
+            # Split by '.' but preserve array indices
+            parts = []
+            current = ""
+            i = 0
+            while i < len(path_str):
+                if path_str[i] == '.':
+                    if current:
+                        parts.append(current)
+                        current = ""
+                elif path_str[i] == '[':
+                    # Found array index
+                    if current:
+                        parts.append(current)
+                        current = ""
+                    # Extract index
+                    i += 1
+                    index = ""
+                    while i < len(path_str) and path_str[i] != ']':
+                        index += path_str[i]
+                        i += 1
+                    if index:
+                        parts.append(index)
+                    # Skip closing ']'
+                    if i < len(path_str) and path_str[i] == ']':
+                        i += 1
+                    continue
+                else:
+                    current += path_str[i]
+                i += 1
+            if current:
+                parts.append(current)
+            return parts
+
         # Try exact match first (longest tool names first)
         sorted_tools = sorted(results_by_tool.keys(), key=len, reverse=True)
 
@@ -446,15 +614,20 @@ class PlaceholderResolver:
             if placeholder.startswith(tool_name + '.'):
                 # Extract field path
                 remaining = placeholder[len(tool_name) + 1:]
-                field_path = remaining.split('.') if remaining else []
+                field_path = parse_field_path(remaining)
+                # Don't remove .results here - let extract_field_from_data handle it
+                # It will check if results exists and only fallback if it doesn't
                 return tool_name, field_path
 
         # Fuzzy match - find tool that matches end of placeholder
         parts = placeholder.split('.')
-        if len(parts) >= 2:
+        if len(parts) >= MIN_PLACEHOLDER_PARTS:
             # Try matching the first part against tool names
             prefix = parts[0]
-            field_path = parts[1:]
+            # Reconstruct remaining path and parse it
+            remaining = '.'.join(parts[1:])
+            field_path = parse_field_path(remaining)
+            # Don't remove .results here - let extract_field_from_data handle it
 
             for tool_name in sorted_tools:
                 # Normalize for comparison
@@ -478,7 +651,7 @@ class ToolExecutor:
     async def execute_tools(
         planned_tools: List[Dict[str, Any]],
         tools_by_name: Dict[str, Any],
-        llm: Any,
+        llm: BaseChatModel,
         state: ChatState,
         log: logging.Logger,
         writer: StreamWriter,
@@ -510,7 +683,7 @@ class ToolExecutor:
     async def _execute_sequential(
         planned_tools: List[Dict[str, Any]],
         tools_by_name: Dict[str, Any],
-        llm: Any,
+        llm: BaseChatModel,
         state: ChatState,
         log: logging.Logger,
         writer: StreamWriter,
@@ -547,18 +720,62 @@ class ToolExecutor:
             if PlaceholderResolver.has_placeholders(resolved_args):
                 unresolved = PlaceholderResolver.PLACEHOLDER_PATTERN.findall(json.dumps(resolved_args))
                 log.error(f"❌ Unresolved placeholders in {actual_tool_name}: {unresolved}")
+
+                # Check if this is due to empty search results - provide helpful error
+                error_msg = f"Error: Unresolved placeholders: {', '.join(set(unresolved))}"
+                for placeholder in unresolved:
+                    # Check if placeholder references a search that returned empty
+                    if "search" in placeholder.lower() and "results[0]" in placeholder:
+                        # Extract tool name from placeholder (handle dots in tool names like "confluence.search_pages")
+                        # Try to find matching tool in results_by_tool
+                        for tool_name in results_by_tool.keys():
+                            if tool_name in placeholder or placeholder.startswith(tool_name.split('.')[-1]):
+                                tool_data = results_by_tool[tool_name]
+                                if isinstance(tool_data, dict) and "data" in tool_data:
+                                    data = tool_data["data"]
+                                    if isinstance(data, dict) and "results" in data:
+                                        results = data["results"]
+                                        if isinstance(results, list) and len(results) == 0:
+                                            error_msg += f" (Search '{tool_name}' returned empty results - check conversation history for page_id instead)"
+                                            break
+
                 tool_results.append({
                     "tool_name": actual_tool_name,
-                    "result": f"Error: Unresolved placeholders: {', '.join(set(unresolved))}",
+                    "result": error_msg,
                     "status": "error",
                     "tool_id": f"call_{i}_{actual_tool_name}"
                 })
                 continue
 
-            # Stream status
+            # Stream detailed status with context
+            tool_display_name = actual_tool_name.replace("_", " ").title()
+            # Extract meaningful info from tool name
+            if "retrieval" in actual_tool_name.lower():
+                status_msg = "Searching knowledge base for relevant information..."
+            elif "confluence" in actual_tool_name.lower():
+                if "create" in actual_tool_name.lower():
+                    status_msg = "Creating Confluence page..."
+                elif "update" in actual_tool_name.lower():
+                    status_msg = "Updating Confluence page..."
+                elif "get" in actual_tool_name.lower() or "search" in actual_tool_name.lower():
+                    status_msg = "Retrieving Confluence content..."
+                else:
+                    status_msg = f"Working with Confluence: {tool_display_name}..."
+            elif "jira" in actual_tool_name.lower():
+                if "create" in actual_tool_name.lower():
+                    status_msg = "Creating Jira issue..."
+                elif "update" in actual_tool_name.lower():
+                    status_msg = "Updating Jira issue..."
+                elif "search" in actual_tool_name.lower() or "get" in actual_tool_name.lower():
+                    status_msg = "Searching Jira for information..."
+                else:
+                    status_msg = f"Working with Jira: {tool_display_name}..."
+            else:
+                status_msg = f"Executing {tool_display_name}..."
+
             safe_stream_write(writer, {
                 "event": "status",
-                "data": {"status": "executing", "message": f"Executing {actual_tool_name}..."}
+                "data": {"status": "executing", "message": status_msg}
             }, config)
 
             # Execute tool
@@ -572,6 +789,39 @@ class ToolExecutor:
             )
 
             tool_results.append(result_dict)
+
+            # Send completion status
+            if result_dict.get("status") == "success":
+                if "retrieval" in actual_tool_name.lower():
+                    completion_msg = "Knowledge base search completed"
+                elif "confluence" in actual_tool_name.lower():
+                    if "create" in actual_tool_name.lower():
+                        completion_msg = "Confluence page created successfully"
+                    elif "update" in actual_tool_name.lower():
+                        completion_msg = "Confluence page updated successfully"
+                    else:
+                        completion_msg = "Confluence operation completed"
+                elif "jira" in actual_tool_name.lower():
+                    if "create" in actual_tool_name.lower():
+                        completion_msg = "Jira issue created successfully"
+                    elif "update" in actual_tool_name.lower():
+                        completion_msg = "Jira issue updated successfully"
+                    else:
+                        completion_msg = "Jira operation completed"
+                else:
+                    completion_msg = f"{actual_tool_name.replace('_', ' ').title()} completed"
+
+                safe_stream_write(writer, {
+                    "event": "status",
+                    "data": {"status": "executing", "message": completion_msg}
+                }, config)
+            else:
+                # Tool failed - send error status
+                error_msg = result_dict.get("error", "Unknown error")
+                safe_stream_write(writer, {
+                    "event": "status",
+                    "data": {"status": "error", "message": f"Operation failed: {error_msg[:100]}"}
+                }, config)
 
             # Store successful results for next placeholder resolution
             if result_dict.get("status") == "success":
@@ -590,7 +840,7 @@ class ToolExecutor:
     async def _execute_parallel(
         planned_tools: List[Dict[str, Any]],
         tools_by_name: Dict[str, Any],
-        llm: Any,
+        llm: BaseChatModel,
         state: ChatState,
         log: logging.Logger
     ) -> List[Dict[str, Any]]:
@@ -618,6 +868,7 @@ class ToolExecutor:
                 })))
                 continue
 
+            # Execute tool directly (content generation happens in planner)
             tasks.append(
                 ToolExecutor._execute_single_tool(
                     tool=tools_by_name[actual_tool_name],
@@ -771,7 +1022,7 @@ class ToolExecutor:
             return None
 
     @staticmethod
-    async def _run_tool(tool: object, args: Dict[str, Any]) -> Any:
+    async def _run_tool(tool: object, args: Dict[str, Any]) -> Union[Dict[str, Any], str, Tuple[bool, str], List[Any], None]:
         """Run tool using appropriate method"""
         if hasattr(tool, 'arun'):
             return await tool.arun(args)
@@ -783,8 +1034,8 @@ class ToolExecutor:
             return await loop.run_in_executor(None, functools.partial(tool.run, **args))
 
     @staticmethod
-    def _process_retrieval_output(result: Any, state: ChatState, log: logging.Logger) -> str:
-        """Process retrieval tool output and update state"""
+    def _process_retrieval_output(result: Union[Dict[str, Any], str, Tuple[bool, str], List[Any], None], state: ChatState, log: logging.Logger) -> str:
+        """Process retrieval tool output and update state (accumulates results from multiple retrieval calls)"""
         try:
             from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
@@ -802,13 +1053,42 @@ class ToolExecutor:
                     pass
 
             if retrieval_output:
-                state["final_results"] = retrieval_output.final_results
-                state["virtual_record_id_to_result"] = retrieval_output.virtual_record_id_to_result
+                # Accumulate final_results instead of overwriting (for parallel retrieval calls)
+                existing_final_results = state.get("final_results", [])
+                if not isinstance(existing_final_results, list):
+                    existing_final_results = []
 
+                # Combine new results with existing ones
+                new_final_results = retrieval_output.final_results or []
+                combined_final_results = existing_final_results + new_final_results
+                state["final_results"] = combined_final_results
+
+                # Accumulate virtual_record_id_to_result
+                existing_virtual_map = state.get("virtual_record_id_to_result", {})
+                if not isinstance(existing_virtual_map, dict):
+                    existing_virtual_map = {}
+
+                new_virtual_map = retrieval_output.virtual_record_id_to_result or {}
+                combined_virtual_map = {**existing_virtual_map, **new_virtual_map}
+                state["virtual_record_id_to_result"] = combined_virtual_map
+
+                # Accumulate tool_records
                 if retrieval_output.virtual_record_id_to_result:
-                    state["tool_records"] = list(retrieval_output.virtual_record_id_to_result.values())
+                    existing_tool_records = state.get("tool_records", [])
+                    if not isinstance(existing_tool_records, list):
+                        existing_tool_records = []
 
-                log.info(f"📚 Retrieved {len(retrieval_output.final_results)} knowledge blocks")
+                    new_tool_records = list(retrieval_output.virtual_record_id_to_result.values())
+                    # Avoid duplicates by checking record IDs
+                    existing_record_ids = {rec.get("_id") for rec in existing_tool_records if isinstance(rec, dict) and "_id" in rec}
+                    unique_new_records = [
+                        rec for rec in new_tool_records
+                        if not (isinstance(rec, dict) and rec.get("_id") in existing_record_ids)
+                    ]
+                    combined_tool_records = existing_tool_records + unique_new_records
+                    state["tool_records"] = combined_tool_records
+
+                log.info(f"📚 Retrieved {len(new_final_results)} knowledge blocks (total: {len(combined_final_results)})")
                 return retrieval_output.content
 
         except Exception as e:
@@ -851,6 +1131,24 @@ JIRA_GUIDANCE = r"""
 - Last month: `updated >= -30d`
 - Last 3 months: `updated >= -90d`
 - This year: `updated >= startOfYear()`
+
+### Pagination Handling
+- When `jira.search_issues` or `jira.get_issues` returns results with `nextPageToken` or `isLast: false`, there are MORE results available
+- If user asks for "all issues", "all results", "everything", or "complete list", you MUST handle pagination automatically:
+  1. Check if result has `nextPageToken` field (not null/empty)
+  2. If yes, call the same tool again with `nextPageToken` parameter to get next page
+  3. Continue until `isLast: true` or no `nextPageToken` exists
+- Use cascading tool calls for pagination:
+  ```json
+  {{
+    "tools": [
+      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "maxResults": 100}}}},
+      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{{{jira.search_issues.data.nextPageToken}}}}"}}}}
+    ]
+  }}
+  ```
+- **CRITICAL**: For "all" or "complete" requests, automatically handle pagination - DO NOT ask for clarification
+- Combine all results from all pages when presenting to the user
 """
 
 CONFLUENCE_GUIDANCE = r"""
@@ -860,6 +1158,28 @@ CONFLUENCE_GUIDANCE = r"""
 - CREATE page → use `confluence.create_page`
 - SEARCH/FIND page → use `confluence.search_pages`
 - GET/READ pages → use `confluence.get_pages_in_space` or `confluence.get_page_content`
+
+### ⚠️ CRITICAL: Never Use Retrieval for IDs/Keys
+
+**WRONG - Don't use retrieval to get page_id or space_id:**
+```json
+{{
+  "tools": [
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "page id"}}}},
+    {{"name": "confluence.update_page", "args": {{"page_id": "{{{{retrieval.search_internal_knowledge.data.results[0].id}}}}"}}}}
+  ]
+}}
+```
+
+**CORRECT - Use Confluence tools to get IDs:**
+```json
+{{
+  "tools": [
+    {{"name": "confluence.search_pages", "args": {{"title": "My Page"}}}},
+    {{"name": "confluence.update_page", "args": {{"page_id": "{{{{confluence.search_pages.data.results[0].id}}}}"}}}}
+  ]
+}}
+```
 
 ### Critical Parameter Names (Common Mistakes)
 
@@ -877,23 +1197,61 @@ CONFLUENCE_GUIDANCE = r"""
 - ❌ WRONG: `{"id": "..."}` or `{"pageId": "..."}`
 
 ### Space ID Resolution for create_page
-1. **Check Reference Data first** - if `type: "confluence_space"` exists, use its `id` field
-2. **If not in Reference Data**:
-   - If space_id is a key (non-numeric): Call `confluence.get_spaces`, find matching space, extract numeric `id`
-   - If space_id is numeric: Use directly
-3. **CRITICAL**: API requires numeric space IDs. Always use `id` field, never `key` field.
+1. **Check Reference Data first** - if `type: "confluence_space"` exists, use its `id` field directly (NO placeholders)
+2. **If user provided space_id directly** - use it directly (NO placeholders)
+3. **If space_id needs to be resolved from space key/name**:
+   - **ONLY THEN** use cascading: Call `confluence.get_spaces` first, then use placeholder in `create_page`
+   - Example (cascading): `[{"name": "confluence.get_spaces"}, {"name": "confluence.create_page", "args": {"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}", ...}}]`
+4. **CRITICAL**: API requires numeric space IDs. Always use `id` field, never `key` field.
+5. **CRITICAL**: If space_id is already known (from user input or reference data), use it directly - DO NOT use placeholders
 
-### Example Cascading Pattern
+### Page ID Resolution for update_page/get_page_content
 
-Search for page, then get its content:
+**⚠️ CRITICAL: Handle empty search results gracefully**
+
+**BEFORE using placeholders, check these in order:**
+
+1. **Check conversation history FIRST** - If a page was just created or mentioned:
+   - Look for previous assistant messages that created/mentioned the page
+   - Extract the page_id from those messages
+   - Use it directly (NO placeholders)
+   - Example: User says "update the page I just created" → Find page_id from create_page result in conversation history
+
+2. **If user provided page_id directly** - use it directly (NO placeholders)
+
+3. **If you MUST search for a page** (only if not in conversation history):
+   - Use cascading: Call `confluence.search_pages` first
+   - **BUT**: Be aware that search might return empty results
+   - **If search returns empty**: The placeholder will FAIL - you need to handle this
+   - **Better approach**: If page might not exist, check conversation history first, or use `confluence.get_pages_in_space` to list pages
+
+**Example - Using conversation history (RECOMMENDED):**
 ```json
-{
-  "tools": [
-    {"name": "confluence.search_pages", "args": {"title": "My Page"}},
-    {"name": "confluence.get_page_content", "args": {"page_id": "{{confluence.search_pages.data.results.id}}"}}
-  ]
-}
+{{
+  "tools": [{{
+    "name": "confluence.update_page",
+    "args": {{
+      "page_id": "230588418",  // From conversation history - page was just created
+      "page_content": "<h1>Updated Content</h1>..."
+    }}
+  }}]
+}}
 ```
+
+**Example - Cascading (only if page_id not in conversation history):**
+```json
+{{
+  "tools": [
+    {{"name": "confluence.search_pages", "args": {{"title": "My Page", "space_id": "123"}}}},
+    {{"name": "confluence.get_page_content", "args": {{"page_id": "{{{{confluence.search_pages.data.results[0].id}}}}"}}}}
+  ]
+}}
+```
+
+**⚠️ IMPORTANT**:
+- If `confluence.search_pages` returns empty results (`results: []`), the placeholder will FAIL
+- **ALWAYS check conversation history first** before using search with placeholders
+- If user says "update the page I just created" → Use page_id from conversation history, NOT a search
 """
 
 PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
@@ -902,11 +1260,12 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 
 **Decision Tree (Follow in Order):**
 1. **Simple greeting/thanks?** → `can_answer_directly: true`
-2. **User references previous discussion?** → Use conversation context, minimal tools
-3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
-4. **User wants LIVE/REAL-TIME data from a connected service?** → Use service tools
-5. **User wants INFORMATION ABOUT something?** (from knowledge base/docs) → Use `retrieval.search_internal_knowledge`
-6. **Documentation creation with KB citations in history?** → Start with `retrieval.search_internal_knowledge`
+2. **User asks about the conversation itself?** (meta-questions like "what did we discuss", "what did I ask", "summarize our conversation") → `can_answer_directly: true` - answer from conversation history
+3. **User references previous discussion?** → Use conversation context, minimal tools
+4. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
+5. **User wants LIVE/REAL-TIME data from a connected service?** → Use service tools
+6. **User wants INFORMATION ABOUT something?** (from knowledge base/docs) → Use `retrieval.search_internal_knowledge`
+7. **Documentation creation with KB citations in history?** → Start with `retrieval.search_internal_knowledge`
 
 ## Tool Selection Principles
 
@@ -948,26 +1307,97 @@ PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise
 
 ## Cascading Tools (Multi-Step Tasks)
 
-**When one tool's output feeds into another, use placeholders:**
+**⚠️ CRITICAL RULE: Placeholders ({{{{tool.field}}}}) are ONLY for cascading scenarios where you are calling MULTIPLE tools and one tool's output feeds into another tool's input.**
 
-Format: `{{{{tool_name.data.field}}}}`
+**If you are calling a SINGLE tool, use actual values directly - placeholders will cause the tool to FAIL.**
 
-**CRITICAL: NEVER pass instruction text as parameter values**
-- ❌ WRONG: `{{"space_id": "Use the numeric id from get_spaces results"}}`
-- ❌ WRONG: `{{"space_id": "Resolve the numeric id for space name/key from results"}}`
-- ✅ CORRECT: `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}`
+**When to use placeholders:**
+- ✅ You are calling MULTIPLE tools in sequence
+- ✅ The second tool needs data from the first tool's result
+- ✅ The first tool is GUARANTEED to return results (not a search that might be empty)
+- ✅ Example: Get spaces first, then use a space ID to create a page
 
-**Example:**
+**When NOT to use placeholders:**
+- ❌ Single tool call - use actual values directly
+- ❌ User provided the value - use it directly (e.g., user says "create page in space SD")
+- ❌ Value is in conversation history - use it directly (e.g., page was just created, use that page_id)
+- ❌ Value can be inferred - use the inferred value
+- ❌ Search operations that might return empty results - check conversation history first
+- ❌ Placeholders will cause tool execution to FAIL if not in cascading scenario
+
+## ⚠️ CRITICAL: Retrieval Tool Limitations
+
+**retrieval.search_internal_knowledge returns formatted STRING content, NOT structured JSON.**
+
+**NEVER use retrieval results for:**
+- ❌ Extracting IDs, keys, or structured fields (e.g., {{{{retrieval.search_internal_knowledge.data.results[0].accountId}}}})
+- ❌ Using as input to other tools that need structured data
+- ❌ Cascading placeholders from retrieval to API tools
+
+**Use retrieval ONLY for:**
+- ✅ Getting information/knowledge to include in your response
+- ✅ Finding context to help answer user questions
+- ✅ Gathering documentation or explanations
+
+**For structured data extraction (IDs, keys, accountIds):**
+- ✅ Use service tools directly (e.g., jira.search_users, confluence.search_pages)
+- ✅ These return structured JSON that can be used in placeholders
+
+**Example - WRONG (don't do this):**
 ```json
 {{
   "tools": [
-    {{"name": "confluence.get_spaces", "args": {{}}}},
-    {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}}}
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "user info"}}}},
+    {{"name": "jira.assign_issue", "args": {{"accountId": "{{{{retrieval.search_internal_knowledge.data.results[0].accountId}}}}"}}}}
   ]
 }}
 ```
 
-**Placeholder rules:**
+**Example - CORRECT:**
+```json
+{{
+  "tools": [
+    {{"name": "jira.search_users", "args": {{"query": "john@example.com"}}}},
+    {{"name": "jira.assign_issue", "args": {{"accountId": "{{{{jira.search_users.data.results[0].accountId}}}}"}}}}
+  ]
+}}
+```
+
+**⚠️ CRITICAL: Empty Search Results**
+- If you're searching for a page/user/resource that might not exist, DON'T use placeholders
+- Check conversation history first - if the page was just created/mentioned, use that page_id
+- If search might return empty, plan to handle it gracefully or use alternative methods
+- Example: User says "update the page I just created" → Use page_id from conversation history, NOT a search
+
+**Format (ONLY for cascading):**
+`{{{{tool_name.data.field}}}}`
+
+**CRITICAL: NEVER pass instruction text as parameter values**
+- ❌ WRONG: `{{"space_id": "Use the numeric id from get_spaces results"}}`
+- ❌ WRONG: `{{"space_id": "Resolve the numeric id for space name/key from results"}}`
+- ❌ WRONG: `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}` (if only calling one tool)
+- ✅ CORRECT (cascading): `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}` (when calling get_spaces first)
+
+**Example (Cascading - Multiple Tools):**
+```json
+{{
+  "tools": [
+    {{"name": "confluence.get_spaces", "args": {{}}}},
+    {{"name": "confluence.create_page", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}", "page_title": "My Page", "page_content": "..."}}}}
+  ]
+}}
+```
+
+**Example (Single Tool - NO Placeholders):**
+```json
+{{
+  "tools": [
+    {{"name": "confluence.create_page", "args": {{"space_id": "SD", "page_title": "My Page", "page_content": "..."}}}}
+  ]
+}}
+```
+
+**Placeholder rules (ONLY for cascading):**
 - Simple: `{{{{tool_name.field}}}}`
 - Nested: `{{{{tool_name.data.nested.field}}}}`
 - Arrays: `{{{{tool_name.data.results[0].id}}}}` (use [0] for first item, [1] for second, etc.)
@@ -985,10 +1415,47 @@ Format: `{{{{tool_name.data.field}}}}`
 3. Use dot notation to navigate: `data.results[0].id`
 4. Use array index [0] for first item in arrays
 
-**Common patterns:**
+**Common patterns (ONLY for cascading):**
 - Get first result: `{{{{tool.data.results[0].field}}}}`
 - Get nested field: `{{{{tool.data.item.nested_field}}}}`
 - Get by index: `{{{{tool.data.items[2].id}}}}`
+
+## Pagination Handling (CRITICAL)
+
+**When tool results indicate more data is available:**
+- Check tool results for pagination indicators:
+  - `nextPageToken` (string, not null/empty) → More pages available
+  - `isLast: false` → More pages available
+  - `hasMore: true` → More pages available
+  - `total` > number of items returned → More pages available
+
+**Automatic Pagination Rules:**
+- If user requests "all", "complete", "everything", "entire list", or similar → Handle pagination automatically
+- Use cascading tool calls to fetch subsequent pages
+- Example for Jira search pagination:
+  ```json
+  {{
+    "tools": [
+      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "maxResults": 100}}}},
+      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{{{jira.search_issues.data.nextPageToken}}}}"}}}}
+    ]
+  }}
+  ```
+- Continue fetching pages until:
+  - `isLast: true` is returned, OR
+  - No `nextPageToken` exists (null/empty), OR
+  - `hasMore: false` is returned
+
+**CRITICAL Rules:**
+- **DO NOT ask for clarification** about pagination - handle it automatically when user requests "all" or "complete"
+- **DO NOT** stop after first page if pagination indicators show more data
+- Combine all results from all pages when presenting to the user
+- If user asks for specific count (e.g., "first 50"), respect that limit and don't paginate
+
+**Pagination Field Access:**
+- `nextPageToken` is in `data.nextPageToken` (for most tools)
+- `isLast` is in `data.isLast` (for most tools)
+- Use placeholders: `{{{{tool_name.data.nextPageToken}}}}` to get the token for next call
 
 ## Context Reuse (CRITICAL)
 
@@ -996,6 +1463,13 @@ Format: `{{{{tool_name.data.field}}}}`
 - Was this content already discussed? → Use it directly
 - Did user say "this/that/above"? → Refers to previous message
 - Is user adding/modifying previous data? → Don't re-fetch
+- **Is user asking about the conversation itself?** → `can_answer_directly: true` - NO tools needed
+
+**Meta-Questions About Conversation (NO TOOLS NEEDED):**
+- "what did we discuss", "what have we talked about", "summarize our conversation"
+- "what did I ask you", "what requests did I make", "what did you do"
+- "what is all that we have discussed", "recap what happened"
+- These questions are about the conversation history itself → Set `can_answer_directly: true` and answer from conversation history
 
 **Example:**
 ```
@@ -1005,28 +1479,88 @@ Action: Use conversation context, call ONLY the action tool needed
 DON'T: Re-fetch data that was already displayed
 ```
 
-**General rule:** Conversation context beats tool calls.
+**Example - Meta-Question:**
+```
+User: "from the all above conversations what is all that we have discussed and what all have i asked you to do?"
+Action: Set can_answer_directly: true, answer from conversation history, NO tools
+```
 
-## Documentation Creation & Content Synthesis
+**General rule:** Conversation context beats tool calls. Meta-questions about conversation = direct answer.
 
-**When user asks to create documentation:**
-- If previous messages have KB citations → Start with `retrieval.search_internal_knowledge`
-- If creating from scratch → Use `retrieval.search_internal_knowledge` with topic keywords
+## Content Generation for Action Tools
 
-**Pattern:**
+**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
+
+**⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
+
+**Content Generation Rules:**
+
+1. **Extract from conversation history:**
+   - Look at previous assistant messages for the actual content
+   - Extract the COMPLETE markdown/HTML content that was shown to the user
+   - This is the content that should go on the page/in the message
+
+2. **Extract from tool results:**
+   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
+   - Extract the relevant content from those results
+   - Combine with conversation history if needed
+
+3. **Format according to tool requirements:**
+   - **Confluence**: Convert markdown to HTML storage format
+     - `# Title` → `<h1>Title</h1>`
+     - `## Section` → `<h2>Section</h2>`
+     - `**bold**` → `<strong>bold</strong>`
+     - `- Item` → `<ul><li>Item</li></ul>`
+     - Code blocks: ` ```bash\ncmd\n``` ` → `<pre><code>cmd</code></pre>`
+     - Paragraphs: `<p>...</p>`
+   - **Gmail/Slack**: Use plain text or markdown as required
+   - **Other tools**: Check tool descriptions for format requirements
+
+4. **Generate COMPLETE content:**
+   - Include ALL sections, details, bullets, code blocks
+   - NEVER include instruction text or placeholders
+   - The content you generate is sent DIRECTLY to the tool
+
+**Example for Confluence (with tool results):**
 ```json
 {{
   "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "topic keywords"}}}},
-    {{"name": "service.create_document", "args": {{
-      "title": "...",
-      "content": "Content will be synthesized by respond_node from retrieval results"
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "deployment guide"}}}},
+    {{"name": "confluence.create_page", "args": {{
+      "space_id": "SD",
+      "page_title": "Deployment Guide",
+      "page_content": "<h1>Deployment Guide</h1><h2>Prerequisites</h2><ul><li>Docker</li><li>Docker Compose</li></ul><h2>Steps</h2><pre><code>docker compose up</code></pre>"
     }}}}
   ]
 }}
 ```
 
-**Key principle:** Planner fetches data, respond_node synthesizes final content. Don't hardcode long content in planner.
+**Example for Confluence (from conversation history):**
+If previous assistant message had:
+```
+# Saurabh — Education & Skills
+## Education
+- B.Tech in Computer Science...
+```
+
+Generate:
+```json
+{{
+  "tools": [{{
+    "name": "confluence.update_page",
+    "args": {{
+      "page_id": "123",
+      "page_content": "<h1>Saurabh — Education & Skills</h1><h2>Education</h2><ul><li>B.Tech in Computer Science...</li></ul>"
+    }}
+  }}]
+}}
+```
+
+**⚠️ CRITICAL:**
+- Generate the FULL, COMPLETE content in the planner
+- Use conversation history AND tool results
+- Format correctly for the target tool
+- NEVER use placeholder text or instructions
 
 {jira_guidance}
 {confluence_guidance}
@@ -1056,11 +1590,44 @@ Set `needs_clarification: true` ONLY if:
 - User asks "tell me about X" or "what is X" → Use retrieval
 - Optional parameters are missing → Use tool defaults or omit them
 
-## Reference Data & User Context
+## Reference Data & User Context (CRITICAL)
 
-**Check Reference Data first:**
-- Previous responses may have needed IDs/keys
-- Use directly instead of calling tools
+
+**⚠️ ALWAYS check Reference Data FIRST before calling tools:**
+- Reference Data contains IDs/keys from previous responses (space IDs, project keys, page IDs, issue keys, etc.)
+- **USE THESE DIRECTLY** - DO NOT call tools to fetch them again
+- Example: If Reference Data shows "Product Roadmap (id=393223)", use `space_id: "393223"` directly
+- **DO NOT** call `get_spaces` to find a space that's already in Reference Data
+- **DO NOT** use array indices like `results[0]` when you have the exact ID in Reference Data
+
+**Reference Data Format:**
+- **Confluence Spaces**: `{{"type": "confluence_space", "name": "Product Roadmap", "id": "393223", "key": "PR"}}`
+  - Use `id` field directly: `{{"space_id": "393223"}}`
+- **Jira Projects**: `{{"type": "jira_project", "name": "PipesHub AI", "key": "PA"}}`
+  - Use `key` field directly: `{{"project_key": "PA"}}`
+- **Jira Issues**: `{{"type": "jira_issue", "key": "PA-123", "summary": "..."}}`
+  - Use `key` field directly: `{{"issue_key": "PA-123"}}`
+- **Confluence Pages**: `{{"type": "confluence_page", "name": "Overview", "id": "65816"}}`
+  - Use `id` field directly: `{{"page_id": "65816"}}`
+
+**Example - Using Reference Data:**
+```
+Reference Data shows: Product Roadmap (id=393223), Guides (id=1540112), Support (id=13041669)
+User asks: "get pages for PR, Guides, SUP"
+
+CORRECT:
+{{"tools": [
+  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "393223"}}}},
+  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "1540112"}}}},
+  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "13041669"}}}}
+]}}
+
+WRONG (don't do this):
+{{"tools": [
+  {{"name": "confluence.get_spaces", "args": {{}}}},
+  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}}}
+]}}
+```
 
 **User asking about themselves:**
 - Use provided user info directly
@@ -1078,7 +1645,14 @@ Set `needs_clarification: true` ONLY if:
   ]
 }}
 
-**Return ONLY valid JSON, no markdown.**"""
+**CRITICAL Output Rules:**
+- **Return ONLY ONE valid JSON object** - DO NOT output multiple JSON objects
+- **DO NOT** wrap JSON in markdown code blocks
+- **DO NOT** add explanatory text before or after the JSON
+- **DO NOT** output partial JSON or multiple JSON objects concatenated
+- The response must be parseable as a single JSON object
+
+**Return ONLY valid JSON, no markdown, no multiple JSON objects.**"""
 
 
 # ============================================================================
@@ -1102,6 +1676,24 @@ JIRA_GUIDANCE = r"""
 - Week: `updated >= -7d`
 - Month: `updated >= -30d`
 - Quarter: `updated >= -90d`
+
+**Pagination Handling:**
+- When `jira.search_issues` or `jira.get_issues` returns results with `nextPageToken` or `isLast: false`, there are MORE results available
+- If user asks for "all issues", "all results", "everything", or "complete list", you MUST handle pagination automatically:
+  1. Check if result has `nextPageToken` field (not null/empty)
+  2. If yes, call the same tool again with `nextPageToken` parameter to get next page
+  3. Continue until `isLast: true` or no `nextPageToken` exists
+- Example cascading for pagination:
+  ```json
+  {
+    "tools": [
+      {"name": "jira.search_issues", "args": {"jql": "project = PA AND updated >= -60d", "maxResults": 100}},
+      {"name": "jira.search_issues", "args": {"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{jira.search_issues.data.nextPageToken}}"}}
+    ]
+  }
+  ```
+- **CRITICAL**: For "all" or "complete" requests, automatically handle pagination - DO NOT ask for clarification
+- Combine all results from all pages when presenting to the user
 """
 
 
@@ -1124,105 +1716,21 @@ CONFLUENCE_GUIDANCE = r"""
 - `update_page`: Uses `page_id`, `page_title` (optional), `page_content` (optional)
 - `get_page_content`: Uses `page_id`
 
+**⚠️ CRITICAL: Never Use Retrieval for IDs/Keys**
+- ❌ Don't use `retrieval.search_internal_knowledge` to get page_id or space_id
+- ✅ Use `confluence.search_pages` or `confluence.get_spaces` to get structured IDs
+- Retrieval returns formatted strings, not JSON - cannot extract structured fields
+
 **Space ID resolution:**
 1. Check Reference Data for `id`
 2. If not found: Call `confluence.get_spaces`, extract numeric `id`
 3. Use numeric ID (not key/name)
 
-## CRITICAL: Content Synthesis for Confluence Pages
-
-### ❌ DON'T: Hardcode Long Content in Planner
-```json
-{{
-  "tools": [{{
-    "name": "confluence.update_page",
-    "args": {{
-      "page_id": "123",
-      "page_content": "<h1>Title</h1><p>Paragraph 1...</p><p>Paragraph 2...</p>..."
-    }}
-  }}]
-}}
-```
-
-### ✅ DO: Let respond_node Synthesize Content
-
-**Pattern 1: Use Placeholders (for simple data)**
-```json
-{{
-  "tools": [{{
-    "name": "confluence.get_page_content",
-    "args": {{"page_id": "456"}}
-  }}, {{
-    "name": "confluence.update_page",
-    "args": {{
-      "page_id": "123",
-      "page_title": "{{{{confluence.get_page_content.data.title}}}}",
-      "page_content": "Content will be synthesized by respond_node from fetched page"
-    }}
-  }}]
-}}
-```
-
-**Pattern 2: Brief Description (for complex synthesis)**
-```json
-{{
-  "tools": [{{
-    "name": "retrieval.search_internal_knowledge",
-    "args": {{"query": "deployment guide"}}
-  }}, {{
-    "name": "confluence.get_page_content",
-    "args": {{"page_id": "page1"}}
-  }}, {{
-    "name": "confluence.update_page",
-    "args": {{
-      "page_id": "summary_page",
-      "page_content": "Combined summary of pages - respond_node will synthesize from tool results"
-    }}
-  }}]
-}}
-```
-
-**How it works:**
-1. Planner fetches the data (get_page_content, retrieval, etc.)
-2. Planner calls update_page with brief placeholder text
-3. **respond_node** sees all tool results and synthesizes the actual HTML content
-4. respond_node updates the page with complete, formatted content
-
-**Key insight:** The `page_content` in planner args is just a **signal** to respond_node. The actual content synthesis happens in respond_node using ALL tool results.
-
-## Example: Update Page with Summary of Multiple Pages
-
-**User request:** "Get pages 123 and 456, summarize them, update page 789"
-
-**Correct plan:**
-```json
-{{
-  "tools": [
-    {{"name": "confluence.get_page_content", "args": {{"page_id": "123"}}}},
-    {{"name": "confluence.get_page_content", "args": {{"page_id": "456"}}}},
-    {{"name": "confluence.update_page", "args": {{
-      "page_id": "789",
-      "page_title": "Combined Summary",
-      "page_content": "Summary of pages 123 and 456 - respond_node will generate from fetched content"
-    }}}}
-  ]
-}}
-```
-
-**What respond_node does:**
-1. Sees tool results for pages 123 and 456 with full content
-2. Synthesizes a comprehensive summary in HTML
-3. Updates page 789 with the synthesized content
-
-**Don't:**
-- ❌ Try to put full HTML in page_content
-- ❌ Use placeholders for long content (they'll fail)
-- ❌ Truncate content to fit token limits
-
-**Do:**
-- ✅ Fetch all needed data with tools
-- ✅ Use brief description in page_content
-- ✅ Let respond_node synthesize the final HTML
+**For content generation:**
+- When `create_page` or `update_page` needs content, use the two-step flow:
+  1. First: Generate content using conversation history and tool results
+  2. Then: Call the tool with the generated content
+- See tool descriptions for content format requirements
 """
 
 PLANNER_USER_TEMPLATE = """Query: {query}
@@ -1366,9 +1874,10 @@ async def planner_node(
     llm = state.get("llm")
     query = state.get("query", "")
 
+    # Send initial planning status
     safe_stream_write(writer, {
         "event": "status",
-        "data": {"status": "planning", "message": "Planning..."}
+        "data": {"status": "planning", "message": "Analyzing your request and planning actions..."}
     }, config)
 
     # Build system prompt with tool descriptions
@@ -1382,23 +1891,61 @@ async def planner_node(
         confluence_guidance=confluence_guidance
     )
 
-    # Build user prompt with context
-    user_prompt = _build_planner_user_prompt(state, query, log)
+    # Build messages with conversation context (using LangChain message format for better context awareness)
+    messages = _build_planner_messages(state, query, log)
 
     # Add retry/continue context if needed
     if state.get("is_retry"):
-        user_prompt = _build_retry_context(state) + "\n\n" + user_prompt
+        retry_context = _build_retry_context(state)
+        # Prepend retry context to the last HumanMessage
+        if messages and isinstance(messages[-1], HumanMessage):
+            messages[-1].content = retry_context + "\n\n" + messages[-1].content
+        else:
+            messages.append(HumanMessage(content=retry_context))
         state["is_retry"] = False
         log.info("🔄 Retry mode active")
 
     if state.get("is_continue"):
-        user_prompt = _build_continue_context(state, log) + "\n\n" + user_prompt
+        continue_context = _build_continue_context(state, log)
+        # Prepend continue context to the last HumanMessage
+        if messages and isinstance(messages[-1], HumanMessage):
+            messages[-1].content = continue_context + "\n\n" + messages[-1].content
+        else:
+            messages.append(HumanMessage(content=continue_context))
         state["is_continue"] = False
+
+        # Send informative continue mode status
+        iteration_count = state.get("iteration_count", 0)
+        max_iterations = state.get("max_iterations", NodeConfig.MAX_ITERATIONS)
+        executed_tools = state.get("executed_tool_names", [])
+
+        if executed_tools:
+            last_tool = executed_tools[-1] if executed_tools else "previous steps"
+            if "retrieval" in last_tool.lower():
+                action_desc = "gathered information"
+            elif "create" in last_tool.lower():
+                action_desc = "created resources"
+            elif "update" in last_tool.lower():
+                action_desc = "updated resources"
+            elif "search" in last_tool.lower() or "get" in last_tool.lower():
+                action_desc = "retrieved information"
+            else:
+                action_desc = "completed previous steps"
+
+            status_msg = f"Step {iteration_count + 1}/{max_iterations}: Planning next actions after we {action_desc}..."
+        else:
+            status_msg = f"Step {iteration_count + 1}/{max_iterations}: Planning next steps to complete your request..."
+
+        safe_stream_write(writer, {
+            "event": "status",
+            "data": {"status": "planning", "message": status_msg}
+        }, config)
+
         log.info("➡️ Continue mode active")
 
     # Plan with validation retry loop
     plan = await _plan_with_validation_retry(
-        llm, system_prompt, user_prompt, state, log, query
+        llm, system_prompt, messages, state, log, query, writer, config
     )
 
     # Store plan in state
@@ -1426,155 +1973,159 @@ async def planner_node(
 
     return state
 
+def _build_conversation_messages(conversations: List[Dict], log: logging.Logger) -> List[Union[HumanMessage, AIMessage]]:
+    """Convert conversation history to LangChain messages with sliding window
 
-# ============================================================================
-# PLANNER HELPER FUNCTIONS
-# ============================================================================
+    Uses a sliding window of MAX_CONVERSATION_HISTORY user+bot pairs (40 messages total),
+    but ALWAYS includes ALL reference data from the entire conversation history.
 
-def _detect_kb_citations_in_history(conversations: List[Dict]) -> bool:
-    """Detect if recent responses have KB citations"""
-    for conv in conversations[-3:]:  # Check last 3 messages
-        if conv.get("role") == "bot_response":
-            content = conv.get("content", "")
-            # Check for KB citation patterns
-            if any(pattern in content for pattern in ["[R", "KB\n", "PipesHub-Readme"]):
-                return True
-    return False
+    Args:
+        conversations: List of conversation dicts with role and content
+        log: Logger instance
 
-
-def _extract_topic_from_kb_context(conversations: List[Dict]) -> str:
-    """Extract main topic from KB-cited responses"""
-    for conv in reversed(conversations[-3:]):
-        if conv.get("role") == "bot_response":
-            content = conv.get("content", "")
-            if "[R" in content or "KB" in content:
-                # Extract first heading or key topic
-                lines = content.split("\n")
-                for line in lines:
-                    if line.startswith("#"):
-                        return line.replace("#", "").strip()
-    return ""
-
-
-
-
-def _detect_content_reference(query: str, conversations: List[Dict], log: logging.Logger) -> bool:
+    Returns:
+        List of HumanMessage and AIMessage objects
     """
-    Detect if user is referencing content from previous messages.
-
-    Triggers ONLY when:
-    - User says "add this/that to..." after detailed content was shown
-    - User says "use the above" after content was displayed
-
-    DO NOT trigger for:
-    - "create a page of the above" → This needs NEW page creation, not reuse
-    - "update page with summary of X" → Needs fetching X, not reusing prev content
-    """
-    query_lower = query.lower()
-
-    # ✅ Strong reuse signals (definitely using prev content)
-    strong_reuse = [
-        "add this to",
-        "add that to",
-        "send this to",
-        "post this to",
-        "use the above for"
-    ]
-
-    # ❌ Weak signals (might need new data)
-    weak_signals = [
-        "create",
-        "make",
-        "generate",  # Creating something NEW
-        "update with summary",  # Needs fetching + synthesis
-        "page of the above",  # Misleading - needs creation
-    ]
-
-    # Check for strong reuse signals
-    has_strong_reuse = any(signal in query_lower for signal in strong_reuse)
-    if not has_strong_reuse:
-        return False
-
-    # Check for weak signals that override
-    has_weak_signal = any(signal in query_lower for signal in weak_signals)
-    if has_weak_signal:
-        log.debug("Weak signal detected - not treating as content reuse")
-        return False
-
-    # Check if previous message had detailed content
     if not conversations:
-        return False
+        return []
 
-    last_bot_message = None
-    for conv in reversed(conversations):
+    messages = []
+    all_reference_data = []
+
+    # First pass: Collect ALL reference data from entire history (no limit)
+    for conv in conversations:
         if conv.get("role") == "bot_response":
-            last_bot_message = conv
-            break
+            ref_data = conv.get("referenceData", [])
+            if ref_data:
+                all_reference_data.extend(ref_data)
 
-    if not last_bot_message:
-        return False
+    # Second pass: Apply sliding window to conversation messages
+    # Count user+bot pairs (each pair = 2 messages)
+    user_bot_pairs = []
+    current_pair = []
 
-    content = last_bot_message.get("content", "")
+    for conv in conversations:
+        role = conv.get("role", "")
+        if role == "user_query":
+            if current_pair:  # Start new pair
+                user_bot_pairs.append(current_pair)
+                current_pair = [conv]
+            else:
+                current_pair = [conv]
+        elif role == "bot_response":
+            if current_pair:
+                current_pair.append(conv)
+                user_bot_pairs.append(current_pair)
+                current_pair = []
+            else:
+                # Bot response without user query (shouldn't happen, but handle it)
+                user_bot_pairs.append([conv])
 
-    # Heuristic: If last response was long and detailed (>500 chars), likely contains reusable content
-    if len(content) > 500:
-        log.debug(f"Previous response has {len(content)} chars - treating as reusable content")
-        return True
+    # Add any remaining pair
+    if current_pair:
+        user_bot_pairs.append(current_pair)
 
-    return False
-
-
-def _build_planner_user_prompt(state: ChatState, query: str, log: logging.Logger) -> str:
-    """Build user prompt with conversation context and smart content detection"""
-    previous_conversations = state.get("previous_conversations", [])
-
-    # Detect KB content in history
-    has_kb_citations = _detect_kb_citations_in_history(previous_conversations)
-
-    # Detect if user is referencing previously discussed content
-    is_referencing_previous = _detect_content_reference(query, previous_conversations, log)
-
-    # Build base prompt
-    if previous_conversations:
-        conversation_history = _format_conversation_history(previous_conversations, log)
-        user_prompt = PLANNER_USER_TEMPLATE_WITH_CONTEXT.format(
-            conversation_history=conversation_history,
-            query=query
-        )
-        log.debug(f"Using {len(previous_conversations)} previous messages")
-
-        # Add context reuse hint if user references previous content
-        if is_referencing_previous:
-            context_hint = """
-## 🎯 CONTENT REUSE DETECTED
-User is referencing content from previous messages.
-Previous assistant messages contain the information user needs.
-**DON'T re-fetch what was already shown.**
-**USE conversation context directly** - respond_node will extract and format.
-"""
-            user_prompt = context_hint + "\n\n" + user_prompt
-            log.info("📌 Content reference detected - using conversation context")
-
-        # Add retrieval hint if KB citations detected (but not if already using conversation context)
-        elif has_kb_citations and any(word in query.lower() for word in ["create", "page", "document", "above", "summary", "this", "that"]):
-            topic = _extract_topic_from_kb_context(previous_conversations)
-            retrieval_hint = f"""
-## 🔍 RETRIEVAL REQUIRED DETECTED
-Previous response had KB citations about: {topic}
-User wants to create documentation → **USE retrieval.search_internal_knowledge FIRST**
-Query suggestion: "{topic.lower()}"
-"""
-            user_prompt = retrieval_hint + "\n\n" + user_prompt
-            log.info(f"📚 KB content detected - adding retrieval hint for topic: {topic}")
+    # Apply sliding window: keep last MAX_CONVERSATION_HISTORY pairs
+    if len(user_bot_pairs) > MAX_CONVERSATION_HISTORY:
+        user_bot_pairs = user_bot_pairs[-MAX_CONVERSATION_HISTORY:]
+        log.debug(f"Applied sliding window: kept last {MAX_CONVERSATION_HISTORY} user+bot pairs from {len(conversations)} total conversations")
     else:
-        user_prompt = PLANNER_USER_TEMPLATE.format(query=query)
+        log.debug(f"Using all {len(user_bot_pairs)} user+bot pairs (within limit of {MAX_CONVERSATION_HISTORY})")
 
-    # Add user context
+    # Convert pairs to messages
+    for pair in user_bot_pairs:
+        for conv in pair:
+            role = conv.get("role", "")
+            content = conv.get("content", "")
+
+            if role == "user_query":
+                messages.append(HumanMessage(content=content))
+            elif role == "bot_response":
+                messages.append(AIMessage(content=content))
+
+    # ALWAYS add ALL reference data (from entire history, not just window)
+    if all_reference_data:
+        ref_data_text = _format_reference_data(all_reference_data, log)
+        # Append reference data to the last AI message if exists, otherwise create a new message
+        if messages and isinstance(messages[-1], AIMessage):
+            # Append to existing AI message
+            messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
+        else:
+            # Create a new message with reference data (though this shouldn't happen)
+            messages.append(AIMessage(content=ref_data_text))
+        log.debug(f"📎 Included {len(all_reference_data)} reference items from entire conversation history")
+
+    return messages
+
+
+def _format_reference_data(all_reference_data: List[Dict], log: logging.Logger) -> str:
+    """Format reference data for inclusion in messages"""
+    if not all_reference_data:
+        return ""
+
+    result = "## Reference Data (from previous responses - use these IDs/keys directly):\n"
+
+    # Group by type
+    spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
+    projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
+    issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
+    pages = [item for item in all_reference_data if item.get("type") == "confluence_page"]
+
+    # Show up to 10 reference items per type
+    max_items = 10
+
+    if spaces:
+        result += "**Confluence Spaces** (use `id` for space_id): "
+        result += ", ".join([f"{item.get('name', '?')} (id={item.get('id', '?')})" for item in spaces[:max_items]])
+        result += "\n"
+
+    if projects:
+        result += "**Jira Projects** (use `key`): "
+        result += ", ".join([f"{item.get('name', '?')} (key={item.get('key', '?')})" for item in projects[:max_items]])
+        result += "\n"
+
+    if issues:
+        result += "**Jira Issues** (use `key`): "
+        result += ", ".join([f"{item.get('key', '?')}" for item in issues[:max_items]])
+        result += "\n"
+
+    if pages:
+        result += "**Confluence Pages** (use `id` for page_id): "
+        result += ", ".join([f"{item.get('title', '?')} (id={item.get('id', '?')})" for item in pages[:max_items]])
+        result += "\n"
+
+    log.debug(f"📎 Included {len(all_reference_data)} reference items (showing up to {max_items} per type)")
+
+    return result
+
+
+def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> List[Union[HumanMessage, AIMessage, SystemMessage]]:
+    """Build LangChain messages for planner with conversation context - using message format for better context awareness
+
+    Returns:
+        List of messages: [SystemMessage (optional), ...conversation messages..., HumanMessage (current query + context)]
+    """
+    previous_conversations = state.get("previous_conversations", [])
+    messages = []
+
+    # Convert conversation history to LangChain messages (with sliding window)
+    if previous_conversations:
+        conversation_messages = _build_conversation_messages(previous_conversations, log)
+        messages.extend(conversation_messages)
+        log.debug(f"Using {len(conversation_messages)} messages from {len(previous_conversations)} conversations (sliding window applied)")
+
+    # Build current query message
     user_context = _format_user_context(state)
     if user_context:
-        user_prompt = user_prompt + "\n\n" + user_context
+        # Combine query and user context
+        query_content = f"{query}\n\n{user_context}"
+    else:
+        query_content = query
 
-    return user_prompt
+    # Add current query as HumanMessage
+    messages.append(HumanMessage(content=query_content))
+
+    return messages
 
 
 def _format_user_context(state: ChatState) -> str:
@@ -1620,61 +2171,6 @@ def _format_user_context(state: ChatState) -> str:
         parts.append("")
 
     return "\n".join(parts)
-
-
-def _format_conversation_history(conversations: List[Dict], log: logging.Logger) -> str:
-    """Format conversation history with reference data"""
-    if not conversations:
-        return ""
-
-    recent = conversations[-5:]
-    lines = []
-    all_reference_data = []
-
-    for conv in recent:
-        role = conv.get("role", "")
-        content = conv.get("content", "")
-
-        if role == "user_query":
-            content = content[:USER_QUERY_MAX_LENGTH] if len(content) > USER_QUERY_MAX_LENGTH else content
-            lines.append(f"User: {content}")
-        elif role == "bot_response":
-            content = content[:BOT_RESPONSE_MAX_LENGTH] if len(content) > BOT_RESPONSE_MAX_LENGTH else content
-            lines.append(f"Assistant: {content}")
-
-            ref_data = conv.get("referenceData", [])
-            if ref_data:
-                all_reference_data.extend(ref_data)
-
-    result = "\n".join(lines)
-
-    # Add reference data if available
-    if all_reference_data:
-        result += "\n\n## Reference Data (from previous responses - use these IDs/keys directly):\n"
-
-        # Group by type
-        spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
-        projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
-        issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
-
-        if spaces:
-            result += "**Confluence Spaces** (use `id` for space_id): "
-            result += ", ".join([f"{item.get('name', '?')} (id={item.get('id', '?')})" for item in spaces[:5]])
-            result += "\n"
-
-        if projects:
-            result += "**Jira Projects** (use `key`): "
-            result += ", ".join([f"{item.get('name', '?')} (key={item.get('key', '?')})" for item in projects[:5]])
-            result += "\n"
-
-        if issues:
-            result += "**Jira Issues** (use `key`): "
-            result += ", ".join([f"{item.get('key', '?')}" for item in issues[:5]])
-            result += "\n"
-
-        log.debug(f"📎 Included {len(all_reference_data)} reference items")
-
-    return result
 
 
 def _extract_missing_params_from_error(error_msg: str) -> List[str]:
@@ -1758,40 +2254,83 @@ def _build_retry_context(state: ChatState) -> str:
 
 
 def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
-    """Build context for continuing with more tools"""
+    """Build context for continuing with more tools with full results for content generation"""
     tool_results = state.get("all_tool_results", [])
     if not tool_results:
         return ""
 
-    # Format last 5 results
+    # Format last 5 results with more detail for content generation
     result_parts = []
     for result in tool_results[-5:]:
         tool_name = result.get("tool_name", "unknown")
         status = result.get("status", "unknown")
-        result_data = str(result.get("result", ""))[:500]
+        result_data = result.get("result", "")
 
-        result_parts.append(f"- {tool_name} ({status}): {result_data}")
+        # For successful results, include full data (not truncated) for content generation
+        if status == "success":
+            # Try to extract structured data
+            if isinstance(result_data, dict):
+                # Include full data structure for content extraction
+                result_str = json.dumps(result_data, default=str, indent=2)[:2000]  # More data for content gen
+            else:
+                result_str = str(result_data)[:2000]
+        else:
+            result_str = str(result_data)[:500]
 
-    return f"""## 📋 PREVIOUS TOOL RESULTS (use this data for next steps)
+        result_parts.append(f"- {tool_name} ({status}):\n{result_str}")
+
+    # Get conversation history for content generation
+    messages = state.get("messages", [])
+    conversation_context = ""
+    if messages:
+        # Get last few assistant messages (where content might be)
+        assistant_messages = [msg for msg in messages if hasattr(msg, 'content') and isinstance(msg.content, str)][-5:]
+        conversation_context = "\n\n".join([msg.content for msg in assistant_messages if msg.content])
+
+    context_parts = [f"""## 📋 PREVIOUS TOOL RESULTS (use this data for next steps and content generation)
 
 {chr(10).join(result_parts)}
 
-**IMPORTANT**: Use the data above to plan next steps. Extract IDs, keys, and other values.
-"""
+**IMPORTANT**:
+- Use the data above to plan next steps
+- Extract IDs, keys, and other values for placeholders
+- For action tools that need content (confluence.create_page, confluence.update_page, etc.), extract content from:
+  1. Tool results above (especially retrieval results)
+  2. Conversation history below
+  3. Generate FULL, COMPLETE content in the correct format (HTML for Confluence, etc.)"""]
+
+    if conversation_context:
+        context_parts.append(f"""## 💬 CONVERSATION HISTORY (for content generation)
+
+{conversation_context}
+
+**Use this content** when generating page_content, body, or other content parameters for action tools.""")
+
+    return "\n\n".join(context_parts)
 
 
 async def _plan_with_validation_retry(
-    llm: Any,
+    llm: BaseChatModel,
     system_prompt: str,
-    user_prompt: str,
+    messages: List[Union[HumanMessage, AIMessage, SystemMessage]],
     state: ChatState,
     log: logging.Logger,
-    query: str
+    query: str,
+    writer: Optional[StreamWriter] = None,
+    config: Optional[RunnableConfig] = None
 ) -> Dict[str, Any]:
     """
     Plan with tool validation retry loop.
 
     If planner suggests invalid tools, retry with error message showing available tools.
+
+    Args:
+        llm: The language model to use
+        system_prompt: System prompt with tool descriptions
+        messages: List of conversation messages (HumanMessage, AIMessage) - conversation history + current query
+        state: Chat state
+        log: Logger instance
+        query: Current user query (for error messages)
     """
     validation_retry_count = state.get("tool_validation_retry_count", 0)
     max_retries = NodeConfig.MAX_VALIDATION_RETRIES
@@ -1800,14 +2339,44 @@ async def _plan_with_validation_retry(
 
     while validation_retry_count <= max_retries:
         try:
-            # Call LLM
-            response = await asyncio.wait_for(
-                llm.ainvoke(
-                    [SystemMessage(content=system_prompt), HumanMessage(content=user_prompt)],
-                    config=invoke_config
-                ),
-                timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
-            )
+            # Build message list: SystemMessage + conversation history + current query
+            llm_messages = [SystemMessage(content=system_prompt)] + messages
+
+            # Start periodic status updates task if writer is available
+            update_task = None
+            if writer and config:
+                async def send_periodic_updates():
+                    """Send periodic status updates during long planning operations"""
+                    try:
+                        await asyncio.sleep(3)  # Wait 3 seconds before first update
+                        safe_stream_write(writer, {
+                            "event": "status",
+                            "data": {"status": "planning", "message": "Still analyzing... this may take a moment"}
+                        }, config)
+                        await asyncio.sleep(5)  # Wait 5 more seconds
+                        safe_stream_write(writer, {
+                            "event": "status",
+                            "data": {"status": "planning", "message": "Reviewing available tools and planning steps..."}
+                        }, config)
+                    except asyncio.CancelledError:
+                        pass
+
+                update_task = asyncio.create_task(send_periodic_updates())
+
+            try:
+                # Call LLM with full conversation context as messages
+                response = await asyncio.wait_for(
+                    llm.ainvoke(llm_messages, config=invoke_config),
+                    timeout=NodeConfig.PLANNER_TIMEOUT_SECONDS
+                )
+            finally:
+                # Cancel update task if it's still running
+                if update_task and not update_task.done():
+                    update_task.cancel()
+                    try:
+                        await update_task
+                    except asyncio.CancelledError:
+                        pass
 
             # Parse response
             plan = _parse_planner_response(
@@ -1846,7 +2415,12 @@ Choose tools ONLY from the available list above.
 
 **Original query**: {query}
 """
-                user_prompt = error_message + "\n\n" + user_prompt
+                # Prepend error message to the last HumanMessage
+                if messages and isinstance(messages[-1], HumanMessage):
+                    messages[-1].content = error_message + "\n\n" + messages[-1].content
+                else:
+                    # If no HumanMessage exists, create one
+                    messages.append(HumanMessage(content=error_message))
 
         except asyncio.TimeoutError:
             log.warning("⏱️ Planner timeout")
@@ -1871,6 +2445,39 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
     elif content.startswith("```"):
         content = re.sub(r'^```\s*\n?', '', content)
         content = re.sub(r'\n?```\s*$', '', content)
+
+    # Handle multiple JSON objects - extract the first complete one
+    # Sometimes LLM outputs multiple JSON objects concatenated (e.g., {"a":1}\n{"b":2})
+    if content.count('{') > 1:
+        # Try to find the first complete JSON object
+        brace_count = 0
+        start_idx = -1
+        found_valid = False
+        for i, char in enumerate(content):
+            if char == '{':
+                if brace_count == 0:
+                    start_idx = i
+                brace_count += 1
+            elif char == '}':
+                brace_count -= 1
+                if brace_count == 0 and start_idx >= 0:
+                    # Found a complete JSON object
+                    try:
+                        json_str = content[start_idx:i+1]
+                        test_plan = json.loads(json_str)
+                        if isinstance(test_plan, dict):
+                            # Prefer objects with "tools" field, but accept any valid dict
+                            if "tools" in test_plan or not found_valid:
+                                content = json_str  # Use this JSON object
+                                found_valid = True
+                                log.debug(f"Extracted first complete JSON object from multiple JSON responses (length: {len(json_str)})")
+                                if "tools" in test_plan:
+                                    break  # Found one with tools, use it
+                    except json.JSONDecodeError:
+                        continue
+        # If we found a valid one, content is already updated
+        if not found_valid:
+            log.warning("Multiple JSON objects detected but none were valid, trying original content")
 
     try:
         plan = json.loads(content)
@@ -2066,7 +2673,7 @@ def _get_field_type_name_v1(field_info) -> str:
         return "any"
 
 
-def _extract_parameters_from_schema(schema: Any, log: logging.Logger) -> Dict[str, Dict[str, Any]]:
+def _extract_parameters_from_schema(schema: Union[Dict[str, Any], type], log: logging.Logger) -> Dict[str, Dict[str, Any]]:
     """
     Extract parameter information from Pydantic schema.
 
@@ -2160,7 +2767,7 @@ def _format_tool_descriptions(tools: List, log: logging.Logger) -> str:
         lines.append(f"### {name}")
         if description:
             # Truncate long descriptions
-            desc_text = description[:200] if len(description) > 200 else description
+            desc_text = description[:MAX_TOOL_DESCRIPTION_LENGTH] if len(description) > MAX_TOOL_DESCRIPTION_LENGTH else description
             lines.append(f"  {desc_text}")
 
         # Extract parameter schema
@@ -2220,9 +2827,50 @@ async def execute_node(
         state["pending_tool_calls"] = False
         return state
 
+    # Build informative execution status
+    tool_names = [tool.get("name", "") for tool in planned_tools]
+    if len(tool_names) == 1:
+        tool_name = tool_names[0]
+        if "retrieval" in tool_name.lower():
+            status_msg = "Searching knowledge base for relevant information..."
+        elif "confluence" in tool_name.lower():
+            if "create" in tool_name.lower():
+                status_msg = "Creating Confluence page..."
+            elif "update" in tool_name.lower():
+                status_msg = "Updating Confluence page..."
+            else:
+                status_msg = "Accessing Confluence content..."
+        elif "jira" in tool_name.lower():
+            if "create" in tool_name.lower():
+                status_msg = "Creating Jira issue..."
+            elif "update" in tool_name.lower():
+                status_msg = "Updating Jira issue..."
+            else:
+                status_msg = "Accessing Jira..."
+        else:
+            status_msg = f"Executing {tool_name.replace('_', ' ').title()}..."
+    else:
+        # Multiple tools - describe what we're doing
+        has_retrieval = any("retrieval" in t.lower() for t in tool_names)
+        has_confluence = any("confluence" in t.lower() for t in tool_names)
+        has_jira = any("jira" in t.lower() for t in tool_names)
+
+        actions = []
+        if has_retrieval:
+            actions.append("searching knowledge base")
+        if has_confluence:
+            actions.append("working with Confluence")
+        if has_jira:
+            actions.append("working with Jira")
+
+        if actions:
+            status_msg = f"Executing {len(planned_tools)} operations: {', '.join(actions)}..."
+        else:
+            status_msg = f"Executing {len(planned_tools)} operations in parallel..."
+
     safe_stream_write(writer, {
         "event": "status",
-        "data": {"status": "executing", "message": f"Executing {len(planned_tools)} tool(s)..."}
+        "data": {"status": "executing", "message": status_msg}
     }, config)
 
     # Get available tools
@@ -2263,6 +2911,13 @@ async def execute_node(
     # Update state
     state["tool_results"] = tool_results
     state["all_tool_results"] = tool_results
+
+    # Track executed tool names for continue mode status messages
+    executed_tool_names = [r.get("tool_name", "") for r in tool_results if r.get("tool_name")]
+    if "executed_tool_names" in state:
+        state["executed_tool_names"].extend(executed_tool_names)
+    else:
+        state["executed_tool_names"] = executed_tool_names
 
     if not state.get("messages"):
         state["messages"] = []
@@ -2710,9 +3365,39 @@ async def prepare_continue_node(
 
     # Keep tool results for next planning
 
+    # Get context about what we're continuing with
+    query = state.get("query", "")
+    previous_tools = state.get("executed_tool_names", [])
+    iteration_count = state.get("iteration_count", 0)
+    max_iterations = state.get("max_iterations", NodeConfig.MAX_ITERATIONS)
+
+    # Build informative message based on what was done and what's needed
+    query_lower = query.lower()
+    if previous_tools:
+        last_tool = previous_tools[-1] if previous_tools else ""
+        if "retrieval" in last_tool.lower():
+            action_desc = "gathered information"
+            next_action = "taking action" if any(word in query_lower for word in ["create", "update", "make", "add", "edit"]) else "completing the task"
+        elif "create" in last_tool.lower():
+            action_desc = "created resources"
+            next_action = "completing additional steps"
+        elif "update" in last_tool.lower():
+            action_desc = "updated resources"
+            next_action = "completing additional steps"
+        elif "search" in last_tool.lower() or "get" in last_tool.lower():
+            action_desc = "retrieved information"
+            next_action = "taking action based on the information"
+        else:
+            action_desc = "completed previous steps"
+            next_action = "continuing with next steps"
+
+        message = f"Step {iteration_count}/{max_iterations}: After we {action_desc}, now {next_action}..."
+    else:
+        message = f"Step {iteration_count}/{max_iterations}: Planning next steps to complete your request..."
+
     safe_stream_write(writer, {
         "event": "status",
-        "data": {"status": "continuing", "message": "Continuing..."}
+        "data": {"status": "continuing", "message": message}
     }, config)
 
     max_iterations = state.get("max_iterations", NodeConfig.MAX_ITERATIONS)
@@ -2954,43 +3639,36 @@ async def respond_node(
 
 async def _generate_direct_response(
     state: ChatState,
-    llm: Any,
+    llm: BaseChatModel,
     log: logging.Logger,
     writer: StreamWriter,
     config: RunnableConfig
 ) -> str:
-    """Generate direct response with streaming"""
+    """Generate direct response with full conversation context as LangChain messages"""
     query = state.get("query", "")
     previous = state.get("previous_conversations", [])
 
-    # Build context
-    context_lines = []
-    for conv in previous[-3:]:
-        role = conv.get("role", "")
-        content = conv.get("content", "")[:200]
-        if role == "user_query":
-            context_lines.append(f"User: {content}")
-        elif role == "bot_response":
-            context_lines.append(f"Assistant: {content}...")
+    # Build messages with full conversation history (same as planner)
+    messages = []
 
-    context = "\n".join(context_lines) if context_lines else ""
+    # System message
     user_context = _format_user_context(state)
-    user_info_section = f"\n\n{user_context}" if user_context else ""
-
     system_content = "You are a helpful, friendly AI assistant. Respond naturally and concisely."
     if user_context:
         system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
+    messages.append(SystemMessage(content=system_content))
 
+    # Add conversation history as LangChain messages (with sliding window)
+    if previous:
+        conversation_messages = _build_conversation_messages(previous, log)
+        messages.extend(conversation_messages)
+        log.debug(f"Using {len(conversation_messages)} messages from {len(previous)} conversations for direct response (sliding window applied)")
+
+    # Current query
     user_content = query
-    if context:
-        user_content = f"{context}\n\nUser: {query}"
     if user_context:
-        user_content += user_info_section
-
-    messages = [
-        SystemMessage(content=system_content),
-        HumanMessage(content=user_content)
-    ]
+        user_content += f"\n\n{user_context}"
+    messages.append(HumanMessage(content=user_content))
 
     try:
         full_content = ""
@@ -3067,7 +3745,7 @@ def _build_tool_results_context(tool_results: List[Dict], final_results: List[Di
         parts.append("Transform data into professional markdown.\n")
         parts.append("Store IDs/keys in referenceData.\n\n")
 
-        for r in non_retrieval[:5]:
+        for r in non_retrieval:
             tool_name = r.get('tool_name', 'unknown')
             content = ToolResultExtractor.extract_data_from_result(r.get("result", ""))
 
@@ -3137,7 +3815,7 @@ def check_for_error(state: ChatState) -> Literal["error", "continue"]:
 # ============================================================================
 
 def _process_retrieval_output(result: object, state: ChatState, log: logging.Logger) -> str:
-    """Process retrieval tool output"""
+    """Process retrieval tool output (accumulates results from multiple retrieval calls)"""
     try:
         from app.agents.actions.retrieval.retrieval import RetrievalToolOutput
 
@@ -3154,13 +3832,42 @@ def _process_retrieval_output(result: object, state: ChatState, log: logging.Log
                 pass
 
         if retrieval_output:
-            state["final_results"] = retrieval_output.final_results
-            state["virtual_record_id_to_result"] = retrieval_output.virtual_record_id_to_result
+            # Accumulate final_results instead of overwriting (for parallel retrieval calls)
+            existing_final_results = state.get("final_results", [])
+            if not isinstance(existing_final_results, list):
+                existing_final_results = []
 
+            # Combine new results with existing ones
+            new_final_results = retrieval_output.final_results or []
+            combined_final_results = existing_final_results + new_final_results
+            state["final_results"] = combined_final_results
+
+            # Accumulate virtual_record_id_to_result
+            existing_virtual_map = state.get("virtual_record_id_to_result", {})
+            if not isinstance(existing_virtual_map, dict):
+                existing_virtual_map = {}
+
+            new_virtual_map = retrieval_output.virtual_record_id_to_result or {}
+            combined_virtual_map = {**existing_virtual_map, **new_virtual_map}
+            state["virtual_record_id_to_result"] = combined_virtual_map
+
+            # Accumulate tool_records
             if retrieval_output.virtual_record_id_to_result:
-                state["tool_records"] = list(retrieval_output.virtual_record_id_to_result.values())
+                existing_tool_records = state.get("tool_records", [])
+                if not isinstance(existing_tool_records, list):
+                    existing_tool_records = []
 
-            log.info(f"Retrieved {len(retrieval_output.final_results)} knowledge blocks")
+                new_tool_records = list(retrieval_output.virtual_record_id_to_result.values())
+                # Avoid duplicates by checking record IDs
+                existing_record_ids = {rec.get("_id") for rec in existing_tool_records if isinstance(rec, dict) and "_id" in rec}
+                unique_new_records = [
+                    rec for rec in new_tool_records
+                    if not (isinstance(rec, dict) and rec.get("_id") in existing_record_ids)
+                ]
+                combined_tool_records = existing_tool_records + unique_new_records
+                state["tool_records"] = combined_tool_records
+
+            log.info(f"Retrieved {len(new_final_results)} knowledge blocks (total: {len(combined_final_results)})")
             return retrieval_output.content
 
     except Exception as e:

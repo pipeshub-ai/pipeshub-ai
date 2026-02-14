@@ -10,7 +10,7 @@ while also supporting tool execution results.
 """
 
 from datetime import datetime
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -821,24 +821,37 @@ def create_response_messages(state) -> List[Any]:
     if knowledge_tool_msg:
         messages.append(knowledge_tool_msg)
 
-    # 3. Conversation history
+    # 3. Conversation history - Include ALL conversations with full content (no truncation, no limit)
     previous_conversations = state.get("previous_conversations", [])
-    max_history = 5
-    recent_convs = previous_conversations[-max_history:] if len(previous_conversations) > max_history else previous_conversations
 
     # Extract conversation memory for context enrichment
     from app.modules.agents.qna.conversation_memory import ConversationMemory
     memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
     state["conversation_memory"] = memory
 
-    for conv in recent_convs:
+    # Build conversation messages with ALL content preserved (same as planner)
+    all_reference_data = []
+    for conv in previous_conversations:
         role = conv.get("role")
         content = conv.get("content", "")
 
+        # Preserve ALL content - no truncation whatsoever
         if role == "user_query":
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
             messages.append(AIMessage(content=content))
+
+            # Collect reference data for later
+            ref_data = conv.get("referenceData", [])
+            if ref_data:
+                all_reference_data.extend(ref_data)
+
+    # Add reference data to the last AI message if available
+    if all_reference_data:
+        ref_data_text = _format_reference_data_for_response(all_reference_data)
+        if messages and isinstance(messages[-1], AIMessage):
+            # Append to existing AI message
+            messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
 
     # 4. Current query with context enrichment
     current_query = state["query"]
@@ -890,6 +903,45 @@ def create_response_messages(state) -> List[Any]:
     messages.append(HumanMessage(content=query_with_context))
 
     return messages
+
+
+def _format_reference_data_for_response(all_reference_data: List[Dict]) -> str:
+    """Format reference data for inclusion in response messages"""
+    if not all_reference_data:
+        return ""
+
+    result = "## Reference Data (from previous responses - use these IDs/keys directly):\n"
+
+    # Group by type
+    spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
+    projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
+    issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
+    pages = [item for item in all_reference_data if item.get("type") == "confluence_page"]
+
+    # Show up to 10 reference items per type
+    max_items = 10
+
+    if spaces:
+        result += "**Confluence Spaces** (use `id` for space_id): "
+        result += ", ".join([f"{item.get('name', '?')} (id={item.get('id', '?')})" for item in spaces[:max_items]])
+        result += "\n"
+
+    if projects:
+        result += "**Jira Projects** (use `key`): "
+        result += ", ".join([f"{item.get('name', '?')} (key={item.get('key', '?')})" for item in projects[:max_items]])
+        result += "\n"
+
+    if issues:
+        result += "**Jira Issues** (use `key`): "
+        result += ", ".join([f"{item.get('key', '?')}" for item in issues[:max_items]])
+        result += "\n"
+
+    if pages:
+        result += "**Confluence Pages** (use `id` for page_id): "
+        result += ", ".join([f"{item.get('title', '?')} (id={item.get('id', '?')})" for item in pages[:max_items]])
+        result += "\n"
+
+    return result
 
 
 # ============================================================================

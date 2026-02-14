@@ -46,7 +46,7 @@ class CreateIssueInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def extract_nested_values(cls, data: dict):
+    def extract_nested_values(cls, data: dict) -> dict:
         """Extract values from nested structures that LLMs might use"""
         if isinstance(data, dict):
             normalized = dict(data)
@@ -86,7 +86,7 @@ class GetIssuesInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def extract_project_key(cls, data: dict):
+    def extract_project_key(cls, data: dict) -> dict:
         """Extract project_key from various field names that LLMs might use"""
         if isinstance(data, dict):
             normalized = dict(data)
@@ -109,7 +109,7 @@ class GetIssueInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def extract_issue_key(cls, data: dict):
+    def extract_issue_key(cls, data: dict) -> dict:
         """Extract issue_key from various field names that LLMs might use"""
         if isinstance(data, dict):
             normalized = dict(data)
@@ -139,7 +139,7 @@ class AddCommentInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def extract_issue_key(cls, data: dict):
+    def extract_issue_key(cls, data: dict) -> dict:
         """Extract issue_key from various field names that LLMs might use"""
         if isinstance(data, dict):
             # Create a new dict to avoid modification during iteration
@@ -182,7 +182,7 @@ class UpdateIssueInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def extract_nested_values(cls, data: dict):
+    def extract_nested_values(cls, data: dict) -> dict:
         """Extract values from nested structures that LLMs might use"""
         if isinstance(data, dict):
             # Create normalized dict
@@ -249,7 +249,7 @@ class GetProjectMetadataInput(BaseModel):
 
     @model_validator(mode='before')
     @classmethod
-    def extract_project_key(cls, data: dict):
+    def extract_project_key(cls, data: dict) -> dict:
         """Extract project_key from various field names that LLMs might use"""
         if isinstance(data, dict):
             normalized = dict(data)

@@ -27,7 +27,6 @@ import informationIcon from '@iconify-icons/mdi/information';
 import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
-import tuneIcon from '@iconify-icons/mdi/tune';
 import deleteIcon from '@iconify-icons/mdi/delete-outline';
 import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
 import { NodeData } from '../../types/agent';
@@ -1588,7 +1587,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               {normalizeDisplayName(data.label)}
             </Typography>
           </Box>
-          {onDelete && (
+          {onDelete && !data?.type?.startsWith('user-input') && !data?.type?.startsWith('chat-response') && (
             <IconButton
               size="small"
               onClick={(e) => {
@@ -2292,36 +2291,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
           </Box>
         )}
 
-        {/* Toolset Badge */}
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 0.5,
-              px: 1.5,
-              py: 0.75,
-              background: `linear-gradient(135deg, ${alpha(colors.info, 0.1)} 0%, ${alpha(colors.primary, 0.1)} 100%)`,
-              border: `1px solid ${alpha(colors.info, 0.2)}`,
-              borderRadius: 2,
-              fontSize: '0.7rem',
-              fontWeight: 700,
-              color: colors.info,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              transition: 'all 0.2s ease',
-              '&:hover': {
-                background: `linear-gradient(135deg, ${alpha(colors.info, 0.2)} 0%, ${alpha(colors.primary, 0.2)} 100%)`,
-                borderColor: colors.info,
-                transform: 'scale(1.05)',
-                boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
-              },
-            }}
-          >
-            Toolset
-            <Icon icon={tuneIcon} width={12} height={12} />
-          </Box>
-        </Box>
       </Box>
 
       {/* Handles - uses modular NodeHandles component */}

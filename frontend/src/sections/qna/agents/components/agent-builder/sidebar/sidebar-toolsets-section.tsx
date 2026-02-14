@@ -124,6 +124,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                 alignItems: 'center',
                 px: 2,
                 py: 1,
+                pl: 4,
                 cursor: 'pointer',
                 '&:hover': {
                   backgroundColor: alpha(theme.palette.primary.main, 0.04),
@@ -306,7 +307,7 @@ export const SidebarToolsetsSection: React.FC<SidebarToolsetsSectionProps> = ({
                       '&::before': {
                         content: '""',
                         position: 'absolute',
-                        left: '32px',
+                        left: '52px',
                         top: 0,
                         bottom: 0,
                         width: '2px',

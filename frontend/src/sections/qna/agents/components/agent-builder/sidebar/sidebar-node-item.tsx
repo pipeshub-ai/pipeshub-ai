@@ -16,6 +16,7 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
   connectorIconPath,
   itemIcon,
   isDynamicIcon = false,
+  isDraggable = true,
 }) => {
   const theme = useTheme();
 
@@ -81,13 +82,13 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
   return (
     <ListItem
       button
-      draggable
-      onDragStart={handleDragStart}
+      draggable={isDraggable}
+      onDragStart={isDraggable ? handleDragStart : undefined}
       sx={{
         py: 0.75,
         px: 2,
         pl: isSubItem ? 5 : 3.5,
-        cursor: 'grab',
+        cursor: isDraggable ? 'grab' : 'default',
         borderRadius: 1,
         mx: isSubItem ? 1.5 : 1,
         my: 0.25,
@@ -98,7 +99,7 @@ export const SidebarNodeItem: React.FC<SidebarNodeItemProps> = ({
           backgroundColor: theme.palette.action.hover,
         },
         '&:active': {
-          cursor: 'grabbing',
+          cursor: isDraggable ? 'grabbing' : 'default',
           backgroundColor: theme.palette.action.selected,
         },
       }}

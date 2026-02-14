@@ -35,33 +35,27 @@ class CreatePageInput(BaseModel):
     page_title: str = Field(description="Page title")
     page_content: str = Field(description="Page content in storage format")
 
-
 class GetPageContentInput(BaseModel):
     """Schema for getting page content"""
     page_id: str = Field(description="Page ID")
 
-
 class GetPagesInSpaceInput(BaseModel):
     """Schema for getting pages in space"""
     space_id: str = Field(description="Space ID or key")
-
 
 class UpdatePageTitleInput(BaseModel):
     """Schema for updating page title"""
     page_id: str = Field(description="Page ID")
     new_title: str = Field(description="New title")
 
-
 class SearchPagesInput(BaseModel):
     """Schema for searching pages"""
     title: str = Field(description="Page title to search")
     space_id: Optional[str] = Field(default=None, description="Space ID to limit search")
 
-
 class GetSpaceInput(BaseModel):
     """Schema for getting space"""
     space_id: str = Field(description="Space ID")
-
 
 class UpdatePageInput(BaseModel):
     """Schema for updating a Confluence page"""
@@ -69,6 +63,11 @@ class UpdatePageInput(BaseModel):
     page_title: Optional[str] = Field(default=None, description="New page title (optional)")
     page_content: Optional[str] = Field(default=None, description="New page content in storage format (optional)")
 
+class CommentOnPageInput(BaseModel):
+    """Schema for commenting on a Confluence page"""
+    page_id: str = Field(description="Page ID")
+    comment_text: str = Field(description="Comment text/content")
+    parent_comment_id: Optional[str] = Field(default=None, description="Parent comment ID if replying to a comment (optional)")
 
 # Register Confluence toolset
 @ToolsetBuilder("Confluence")\
@@ -88,6 +87,8 @@ class UpdatePageInput(BaseModel):
                     # Write scopes for creating/updating content
                     AtlassianScope.CONFLUENCE_CONTENT_CREATE.value,  # For create_page
                     AtlassianScope.CONFLUENCE_PAGE_WRITE.value,      # For update_page_title
+                    AtlassianScope.CONFLUENCE_COMMENT_WRITE.value,      # For comment_on_page
+                    AtlassianScope.CONFLUENCE_COMMENT_DELETE.value,      # For delete_comment
                 ]
             ),
             fields=[
@@ -247,7 +248,34 @@ class Confluence:
         Args:
             space_id: The ID or key of the space
             page_title: The title of the page
-            page_content: The content of the page
+            page_content: The content of the page in Confluence storage format (HTML-like tags)
+
+        **CRITICAL: Content Format Requirements**
+
+        The `page_content` parameter MUST contain the FULL actual HTML content in Confluence storage format.
+        This content is sent DIRECTLY to Confluence - it is NOT processed or modified.
+
+        **Format Requirements:**
+        - Use HTML-like tags: `<h1>`, `<h2>`, `<p>`, `<ul>`, `<li>`, `<strong>`, `<em>`, etc.
+        - Use `<br/>` for line breaks
+        - Use `<code>` for inline code, `<pre><code>` for code blocks
+        - Lists: `<ul><li>Item</li></ul>` or `<ol><li>Item</li></ol>`
+
+        **Content Generation:**
+        - Extract content from conversation history or tool results
+        - Convert markdown to HTML format:
+          - `# Title` → `<h1>Title</h1>`
+          - `## Section` → `<h2>Section</h2>`
+          - `**bold**` → `<strong>bold</strong>`
+          - `- Item` → `<ul><li>Item</li></ul>`
+          - Code blocks: ` ```bash\ncmd\n``` ` → `<pre><code>cmd</code></pre>`
+        - Include ALL sections, details, bullets, code blocks
+        - NEVER include instruction text or placeholders
+
+        **Example:**
+        ```python
+        page_content = "<h1>Deployment Guide</h1><h2>Prerequisites</h2><ul><li>Docker</li><li>Docker Compose</li></ul><h2>Steps</h2><pre><code>docker compose up</code></pre>"
+        ```
 
         Returns:
             Tuple of (success, json_response)
@@ -661,7 +689,35 @@ class Confluence:
         Args:
             page_id: The ID of the page to update
             page_title: Optional new title for the page
-            page_content: Optional new content for the page in storage format
+            page_content: Optional new content for the page in Confluence storage format (HTML-like tags)
+
+        **CRITICAL: Content Format Requirements**
+
+        The `page_content` parameter MUST contain the FULL actual HTML content in Confluence storage format.
+        This content is sent DIRECTLY to Confluence - it is NOT processed or modified.
+
+        **Format Requirements:**
+        - Use HTML-like tags: `<h1>`, `<h2>`, `<p>`, `<ul>`, `<li>`, `<strong>`, `<em>`, etc.
+        - Use `<br/>` for line breaks
+        - Use `<code>` for inline code, `<pre><code>` for code blocks
+        - Lists: `<ul><li>Item</li></ul>` or `<ol><li>Item</li></ol>`
+
+        **Content Generation:**
+        - Extract content from conversation history or tool results
+        - If updating existing content, merge with current page content (fetch first using get_page_content)
+        - Convert markdown to HTML format:
+          - `# Title` → `<h1>Title</h1>`
+          - `## Section` → `<h2>Section</h2>`
+          - `**bold**` → `<strong>bold</strong>`
+          - `- Item` → `<ul><li>Item</li></ul>`
+          - Code blocks: ` ```bash\ncmd\n``` ` → `<pre><code>cmd</code></pre>`
+        - Include ALL sections, details, bullets, code blocks
+        - NEVER include instruction text or placeholders
+
+        **Example:**
+        ```python
+        page_content = "<h1>Updated Guide</h1><h2>New Section</h2><p>Additional information...</p>"
+        ```
 
         Returns:
             Tuple of (success, json_response)
@@ -798,3 +854,87 @@ class Confluence:
             logger.error(f"Error getting page versions: {e}")
             return False, json.dumps({"error": str(e)})
 
+    @tool(
+        app_name="confluence",
+        tool_name="comment_on_page",
+        description="Add a comment to a Confluence page",
+        args_schema=CommentOnPageInput,
+        returns="JSON with success status and comment details",
+        when_to_use=[
+            "User wants to add a comment to a Confluence page",
+            "User mentions 'Confluence' + wants to comment",
+            "User asks to comment on a page"
+        ],
+        when_not_to_use=[
+            "User wants to create page (use create_page)",
+            "User wants to read page (use get_page_content)",
+            "User wants info ABOUT Confluence (use retrieval)",
+            "No Confluence mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Add a comment to the Confluence page",
+            "Comment on page X",
+            "Leave a comment on this page"
+        ],
+        category=ToolCategory.DOCUMENTATION,
+        llm_description="Add a comment to a Confluence page. The comment_text parameter accepts plain text - it will be automatically formatted with HTML escaping and proper structure for Confluence."
+    )
+    def comment_on_page(
+        self,
+        page_id: str,
+        comment_text: str,
+        parent_comment_id: Optional[str] = None
+    ) -> Tuple[bool, str]:
+        """Add a comment to a Confluence page.
+
+        Args:
+            page_id: The ID of the page
+            comment_text: The comment text/content
+            parent_comment_id: Optional parent comment ID if replying to a comment
+
+        Returns:
+            Tuple of (success, json_response)
+        """
+        try:
+            # Convert page_id to int with proper error handling
+            try:
+                page_id_int = int(page_id)
+            except ValueError:
+                return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
+
+            # ✅ FIX: Properly format comment text with HTML escaping and storage format
+            import html
+
+            # Escape HTML special characters
+            escaped_text = html.escape(comment_text)
+
+            # Convert newlines to <br/> tags
+            escaped_text = escaped_text.replace('\n', '<br/>')
+
+            # Wrap in paragraph tags
+            html_content = f"<p>{escaped_text}</p>"
+
+            # ✅ FIX: Confluence API v2 expects body in storage format structure
+            # The body_body parameter should be a dict/object, not a string
+            # Format: {"storage": {"value": "<p>text</p>", "representation": "storage"}}
+            comment_body = {
+                "storage": {
+                    "value": html_content,
+                    "representation": "storage"
+                }
+            }
+
+            response = self._run_async(
+                self.client.create_footer_comment(
+                    pageId=str(page_id_int),
+                    body_body=comment_body,  # Pass as dict, not string
+                    parentCommentId=parent_comment_id
+                )
+            )
+
+            return self._handle_response(response, "Comment added successfully")
+
+        except Exception as e:
+            logger.error(f"Error adding comment: {e}")
+            return False, json.dumps({"error": str(e)})

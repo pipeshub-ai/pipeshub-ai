@@ -24,6 +24,7 @@ import { Icon } from '@iconify/react';
 import { useReactFlow } from '@xyflow/react';
 import toolIcon from '@iconify-icons/mdi/tools';
 import deleteIcon from '@iconify-icons/mdi/delete-outline';
+import tuneIcon from '@iconify-icons/mdi/tune';
 import { normalizeDisplayName } from '../../../utils/agent';
 import { NodeHandles } from './NodeHandles';
 import { NodeIcon } from './NodeIcon';
@@ -60,7 +61,7 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const { setNodes } = useReactFlow();
-  
+
   const [addToolAnchorEl, setAddToolAnchorEl] = useState<null | HTMLElement>(null);
   const addToolMenuOpen = Boolean(addToolAnchorEl);
 
@@ -79,28 +80,28 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
     info: isDark ? '#9ca3af' : '#525252',
     background: {
       card: theme.palette.background.paper,
-      section: isDark 
-        ? alpha('#2a2a2a', 0.6) 
+      section: isDark
+        ? alpha('#2a2a2a', 0.6)
         : alpha(theme.palette.background.default, 0.7),
-      field: isDark 
-        ? alpha('#2a2a2a', 0.4) 
+      field: isDark
+        ? alpha('#2a2a2a', 0.4)
         : alpha(theme.palette.background.paper, 0.8),
       hover: theme.palette.action.hover,
     },
     border: {
-      main: isDark 
-        ? '#4a4a4a' 
+      main: isDark
+        ? '#4a4a4a'
         : '#d0d0d0',
-      subtle: isDark 
-        ? '#3a3a3a' 
+      subtle: isDark
+        ? '#3a3a3a'
         : '#e0e0e0',
       focus: isDark ? '#6b6b6b' : '#a0a0a0',
     },
     text: {
       primary: theme.palette.text.primary,
       secondary: theme.palette.text.secondary,
-      muted: isDark 
-        ? alpha(theme.palette.text.secondary, 0.75) 
+      muted: isDark
+        ? alpha(theme.palette.text.secondary, 0.75)
         : alpha(theme.palette.text.secondary, 0.65),
     },
   };
@@ -120,16 +121,16 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
       nodes.map((node: any) =>
         node.id === data.id
           ? {
-              ...node,
-              data: {
-                ...node.data,
-                config: {
-                  ...node.data.config,
-                  tools: [...(node.data.config?.tools || []), tool],
-                  selectedTools: [...(node.data.config?.selectedTools || []), tool.name],
-                },
+            ...node,
+            data: {
+              ...node.data,
+              config: {
+                ...node.data.config,
+                tools: [...(node.data.config?.tools || []), tool],
+                selectedTools: [...(node.data.config?.selectedTools || []), tool.name],
               },
-            }
+            },
+          }
           : node
       )
     );
@@ -142,16 +143,16 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
       nodes.map((node: any) =>
         node.id === data.id
           ? {
-              ...node,
-              data: {
-                ...node.data,
-                config: {
-                  ...node.data.config,
-                  tools: node.data.config?.tools?.filter((t: Tool) => t.name !== toolName) || [],
-                  selectedTools: node.data.config?.selectedTools?.filter((t: string) => t !== toolName) || [],
-                },
+            ...node,
+            data: {
+              ...node.data,
+              config: {
+                ...node.data.config,
+                tools: node.data.config?.tools?.filter((t: Tool) => t.name !== toolName) || [],
+                selectedTools: node.data.config?.selectedTools?.filter((t: string) => t !== toolName) || [],
               },
-            }
+            },
+          }
           : node
       )
     );
@@ -179,9 +180,9 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
         border: selected ? `2px solid ${colors.border.focus}` : `2px solid ${colors.border.main}`,
         borderRadius: 2,
         backgroundColor: colors.background.card,
-        boxShadow: selected 
+        boxShadow: selected
           ? (isDark ? `0 6px 16px rgba(0, 0, 0, 0.4)` : `0 6px 16px rgba(0, 0, 0, 0.15)`)
-          : isDark 
+          : isDark
             ? `0 2px 8px rgba(0, 0, 0, 0.2)`
             : `0 2px 8px rgba(0, 0, 0, 0.1)`,
         cursor: 'pointer',
@@ -190,7 +191,7 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
         overflow: 'visible',
         '&:hover': {
           borderColor: colors.border.focus,
-          boxShadow: isDark 
+          boxShadow: isDark
             ? `0 8px 20px rgba(0, 0, 0, 0.3)`
             : `0 8px 20px rgba(0, 0, 0, 0.15)`,
           transform: 'translateY(-2px)',
@@ -208,8 +209,8 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
         sx={{
           p: 2.5,
           borderBottom: `1px solid ${colors.border.main}`,
-          backgroundColor: isDark 
-            ? alpha('#1f1f1f', 0.6) 
+          backgroundColor: isDark
+            ? alpha('#1f1f1f', 0.6)
             : alpha(theme.palette.background.default, 0.6),
           borderTopLeftRadius: 2,
           borderTopRightRadius: 2,
@@ -258,26 +259,30 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
               <Icon icon={deleteIcon} width={18} height={18} />
             </IconButton>
           )}
+
+
         </Box>
         {data.description && (
-          <Typography
-            variant="body2"
-            sx={{
-              color: colors.text.secondary,
-              fontSize: '0.8rem',
-              lineHeight: 1.5,
-              fontWeight: 400,
-              wordBreak: 'break-word',
-              whiteSpace: 'normal',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              display: '-webkit-box',
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: 'vertical',
-            }}
-          >
-            {data.description}
-          </Typography>
+          <Box>
+            <Typography
+              variant="body2"
+              sx={{
+                color: colors.text.secondary,
+                fontSize: '0.8rem',
+                lineHeight: 1.5,
+                fontWeight: 400,
+                wordBreak: 'break-word',
+                whiteSpace: 'normal',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                display: '-webkit-box',
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: 'vertical',
+              }}
+            >
+              {data.description}
+            </Typography>
+          </Box>
         )}
       </Box>
 
@@ -294,11 +299,11 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
             }}
           >
             <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.25 }}>
-              <Icon 
-                icon={toolIcon} 
-                width={14} 
-                height={14} 
-                style={{ color: colors.info, opacity: 0.8 }} 
+              <Icon
+                icon={toolIcon}
+                width={14}
+                height={14}
+                style={{ color: colors.info, opacity: 0.8 }}
               />
               <Typography
                 variant="body2"
@@ -372,15 +377,15 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
                 },
               }}
             >
-              <Icon 
-                icon={toolIcon} 
-                width={32} 
-                height={32} 
-                style={{ 
-                  color: colors.text.muted, 
+              <Icon
+                icon={toolIcon}
+                width={32}
+                height={32}
+                style={{
+                  color: colors.text.muted,
                   opacity: 0.4,
                   marginBottom: 8,
-                }} 
+                }}
               />
               <Typography
                 sx={{
@@ -445,11 +450,11 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
                 {tools.map((tool: Tool, index: number) => (
                   <React.Fragment key={tool.name || index}>
                     {index > 0 && (
-                      <Divider 
-                        sx={{ 
+                      <Divider
+                        sx={{
                           my: 1.25,
                           borderColor: colors.border.subtle,
-                        }} 
+                        }}
                       />
                     )}
                     <ListItem
@@ -525,6 +530,36 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
             </Box>
           )}
         </Box>
+        {/* Toolset Badge */}
+        <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 0.5,
+              px: 1.5,
+              py: 0.75,
+              background: `linear-gradient(135deg, ${alpha(colors.info, 0.1)} 0%, ${alpha(colors.primary, 0.1)} 100%)`,
+              border: `1px solid ${alpha(colors.info, 0.2)}`,
+              borderRadius: 2,
+              fontSize: '0.7rem',
+              fontWeight: 700,
+              color: colors.info,
+              textTransform: 'uppercase',
+              letterSpacing: '0.05em',
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                background: `linear-gradient(135deg, ${alpha(colors.info, 0.2)} 0%, ${alpha(colors.primary, 0.2)} 100%)`,
+                borderColor: colors.info,
+                transform: 'scale(1.05)',
+                boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
+              },
+            }}
+          >
+            Toolset
+            <Icon icon={tuneIcon} width={12} height={12} />
+          </Box>
+        </Box>
       </Box>
 
       {/* Add Tool Menu */}
@@ -539,7 +574,7 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
             width: 280,
             mt: 1,
             borderRadius: 2,
-            boxShadow: isDark 
+            boxShadow: isDark
               ? `0 8px 24px rgba(0, 0, 0, 0.4)`
               : `0 8px 24px rgba(0, 0, 0, 0.15)`,
             border: `1px solid ${colors.border.main}`,
@@ -563,9 +598,9 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
                 e.stopPropagation();
                 handleAddTool(tool);
               }}
-              sx={{ 
-                flexDirection: 'column', 
-                alignItems: 'flex-start', 
+              sx={{
+                flexDirection: 'column',
+                alignItems: 'flex-start',
                 py: 1.5,
                 px: 2,
                 transition: 'all 0.15s ease',
@@ -574,9 +609,9 @@ export const ToolsetNode: React.FC<ToolsetNodeProps> = ({ data, selected, onDele
                 },
               }}
             >
-              <Typography 
-                variant="body2" 
-                sx={{ 
+              <Typography
+                variant="body2"
+                sx={{
                   fontWeight: 600,
                   color: colors.text.primary,
                   mb: tool.description ? 0.5 : 0,

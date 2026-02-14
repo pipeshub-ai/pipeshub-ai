@@ -75,7 +75,7 @@ export const SidebarCategory: React.FC<SidebarCategoryProps> = ({
         sx={{
           py: 1,
           px: 2,
-          pl: 2,
+          pl: 4,
           cursor: dragType ? 'grab' : 'pointer',
           borderRadius: 1.5,
           mx: 1,

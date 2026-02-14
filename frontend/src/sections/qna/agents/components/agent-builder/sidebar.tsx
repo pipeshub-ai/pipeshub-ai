@@ -169,6 +169,9 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
       isDynamicIcon = true;
     }
 
+    // Input/output nodes should not be draggable
+    const isDraggable = template.category !== 'inputs' && template.category !== 'outputs';
+
     return (
       <SidebarNodeItem
         key={template.type}
@@ -177,6 +180,7 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
         sectionType={sectionType}
         itemIcon={itemIcon}
         isDynamicIcon={isDynamicIcon}
+        isDraggable={isDraggable}
       />
     );
   };

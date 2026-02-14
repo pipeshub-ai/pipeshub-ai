@@ -105,7 +105,7 @@ export const useAgentBuilderNodeTemplates = (
           .trim();
         
         // Create unique type identifier using provider and modelName to avoid conflicts
-        const uniqueTypeId = `${model.provider}-${modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+        const uniqueTypeId = `${model.provider}-${modelName}-${model.modelKey}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
         
         return {
           type: `llm-${uniqueTypeId}`,
