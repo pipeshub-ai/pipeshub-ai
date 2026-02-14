@@ -52,3 +52,63 @@
 - Write tests for new functionality and bug fixes.
 - Do not commit code that breaks existing tests.
 - Mock external dependencies (databases, APIs, message queues) in unit tests.
+
+## OpenAPI Specification (BLOCKER)
+
+The project maintains a single OpenAPI spec at `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`. This spec MUST stay in sync with all API changes. **Treat any mismatch as a blocking issue on the PR.**
+
+### How to detect API changes in the PR diff
+
+Scan the **entire PR diff** (all changed files, not just specific paths) for any of the following code patterns. These indicate that the PR introduces, modifies, or removes API surface area:
+
+**Express / Node.js patterns (TypeScript/JavaScript):**
+- `router.get(`, `router.post(`, `router.put(`, `router.patch(`, `router.delete(`, `router.options(`, `router.head(`
+- `app.get(`, `app.post(`, `app.put(`, `app.patch(`, `app.delete(`
+- `Router()` — new router instantiation
+- Route path strings like `'/api/...'`, `'/v1/...'`
+
+**FastAPI / Python patterns:**
+- `@router.get(`, `@router.post(`, `@router.put(`, `@router.patch(`, `@router.delete(`
+- `@app.get(`, `@app.post(`, `@app.put(`, `@app.patch(`, `@app.delete(`
+- `APIRouter(` — new router instantiation
+- Pydantic `BaseModel` subclasses used as request/response types in endpoint signatures
+- Changes to `status_code=`, `response_model=`, `dependencies=` in route decorators
+
+**General patterns (any language/framework):**
+- New or changed HTTP method handlers
+- Changes to URL path definitions or route prefixes
+- Added, removed, or renamed query/path/header parameters
+- Changes to request body validation or response schemas
+- Changes to authentication/authorization decorators or middleware applied to routes (e.g., `@authenticate`, `authMiddleware`, `Depends(...)`)
+- Changes to response status codes or error response shapes
+
+### When OpenAPI updates are required
+
+If ANY of the above patterns appear in the PR diff as **added or modified lines**, the PR MUST include corresponding updates to `pipeshub-openapi.yaml`. Specifically:
+
+1. **New endpoints**: Any new route handler added anywhere in the codebase.
+2. **Removed endpoints**: Any route handler deleted or commented out.
+3. **Changed HTTP methods or paths**: Method or URL path of an existing endpoint is modified.
+4. **Request body changes**: Fields added, removed, or modified in request body schemas/validators.
+5. **Response schema changes**: Fields, status codes, or content types changed in responses.
+6. **Query/path/header parameter changes**: Parameters added, removed, renamed, or changed in type/required status.
+7. **Authentication/authorization changes**: Auth requirements added or removed from endpoints.
+8. **New or modified middleware**: Middleware that changes request/response shape applied to routes.
+
+### Review instructions
+
+- Scan **every file in the PR diff** for the code patterns listed above. Do NOT limit your search to specific directories or file naming conventions — routes can be defined in any file.
+- If the PR contains any of these patterns in added/modified lines but does NOT include changes to `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`, flag this as a **BLOCKER**.
+- Use this exact comment format so it is clearly visible:
+
+  > **🚫 BLOCKER: OpenAPI spec update required**
+  >
+  > This PR modifies API endpoints/contracts but does not update the OpenAPI specification at `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml`.
+  >
+  > The OpenAPI spec must stay in sync with all API changes. Please update it to reflect the changes introduced in this PR before merging.
+  >
+  > **Detected API changes in:**
+  > _(list every file and the specific route pattern detected, e.g., "`src/modules/auth/routes/userAccount.routes.ts` — added `router.post('/verify-email', ...)`")_
+
+- If the PR DOES update the OpenAPI spec alongside API changes, verify that the spec changes accurately reflect the code changes (correct paths, methods, parameters, schemas, and status codes).
+- If the PR only modifies internal logic with no route/contract changes (e.g., fixing a bug inside a handler without changing its signature, inputs, or outputs), no OpenAPI update is needed — do not flag it.

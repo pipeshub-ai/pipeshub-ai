@@ -5,6 +5,9 @@ on:
     branches:
       - 'main'
 
+permissions:
+  contents: read
+
 jobs:
   validate-backend:
     runs-on: ubuntu-latest
@@ -108,4 +111,82 @@ jobs:
           git fetch origin main
           if [ $(git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' | wc -l) -gt 0 ]; then
             git diff --name-only origin/main ${{ github.sha }} | grep '\.py$' | xargs ruff check --select ANN201,ANN202,ANN204,ANN205,ANN206,N804,F841,PLR2004,ANN401,SIM118,I001
+          fi
+
+  validate-openapi:
+    name: OpenAPI Spec Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 1: Lint the spec with Spectral
+      - name: Install Spectral
+        run: npm install -g @stoplight/spectral-cli
+
+      - name: Lint OpenAPI spec with Spectral
+        run: spectral lint backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml --ruleset .spectral.yaml --fail-severity error
+
+      # Step 2: Detect breaking changes against main
+      - name: Detect breaking changes with oasdiff
+        if: github.event_name == 'pull_request'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: https://raw.githubusercontent.com/${{ github.repository }}/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+          revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+          fail-on: ERR
+
+      # Step 3: Check that API route changes include spec updates
+      - name: Check OpenAPI spec is updated with route changes
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main --depth=1
+
+          CHANGED_FILES=$(git diff --name-only origin/main..HEAD)
+
+          # Patterns that indicate API surface changes
+          HAS_ROUTE_CHANGES=false
+          AFFECTED_FILES=""
+
+          while IFS= read -r file; do
+            case "$file" in
+              *.routes.ts|*router.py|*_router.py|*/controllers/*.ts|*/schemas/*.py)
+                HAS_ROUTE_CHANGES=true
+                AFFECTED_FILES="$AFFECTED_FILES\n  - $file"
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          # Also check for route patterns in the diff content of all changed files
+          if [ "$HAS_ROUTE_CHANGES" = false ]; then
+            DIFF_CONTENT=$(git diff origin/main..HEAD -- '*.ts' '*.py' '*.js')
+            if echo "$DIFF_CONTENT" | grep -qE '^\+.*(router\.(get|post|put|patch|delete|options|head)\(|app\.(get|post|put|patch|delete)\(|@router\.(get|post|put|patch|delete)\(|@app\.(get|post|put|patch|delete)\(|APIRouter\()'; then
+              HAS_ROUTE_CHANGES=true
+              # Find which files have the pattern
+              for file in $(echo "$CHANGED_FILES" | grep -E '\.(ts|py|js)$'); do
+                FILE_DIFF=$(git diff origin/main..HEAD -- "$file" 2>/dev/null || true)
+                if echo "$FILE_DIFF" | grep -qE '^\+.*(router\.(get|post|put|patch|delete|options|head)\(|app\.(get|post|put|patch|delete)\(|@router\.(get|post|put|patch|delete)\(|@app\.(get|post|put|patch|delete)\(|APIRouter\()'; then
+                  AFFECTED_FILES="$AFFECTED_FILES\n  - $file"
+                fi
+              done
+            fi
+          fi
+
+          HAS_SPEC_CHANGES=$(echo "$CHANGED_FILES" | grep -c "pipeshub-openapi.yaml" || true)
+
+          if [ "$HAS_ROUTE_CHANGES" = true ] && [ "$HAS_SPEC_CHANGES" -eq 0 ]; then
+            echo "::error::OpenAPI spec update required! This PR modifies API routes but does not update pipeshub-openapi.yaml."
+            echo ""
+            echo "Affected files with route changes:"
+            echo -e "$AFFECTED_FILES"
+            echo ""
+            echo "Please update backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml to reflect the API changes."
+            exit 1
+          fi
+
+          if [ "$HAS_ROUTE_CHANGES" = true ] && [ "$HAS_SPEC_CHANGES" -gt 0 ]; then
+            echo "API route changes detected and OpenAPI spec is updated."
+          else
+            echo "No API route changes detected. OpenAPI spec update not required."
           fi

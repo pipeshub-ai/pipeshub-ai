@@ -1,0 +1,67 @@
+extends:
+  - spectral:oas
+
+rules:
+  # --- Structural validity ---
+  oas3-schema: error
+  oas3-valid-media-example: warn
+  oas3-valid-schema-example: warn
+
+  # --- Descriptions & documentation ---
+  info-description: error
+  info-contact: warn
+  operation-description: warn
+  operation-operationId: error
+  operation-tags: error
+  tag-description: warn
+
+  # --- Naming & consistency ---
+  operation-operationId-valid-in-url: error
+  path-params: error
+  path-keys-no-trailing-slash: warn
+
+  # --- Security ---
+  oas3-operation-security-defined: error
+
+  # --- Response quality ---
+  operation-success-response: error
+
+  # Disable rules that are too noisy for this spec
+  info-license: off
+  oas3-api-servers: off
+
+  # --- Custom rules ---
+
+  # Paths must use camelCase for static segments (matching backend route conventions).
+  # Allows: {params}, dots (.well-known), hash fragments (#s3).
+  path-camel-case:
+    description: Static path segments should use camelCase.
+    message: "{{property}} contains segments that are not camelCase."
+    severity: warn
+    given: $.paths[*]~
+    then:
+      function: pattern
+      functionOptions:
+        match: "^(/([a-zA-Z][a-zA-Z0-9]*(-[a-zA-Z0-9]+)*|\\{[^}]+\\}|\\.[a-zA-Z0-9\\-.]+|[a-z0-9\\-.]+))+/?([#][a-zA-Z0-9]+)?$"
+
+  # Request bodies should have a description
+  request-body-description:
+    description: Request bodies should have a description.
+    message: Request body is missing a description.
+    severity: warn
+    given: $.paths[*][*].requestBody
+    then:
+      field: description
+      function: truthy
+
+  # Schema properties should have a type defined.
+  # Note: Properties using $ref, oneOf/anyOf/allOf legitimately omit type.
+  # Severity set to hint to avoid false positives on polymorphic schemas.
+  schema-properties-define-type:
+    description: Schema properties should define a type.
+    message: "{{property}} is missing a type (ignore if using $ref/oneOf/anyOf/allOf)."
+    severity: hint
+    given: $.components.schemas[*].properties[*]
+    then:
+      field: type
+      function: truthy
