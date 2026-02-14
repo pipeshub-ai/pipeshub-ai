@@ -8,8 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolIntent, ToolParameter
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -68,6 +67,14 @@ class CommentOnPageInput(BaseModel):
     page_id: str = Field(description="Page ID")
     comment_text: str = Field(description="Comment text/content")
     parent_comment_id: Optional[str] = Field(default=None, description="Parent comment ID if replying to a comment (optional)")
+
+class GetChildPagesInput(BaseModel):
+    """Schema for getting child pages"""
+    page_id: str = Field(description="The parent page ID")
+
+class GetPageVersionsInput(BaseModel):
+    """Schema for getting page versions"""
+    page_id: str = Field(description="The page ID")
 
 # Register Confluence toolset
 @ToolsetBuilder("Confluence")\
@@ -457,13 +464,7 @@ class Confluence:
         app_name="confluence",
         tool_name="get_child_pages",
         description="Get child pages of a Confluence page",
-        parameters=[
-            ToolParameter(
-                name="page_id",
-                type=ParameterType.STRING,
-                description="The ID of the parent page"
-            ),
-        ],
+        args_schema=GetChildPagesInput,
         returns="JSON with list of child pages",
         when_to_use=[
             "User wants to see child/sub-pages",
@@ -802,13 +803,7 @@ class Confluence:
         app_name="confluence",
         tool_name="get_page_versions",
         description="Get versions of a Confluence page",
-        parameters=[
-            ToolParameter(
-                name="page_id",
-                type=ParameterType.STRING,
-                description="The ID of the page"
-            )
-        ],
+        args_schema=GetPageVersionsInput,
         returns="JSON with page versions",
         when_to_use=[
             "User wants to see page version history",

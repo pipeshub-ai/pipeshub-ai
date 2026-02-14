@@ -728,7 +728,7 @@ class ToolExecutor:
                     if "search" in placeholder.lower() and "results[0]" in placeholder:
                         # Extract tool name from placeholder (handle dots in tool names like "confluence.search_pages")
                         # Try to find matching tool in results_by_tool
-                        for tool_name in results_by_tool.keys():
+                        for tool_name in results_by_tool:
                             if tool_name in placeholder or placeholder.startswith(tool_name.split('.')[-1]):
                                 tool_data = results_by_tool[tool_name]
                                 if isinstance(tool_data, dict) and "data" in tool_data:
@@ -2345,7 +2345,7 @@ async def _plan_with_validation_retry(
             # Start periodic status updates task if writer is available
             update_task = None
             if writer and config:
-                async def send_periodic_updates():
+                async def send_periodic_updates() -> None:
                     """Send periodic status updates during long planning operations"""
                     try:
                         await asyncio.sleep(3)  # Wait 3 seconds before first update

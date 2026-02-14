@@ -11,8 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolIntent, ToolParameter
+from app.agents.tools.models import ToolIntent
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
@@ -264,6 +263,18 @@ class GetProjectMetadataInput(BaseModel):
     class Config:
         populate_by_name = True
         extra = 'ignore'
+
+class GetProjectInput(BaseModel):
+    """Schema for getting a specific JIRA project"""
+    project_key: str = Field(description="Project key (e.g., 'PA')")
+
+class ConvertTextToAdfInput(BaseModel):
+    """Schema for converting plain text to ADF"""
+    text: str = Field(description="Plain text to convert")
+
+class GetCommentsInput(BaseModel):
+    """Schema for getting a specific JIRA comment"""
+    issue_key: str = Field(description="Issue key (e.g., 'PA-123')")
 
 # Register JIRA toolset
 @ToolsetBuilder("Jira")\
@@ -823,14 +834,7 @@ class Jira:
         app_name="jira",
         tool_name="convert_text_to_adf",
         description="Convert plain text to Atlassian Document Format (ADF)",
-        parameters=[
-            ToolParameter(
-                name="text",
-                type=ParameterType.STRING,
-                description="Plain text to convert",
-                required=True
-            ),
-        ],
+        args_schema=ConvertTextToAdfInput,
         returns="ADF document structure",
         when_to_use=[
             "User needs to convert text to ADF format",
@@ -1205,14 +1209,7 @@ class Jira:
         app_name="jira",
         tool_name="get_project",
         description="Get a specific JIRA project",
-        parameters=[
-            ToolParameter(
-                name="project_key",
-                type=ParameterType.STRING,
-                description="JIRA project key (e.g., 'PROJ', 'TEST', 'DEV'). CRITICAL: This must be a REAL project key from the user's JIRA workspace. DO NOT use placeholder values like 'YOUR_PROJECT_KEY', 'EXAMPLE', 'PLACEHOLDER', or any example values. If you don't know the project key, ASK the user for it first.",
-                required=True
-            ),
-        ],
+        args_schema=GetProjectInput,
         returns="Project details",
         when_to_use=[
             "User wants details about a specific project",
@@ -1646,14 +1643,7 @@ class Jira:
         app_name="jira",
         tool_name="get_comments",
         description="Get comments for a JIRA issue",
-        parameters=[
-            ToolParameter(
-                name="issue_key",
-                type=ParameterType.STRING,
-                description="Issue key",
-                required=True
-            ),
-        ],
+        args_schema=GetCommentsInput,
         returns="List of comments",
         when_to_use=[
             "User wants to read comments on ticket",
