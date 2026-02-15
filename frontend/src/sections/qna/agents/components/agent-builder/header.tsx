@@ -253,7 +253,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
       {/* Action Buttons - Responsive layout */}
       <Stack direction="row" spacing={1} alignItems="center">
         {/* Premium Template Button */}
-        {!isMobile && (
+        {/* {!isMobile && (
           <Tooltip title="Use Template">
             <Button
               variant="outlined"
@@ -295,10 +295,10 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               {!isTablet && (templatesLoading ? 'Loading...' : 'Template')}
             </Button>
           </Tooltip>
-        )}
+        )} */}
 
         {/* Premium Share Button */}
-        {editingAgent && (
+        {/* {editingAgent && (
           <Tooltip title="Share Agent">
             <Button
               variant="outlined"
@@ -334,7 +334,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
               {!isMobile && 'Share'}
             </Button>
           </Tooltip>
-        )}
+        )} */}
 
         {/* Premium Action Buttons */}
         <Stack direction="row" spacing={1.5} alignItems="center">

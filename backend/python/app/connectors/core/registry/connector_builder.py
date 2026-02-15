@@ -603,16 +603,24 @@ class CommonFields:
         )
 
     @staticmethod
-    def api_token(token_name: str = "API Token", placeholder: str = "") -> AuthField:
-        """Standard API token field"""
+    def api_token(token_name: str = "API Token", placeholder: str = "", field_name: Optional[str] = None, required: bool = True) -> AuthField:
+        """Standard API token field
+
+        Args:
+            token_name: Display name for the token field
+            placeholder: Placeholder text for the input field
+            field_name: Optional custom field name (defaults to "apiToken")
+            required: Whether the field is required (defaults to True)
+        """
         return AuthField(
-            name="apiToken",
+            name=field_name or "apiToken",
             display_name=token_name,
             placeholder=placeholder or f"Enter your {token_name}",
             description=f"The {token_name} from your application settings",
             field_type="PASSWORD",
             max_length=2000,
-            is_secret=True
+            is_secret=True,
+            required=required
         )
 
     @staticmethod

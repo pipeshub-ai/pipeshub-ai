@@ -67,6 +67,18 @@ class ToolRegistry:
         """
         return self._tools.get(f"{app_name}.{tool_name}")
 
+    def get_tool_by_full_name(self, full_name: str) -> Optional[Tool]:
+        """
+        Get a tool by its full name.
+
+        Args:
+            full_name: Full tool name (e.g., "slack.send_message")
+
+        Returns:
+            Tool if found, None otherwise
+        """
+        return self._tools.get(full_name)
+
     def get_tools_by_category(self, category: ToolCategory) -> List[Tool]:
         """
         Get all tools in a specific category.

@@ -2,7 +2,7 @@
 Google client factory for creating Google service clients.
 """
 
-from typing import Optional
+from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
 from app.modules.agents.qna.chat_state import ChatState
@@ -12,6 +12,8 @@ from app.sources.client.google.google import GoogleClient
 class GoogleClientFactory(ClientFactory):
     """
     Factory for creating Google service clients.
+
+    - Toolset-based authentication (new architecture): Uses toolset config from etcd
 
     Attributes:
         service_name: Name of Google service (gmail, calendar, drive, etc.)
@@ -29,37 +31,28 @@ class GoogleClientFactory(ClientFactory):
         self.service_name = service_name
         self.version = version
 
-    async def create_client(self, config_service, logger, state: ChatState | None = None, connector_instance_id: Optional[str] = None) -> GoogleClient:
+    async def create_client(
+        self,
+        config_service,
+        logger,
+        toolset_config: Dict[str, Any],
+        state: ChatState | None = None
+    ) -> GoogleClient:
         """
-        Create Google client instance.
-
+        Create Google client instance from toolset configuration.
         Args:
             config_service: Configuration service instance
             logger: Logger instance
+            state: Chat state (optional)
+            toolset_config: Toolset configuration from etcd (REQUIRED)
 
         Returns:
             Google client instance
         """
-
-        # Determine impersonation based on chat state (org account type)
-        is_individual = True
-        user_email = None
-        if state and isinstance(state, dict):
-            org_info = state.get("org_info") or {}
-            account_type = str((org_info or {}).get("accountType", "")).lower()
-            is_individual = account_type != "enterprise"
-            if not is_individual:
-                user_email = str(state.get("user_info", {}).get("userEmail", "")).strip() or None
-
-        client = await GoogleClient.build_from_services(
+        client = await GoogleClient.build_from_toolset(
+            toolset_config=toolset_config,
             service_name=self.service_name,
             logger=logger,
-            config_service=config_service,
-            is_individual=is_individual,
             version=self.version,
-            user_email=user_email,
-            connector_instance_id=connector_instance_id
         )
-        logger.info(f"Created Google client for service {self.service_name} with user email {user_email}")
-
         return client.get_client()

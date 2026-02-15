@@ -17,6 +17,7 @@ import {
   Tooltip,
   InputAdornment,
   Chip,
+  Skeleton,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import axios from 'src/utils/axios';
@@ -156,7 +157,6 @@ export default function PlatformSettings() {
         elevation={0}
         sx={{
           overflow: 'hidden',
-          position: 'relative',
           p: { xs: 2, md: 3 },
           borderRadius: 1,
           border: '1px solid',
@@ -166,27 +166,6 @@ export default function PlatformSettings() {
             : theme.palette.background.paper,
         }}
       >
-        {/* Loading overlay */}
-        {loading && (
-          <Box
-            sx={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: alpha(theme.palette.background.paper, 0.7),
-              backdropFilter: 'blur(4px)',
-              zIndex: 10,
-            }}
-          >
-            <CircularProgress size={28} />
-          </Box>
-        )}
-
         {/* Header section */}
         <Box
           sx={{
@@ -276,7 +255,84 @@ export default function PlatformSettings() {
           </Alert>
         )}
 
-        <Stack spacing={3}>
+        {loading ? (
+          /* Loading Skeletons */
+          <Stack spacing={3}>
+            {/* Header Skeleton */}
+            <Box>
+              <Skeleton variant="text" width="40%" height={32} sx={{ mb: 1 }} />
+              <Skeleton variant="text" width="60%" height={24} />
+            </Box>
+
+            {/* File Upload Section Skeleton */}
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+                <Skeleton variant="circular" width={40} height={40} />
+                <Box sx={{ flex: 1 }}>
+                  <Skeleton variant="text" width="30%" height={24} sx={{ mb: 0.5 }} />
+                  <Skeleton variant="text" width="50%" height={20} />
+                </Box>
+              </Box>
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 1,
+                  bgcolor: isDark
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.grey[50], 0.8),
+                  border: `1px solid ${theme.palette.divider}`,
+                }}
+              >
+                <Skeleton variant="rectangular" width="100%" height={56} sx={{ borderRadius: 1 }} />
+                <Skeleton variant="text" width="80%" height={20} sx={{ mt: 2 }} />
+              </Box>
+            </Box>
+
+            {/* Feature Flags Section Skeleton */}
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+                <Skeleton variant="circular" width={40} height={40} />
+                <Box sx={{ flex: 1 }}>
+                  <Skeleton variant="text" width="25%" height={24} sx={{ mb: 0.5 }} />
+                  <Skeleton variant="text" width="45%" height={20} />
+                </Box>
+              </Box>
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 1,
+                  bgcolor: isDark
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.grey[50], 0.8),
+                  border: `1px solid ${theme.palette.divider}`,
+                }}
+              >
+                {Array.from({ length: 3 }, (_, i) => (
+                  <Box
+                    key={i}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      p: 2,
+                      mb: i < 2 ? 1.5 : 0,
+                      borderRadius: 1,
+                      bgcolor: theme.palette.background.paper,
+                      border: `1px solid ${theme.palette.divider}`,
+                    }}
+                  >
+                    <Box sx={{ flex: 1 }}>
+                      <Skeleton variant="text" width="40%" height={20} />
+                      <Skeleton variant="text" width="70%" height={16} sx={{ mt: 0.5 }} />
+                    </Box>
+                    <Skeleton variant="rectangular" width={48} height={24} sx={{ borderRadius: 12 }} />
+                  </Box>
+                ))}
+              </Box>
+            </Box>
+          </Stack>
+        ) : (
+          <Stack spacing={3}>
           {/* File Upload Limit Section */}
           <Box>
             <Box
@@ -561,6 +617,7 @@ export default function PlatformSettings() {
             </Box>
           </Box>
         </Stack>
+        )}
 
         {/* Info box */}
         <Box

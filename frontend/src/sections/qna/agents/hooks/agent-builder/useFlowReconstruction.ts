@@ -29,150 +29,103 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
 
       // Enhanced Tree Layout - Optimized for visual clarity and scalability
       const layout = {
-        // Five distinct layers with proper separation to prevent overlap
+        // Six distinct horizontal layers with proper separation
         layers: {
-          input: { x: 420, baseY: 1250 }, // Layer 1: User Input
-          preprocessing: { x: 100, baseY: 300 }, // Layer 2: Knowledge & Context
-          processing: { x: 400, baseY: 450 }, // Layer 3: LLMs & Tools
-          agent: { x: 1000, baseY: 450 }, // Layer 4: Agent Core
-          output: { x: 1500, baseY: 850 }, // Layer 5: Response Output
+          input: { x: 100, baseY: 400 },         // Layer 1: User Input (left)
+          knowledge: { x: 500, baseY: 400 },     // Layer 2: Knowledge & Context
+          llm: { x: 950, baseY: 400 },           // Layer 3: LLMs
+          tools: { x: 1400, baseY: 400 },        // Layer 4: Toolsets (separate layer)
+          agent: { x: 1850, baseY: 400 },        // Layer 5: Agent Core
+          output: { x: 2300, baseY: 400 },       // Layer 6: Response Output
         },
 
         // Dynamic spacing based on node density
         spacing: {
-          // Base spacing for different node counts
-          getSectionSpacing: (nodeCount: number) => {
-            if (nodeCount <= 2) return 160;
-            if (nodeCount <= 4) return 140;
-            if (nodeCount <= 6) return 120;
-            return 100;
-          },
-
-          // Vertical distribution within sections
+          // Vertical spacing between nodes in same layer
           getVerticalSpacing: (nodeCount: number) => {
             if (nodeCount === 1) return 0;
-            if (nodeCount <= 3) return 180;
-            if (nodeCount <= 5) return 150;
-            return 120;
+            if (nodeCount <= 2) return 280;
+            if (nodeCount <= 3) return 240;
+            if (nodeCount <= 4) return 210;
+            if (nodeCount <= 6) return 180;
+            if (nodeCount <= 8) return 160;
+            if (nodeCount <= 10) return 145;
+            return 130; // For 10+ nodes
           },
 
-          // Horizontal spacing between node types in same layer
-          typeOffset: 180,
-
-          // Minimum gaps
-          minGap: 100,
-          maxGap: 250,
-        },
-
-        // Sub-positioning within processing layers - Increased separation
-        sections: {
-          knowledge: {
-            baseX: -150, // Further left of preprocessing layer
-            priority: 1, // Higher visual priority
-          },
-          llm: {
-            baseX: -100, // Left side of processing layer
-            priority: 2,
-          },
-          tools: {
-            baseX: 120, // Right side of processing layer with more space
-            priority: 3,
-          },
+          // Minimum gaps between nodes
+          minVerticalGap: 130,
+          minHorizontalGap: 350,
         },
       };
 
       // Calculate node counts for intelligent positioning
+      let toolsetsCount = 0;
+      if (agent.toolsets && agent.toolsets.length > 0) {
+        toolsetsCount = agent.toolsets.length;
+      } else if (agent.tools && agent.tools.length > 0) {
+        const uniqueApps = new Set<string>();
+        agent.tools.forEach((toolName: string) => {
+          const appName = toolName.split('.')[0];
+          uniqueApps.add(appName);
+        });
+        toolsetsCount = uniqueApps.size;
+      }
+      
       const counts = {
         llm: agent.models?.length || (models.length > 0 ? 1 : 0),
-        tools: agent.tools?.length || 0,
-        knowledge: (agent.kb?.length || 0) + (agent.connectors?.filter(ci => ci.category === 'knowledge').length || 0),
+        tools: 0,
+        toolsets: toolsetsCount,
+        knowledge: agent.knowledge?.length || 0,
       };
 
+      
       // Smart positioning system with visual balance
       const calculateOptimalPosition = (
-        layer: keyof typeof layout.layers,
-        section: 'input' | 'knowledge' | 'llm' | 'tools' | 'agent' | 'output',
+        layerKey: keyof typeof layout.layers,
         index: number,
-        totalInSection: number
+        totalInLayer: number
       ) => {
-        const baseLayer = layout.layers[layer];
-        const spacing = layout.spacing.getVerticalSpacing(totalInSection);
+        const layer = layout.layers[layerKey];
+        const spacing = layout.spacing.getVerticalSpacing(totalInLayer);
 
         // Calculate vertical centering with intelligent distribution
-        const getVerticalPosition = () => {
-          if (totalInSection === 1) {
-            return baseLayer.baseY;
-          }
-
-          // For multiple nodes, create elegant vertical distribution
-          const totalHeight = (totalInSection - 1) * spacing;
-          const startY = baseLayer.baseY - totalHeight / 2;
-          return startY + index * spacing;
-        };
-
-        // Calculate horizontal position with section-aware logic
-        const getHorizontalPosition = () => {
-          switch (section) {
-            case 'input':
-            case 'agent':
-            case 'output':
-              return baseLayer.x;
-
-            case 'knowledge':
-              return layout.layers.preprocessing.x + layout.sections.knowledge.baseX;
-
-            case 'llm': {
-              // Adjust LLM position based on memory presence
-              let llmX = baseLayer.x + layout.sections.llm.baseX;
-              if (counts.knowledge > 0) {
-                llmX += layout.spacing.typeOffset * 0.5; // More separation from knowledge
-              }
-              return llmX;
-            }
-
-            case 'tools': {
-              // Tools positioned right, considering other node types
-              let toolsX = baseLayer.x + layout.sections.tools.baseX;
-              if (counts.llm > 0) {
-                toolsX += layout.spacing.typeOffset * 0.7; // Even more separation
-              }
-              return toolsX;
-            }
-
-            default:
-              return baseLayer.x;
-          }
-        };
+        let y: number;
+        if (totalInLayer === 1) {
+          y = layer.baseY;
+        } else {
+          // Create vertical distribution centered around baseY
+          const totalHeight = (totalInLayer - 1) * spacing;
+          const startY = layer.baseY - totalHeight / 2;
+          y = startY + index * spacing;
+        }
 
         return {
-          x: getHorizontalPosition(),
-          y: getVerticalPosition(),
+          x: layer.x,
+          y,
         };
       };
 
       // Enhanced agent positioning with visual balance consideration
       const calculateAgentPosition = () => {
-        const connectedPositions: { x: number; y: number; weight: number }[] = [];
+        const connectedPositions: { y: number; weight: number }[] = [];
 
-        // Collect all processing node positions with weights
+        // Collect all processing node Y positions with weights
         const addPositions = (
-          section: 'knowledge' | 'llm' | 'tools',
+          layerKey: keyof typeof layout.layers,
           count: number,
           weight: number
         ) => {
           for (let i = 0; i < count; i += 1) {
-            const pos = calculateOptimalPosition('preprocessing', section, i, count);
-            if (section === 'llm') {
-              pos.x = calculateOptimalPosition('processing', section, i, count).x;
-            }
-            connectedPositions.push({ ...pos, weight });
+            const pos = calculateOptimalPosition(layerKey, i, count);
+            connectedPositions.push({ y: pos.y, weight });
           }
         };
 
         // Add positions with different weights for visual balance
-        if (counts.knowledge > 0) addPositions('knowledge', counts.knowledge, 1.2);
-        if (counts.llm > 0) addPositions('llm', counts.llm, 2.0); // Higher weight for LLMs
-        if (counts.tools > 0) addPositions('tools', counts.tools, 1.5);
+        if (counts.knowledge > 0) addPositions('knowledge', counts.knowledge, 1.0);
+        if (counts.llm > 0) addPositions('llm', counts.llm, 1.5);
+        if (counts.toolsets > 0) addPositions('tools', counts.toolsets, 1.0);
 
         if (connectedPositions.length === 0) {
           return { x: layout.layers.agent.x, y: layout.layers.agent.baseY };
@@ -184,7 +137,9 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           connectedPositions.reduce((sum, pos) => sum + pos.y * pos.weight, 0) / totalWeight;
 
         // Apply constraints for better visual bounds
-        const constrainedY = Math.max(250, Math.min(weightedY, 650));
+        const minY = Math.min(...connectedPositions.map(p => p.y));
+        const maxY = Math.max(...connectedPositions.map(p => p.y));
+        const constrainedY = Math.max(minY - 50, Math.min(weightedY, maxY + 50));
 
         return {
           x: layout.layers.agent.x,
@@ -192,11 +147,11 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         };
       };
 
-      // 1. Create Chat Input node with enhanced positioning
+      // 1. Create Chat Input node
       const chatInputNode: Node<NodeData> = {
         id: 'chat-input-1',
         type: 'flowNode',
-        position: calculateOptimalPosition('input', 'input', 0, 1),
+        position: calculateOptimalPosition('input', 0, 1),
         data: {
           id: 'chat-input-1',
           type: 'user-input',
@@ -211,33 +166,68 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       };
       nodes.push(chatInputNode);
 
-      // 2. Create Knowledge nodes first (Knowledge Bases + App Knowledge) - Left side
+      // 2. Create Knowledge nodes (Knowledge Bases + App Knowledge)
       const knowledgeNodes: Node<NodeData>[] = [];
-      let knowledgeIndex = 0;
 
-      // Knowledge Base nodes (KB)
-      if (agent.kb && agent.kb.length > 0) {
-        agent.kb.forEach((kbId) => {
-          const matchingKB = knowledgeBases.find((kb) => kb.id === kbId);
-          if (matchingKB) {
+      if (agent.knowledge && agent.knowledge.length > 0) {
+        agent.knowledge.forEach((knowledgeItem: any, index: number) => {
+          const connectorId = knowledgeItem.connectorId || '';
+          const filters = knowledgeItem.filtersParsed || knowledgeItem.filters || {};
+          
+          let filtersParsed = filters;
+          if (typeof filters === 'string') {
+            try {
+              filtersParsed = JSON.parse(filters);
+            } catch {
+              filtersParsed = {};
+            }
+          }
+          
+          const recordGroups = filtersParsed.recordGroups || [];
+          const records = filtersParsed.records || [];
+          
+          const knowledgeType = knowledgeItem.type || '';
+          const isKB = knowledgeType === 'KB';
+          
+          const kbIdsInRecordGroups = recordGroups.filter((rgId: string) => 
+            knowledgeBases.some((kb) => kb.id === rgId)
+          );
+          const hasKBIds = kbIdsInRecordGroups.length > 0;
+          
+          const isKnowledgeBase = isKB || hasKBIds;
+          
+          if (isKnowledgeBase) {
+            const kbName = knowledgeItem.name || knowledgeItem.displayName || 'Knowledge Base';
+            const kbDisplayName = knowledgeItem.displayName || knowledgeItem.name || kbName;
+            const kbId = kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
+            
+            const matchingKB = knowledgeBases.find((kb) => kb.id === kbId);
+            
+            const kbConnectorId = matchingKB?.connectorId || connectorId;
+            const finalKbName = matchingKB?.name || kbDisplayName;
+            const finalKbId = matchingKB?.id || kbId;
+            
+            nodeCounter += 1;
+            const nodeId = `kb-${nodeCounter}`;
             const kbNode: Node<NodeData> = {
-              id: `kb-${(nodeCounter += 1)}`,
+              id: nodeId,
               type: 'flowNode',
-              position: calculateOptimalPosition(
-                'preprocessing',
-                'knowledge',
-                (knowledgeIndex += 1),
-                counts.knowledge
-              ),
+              position: calculateOptimalPosition('knowledge', index, counts.knowledge),
               data: {
-                id: `kb-${nodeCounter - 1}`,
-                type: `kb-${matchingKB.id}`,
-                label: `KB: ${truncateText(matchingKB.name, 18)}`,
+                id: nodeId,
+                type: `kb-${finalKbId}`,
+                label: `KB: ${truncateText(finalKbName, 18)}`,
                 description: 'Knowledge base for contextual information retrieval',
                 icon: databaseIcon,
                 config: {
-                  kbId: matchingKB.id,
-                  kbName: matchingKB.name,
+                  kbId: finalKbId,
+                  kbName: finalKbName,
+                  connectorInstanceId: kbConnectorId,
+                  filters: {
+                    recordGroups: [finalKbId],
+                    records,
+                  },
+                  selectedRecords: records,
                   similarity: 0.8,
                 },
                 inputs: ['query'],
@@ -247,79 +237,88 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             };
             nodes.push(kbNode);
             knowledgeNodes.push(kbNode);
+          } else {
+            const appName = knowledgeItem.name || knowledgeItem.displayName || '';
+            const appDisplayName = knowledgeItem.displayName || knowledgeItem.name || appName;
+            
+            const displayName = appDisplayName || (connectorId.split('/').pop() || connectorId) || 'Knowledge Source';
+            const normalizedAppName = displayName.toLowerCase().replace(" ", "").replace(/\s+/g, '-');
+            
+            nodeCounter += 1;
+            const nodeId = `app-${nodeCounter}`;
+            const appKnowledgeNode: Node<NodeData> = {
+              id: nodeId,
+              type: 'flowNode',
+              position: calculateOptimalPosition('knowledge', index, counts.knowledge),
+              data: {
+                id: nodeId,
+                type: `app-${normalizedAppName}`,
+                label: normalizeDisplayName(displayName),
+                description: `Access ${displayName} knowledge and context`,
+                icon: getAppKnowledgeIcon(displayName),
+                config: {
+                  connectorInstanceId: connectorId,
+                  appName: displayName,
+                  appDisplayName: displayName,
+                  connectorType: knowledgeItem.type || displayName,
+                  filters: filtersParsed,
+                  selectedRecordGroups: filtersParsed.recordGroups || [],
+                  selectedRecords: filtersParsed.records || [],
+                  iconPath: `/assets/icons/connectors/${normalizedAppName}.svg`,
+                  similarity: 0.8,
+                },
+                inputs: ['query'],
+                outputs: ['context'],
+                isConfigured: true,
+              },
+            };
+            nodes.push(appKnowledgeNode);
+            knowledgeNodes.push(appKnowledgeNode);
           }
         });
       }
-
-      // App Knowledge nodes
-      // Handle knowledge connector instances (category: 'knowledge')
-      const knowledgeConnectorInstances = agent.connectors?.filter(ci => ci.category === 'knowledge') || [];
-      
-      // Process connectors with category='knowledge'
-      knowledgeConnectorInstances.forEach((connectorInstance: ConnectorInstance) => {
-        const normalizedAppName = connectorInstance.type.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-').replace(/\s+/g, '-');
-        const appKnowledgeNode: Node<NodeData> = {
-          id: `app-${(nodeCounter += 1)}`,
-          type: 'flowNode',
-          position: calculateOptimalPosition(
-            'preprocessing',
-            'knowledge',
-            (knowledgeIndex += 1),
-            counts.knowledge
-          ),
-          data: {
-            id: `app-${nodeCounter - 1}`,
-            type: `app-${normalizedAppName}`,
-            label: normalizeDisplayName(connectorInstance.name || connectorInstance.type),
-            description: `Access ${connectorInstance.name || connectorInstance.type} knowledge and context`,
-            icon: getAppKnowledgeIcon(connectorInstance.type),
-            config: {
-              connectorInstanceId: connectorInstance.id,
-              appName: connectorInstance.type,
-              appDisplayName: connectorInstance.name || connectorInstance.type,
-              connectorType: connectorInstance.type,
-              scope: connectorInstance.scope,
-              iconPath: `/assets/icons/connectors/${connectorInstance.type.replace(" ", "").toLowerCase()}.svg`,
-              similarity: 0.8,
-            },
-            inputs: ['query'],
-            outputs: ['context'],
-            isConfigured: true,
-          },
-        };
-        nodes.push(appKnowledgeNode);
-        knowledgeNodes.push(appKnowledgeNode);
-      });
       
 
-      // 3. Create LLM nodes with intelligent positioning
+      // 3. Create LLM nodes
       const llmNodes: Node<NodeData>[] = [];
-      if (agent.models && agent.models.length > 0) {
-        agent.models.forEach((modelConfig, index) => {
+      
+      const agentModels = agent.models || [];
+      
+      if (agentModels.length > 0) {
+        agentModels.forEach((modelItem: any, index: number) => {
+          const isStringKey = typeof modelItem === 'string';
+          const modelKey = isStringKey ? modelItem : (modelItem.modelKey || modelItem);
+          
           const matchingModel = models.find(
-            (m) => m.modelName === modelConfig.modelName || m.provider === modelConfig.provider
+            (m) => m.modelKey === modelKey || 
+                   m.modelName === (isStringKey ? modelKey : modelItem.modelName) ||
+                   m.provider === (isStringKey ? '' : modelItem.provider)
           );
 
+          const modelName = matchingModel?.modelName || (isStringKey ? modelKey : modelItem.modelName) || 'AI Model';
+          const provider = matchingModel?.provider || (isStringKey ? 'AI' : modelItem.provider) || 'AI';
+          const isReasoning = matchingModel?.isReasoning || (isStringKey ? false : modelItem.isReasoning) || false;
+
+          nodeCounter += 1;
+          const nodeId = `llm-${nodeCounter}`;
           const llmNode: Node<NodeData> = {
-            id: `llm-${(nodeCounter += 1)}`,
+            id: nodeId,
             type: 'flowNode',
-            position: calculateOptimalPosition('processing', 'llm', index, counts.llm),
+            position: calculateOptimalPosition('llm', index, counts.llm),
             data: {
-              id: `llm-${nodeCounter - 1}`,
-              type: `llm-${matchingModel?.modelKey || modelConfig.modelName?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
-              label:
-                modelConfig.modelName
-                  .trim() || 'AI Model',
-              description: `${formattedProvider(modelConfig.provider || 'AI')} language model`,
+              id: nodeId,
+              type: `llm-${matchingModel?.modelKey || `${matchingModel?.provider}-${matchingModel?.modelName}-${matchingModel?.modelKey}` || 'default'}`,
+              label: modelName.trim() || 'AI Model',
+              description: `${formattedProvider(provider)} language model`,
               icon: brainIcon,
               config: {
-                modelKey: matchingModel?.modelKey || modelConfig.modelName,
-                modelName: modelConfig.modelName,
-                provider: modelConfig.provider,
+                modelKey: matchingModel?.modelKey || modelKey,
+                modelName,
+                provider,
                 modelType: matchingModel?.modelType || 'llm',
                 isMultimodal: matchingModel?.isMultimodal || false,
                 isDefault: matchingModel?.isDefault || false,
-                isReasoning: modelConfig.isReasoning || false,
+                isReasoning,
               },
               inputs: ['prompt', 'context'],
               outputs: ['response'],
@@ -330,18 +329,17 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           llmNodes.push(llmNode);
         });
       } else if (models.length > 0) {
-        // Add default model with optimal positioning
         const defaultModel = models[0];
+        nodeCounter += 1;
+        const nodeId = `llm-${nodeCounter}`;
         const llmNode: Node<NodeData> = {
-          id: `llm-${(nodeCounter += 1)}`,
+          id: nodeId,
           type: 'flowNode',
-          position: calculateOptimalPosition('processing', 'llm', 0, 1),
+          position: calculateOptimalPosition('llm', 0, 1),
           data: {
-            id: `llm-${nodeCounter - 1}`,
-            type: `llm-${defaultModel.modelKey || 'default'}`,
-            label:
-              defaultModel.modelName
-                .trim() || 'AI Model',
+            id: nodeId,
+            type: `llm-${defaultModel.modelKey || `${defaultModel.provider}-${defaultModel.modelName}-default`}`,
+            label: defaultModel.modelName.trim() || 'AI Model',
             description: `${formattedProvider(defaultModel.provider || 'AI')} language model`,
             icon: brainIcon,
             config: {
@@ -362,111 +360,142 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         llmNodes.push(llmNode);
       }
 
-      // 4. Create Individual Tool nodes from agent.tools (the actual saved tools)
-      const individualToolNodes: Node<NodeData>[] = [];
-      const toolGroupNodes: Node<NodeData>[] = [];
+      // 4. Create Toolset nodes
+      const toolsetNodes: Node<NodeData>[] = [];
       
-      if (agent.tools && agent.tools.length > 0) {
-        // Agent has specific tools saved - create individual tool nodes
-        agent.tools.forEach((toolName, index) => {
+      const hasToolsets = agent.toolsets && agent.toolsets.length > 0;
+      const hasLegacyTools = !hasToolsets && agent.tools && agent.tools.length > 0;
+      
+      if (hasToolsets && agent.toolsets) {
+        agent.toolsets.forEach((toolset: any, index: number) => {
+          const toolsetName = toolset.name || '';
+          const toolsetDisplayName = toolset.displayName || toolset.name || 'Toolset';
+          const toolsetType = toolset.type || toolsetName;
+          const normalizedToolsetName = toolsetName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '-');
+          const iconPath = `/assets/icons/connectors/${normalizedToolsetName}.svg`;
+          
+          const toolsetTools = toolset.tools || [];
+          
+          const normalizeTool = (tool: any) => {
+            const toolName = tool.name || tool.fullName?.split('.').pop() || 'Tool';
+            const toolFullName = tool.fullName || `${toolsetName}.${toolName}`;
+            
+            const matchingTool = tools.find(
+              (t) => t.full_name === toolFullName || 
+                     t.tool_name === toolName ||
+                     t.tool_id === tool._key
+            );
+            
+            return {
+              name: toolName,
+              fullName: toolFullName,
+              description: tool.description || matchingTool?.description || `${toolsetDisplayName} tool`,
+              toolsetName,
+            };
+          };
+          
+          const normalizedTools = toolsetTools.map(normalizeTool);
+          
+          const selectedToolNames = toolset.selectedTools && toolset.selectedTools.length > 0
+            ? toolset.selectedTools
+            : normalizedTools.map((t: any) => t.name);
+          
+          nodeCounter += 1;
+          const nodeId = `toolset-${toolsetName}-${nodeCounter}`;
+          const toolsetNode: Node<NodeData> = {
+            id: nodeId,
+            type: 'flowNode',
+            position: calculateOptimalPosition('tools', index, counts.toolsets),
+            data: {
+              id: nodeId,
+              type: `toolset-${toolsetName}`,
+              label: normalizeDisplayName(toolsetDisplayName),
+              description: `${toolsetDisplayName} with ${normalizedTools.length} tools`,
+              icon: iconPath,
+              category: 'toolset',
+              config: {
+                toolsetName,
+                displayName: toolsetDisplayName,
+                iconPath,
+                category: toolsetType,
+                tools: normalizedTools,
+                availableTools: normalizedTools,
+                selectedTools: selectedToolNames,
+                isConfigured: true,
+                isAuthenticated: true,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          nodes.push(toolsetNode);
+          toolsetNodes.push(toolsetNode);
+        });
+      } else if (hasLegacyTools && agent.tools) {
+        const toolsByApp = new Map<string, any[]>();
+        
+        agent.tools.forEach((toolName: string) => {
           const matchingTool = tools.find(
             (t) => t.full_name === toolName || t.tool_name === toolName || t.tool_id === toolName
           );
 
           if (matchingTool) {
-            // Find the connector instance for this tool
-            const connectorInstance = agent.connectors?.find(
-              (ci) => ci.type?.toUpperCase() === matchingTool.app_name?.toUpperCase() ||
-                     ci.type?.toLowerCase() === matchingTool.app_name?.toLowerCase()
-            );
-
-            // Construct iconPath from connector type
-            const connectorType = connectorInstance?.type || matchingTool.app_name;
-            const iconPath = `/assets/icons/connectors/${connectorType.replace(" ", "").toLowerCase()}.svg`;
-
-            const toolNode: Node<NodeData> = {
-              id: `tool-${(nodeCounter += 1)}`,
-              type: 'flowNode',
-              position: calculateOptimalPosition('processing', 'tools', index, agent.tools.length),
-              data: {
-                id: `tool-${nodeCounter - 1}`,
-                type: `tool-${matchingTool.tool_id}`,
-                label: normalizeDisplayName(matchingTool.tool_name.replace(/_/g, ' ')),
-                description: matchingTool.description || `${matchingTool.app_name} integration`,
-                icon: getAppIcon(matchingTool.app_name),
-                config: {
-                  toolId: matchingTool.tool_id,
-                  fullName: matchingTool.full_name,
-                  appName: matchingTool.app_name,
-                  parameters: matchingTool.parameters || [],
-                  // Associate with connector instance
-                  connectorInstanceId: connectorInstance?.id,
-                  connectorType: connectorInstance?.type || matchingTool.app_name,
-                  connectorName: connectorInstance?.name || connectorInstance?.type,
-                  scope: connectorInstance?.scope || 'personal',
-                  iconPath, // Add connector icon for visual distinction
-                },
-                inputs: ['input'],
-                outputs: ['output'],
-                isConfigured: true,
-              },
-            };
-            nodes.push(toolNode);
-            individualToolNodes.push(toolNode);
+            const appName = matchingTool.app_name || toolName.split('.')[0];
+            if (!toolsByApp.has(appName)) {
+              toolsByApp.set(appName, []);
+            }
+            toolsByApp.get(appName)!.push(matchingTool);
           }
         });
-      } else if (agent.connectors && Array.isArray(agent.connectors)) {
-        // No specific tools saved, fallback to creating tool-group nodes from connector instances with category='action'
-        const actionConnectorInstances = agent.connectors.filter(ci => ci.category === 'action');
-        actionConnectorInstances.forEach((connectorInstance: ConnectorInstance, index: number) => {
-          // Find all tools that belong to this connector type
-          const connectorTools = tools.filter((t) => 
-            t.app_name?.toUpperCase() === connectorInstance.type?.toUpperCase() ||
-            t.app_name?.toLowerCase() === connectorInstance.type?.toLowerCase()
-          );
+        
+        let toolsetIndex = 0;
+        toolsByApp.forEach((appTools, appName) => {
+          const iconPath = `/assets/icons/connectors/${appName.toLowerCase().replace(/[^a-zA-Z0-9]/g, '')}.svg`;
           
-          // Construct iconPath from connector type
-          const groupIconPath = `/assets/icons/connectors/${connectorInstance.type.replace(" ", "").toLowerCase()}.svg`;
+          const normalizedTools = appTools.map((tool: any) => ({
+            name: tool.tool_name || tool.full_name?.split('.').pop() || 'Tool',
+            fullName: tool.full_name || `${appName}.${tool.tool_name}`,
+            description: tool.description || `${appName} tool`,
+            toolsetName: appName,
+          }));
           
-          // Create a tool-group node with all the connector's tools
-          const toolGroupNode: Node<NodeData> = {
-            id: `tool-group-${(nodeCounter += 1)}`,
+          nodeCounter += 1;
+          const nodeId = `toolset-${appName}-${nodeCounter}`;
+          const toolsetNode: Node<NodeData> = {
+            id: nodeId,
             type: 'flowNode',
-            position: calculateOptimalPosition('processing', 'tools', index, actionConnectorInstances.length),
+            position: calculateOptimalPosition('tools', toolsetIndex, toolsByApp.size),
             data: {
-              id: `tool-group-${nodeCounter - 1}`,
-              type: `tool-group-${connectorInstance.type?.toLowerCase().replace(/\s+/g, '-') || connectorInstance.name?.toLowerCase().replace(/\s+/g, '-') || 'tools'}`,
-              label: normalizeDisplayName(connectorInstance.name || connectorInstance.type),
-              description: `${connectorInstance.type} with ${connectorTools.length} tools`,
-              icon: getAppIcon(connectorInstance.type || connectorInstance.name),
+              id: nodeId,
+              type: `toolset-${appName}`,
+              label: normalizeDisplayName(appName),
+              description: `${appName} with ${normalizedTools.length} tools`,
+              icon: iconPath,
+              category: 'toolset',
               config: {
-                connectorInstanceId: connectorInstance.id,
-                connectorType: connectorInstance.type,
-                connectorName: connectorInstance.name || connectorInstance.type,
-                appName: connectorInstance.type,
-                appDisplayName: connectorInstance.name || connectorInstance.type,
-                scope: connectorInstance.scope,
-                iconPath: groupIconPath, // Add connector icon
-                tools: connectorTools.map(t => ({
-                  toolId: t.tool_id,
-                  fullName: t.full_name,
-                  toolName: t.tool_name,
-                  appName: t.app_name,
-                  description: t.description
-                })),
-                selectedTools: connectorTools.map(t => t.tool_id), // All tools selected by default
+                toolsetName: appName,
+                displayName: appName,
+                iconPath,
+                category: 'app',
+                tools: normalizedTools,
+                availableTools: normalizedTools,
+                selectedTools: normalizedTools.map((t: any) => t.name),
+                isConfigured: true,
+                isAuthenticated: true,
               },
-              inputs: ['input'],
+              inputs: [],
               outputs: ['output'],
               isConfigured: true,
             },
           };
-          nodes.push(toolGroupNode);
-          toolGroupNodes.push(toolGroupNode);
+          nodes.push(toolsetNode);
+          toolsetNodes.push(toolsetNode);
+          toolsetIndex += 1;
         });
       }
 
-      // 6. Create Agent Core with optimal centered positioning
+      // 5. Create Agent Core with optimal centered positioning
       const agentPosition = calculateAgentPosition();
       const agentCoreNode: Node<NodeData> = {
         id: 'agent-core-1',
@@ -492,11 +521,11 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       };
       nodes.push(agentCoreNode);
 
-      // 7. Create Chat Response with aligned positioning
+      // 6. Create Chat Response aligned with agent
       const chatResponseNode: Node<NodeData> = {
         id: 'chat-response-1',
         type: 'flowNode',
-        position: { x: layout.layers.output.x, y: agentPosition.y }, // Align with agent
+        position: { x: layout.layers.output.x, y: agentPosition.y },
         data: {
           id: 'chat-response-1',
           type: 'chat-response',
@@ -530,7 +559,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         animated: false,
       });
 
-      // Knowledge to Agent connections - Context flow
+      // Knowledge to Agent connections
       knowledgeNodes.forEach((knowledgeNode) => {
         edges.push({
           id: `e-knowledge-agent-${(edgeCounter += 1)}`,
@@ -548,7 +577,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         });
       });
 
-      // LLM to Agent connections - Processing flow
+      // LLM to Agent connections
       llmNodes.forEach((llmNode) => {
         edges.push({
           id: `e-llm-agent-${(edgeCounter += 1)}`,
@@ -566,35 +595,15 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
         });
       });
 
-      // Individual Tools → Agent connections (if individual tools exist)
-      individualToolNodes.forEach((toolNode) => {
+      // Toolset → Agent connections
+      // Toolsets connect directly to agent's toolsets handle
+      toolsetNodes.forEach((toolsetNode) => {
         edges.push({
-          id: `e-tool-agent-${(edgeCounter += 1)}`,
-          source: toolNode.id,
+          id: `e-toolset-agent-${(edgeCounter += 1)}`,
+          source: toolsetNode.id,
           target: 'agent-core-1',
           sourceHandle: 'output',
-          targetHandle: 'actions',
-          type: 'smoothstep',
-          style: {
-            stroke: theme.palette.warning.main,
-            strokeWidth: 2,
-            strokeDasharray: '0',
-          },
-          animated: false,
-        });
-      });
-
-      // Tool Group → Agent connections (fallback if no individual tools)
-      // Tools can now connect directly to agent's actions handle
-      // No need for intermediate connector instance nodes
-      // Flow: Tool Group (source) → Agent actions handle (target)
-      toolGroupNodes.forEach((toolGroupNode) => {
-        edges.push({
-          id: `e-toolgroup-agent-${(edgeCounter += 1)}`,
-          source: toolGroupNode.id,
-          target: 'agent-core-1',
-          sourceHandle: 'output',
-          targetHandle: 'actions',
+          targetHandle: 'toolsets',
           type: 'smoothstep',
           style: {
             stroke: theme.palette.warning.main,

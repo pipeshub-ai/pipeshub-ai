@@ -16256,6 +16256,7 @@ class JiraDataSource:
         if recommend is not None:
             _query['recommend'] = recommend
         _body = None
+        query_params=_as_str_dict(_query)
         rel_path = '/rest/api/3/user/assignable/search'
         url = self.base_url + _safe_format_url(rel_path, _path)
         req = HTTPRequest(
@@ -16263,7 +16264,7 @@ class JiraDataSource:
             url=url,
             headers=_as_str_dict(_headers),
             path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            query=query_params,
             body=_body,
         )
         resp = await self._client.execute(req)
@@ -16660,12 +16661,13 @@ class JiraDataSource:
         _body = None
         rel_path = '/rest/api/3/user/picker'
         url = self.base_url + _safe_format_url(rel_path, _path)
+        query_params_dict = _as_str_dict(_query)
         req = HTTPRequest(
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
             path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            query=query_params_dict,  # Use alias 'query' instead of 'query_params' (Pydantic alias requirement)
             body=_body,
         )
         resp = await self._client.execute(req)

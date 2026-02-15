@@ -259,6 +259,292 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
       const allToolsStr = event.dataTransfer.getData('allTools');
       const toolCount = event.dataTransfer.getData('toolCount');
       
+      // Extract toolset-specific drag data (check both 'type' key and other keys)
+      const toolsetName = event.dataTransfer.getData('toolsetName');
+      let toolsetDisplayName = event.dataTransfer.getData('displayName');
+      // If displayName contains " - " (toolset - tool format), extract just the toolset name
+      if (toolsetDisplayName && toolsetDisplayName.includes(' - ')) {
+        toolsetDisplayName = toolsetDisplayName.split(' - ')[0].trim();
+      }
+      const toolsetIconPath = event.dataTransfer.getData('iconPath');
+      const toolsetCategory = event.dataTransfer.getData('category');
+      const toolsetType = event.dataTransfer.getData('type'); // 'toolset' or 'tool'
+      const toolFullName = event.dataTransfer.getData('fullName');
+      const toolName = event.dataTransfer.getData('toolName');
+      const toolDescription = event.dataTransfer.getData('description');
+      const isToolsetConfigured = event.dataTransfer.getData('isConfigured') === 'true';
+      const isToolsetAuthenticated = event.dataTransfer.getData('isAuthenticated') === 'true';
+      
+      
+      // Handle toolset drops (toolsets don't have templates, they're created dynamically)
+      if (type.startsWith('toolset-') || toolsetType === 'toolset') {
+        // Validate toolset is configured and authenticated
+        if (!isToolsetConfigured || !isToolsetAuthenticated) {
+          if (onError) {
+            const reason = !isToolsetConfigured ? 'not configured' : 'not authenticated';
+            onError(`${toolsetDisplayName || toolsetName} is ${reason}. Please configure it in settings before using.`);
+          }
+          return;
+        }
+        
+        if (!allToolsStr) {
+          if (onError) {
+            onError('No tools found for this toolset.');
+          }
+          return;
+        }
+        
+        try {
+          const allTools = JSON.parse(allToolsStr);
+          const selectedToolsStr = event.dataTransfer.getData('selectedTools');
+          const selectedTools = selectedToolsStr ? JSON.parse(selectedToolsStr) : allTools.map((t: any) => t.toolName || t.name);
+          
+          // Normalize tool structure (ToolsetNode expects { name, fullName, description, toolsetName })
+          const normalizeTool = (t: any) => ({
+            name: t.toolName || t.name || '',
+            fullName: t.fullName || `${toolsetName}.${t.toolName || t.name || ''}`,
+            description: t.description || '',
+            toolsetName: t.toolsetName || toolsetName,
+          });
+          
+          const normalizedTools = allTools.map(normalizeTool);
+          
+          // Check if a toolset node for this toolset already exists
+          const existingToolsetNode = nodes.find(
+            (n) => n.data.type.startsWith('toolset-') && 
+                   n.data.config?.toolsetName === toolsetName
+          );
+          
+          if (existingToolsetNode) {
+            // Merge tools into existing toolset node (add tools that don't exist)
+            const existingTools = existingToolsetNode.data.config?.tools || [];
+            const existingToolNames = new Set(existingTools.map((t: any) => t.fullName || t.name));
+            
+            const newTools = normalizedTools.filter(
+              (t: any) => !existingToolNames.has(t.fullName) && !existingToolNames.has(t.name)
+            );
+            
+            if (newTools.length > 0) {
+              setNodes((nds) =>
+                nds.map((node) =>
+                  node.id === existingToolsetNode.id
+                    ? {
+                        ...node,
+                        data: {
+                          ...node.data,
+                          config: {
+                            ...node.data.config,
+                            tools: [...existingTools, ...newTools],
+                            selectedTools: [
+                              ...(node.data.config?.selectedTools || []),
+                              ...newTools.map((t: any) => t.name),
+                            ],
+                            // Update availableTools to include all tools
+                            availableTools: normalizedTools,
+                          },
+                        },
+                      }
+                    : node
+                )
+              );
+            }
+            return;
+          }
+          
+          // No existing toolset node, create a new one
+          const position = {
+            x: event.clientX - reactFlowBounds.left - 130,
+            y: event.clientY - reactFlowBounds.top - 40,
+          };
+          
+          const newNode: Node<FlowNodeData> = {
+            id: `toolset-${toolsetName}-${Date.now()}`,
+            type: 'flowNode',
+            position,
+            data: {
+              id: `toolset-${toolsetName}-${Date.now()}`,
+              type: `toolset-${toolsetName}`,
+              label: normalizeDisplayName(toolsetDisplayName || toolsetName),
+              description: `${toolsetDisplayName || toolsetName} with ${toolCount || normalizedTools.length} tools`,
+              icon: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+              category: 'toolset',
+              config: {
+                toolsetName,
+                displayName: toolsetDisplayName || toolsetName,
+                iconPath: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+                category: toolsetCategory || 'app',
+                tools: normalizedTools,
+                availableTools: normalizedTools,
+                selectedTools: selectedTools.map((t: string) => {
+                  // Convert toolName to name if needed
+                  const tool = normalizedTools.find((nt: any) => nt.toolName === t || nt.name === t);
+                  return tool ? tool.name : t;
+                }),
+                isConfigured: isToolsetConfigured,
+                isAuthenticated: isToolsetAuthenticated,
+              },
+              inputs: [],
+              outputs: ['output'],
+              isConfigured: true,
+            },
+          };
+          setNodes((nds) => [...nds, newNode]);
+          return;
+        } catch (e) {
+          console.error('Failed to parse toolset data:', e);
+          if (onError) {
+            onError('Failed to parse toolset data. Please try again.');
+          }
+          return;
+        }
+      }
+      
+      // Handle individual tool drops from toolsets - create or update toolset node
+      // Check if this is a tool from a toolset (has toolsetName in drag data)
+      // Construct toolFullName if it's missing
+      const constructedToolFullName = toolFullName || (toolsetName && toolName ? `${toolsetName}.${toolName}` : '');
+      const isToolsetTool = toolsetType === 'tool' && toolsetName && (constructedToolFullName || toolName);
+      
+      if (isToolsetTool) {
+        // Validate toolset is configured and authenticated
+        if (!isToolsetConfigured || !isToolsetAuthenticated) {
+          if (onError) {
+            const reason = !isToolsetConfigured ? 'not configured' : 'not authenticated';
+            onError(`The "${toolsetDisplayName || toolsetName}" toolset is ${reason}. Please configure it in settings before using this tool.`);
+          }
+          return;
+        }
+        
+        // Use constructed fullName
+        const finalToolFullName = constructedToolFullName || `${toolsetName}.${toolName}`;
+        
+        // Get all tools from the toolset (from drag data)
+        let allAvailableTools: any[] = [];
+        if (allToolsStr) {
+          try {
+            allAvailableTools = JSON.parse(allToolsStr);
+          } catch (e) {
+            console.error('Failed to parse allTools from drag data:', e);
+          }
+        }
+        
+        // If allTools is empty, create a minimal structure with the dropped tool
+        if (allAvailableTools.length === 0) {
+          allAvailableTools = [{
+            toolName: toolName || '',
+            fullName: finalToolFullName,
+            toolsetName,
+            description: toolDescription || '',
+            appName: toolsetName,
+          }];
+        }
+        
+        // Normalize tool structure (ToolsetNode expects { name, fullName, description, toolsetName })
+        const normalizeTool = (t: any) => ({
+          name: t.toolName || t.name || '',
+          fullName: t.fullName || `${toolsetName}.${t.toolName || t.name || ''}`,
+          description: t.description || '',
+          toolsetName: t.toolsetName || toolsetName,
+        });
+        
+        // Normalize all available tools
+        const normalizedAvailableTools = allAvailableTools.map(normalizeTool);
+        
+        // Find the dropped tool in available tools
+        const droppedTool = normalizedAvailableTools.find(
+          (t: any) => t.fullName === finalToolFullName || t.name === toolName
+        ) || normalizeTool({
+          toolName: toolName || '',
+          fullName: finalToolFullName,
+          toolsetName,
+          description: toolDescription || '',
+        });
+        
+        // Check if a toolset node for this toolset already exists
+        const existingToolsetNode = nodes.find(
+          (n) => n.data.type.startsWith('toolset-') && 
+                 n.data.config?.toolsetName === toolsetName
+        );
+        
+        if (existingToolsetNode) {
+          // Add the tool to the existing toolset node if it's not already there
+          const existingTools = existingToolsetNode.data.config?.tools || [];
+          const toolAlreadyExists = existingTools.some(
+            (t: any) => t.fullName === droppedTool.fullName || t.name === droppedTool.name
+          );
+          
+          if (!toolAlreadyExists) {
+            setNodes((nds) =>
+              nds.map((node) =>
+                node.id === existingToolsetNode.id
+                  ? {
+                      ...node,
+                      data: {
+                        ...node.data,
+                        config: {
+                          ...node.data.config,
+                          tools: [...existingTools, droppedTool],
+                          selectedTools: [
+                            ...(node.data.config?.selectedTools || []),
+                            droppedTool.name,
+                          ],
+                          // Update availableTools if we have more tools now
+                          availableTools: normalizedAvailableTools.length > 0 
+                            ? normalizedAvailableTools 
+                            : node.data.config?.availableTools || [],
+                        },
+                      },
+                    }
+                  : node
+              )
+            );
+          }
+          return;
+        }
+        
+        // No existing toolset node, create a new one with only the dropped tool
+        const position = {
+          x: event.clientX - reactFlowBounds.left - 130,
+          y: event.clientY - reactFlowBounds.top - 40,
+        };
+        
+        const newNode: Node<FlowNodeData> = {
+          id: `toolset-${toolsetName}-${Date.now()}`,
+          type: 'flowNode',
+          position,
+          data: {
+            id: `toolset-${toolsetName}-${Date.now()}`,
+            type: `toolset-${toolsetName}`,
+            label: normalizeDisplayName(toolsetDisplayName || toolsetName),
+            description: `${toolsetDisplayName || toolsetName} toolset`,
+            icon: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+            category: 'toolset',
+            config: {
+              toolsetName,
+              displayName: toolsetDisplayName || toolsetName,
+              iconPath: toolsetIconPath || '/assets/icons/toolsets/default.svg',
+              category: toolsetCategory || 'app',
+              // Only the dropped tool is initially selected
+              tools: [droppedTool],
+              // All available tools from the toolset (for adding more)
+              availableTools: normalizedAvailableTools.length > 0 
+                ? normalizedAvailableTools 
+                : [droppedTool],
+              selectedTools: [droppedTool.name],
+              isConfigured: isToolsetConfigured,
+              isAuthenticated: isToolsetAuthenticated,
+            },
+            inputs: [],
+            outputs: ['output'],
+            isConfigured: true,
+          },
+        };
+        setNodes((nds) => [...nds, newNode]);
+        return;
+      }
+      
+      // For non-toolset drops, find the template
+
       const template = nodeTemplates.find((t) => t.type === type);
       if (!template) return;
 

@@ -72,6 +72,7 @@ class AtlassianScope(Enum):
     CONFLUENCE_COMMENT_WRITE = "write:comment:confluence"
     CONFLUENCE_SEARCH = "search:confluence"
     CONFLUENCE_EMAIL_READ = "read:email-address:confluence"
+    CONFLUENCE_COMMENT_DELETE = "delete:comment:confluence"
 
     # Common Scopes
     ACCOUNT_READ = "read:account"

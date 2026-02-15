@@ -7,12 +7,132 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.evernote.evernote import EvernoteClient, EvernoteResponse
 from app.sources.external.evernote.evernote import EvernoteDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_note",
+        description="Create a new note",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Note title", "required": True},
+            {"name": "content", "type": "string", "description": "Note content", "required": True}
+        ],
+        tags=["notes", "create"]
+    ),
+    ToolDefinition(
+        name="get_note",
+        description="Get note details",
+        parameters=[
+            {"name": "note_guid", "type": "string", "description": "Note GUID", "required": True}
+        ],
+        tags=["notes", "read"]
+    ),
+    ToolDefinition(
+        name="update_note",
+        description="Update a note",
+        parameters=[
+            {"name": "note_guid", "type": "string", "description": "Note GUID", "required": True}
+        ],
+        tags=["notes", "update"]
+    ),
+    ToolDefinition(
+        name="delete_note",
+        description="Delete a note",
+        parameters=[
+            {"name": "note_guid", "type": "string", "description": "Note GUID", "required": True}
+        ],
+        tags=["notes", "delete"]
+    ),
+    ToolDefinition(
+        name="create_notebook",
+        description="Create a new notebook",
+        parameters=[
+            {"name": "name", "type": "string", "description": "Notebook name", "required": True}
+        ],
+        tags=["notebooks", "create"]
+    ),
+    ToolDefinition(
+        name="get_notebook",
+        description="Get notebook details",
+        parameters=[
+            {"name": "notebook_guid", "type": "string", "description": "Notebook GUID", "required": True}
+        ],
+        tags=["notebooks", "read"]
+    ),
+    ToolDefinition(
+        name="update_notebook",
+        description="Update a notebook",
+        parameters=[
+            {"name": "notebook_guid", "type": "string", "description": "Notebook GUID", "required": True}
+        ],
+        tags=["notebooks", "update"]
+    ),
+    ToolDefinition(
+        name="get_default_notebook",
+        description="Get default notebook",
+        parameters=[],
+        tags=["notebooks", "read"]
+    ),
+    ToolDefinition(
+        name="search_notes",
+        description="Search for notes",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["notes", "search"]
+    ),
+]
 
+
+# Register Evernote toolset
+@ToolsetBuilder("Evernote")\
+    .in_group("Productivity")\
+    .with_description("Evernote integration for note-taking and organization")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Evernote",
+            authorize_url="https://www.evernote.com/OAuth.action",
+            token_url="https://www.evernote.com/oauth",
+            redirect_uri="toolsets/oauth/callback/evernote",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "read",
+                    "write"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Evernote Developer Portal"),
+                CommonFields.client_secret("Evernote Developer Portal")
+            ],
+            icon_path="/assets/icons/connectors/evernote.svg",
+            app_group="Productivity",
+            app_description="Evernote OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Evernote Developer Token", "your-developer-token")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/evernote.svg"))\
+    .build_decorator()
 class Evernote:
     """Evernote tools exposed to the agents using EvernoteDataSource"""
 

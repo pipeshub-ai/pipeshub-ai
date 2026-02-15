@@ -1,17 +1,136 @@
 import json
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.zendesk.zendesk import ZendeskClient
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_current_user",
+        description="Get current user information",
+        parameters=[],
+        tags=["users", "info"]
+    ),
+    ToolDefinition(
+        name="list_tickets",
+        description="List support tickets",
+        parameters=[
+            {"name": "status", "type": "string", "description": "Ticket status filter", "required": False}
+        ],
+        tags=["tickets", "list"]
+    ),
+    ToolDefinition(
+        name="get_ticket",
+        description="Get ticket details",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True}
+        ],
+        tags=["tickets", "read"]
+    ),
+    ToolDefinition(
+        name="create_ticket",
+        description="Create a new ticket",
+        parameters=[
+            {"name": "subject", "type": "string", "description": "Ticket subject", "required": True},
+            {"name": "description", "type": "string", "description": "Ticket description", "required": True}
+        ],
+        tags=["tickets", "create"]
+    ),
+    ToolDefinition(
+        name="update_ticket",
+        description="Update a ticket",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True}
+        ],
+        tags=["tickets", "update"]
+    ),
+    ToolDefinition(
+        name="delete_ticket",
+        description="Delete a ticket",
+        parameters=[
+            {"name": "ticket_id", "type": "integer", "description": "Ticket ID", "required": True}
+        ],
+        tags=["tickets", "delete"]
+    ),
+    ToolDefinition(
+        name="list_users",
+        description="List users",
+        parameters=[],
+        tags=["users", "list"]
+    ),
+    ToolDefinition(
+        name="get_user",
+        description="Get user details",
+        parameters=[
+            {"name": "user_id", "type": "integer", "description": "User ID", "required": True}
+        ],
+        tags=["users", "read"]
+    ),
+    ToolDefinition(
+        name="search_tickets",
+        description="Search for tickets",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["tickets", "search"]
+    ),
+]
 
+
+# Register Zendesk toolset
+@ToolsetBuilder("Zendesk")\
+    .in_group("Customer Support")\
+    .with_description("Zendesk integration for customer support ticket management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Zendesk",
+            authorize_url="https://{subdomain}.zendesk.com/oauth/authorizations/new",
+            token_url="https://{subdomain}.zendesk.com/oauth/tokens",
+            redirect_uri="toolsets/oauth/callback/zendesk",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "read",
+                    "write"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Zendesk OAuth App"),
+                CommonFields.client_secret("Zendesk OAuth App")
+            ],
+            icon_path="/assets/icons/connectors/zendesk.svg",
+            app_group="Customer Support",
+            app_description="Zendesk OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Zendesk API Token", "your-api-token"),
+            CommonFields.api_token("Zendesk Subdomain", "your-subdomain", field_name="subdomain")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/zendesk.svg"))\
+    .build_decorator()
 class Zendesk:
     """Zendesk tool exposed to the agents"""
     def __init__(self, client: ZendeskClient) -> None:

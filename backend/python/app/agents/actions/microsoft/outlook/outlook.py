@@ -1,12 +1,22 @@
-
 import json
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.outlook.outlook import (
     OutlookCalendarContactsDataSource,
@@ -14,7 +24,96 @@ from app.sources.external.microsoft.outlook.outlook import (
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="send_mail",
+        description="Send an email",
+        parameters=[
+            {"name": "to", "type": "string", "description": "Recipient email", "required": True},
+            {"name": "subject", "type": "string", "description": "Email subject", "required": True},
+            {"name": "body", "type": "string", "description": "Email body", "required": True}
+        ],
+        tags=["email", "send"]
+    ),
+    ToolDefinition(
+        name="get_messages",
+        description="Get email messages",
+        parameters=[
+            {"name": "folder_id", "type": "string", "description": "Folder ID", "required": False}
+        ],
+        tags=["email", "list"]
+    ),
+    ToolDefinition(
+        name="get_message",
+        description="Get message details",
+        parameters=[
+            {"name": "message_id", "type": "string", "description": "Message ID", "required": True}
+        ],
+        tags=["email", "read"]
+    ),
+    ToolDefinition(
+        name="reply_to_message",
+        description="Reply to a message",
+        parameters=[
+            {"name": "message_id", "type": "string", "description": "Message ID", "required": True},
+            {"name": "body", "type": "string", "description": "Reply body", "required": True}
+        ],
+        tags=["email", "reply"]
+    ),
+    ToolDefinition(
+        name="get_folders",
+        description="Get email folders",
+        parameters=[],
+        tags=["folders", "list"]
+    ),
+    ToolDefinition(
+        name="get_contacts",
+        description="Get contacts",
+        parameters=[],
+        tags=["contacts", "list"]
+    ),
+    ToolDefinition(
+        name="get_calendar_events",
+        description="Get calendar events",
+        parameters=[],
+        tags=["calendar", "list"]
+    ),
+]
 
+
+# Register Microsoft Outlook toolset
+@ToolsetBuilder("Microsoft Outlook")\
+    .in_group("Microsoft 365")\
+    .with_description("Microsoft Outlook integration for email, calendar, and contacts")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Outlook",
+            authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            redirect_uri="toolsets/oauth/callback/outlook",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "Mail.ReadWrite",
+                    "Calendars.ReadWrite",
+                    "Contacts.ReadWrite"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Azure App Registration"),
+                CommonFields.client_secret("Azure App Registration")
+            ],
+            icon_path="/assets/icons/connectors/outlook.svg",
+            app_group="Microsoft 365",
+            app_description="Microsoft Outlook OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/outlook.svg"))\
+    .build_decorator()
 class Outlook:
     """Microsoft Outlook tool exposed to the agents"""
     def __init__(self, client: MSGraphClient) -> None:

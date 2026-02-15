@@ -1,19 +1,116 @@
-
 import base64
 import json
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.one_drive.one_drive import OneDriveDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_drives",
+        description="Get OneDrive drives",
+        parameters=[
+            {"name": "search", "type": "string", "description": "Search query", "required": False}
+        ],
+        tags=["drives", "list"]
+    ),
+    ToolDefinition(
+        name="get_drive",
+        description="Get drive details",
+        parameters=[
+            {"name": "drive_id", "type": "string", "description": "Drive ID", "required": True}
+        ],
+        tags=["drives", "read"]
+    ),
+    ToolDefinition(
+        name="get_files",
+        description="Get files in a drive",
+        parameters=[
+            {"name": "drive_id", "type": "string", "description": "Drive ID", "required": False},
+            {"name": "folder_path", "type": "string", "description": "Folder path", "required": False}
+        ],
+        tags=["files", "list"]
+    ),
+    ToolDefinition(
+        name="get_file",
+        description="Get file details",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "read"]
+    ),
+    ToolDefinition(
+        name="upload_file",
+        description="Upload a file",
+        parameters=[
+            {"name": "file_name", "type": "string", "description": "File name", "required": True},
+            {"name": "content", "type": "string", "description": "File content", "required": True},
+            {"name": "folder_path", "type": "string", "description": "Folder path", "required": False}
+        ],
+        tags=["files", "upload"]
+    ),
+    ToolDefinition(
+        name="delete_file",
+        description="Delete a file",
+        parameters=[
+            {"name": "file_id", "type": "string", "description": "File ID", "required": True}
+        ],
+        tags=["files", "delete"]
+    ),
+]
 
+
+# Register OneDrive toolset
+@ToolsetBuilder("OneDrive")\
+    .in_group("Microsoft 365")\
+    .with_description("OneDrive integration for file storage and management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="OneDrive",
+            authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            redirect_uri="toolsets/oauth/callback/onedrive",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "Files.ReadWrite",
+                    "Files.ReadWrite.All",
+                    "Sites.ReadWrite.All"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Azure App Registration"),
+                CommonFields.client_secret("Azure App Registration")
+            ],
+            icon_path="/assets/icons/connectors/onedrive.svg",
+            app_group="Microsoft 365",
+            app_description="OneDrive OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/onedrive.svg"))\
+    .build_decorator()
 class OneDrive:
     """OneDrive tool exposed to the agents"""
     def __init__(self, client: MSGraphClient) -> None:

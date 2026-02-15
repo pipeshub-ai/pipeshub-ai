@@ -29,26 +29,40 @@ export interface Agent {
   description: string;
   startMessage: string;
   systemPrompt: string;
-  tools: string[];
-  models: {
+  // Legacy fields (deprecated)
+  tools?: string[];
+  kb?: string[];
+  connectors?: ConnectorInstance[];
+  // New graph-based fields
+  // Models can be:
+  // - Array of strings (model keys) before enrichment
+  // - Array of enriched model objects after backend processing
+  models: (string | {
+    modelKey: string;
     provider: string;
     modelName: string;
-    isReasoning: boolean;
-  }[];
-  kb: string[];
-  connectors: ConnectorInstance[]; // Unified array with category field
-  vectorDBs: string[];
+    isReasoning?: boolean;
+    isMultimodal?: boolean;
+    isDefault?: boolean;
+    modelType?: string;
+    [key: string]: any;
+  })[];
+  knowledge?: Knowledge[]; // Linked via graph
+  toolsets?: Toolset[]; // Linked via graph
+  vectorDBs?: string[];
   tags: string[];
   templateId?: string;
   createdBy: string;
-  orgId: string;
-  createdAtTimestamp: string;
-  updatedAtTimestamp: string;
+  orgId?: string;
+  createdAtTimestamp: string | number;
+  updatedAtTimestamp: string | number;
   lastUsedAt?: string;
-  conversationCount: number;
-  sharedWith: string[];
-  version: number;
+  conversationCount?: number;
+  sharedWith?: string[];
+  version?: number;
   icon?: string;
+  isActive?: boolean;
+  isDeleted?: boolean;
   flow?: {
     nodes: any[];
     edges: any[];
@@ -116,27 +130,186 @@ export interface ConnectorInstance {
   category: 'knowledge' | 'action'; // Purpose: knowledge (apps) or action (tools)
 }
 
+// ============================================================================
+// New Graph-based Toolset Types
+// ============================================================================
+
+export enum ToolsetType {
+  APP = 'app',
+  FILE = 'file',
+  WEB_SEARCH = 'web_search',
+  DATABASE = 'database',
+  UTILITY = 'utility',
+}
+
+export enum AuthType {
+  OAUTH = 'OAUTH',
+  API_TOKEN = 'API_TOKEN',
+  BEARER_TOKEN = 'BEARER_TOKEN',
+  NONE = 'NONE',
+}
+
+/**
+ * Tool node - minimal schema
+ */
+export interface Tool {
+  _key: string;
+  _id?: string;
+  toolName: string;
+  fullName: string; // e.g., "slack.send_message"
+  appName: string;
+  description: string;
+  createdBy: string;
+  createdAtTimestamp: number;
+  updatedAtTimestamp: number;
+}
+
+/**
+ * Toolset node - minimal schema (NO auth fields in DB)
+ * Auth status retrieved dynamically from etcd
+ */
+export interface Toolset {
+  _key: string;
+  _id?: string;
+  name: string; // Normalized name for etcd path
+  displayName: string;
+  type: string; // app, utility, etc
+  userId: string; // Owner (for etcd path)
+  createdBy: string;
+  createdAtTimestamp: number;
+  updatedAtTimestamp: number;
+  // Dynamic fields from etcd (not in DB)
+  authType?: string;
+  isAuthenticated?: boolean;
+  isConfigured?: boolean;
+  etcdPath?: string;
+  metadata?: Record<string, any>; // From etcd
+  // Tools linked to this toolset
+  tools?: Tool[];
+  // Additional display fields (from registry)
+  category?: string;
+  group?: string;
+  iconPath?: string;
+  description?: string;
+  supportedAuthTypes?: string[];
+  toolCount?: number;
+}
+
+/**
+ * Knowledge node - filter configuration for connectors
+ */
+export interface Knowledge {
+  _key: string;
+  _id?: string;
+  connectorId: string;
+  filters: string; // Stringified JSON
+  filtersParsed?: {
+    recordGroups?: string[];
+    records?: string[];
+    [key: string]: any;
+  }; // Parsed filters
+  createdBy: string;
+  updatedBy?: string | null;
+  createdAtTimestamp: number;
+  updatedAtTimestamp: number;
+}
+
+/**
+ * Toolset from registry (Python code)
+ * Now includes tools for drag-and-drop selection
+ */
+export interface RegistryToolset {
+  name: string; // Normalized name (e.g., "slack")
+  normalized_name: string; // Normalized name for API
+  displayName: string; // Display name (e.g., "Slack")
+  appGroup?: string; // App group (e.g., "Communication")
+  category: string; // Category (e.g., "communication", "app")
+  supportedAuthTypes: string[]; // Supported auth types
+  description: string; // Toolset description
+  iconPath?: string; // Icon path
+  tools: RegistryTool[]; // Tools included in this toolset
+  toolCount: number; // Number of tools
+  config?: Record<string, any>; // Configuration schema
+}
+
+/**
+ * Tool from registry (Python code)
+ */
+export interface RegistryTool {
+  name: string; // Tool name (e.g., "send_message")
+  fullName: string; // Full name (e.g., "slack.send_message")
+  description: string;
+  parameters?: Array<{
+    name: string;
+    type: string;
+    description: string;
+    required: boolean;
+    default?: any;
+  }>;
+  tags?: string[];
+  examples?: any[];
+}
+
+/**
+ * Toolset auth status from etcd
+ */
+export interface ToolsetAuthStatus {
+  exists: boolean;
+  isAuthenticated: boolean;
+  authType: string | null;
+  configuredAt?: number;
+}
+
+/**
+ * Simple tool reference (for agent form data, doesn't need full DB fields)
+ */
+export interface ToolRef {
+  name: string;
+  fullName: string;
+  description?: string;
+}
+
+/**
+ * Toolset reference in agent (replaces direct connector array)
+ */
+export interface ToolsetReference {
+  id: string;
+  name: string;
+  displayName: string;
+  type: string;
+  tools?: ToolRef[];
+}
+
+/**
+ * Knowledge reference in agent
+ */
+export interface KnowledgeReference {
+  id: string;
+  connectorId: string;
+  filters?: Record<string, any>;
+}
+
 export interface AgentFormData {
   name: string;
   description: string;
   startMessage: string;
   systemPrompt: string;
-  tools: string[];
-  models: {
-    provider: string;
-    modelName: string;
-    isReasoning: boolean;
-    modelKey: string;
-  }[];
-  kb: string[];
-  connectors: ConnectorInstance[]; // Unified array with category field
-  vectorDBs: string[];
+  // Models as array of model objects or keys
+  models: (string | { provider: string; modelName: string; isReasoning: boolean; modelKey: string })[];
+  // Legacy support (deprecated)
+  tools?: string[];
+  kb?: string[];
+  connectors?: ConnectorInstance[];
+  vectorDBs?: string[];
   tags: string[];
   templateId?: string;
   flow?: {
     nodes: any[];
     edges: any[];
   };
+  // New graph-based fields
+  knowledge?: KnowledgeReference[];
+  toolsets?: ToolsetReference[];
 }
 
 export interface AgentStats {
