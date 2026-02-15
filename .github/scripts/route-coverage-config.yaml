@@ -1,0 +1,78 @@
+# Route Coverage Checker Configuration
+# =====================================
+# Mapping of source code route files to their OpenAPI spec path prefixes.
+# Edit this file when routes are added, renamed, or removed.
+#
+# How prefixes work:
+#   The OpenAPI spec uses servers: [{url: /api/v1}], so all spec paths
+#   omit the /api/v1 prefix. The prefix here is what appears in the spec.
+#
+# How to find the prefix for a new route file:
+#   Look at app.ts configureRoutes() — find the this.app.use('/api/v1/PREFIX', ...)
+#   line for your route file. The PREFIX value goes here.
+
+# Express route files → spec path prefix
+# Mapped from app.ts configureRoutes() method
+express_route_map:
+  "tokens_manager/routes/health.routes.ts": "/health"
+  "user_management/routes/users.routes.ts": "/users"
+  "user_management/routes/teams.routes.ts": "/teams"
+  "user_management/routes/userGroups.routes.ts": "/user-groups"
+  "user_management/routes/org.routes.ts": "/org"
+  "auth/routes/saml.routes.ts": "/saml"
+  "auth/routes/userAccount.routes.ts": "/userAccount"
+  "auth/routes/orgAuthConfig.routes.ts": "/orgAuthConfig"
+  "storage/routes/storage.routes.ts": "/document"
+  "tokens_manager/routes/connectors.routes.ts": "/connectors"
+  "tokens_manager/routes/oauth.routes.ts": "/oauth"
+  "knowledge_base/routes/kb.routes.ts": "/knowledgeBase"
+  "configuration_manager/routes/cm_routes.ts": "/configurationManager"
+  "crawling_manager/routes/cm_routes.ts": "/crawlingManager"
+  "mail/routes/mail.routes.ts": "/mail"
+  # OAuth provider mounted at /api/v1/oauth2 in code, but spec uses /oauth
+  "oauth_provider/routes/oauth.provider.routes.ts": "/oauth"
+  "oauth_provider/routes/oauth.clients.routes.ts": "/oauth-clients"
+  "oauth_provider/routes/oid.provider.routes.ts": "/.well-known"
+  "api-docs/docs.routes.ts": "/docs"
+
+# es.routes.ts exports multiple factory functions mounted at different prefixes.
+# Map factory function name → spec prefix.
+es_routes_file: "enterprise_search/routes/es.routes.ts"
+es_factory_map:
+  "createConversationalRouter": "/conversations"
+  "createSemanticSearchRouter": "/search"
+  "createAgentConversationalRouter": "/agents"
+
+# Python Query service router config.
+# query_main.py: app.include_router(router, prefix="...")
+# Python agent routes are proxied through Node.js /agents/ endpoint,
+# so they're NOT included here (covered by Express agent routes).
+query_spec_prefix: "/query"
+query_routers:
+  search_router:
+    file: "app/api/routes/search.py"
+    include_prefix: "/api/v1"
+  chatbot_router:
+    file: "app/api/routes/chatbot.py"
+    include_prefix: "/api/v1"
+  tools_router:
+    file: "app/agents/router/router.py"
+    include_prefix: "/api/v1"
+
+# Python Connector service — only webhook routes are unique (non-proxied).
+# The /api/v1/connectors/* and /api/v1/oauth/* routes are proxied through
+# Node.js and already covered by the Express check.
+connector_router_file: "app/connectors/api/router.py"
+connector_spec_prefix: "/connector"
+connector_webhook_paths:
+  - "/drive/webhook"
+  - "/gmail/webhook"
+  - "/admin/webhook"
+
+# Known discrepancies between code and spec that are acceptable.
+# These are pre-existing issues that should be cleaned up over time.
+# Format: [METHOD, path]
+known_missing:
+  - ["PATCH", "/users/{id}/email"]
+  # storageConfig in code is a single POST, spec splits into #s3/#azureBlob/#local
+  - ["POST", "/configurationManager/storageConfig"]

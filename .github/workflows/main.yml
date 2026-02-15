@@ -137,7 +137,18 @@ jobs:
           revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
           fail-on: ERR
 
-      # Step 3: Check that API route changes include spec updates
+      # Step 3: Check route coverage (code routes vs spec)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Check route coverage
+        run: |
+          pip install pyyaml
+          python .github/scripts/check-route-coverage.py
+
+      # Step 4: Check that API route changes include spec updates
       - name: Check OpenAPI spec is updated with route changes
         if: github.event_name == 'pull_request'
         run: |
