@@ -246,7 +246,7 @@ class Retrieval:
             # Actual formatting happens in build_internal_context_for_response()
             # after merge and numbering.
             # ================================================================
-            
+
             # Simple summary for tool result (not used for LLM context)
             agent_content = (
                 f"Retrieved {len(final_results)} knowledge blocks from "

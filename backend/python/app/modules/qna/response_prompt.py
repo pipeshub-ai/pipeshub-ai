@@ -336,11 +336,11 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
 def _sync_block_numbers_from_get_message_content(final_results: List[Dict[str, Any]]) -> None:
     """
     Sync block_number on each result to match what get_message_content() assigned.
-    
+
     get_message_content() assigns block numbers internally as it formats blocks.
     This function replicates that numbering logic to ensure result["block_number"]
     matches the R-markers in the formatted text.
-    
+
     Logic (from chat_helpers.py get_message_content()):
         seen_virtual_record_ids = set()
         record_number = 1
@@ -367,13 +367,13 @@ def _sync_block_numbers_from_get_message_content(final_results: List[Dict[str, A
 
         block_index = result.get("block_index", 0)
         result["block_number"] = f"R{record_number}-{block_index}"
-        
+        BLOCK_GROUP_CONTENT_LENGTH = 2
         # Also sync child results in table blocks
         from app.models.blocks import GroupType
         block_type = result.get("block_type", "")
         if block_type == GroupType.TABLE.value:
             content = result.get("content", ("", []))
-            if isinstance(content, tuple) and len(content) == 2:
+            if isinstance(content, tuple) and len(content) == BLOCK_GROUP_CONTENT_LENGTH:
                 table_summary, child_results = content
                 if isinstance(child_results, list):
                     for child in child_results:
@@ -426,7 +426,7 @@ def build_response_prompt(state, max_iterations=30) -> str:
         user_data = state.get("user_data", "")
         query = state.get("query", "")
         logger_instance = state.get("logger") or logging.getLogger(__name__)
-        
+
         # Get formatted content using get_message_content (same as chatbot)
         message_content = get_message_content(
             final_results,
@@ -436,7 +436,7 @@ def build_response_prompt(state, max_iterations=30) -> str:
             logger_instance,
             mode="json"
         )
-        
+
         # Convert message_content (list of dicts) to string for system prompt
         # get_message_content returns: [{"type": "text", "text": "..."}, ...]
         formatted_parts = []
@@ -445,13 +445,13 @@ def build_response_prompt(state, max_iterations=30) -> str:
                 formatted_parts.append(item.get("text", ""))
             elif isinstance(item, str):
                 formatted_parts.append(item)
-        
+
         internal_context = "\n".join(formatted_parts)
-        
+
         # Sync block numbers from get_message_content() back to results
         # This ensures process_citations() and other functions see matching numbers
         _sync_block_numbers_from_get_message_content(final_results)
-        
+
     elif has_knowledge_tool_result:
         internal_context = (
             "## Internal Knowledge Available\n\n"
@@ -495,7 +495,12 @@ def create_response_messages(state) -> List[Any]:
     FIX: Reduced citation instruction duplication in the user query suffix.
     The system prompt already has complete rules — no need for 20 more lines here.
     """
-    from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+    from langchain_core.messages import (
+        AIMessage,
+        HumanMessage,
+        SystemMessage,
+        ToolMessage,
+    )
 
     messages = []
 
@@ -631,6 +636,7 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
     if content.startswith('{') and content.endswith('}'):
         try:
             import json
+
             from app.utils.citations import fix_json_string
             cleaned_content = fix_json_string(content)
             parsed = json.loads(cleaned_content)
