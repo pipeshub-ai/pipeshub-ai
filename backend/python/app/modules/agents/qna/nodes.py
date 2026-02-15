@@ -28,7 +28,7 @@ from langgraph.types import StreamWriter
 from app.modules.agents.qna.chat_state import ChatState
 from app.modules.agents.qna.stream_utils import safe_stream_write
 from app.modules.qna.response_prompt import create_response_messages
-from app.utils.streaming import stream_llm_response
+from app.utils.streaming import stream_llm_response, stream_llm_response_with_tools
 
 # ============================================================================
 # CONSTANTS & CONFIGURATION
@@ -3007,9 +3007,9 @@ async def reflect_node(
 
     # Log details for debugging
     for r in successful:
-        log.debug(f"  ✅ {r.get('tool_name')}")
+        log.info(f"  ✅ {r.get('tool_name')}")
     for r in failed:
-        log.debug(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:100]}")
+        log.info(f"  ❌ {r.get('tool_name')}: {str(r.get('result', ''))[:100]}")
 
     # ========================================================================
     # DECISION 1: Partial Success (some succeeded, some failed)
@@ -3650,7 +3650,6 @@ async def respond_node(
     # Generate success response
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
-    tool_records = state.get("tool_records", [])
 
     # ================================================================
     # OPTION B: Merge and number retrieval results ONCE after all
@@ -3674,7 +3673,49 @@ async def respond_node(
                 messages.append(HumanMessage(content=context))
 
     try:
-        log.info("🎯 Using stream_llm_response...")
+        log.info("🎯 Using stream_llm_response_with_tools...")
+
+        # Get required parameters from state
+        retrieval_service = state.get("retrieval_service")
+        user_id = state.get("user_id", "")
+        org_id = state.get("org_id", "")
+        blob_store = state.get("blob_store")
+        is_multimodal_llm = state.get("is_multimodal_llm", False)
+        arango_service = state.get("arango_service")
+
+        # Get context_length from config or use default
+        DEFAULT_CONTEXT_LENGTH = 128000
+        config_service = state.get("config_service")
+        context_length = DEFAULT_CONTEXT_LENGTH
+        if config_service:
+            try:
+                # Try to get context length from LLM config if available
+                # This is a fallback - ideally it should be stored in state
+                context_length = DEFAULT_CONTEXT_LENGTH
+            except Exception:
+                pass
+
+        # Construct all_queries from state
+        query = state.get("query", "")
+        decomposed_queries = state.get("decomposed_queries", [])
+        if decomposed_queries:
+            all_queries = [q.get("query", query) for q in decomposed_queries if isinstance(q, dict) and q.get("query")]
+            if not all_queries:
+                all_queries = [query]
+        else:
+            all_queries = [query]
+
+        # Create fetch_full_record_tool
+        from app.utils.fetch_full_record import create_fetch_full_record_tool
+        fetch_tool = create_fetch_full_record_tool(virtual_record_map)
+        tools = [fetch_tool]
+
+        # Create tool_runtime_kwargs
+        tool_runtime_kwargs = {
+            "blob_store": blob_store,
+            "arango_service": arango_service,
+            "org_id": org_id,
+        }
 
         answer_text = ""
         citations = []
@@ -3682,15 +3723,22 @@ async def respond_node(
         confidence = None
         reference_data = []
 
-        async for stream_event in stream_llm_response(
+        async for stream_event in stream_llm_response_with_tools(
             llm=llm,
             messages=messages,
             final_results=final_results,
-            logger=log,
+            all_queries=all_queries,
+            retrieval_service=retrieval_service,
+            user_id=user_id,
+            org_id=org_id,
+            virtual_record_id_to_result=virtual_record_map,
+            blob_store=blob_store,
+            is_multimodal_llm=is_multimodal_llm,
+            context_length=context_length,
+            tools=tools,
+            tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
-            virtual_record_id_to_result=virtual_record_map,
-            records=tool_records,
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

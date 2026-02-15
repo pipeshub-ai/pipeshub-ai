@@ -533,6 +533,22 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
             tool_names = [getattr(t, 'name', str(t)) for t in structured_tools]
             state_logger.debug(f"Structured tool names: {tool_names[:10]}")
 
+        # Add dynamic fetch_full_record tool
+        virtual_record_map = state.get("virtual_record_id_to_result", {})
+        if virtual_record_map:
+            try:
+                from app.utils.fetch_full_record import create_fetch_full_record_tool
+                fetch_tool = create_fetch_full_record_tool(virtual_record_map)
+                structured_tools.append(fetch_tool)
+
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.debug(f"Added fetch_full_record_tool ({len(virtual_record_map)} records)")
+            except Exception as e:
+                state_logger = state.get("logger")
+                if state_logger:
+                    state_logger.warning(f"Failed to add fetch_full_record_tool: {e}")
+
         return structured_tools
     except ImportError:
         # Fallback if langchain_core not available
