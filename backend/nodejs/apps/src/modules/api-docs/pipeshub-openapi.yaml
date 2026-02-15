@@ -170,8 +170,6 @@ tags:
     description: Configure SMTP email server for sending notifications and invitations.
   - name: Authentication Configuration
     description: Configure authentication providers including Azure AD, Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
-  - name: Database Configuration
-    description: View database connection configurations (MongoDB, ArangoDB, Redis, Qdrant, Kafka). Read-only - set via environment variables.
   - name: Platform Settings
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Configuration
@@ -3563,106 +3561,6 @@ components:
           format: email
           description: Default sender email address that appears in the "From" field of outgoing emails
           example: noreply@yourcompany.com
-
-    MongoDBConfig:
-      type: object
-      required:
-        - uri
-      properties:
-        uri:
-          type: string
-          format: uri
-          description: MongoDB connection URI
-        db:
-          type: string
-          description: Database name
-          readOnly: true
-
-    ArangoDBConfig:
-      type: object
-      required:
-        - url
-      properties:
-        url:
-          type: string
-          format: uri
-          description: ArangoDB URL
-        username:
-          type: string
-          description: ArangoDB username
-        password:
-          type: string
-          description: ArangoDB password
-        db:
-          type: string
-          description: Database name
-          readOnly: true
-
-    RedisConfig:
-      type: object
-      required:
-        - host
-        - port
-      properties:
-        host:
-          type: string
-          description: Redis host
-        port:
-          type: integer
-          minimum: 1
-          description: Redis port
-        password:
-          type: string
-          description: Redis password
-        tls:
-          type: boolean
-          description: Enable TLS connection
-          default: false
-
-    QdrantConfig:
-      type: object
-      required:
-        - host
-        - port
-      properties:
-        host:
-          type: string
-          description: Qdrant host
-        port:
-          type: integer
-          minimum: 1
-          description: Qdrant HTTP port
-        grpcPort:
-          type: integer
-          description: Qdrant gRPC port
-        apiKey:
-          type: string
-          description: Qdrant API key
-
-    KafkaConfig:
-      type: object
-      required:
-        - brokers
-      properties:
-        brokers:
-          type: array
-          items:
-            type: string
-            format: uri
-          description: Kafka broker URLs
-        sasl:
-          type: object
-          description: SASL authentication configuration
-          properties:
-            mechanism:
-              type: string
-              description: SASL mechanism
-            username:
-              type: string
-              description: SASL username
-            password:
-              type: string
-              description: SASL password
 
     PlatformSettings:
       type: object
@@ -7174,7 +7072,7 @@ paths:
           description: Unauthorized - Valid bearer token required
 
   /users/email/exists:
-    post:
+    get:
       tags:
         - Users
       summary: Check if user exists by email
@@ -7205,25 +7103,22 @@ paths:
       operationId: checkUserExistsByEmail
       security:
         - scopedToken: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                email:
-                  type: string
-                  format: email
-                  description: Email address to check
-                  example: "john.smith@company.com"
-                includeDeleted:
-                  type: boolean
-                  default: true
-                  description: Whether to include soft-deleted users
-              required:
-                - email
+      parameters:
+        - name: email
+          in: query
+          required: true
+          description: Email address to check
+          schema:
+            type: string
+            format: email
+            example: "john.smith@company.com"
+        - name: includeDeleted
+          in: query
+          required: false
+          description: Whether to include soft-deleted users
+          schema:
+            type: boolean
+            default: true
       responses:
         '200':
           description: Email check completed
@@ -16916,102 +16811,6 @@ paths:
         '401':
           description: Unauthorized
 
-  # -------------------- Database Configuration (Read-only) --------------------
-  /configurationManager/mongoDBConfig:
-    get:
-      tags:
-        - Database Configuration
-      summary: Get MongoDB configuration
-      description: Retrieve MongoDB connection details. Read-only - database configs are set via environment variables.
-      operationId: getMongoDBConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: MongoDB configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/MongoDBConfig'
-        '401':
-          description: Unauthorized
-
-  /configurationManager/arangoDBConfig:
-    get:
-      tags:
-        - Database Configuration
-      summary: Get ArangoDB configuration
-      description: Retrieve ArangoDB connection details.
-      operationId: getArangoDBConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: ArangoDB configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ArangoDBConfig'
-        '401':
-          description: Unauthorized
-
-  /configurationManager/redisConfig:
-    get:
-      tags:
-        - Database Configuration
-      summary: Get Redis configuration
-      description: Retrieve Redis connection details.
-      operationId: getRedisConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Redis configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/RedisConfig'
-        '401':
-          description: Unauthorized
-
-  /configurationManager/qdrantConfig:
-    get:
-      tags:
-        - Database Configuration
-      summary: Get Qdrant configuration
-      description: Retrieve Qdrant vector database connection details.
-      operationId: getQdrantConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Qdrant configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/QdrantConfig'
-        '401':
-          description: Unauthorized
-
-  /configurationManager/kafkaConfig:
-    get:
-      tags:
-        - Database Configuration
-      summary: Get Kafka configuration
-      description: Retrieve Kafka message broker connection details.
-      operationId: getKafkaConfig
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Kafka configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/KafkaConfig'
-        '401':
-          description: Unauthorized
-
   # -------------------- AI Models Configuration --------------------
   /configurationManager/aiModelsConfig:
     post:
@@ -19188,109 +18987,6 @@ paths:
         '401':
           description: Unauthorized
 
-  /query/api/v1/agent-chat:
-    post:
-      tags:
-        - Query Service
-      summary: "[Query Service] Agent-based chat"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Chat with AI agent using LangGraph for complex reasoning.<br><br>
-
-        <b>Service:</b> Query Service<br>
-        <b>Port:</b> 8000<br>
-        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
-
-        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token<br><br>
-
-        <b>Features:</b>
-        <ul>
-        <li>LangGraph-based agent execution</li>
-        <li>Tool calling capabilities</li>
-        <li>Multi-step reasoning</li>
-        <li>Knowledge base integration</li>
-        </ul>
-      operationId: queryServiceAgentChat
-      servers:
-        - url: http://localhost:8000
-          description: Query Service (Internal)
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                query:
-                  type: string
-                  description: User's question
-                limit:
-                  type: integer
-                  default: 50
-                previousConversations:
-                  type: array
-                  items:
-                    type: object
-                quickMode:
-                  type: boolean
-                  default: false
-                filters:
-                  type: object
-                systemPrompt:
-                  type: string
-                tools:
-                  type: array
-                  items:
-                    type: string
-              required:
-                - query
-      responses:
-        '200':
-          description: Agent response
-          content:
-            application/json:
-              schema:
-                type: object
-        '401':
-          description: Unauthorized
-        '500':
-          description: Agent execution failed
-
-  /query/api/v1/agent-chat-stream:
-    post:
-      tags:
-        - Query Service
-      summary: "[Query Service] Streaming agent-based chat"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Streaming chat with AI agent using LangGraph.<br><br>
-
-        <b>Service:</b> Query Service<br>
-        <b>Port:</b> 8000<br>
-        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
-
-        <b>Authentication:</b> Requires user JWT token (proxied from main API) or scoped service token
-      operationId: queryServiceAgentChatStream
-      servers:
-        - url: http://localhost:8000
-          description: Query Service (Internal)
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Server-Sent Events stream
-          content:
-            text/event-stream:
-              schema:
-                type: string
-        '401':
-          description: Unauthorized
-
   /query/api/v1/health-check/{model_type}:
     post:
       tags:
@@ -19380,169 +19076,6 @@ paths:
                     type: string
                   details:
                     type: object
-
-  /query/api/v1/llm-health-check:
-    post:
-      tags:
-        - Query Service
-      summary: "[Query Service] LLM model health check"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Validate user-provided LLM configurations by making a test call to the language model.<br><br>
-
-        <b>Service:</b> Query Service<br>
-        <b>Port:</b> 8000<br>
-        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
-
-        <b>Authentication:</b> Requires scoped service token<br><br>
-
-        <b>Use Case:</b> Verify LLM API keys and model availability before saving configuration.
-      operationId: queryServiceLlmHealthCheck
-      servers:
-        - url: http://localhost:8000
-          description: Query Service (Internal)
-      security:
-        - scopedToken: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  provider:
-                    type: string
-                    description: Model provider (openai, anthropic, ollama, etc.)
-                  configuration:
-                    type: object
-                    properties:
-                      model:
-                        type: string
-                        description: Model name
-                      apiKey:
-                        type: string
-                        description: API key for the provider
-                    additionalProperties: true
-                  isMultimodal:
-                    type: boolean
-                    description: Whether model supports vision/images
-                  isDefault:
-                    type: boolean
-                    description: Whether this is the default model
-      responses:
-        '200':
-          description: LLM service is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [healthy]
-                  message:
-                    type: string
-                  timestamp:
-                    type: integer
-                    format: int64
-        '500':
-          description: LLM service health check failed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [fail, not healthy]
-                  error:
-                    type: string
-                  message:
-                    type: string
-
-  /query/api/v1/embedding-health-check:
-    post:
-      tags:
-        - Query Service
-      summary: "[Query Service] Embedding model health check"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Validate embedding model configurations and verify that the embedding service is responding.<br><br>
-
-        <b>Service:</b> Query Service<br>
-        <b>Port:</b> 8000<br>
-        <b>Base URL:</b> <code>http://localhost:8000</code><br><br>
-
-        <b>Authentication:</b> Requires scoped service token<br><br>
-
-        <b>Use Case:</b> Tests the embedding model with sample text and validates vector store connectivity.
-      operationId: queryServiceEmbeddingHealthCheck
-      servers:
-        - url: http://localhost:8000
-          description: Query Service (Internal)
-      security:
-        - scopedToken: []
-      requestBody:
-        required: true
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              type: array
-              items:
-                type: object
-                properties:
-                  provider:
-                    type: string
-                    description: Embedding provider (openai, cohere, ollama, etc.)
-                  configuration:
-                    type: object
-                    properties:
-                      model:
-                        type: string
-                        description: Embedding model name
-                      apiKey:
-                        type: string
-                        description: API key for the provider
-                    additionalProperties: true
-                  isDefault:
-                    type: boolean
-                    description: Whether this is the default embedding model
-      responses:
-        '200':
-          description: Embedding service is healthy
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [healthy]
-                  message:
-                    type: string
-                  timestamp:
-                    type: integer
-                    format: int64
-        '500':
-          description: Embedding service health check failed
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    enum: [fail, not healthy]
-                  error:
-                    type: string
-                  message:
-                    type: string
 
   /query/api/v1/tools:
     get:
