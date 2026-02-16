@@ -86,7 +86,7 @@ class ClickHouseClientViaCredentials:
         self.secure = secure
         self._sdk = None
 
-    def create_client(self):
+    def create_client(self) -> object:
         """Create the clickhouse-connect SDK client with credentials auth."""
         self._sdk = clickhouse_connect.get_client(
             host=self.host,
@@ -98,7 +98,7 @@ class ClickHouseClientViaCredentials:
         )
         return self._sdk
 
-    def get_sdk(self):
+    def get_sdk(self) -> object:
         """Return the raw clickhouse-connect client.
 
         Raises:
@@ -144,7 +144,7 @@ class ClickHouseClientViaToken:
         self.secure = secure
         self._sdk = None
 
-    def create_client(self):
+    def create_client(self) -> object:
         """Create the clickhouse-connect SDK client with token auth."""
         self._sdk = clickhouse_connect.get_client(
             host=self.host,
@@ -155,7 +155,7 @@ class ClickHouseClientViaToken:
         )
         return self._sdk
 
-    def get_sdk(self):
+    def get_sdk(self) -> object:
         """Return the raw clickhouse-connect client.
 
         Raises:
@@ -191,11 +191,11 @@ class ClickHouseClient(IClient):
         """
         self.client = client
 
-    def get_client(self):
+    def get_client(self) -> object:
         """Return the auth holder client (satisfies IClient)."""
         return self.client
 
-    def get_sdk(self):
+    def get_sdk(self) -> object:
         """Return the raw clickhouse-connect SDK client."""
         return self.client.get_sdk()
 

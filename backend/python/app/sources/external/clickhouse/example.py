@@ -248,12 +248,13 @@ def select_all_records(
     if response.success and response.data:
         rows = response.data.get("result_rows", [])
         cols = response.data.get("column_names", [])
+        preview_limit = 5
         print(f"  Retrieved {len(rows)} row(s)")
         print(f"  Columns: {', '.join(cols)}")
-        for row in rows[:5]:
+        for row in rows[:preview_limit]:
             print(f"    {row}")
-        if len(rows) > 5:
-            print(f"    ... and {len(rows) - 5} more rows")
+        if len(rows) > preview_limit:
+            print(f"    ... and {len(rows) - preview_limit} more rows")
         return rows
 
     print(f"  Failed to select records: {response.error}")
