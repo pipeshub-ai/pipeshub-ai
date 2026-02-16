@@ -2423,6 +2423,14 @@ async def _plan_with_validation_retry(
 
             # Validate tools
             tools = plan.get('tools', [])
+
+            # Fix empty retrieval queries in fallback plans
+            for tool in tools:
+                if "retrieval" in tool.get("name", "").lower():
+                    if not tool.get("args", {}).get("query", "").strip():
+                        tool["args"]["query"] = query  # Use original user query
+                        log.info(f"🔧 Fixed empty retrieval query with user query: {query[:50]}")
+
             is_valid, invalid_tools, available_tool_names = _validate_planned_tools(tools, state, log)
 
             if is_valid or validation_retry_count >= max_retries:
@@ -3739,6 +3747,7 @@ async def respond_node(
             tool_runtime_kwargs=tool_runtime_kwargs,
             target_words_per_chunk=1,
             mode="json",
+            is_agent=True,  # Use agent schemas (with referenceData support)
         ):
             event_type = stream_event.get("event")
             event_data = stream_event.get("data", {})

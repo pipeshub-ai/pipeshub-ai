@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional, Union
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_qdrant import FastEmbedSparse, QdrantVectorStore, RetrievalMode
+from langchain_qdrant import FastEmbedSparse
 from qdrant_client import models
 
 from app.config.configuration_service import ConfigurationService
@@ -79,7 +79,6 @@ class RetrievalService:
         self.vector_db_service = vector_db_service
         self.collection_name = collection_name
         self.logger.info(f"Retrieval service initialized with collection name: {self.collection_name}")
-        self.vector_store = None
         self.embedding_model = None
         self.embedding_size = None
         self.embedding_model_instance = None
@@ -267,11 +266,10 @@ class RetrievalService:
 
             init_tasks = [
                 self._get_accessible_records_task(user_id, org_id, filter_groups, self.arango_service),
-                self._get_vector_store_task(),
                 self._get_user_cached(user_id)  # Get user info in parallel with caching
             ]
 
-            accessible_records, vector_store, user = await asyncio.gather(*init_tasks)
+            accessible_records, user = await asyncio.gather(*init_tasks)
 
             if not accessible_records:
                 self.logger.error(f"No accessible documents found for user {user_id} and org {org_id}")
@@ -299,7 +297,7 @@ class RetrievalService:
                         must={"orgId": org_id},
                         should={"virtualRecordId": accessible_virtual_record_ids}  # Pass as should condition
                     )
-            search_results = await self._execute_parallel_searches(queries, filter, limit, vector_store)
+            search_results = await self._execute_parallel_searches(queries, filter, limit)
 
             if not search_results:
                 self.logger.debug("No search results found")
@@ -608,39 +606,6 @@ class RetrievalService:
 
         return user_data
 
-
-    async def _get_vector_store_task(self) -> QdrantVectorStore:
-        """Cached vector store retrieval"""
-        if not self.vector_store:
-            # Check collection exists
-            collections = await self.vector_db_service.get_collections()
-            self.logger.info(f"Collections: {collections}")
-            collection_info = (
-                await self.vector_db_service.get_collection(self.collection_name)
-                if any(col.name == self.collection_name for col in collections.collections) # type: ignore
-                else None
-            )
-            if not collection_info or collection_info.points_count == 0: # type: ignore
-                raise VectorDBEmptyError("Vector DB is empty or collection not found")
-
-            # Get cached embedding model
-            dense_embeddings = await self.get_embedding_model_instance()
-            self.logger.info(f"Dense embeddings: {dense_embeddings}")
-            if not dense_embeddings:
-                raise ValueError("No dense embeddings found")
-
-            self.vector_store = QdrantVectorStore(
-                client=self.vector_db_service.get_service_client(),
-                collection_name=self.collection_name,
-                vector_name="dense",
-                sparse_vector_name="sparse",
-                embedding=dense_embeddings,
-                sparse_embedding=self.sparse_embeddings,
-                retrieval_mode=RetrievalMode.HYBRID,
-            )
-            self.logger.info(f"Vector store: {self.vector_store}")
-        return self.vector_store
-
     # Convert sparse embeddings to Qdrant's SparseVector format; FastEmbedSparse returns
     # LangChain's SparseVector, which Prefetch does not accept.
     @staticmethod
@@ -653,7 +618,7 @@ class RetrievalService:
             return models.SparseVector(indices=sparse["indices"], values=sparse["values"])
         raise ValueError("Cannot convert sparse embedding to Qdrant SparseVector")
 
-    async def _execute_parallel_searches(self, queries, filter, limit, vector_store) -> List[Dict[str, Any]]:
+    async def _execute_parallel_searches(self, queries, filter, limit) -> List[Dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion."""
         all_results = []
 
