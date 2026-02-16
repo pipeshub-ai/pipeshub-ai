@@ -52,6 +52,12 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveApp
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleDriveError,
+)
+from app.connectors.sources.google.common.datasource_refresh import (
+    refresh_google_datasource_credentials,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -291,81 +297,18 @@ class GoogleDriveIndividualConnector(BaseConnector):
         The datasource wraps a Google client by reference, so replacing
         the client's credentials automatically updates the datasource.
         """
-        if not self.google_client:
-            raise Exception("Google client not initialized. Call init() first.")
 
-        if not self.drive_data_source:
-            raise Exception("Drive data source not initialized. Call init() first.")
+        if not self.google_client or not self.drive_data_source:
+            raise GoogleDriveError("Google client or drive data source not initialized. Call init() first.")
 
-        # Fetch current credentials from etcd (source of truth)
-        config = await self.config_service.get_config(
-            f"/services/connectors/{self.connector_id}/config"
+        await refresh_google_datasource_credentials(
+            google_client=self.google_client,
+            data_source=self.drive_data_source,
+            config_service=self.config_service,
+            connector_id=self.connector_id,
+            logger=self.logger,
+            service_name="Drive"
         )
-
-        if not config:
-            raise Exception("Google Drive configuration not found")
-
-        credentials_config = config.get("credentials", {}) or {}
-        fresh_access_token = credentials_config.get("access_token", "")
-        fresh_refresh_token = credentials_config.get("refresh_token", "")
-
-        if not fresh_access_token and not fresh_refresh_token:
-            raise Exception("No OAuth credentials available")
-
-        # Get current credentials from the Google client
-        current_client = self.google_client.get_client()
-
-        if hasattr(current_client, '_http') and hasattr(current_client._http, 'credentials'):
-            current_credentials = current_client._http.credentials
-            current_token = getattr(current_credentials, 'token', None)
-            current_refresh_token = getattr(current_credentials, 'refresh_token', None)
-
-            # Detect if credentials changed (especially after re-authentication)
-            credentials_changed = False
-
-            # Refresh token change is critical - indicates re-authentication
-            if current_refresh_token != fresh_refresh_token:
-                self.logger.info("🔄 Refresh token changed - user re-authenticated, updating credentials")
-                credentials_changed = True
-
-            # Access token change might indicate external token refresh
-            elif current_token != fresh_access_token:
-                self.logger.debug("🔄 Access token changed, updating credentials")
-                credentials_changed = True
-
-            # Create new Credentials object if changed
-            if credentials_changed:
-                from google.oauth2.credentials import Credentials
-
-                self.logger.debug("🔨 Creating new Google Credentials object with fresh tokens")
-
-                # Get scopes and client info from current credentials
-                scopes = getattr(current_credentials, 'scopes', None)
-                client_id = getattr(current_credentials, 'client_id', None)
-                client_secret = getattr(current_credentials, 'client_secret', None)
-
-                # Create new credentials object (read-only properties require new object)
-                new_credentials = Credentials(
-                    token=fresh_access_token,
-                    refresh_token=fresh_refresh_token,
-                    token_uri="https://oauth2.googleapis.com/token",
-                    client_id=client_id,
-                    client_secret=client_secret,
-                    scopes=scopes,
-                )
-
-                # Update expiry if available
-                token_expiry_ms = credentials_config.get("access_token_expiry_time")
-                if token_expiry_ms:
-                    from datetime import datetime, timezone
-                    token_expiry = datetime.fromtimestamp(
-                        token_expiry_ms / 1000, timezone.utc
-                    ).replace(tzinfo=None)
-                    new_credentials.expiry = token_expiry
-
-                # Replace the credentials object in the client
-                current_client._http.credentials = new_credentials
-                self.logger.info("✅ Credentials updated successfully")
 
     async def _process_drive_item(
         self,
