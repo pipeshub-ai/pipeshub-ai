@@ -4,7 +4,7 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from logging import Logger
-from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, NoReturn, Optional, Set, Tuple
 
 from aiolimiter import AsyncLimiter
 from fastapi import HTTPException
@@ -115,7 +115,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
     .in_group("Cloud Storage")\
     .with_description("Sync files and folders from Box")\
     .with_categories(["Storage"])\
-    .with_scopes([ConnectorScope.TEAM.value])\
+    .with_scopes([ConnectorScope.TEAM])\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
                 AuthField(
@@ -164,6 +164,7 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
         .add_sync_custom_field(CommonFields.batch_size_field())
     )\
     .build_decorator()
+
 class BoxConnector(BaseConnector):
     """
     Connector for synchronizing data from a Box account.
@@ -460,8 +461,8 @@ class BoxConnector(BaseConnector):
                 response = await self.data_source.collaborations_get_folder_collaborations(folder_id=item_id)
 
             if not response.success:
-                # Handle 404 no permission to view collabs
-                if response.status_code == self.HTTP_NOT_FOUND:
+                # 404 or no permission to view collabs (BoxResponse has no status_code; check error string)
+                if response.error and "404" in str(response.error):
                     self.logger.debug(f"No collaborations found or accessible for {item_type} {item_id} (404).")
                 else:
                     self.logger.debug(f"Could not fetch permissions for {item_type} {item_id}: {response.error}")
@@ -835,8 +836,17 @@ class BoxConnector(BaseConnector):
             self.logger.info("Syncing Box record groups (user drives)...")
 
             for user in users:
-                # Get the root folder info to use as the user's drive
-                response = await self.data_source.folders_get_folder_by_id(folder_id='0')
+                try:
+                    # Folder '0' is the user's root "All Files"; must set As-User to get that user's root.
+                    await self.data_source.set_as_user_context(user.source_user_id)
+                except Exception as e:
+                    self.logger.warning(f"Could not set As-User for {user.email}: {e}")
+                    continue
+
+                try:
+                    response = await self.data_source.folders_get_folder_by_id(folder_id='0')
+                finally:
+                    await self.data_source.clear_as_user_context()
 
                 if not response.success:
                     self.logger.warning(f"Could not fetch root folder for user {user.email}: {response.error}")
@@ -846,13 +856,12 @@ class BoxConnector(BaseConnector):
 
                 # Create RecordGroup for user's drive (their "All Files" root storage)
                 record_group = RecordGroup(
-                    org_id=self.data_entities_processor.org_id,
                     name=f"{user.full_name or user.email}'s Box",
+                    org_id=self.data_entities_processor.org_id,
                     external_group_id=user.source_user_id,
-                    external_user_id=user.source_user_id,
-                    connector_name=self.connector_name.value,
+                    connector_name=self.connector_name,
                     connector_id=self.connector_id,
-                    group_type=RecordGroupType.DRIVE.value,
+                    group_type=RecordGroupType.DRIVE,
                     web_url=root_folder.get('shared_link', {}).get('url') if root_folder.get('shared_link') else None,
                     source_created_at=int(datetime.fromisoformat(root_folder.get('created_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('created_at') else None,
                     source_updated_at=int(datetime.fromisoformat(root_folder.get('modified_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('modified_at') else None,
@@ -909,9 +918,13 @@ class BoxConnector(BaseConnector):
         if not self.current_user_id:
             try:
                 current_user_response = await self.data_source.get_current_user()
-                if current_user_response.success:
-                    self.current_user_id = current_user_response.data.id
-                    self.logger.info(f"🔍 Current Token Owner ID: {self.current_user_id}")
+                if current_user_response.success and current_user_response.data:
+                    user_data = self._to_dict(current_user_response.data)
+                    self.current_user_id = user_data.get("id")
+                    if self.current_user_id is not None:
+                        self.current_user_id = str(self.current_user_id)
+                    if self.current_user_id:
+                        self.logger.info(f"🔍 Current Token Owner ID: {self.current_user_id}")
             except Exception as e:
                 self.logger.warning(f"Could not fetch current user ID: {e}")
 
@@ -995,7 +1008,6 @@ class BoxConnector(BaseConnector):
             # Filter for active users only
             all_active_users = await self.data_entities_processor.get_all_active_users()
             active_user_emails = {active_user.email.lower() for active_user in all_active_users}
-
             users_to_sync = [
                 user for user in users
                 if user.email and user.email.lower() in active_user_emails
@@ -1165,7 +1177,7 @@ class BoxConnector(BaseConnector):
 
         key = "event_stream_cursor"
 
-        # 1. Load Cursor
+        # 1. Load Cursor (Box guarantees events after cursor are new; duplicates only within that stream)
         stream_position = 'now'
         try:
             data = await self.box_cursor_sync_point.read_sync_point(key)
@@ -1209,21 +1221,20 @@ class BoxConnector(BaseConnector):
 
                 if next_stream_position:
                     stream_position = next_stream_position
-                    # Update cursor immediately
-                    await self.box_cursor_sync_point.update_sync_point(
-                        key,
-                        {"cursor": stream_position}
-                    )
+                    await self.box_cursor_sync_point.update_sync_point(key, {"cursor": stream_position})
                     self.logger.debug(f"💾 [Incremental] Updated cursor to: {stream_position}")
 
         except Exception as e:
             self.logger.error(f"❌ [Incremental] Error during sync: {e}", exc_info=True)
 
-    async def _process_event_batch(self, events: List[Dict]) -> None:
+    async def _process_event_batch(
+        self,
+        events: List[Dict],
+    ) -> None:
         """
-        Deduplicates events, handles deletions, and groups updates.
-        Now handles "Flat" dictionary schemas AND fetches missing emails.
-        Supports both files and folders.
+        Deduplicates events by event_id (Box may return events more than once or out of order),
+        handles deletions, and groups updates.
+        Supports "Flat" dictionary schemas and fetches missing emails. Handles files and folders.
         """
         items_to_sync: Dict[str, Tuple[str, str]] = {}  # item_id -> (owner_id, item_type)
         items_to_delete: set = set()
@@ -1255,7 +1266,24 @@ class BoxConnector(BaseConnector):
                 return obj.get(key, default)
             return getattr(obj, key, default)
 
+        # Box may return events out of chronological order; sort by created_at so we process in time order.
+        def _event_sort_key(e: Dict) -> Tuple[int, str]:
+            ts = get_val(e, 'created_at')
+            if ts is not None and isinstance(ts, str):
+                return (0, ts)  # ISO 8601 strings sort correctly
+            return (1, '')  # events without timestamp last
+
+        events = sorted(events, key=_event_sort_key)
+        processed_ids_set = set()
+
         for event in events:
+            event_id = get_val(event, 'event_id')
+            if event_id:
+                if event_id in processed_ids_set:
+                    self.logger.debug(f"Skipping duplicate event (event_id={event_id})")
+                    continue
+                processed_ids_set.add(event_id)
+
             event_type = get_val(event, 'event_type')
             source = get_val(event, 'source')
 
