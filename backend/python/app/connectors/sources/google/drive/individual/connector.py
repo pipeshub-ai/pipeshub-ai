@@ -52,6 +52,12 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GoogleDriveApp
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleDriveError,
+)
+from app.connectors.sources.google.common.datasource_refresh import (
+    refresh_google_datasource_credentials,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -280,6 +286,29 @@ class GoogleDriveIndividualConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Drive connector: {ex}", exc_info=True)
             raise
+
+    async def _get_fresh_datasource(self) -> None:
+        """
+        Ensure drive_data_source has ALWAYS-FRESH OAuth credentials.
+
+        Creates a new Credentials object when credentials change.
+        After calling this, use self.drive_data_source directly.
+
+        The datasource wraps a Google client by reference, so replacing
+        the client's credentials automatically updates the datasource.
+        """
+
+        if not self.google_client or not self.drive_data_source:
+            raise GoogleDriveError("Google client or drive data source not initialized. Call init() first.")
+
+        await refresh_google_datasource_credentials(
+            google_client=self.google_client,
+            data_source=self.drive_data_source,
+            config_service=self.config_service,
+            connector_id=self.connector_id,
+            logger=self.logger,
+            service_name="Drive"
+        )
 
     async def _process_drive_item(
         self,
@@ -679,6 +708,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Get user info
         fields = 'user(displayName,emailAddress,permissionId)'
+        await self._get_fresh_datasource()
         user_about = await self.drive_data_source.about_get(fields=fields)
         user_id = user_about.get('user', {}).get('permissionId')
         user_email = user_about.get('user', {}).get('emailAddress')
@@ -716,6 +746,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """
         try:
             # Get start page token for future incremental syncs
+            await self._get_fresh_datasource()
             start_token_response = await self.drive_data_source.changes_get_start_page_token()
             start_page_token = start_token_response.get("startPageToken")
 
@@ -744,6 +775,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
                 # Fetch files
                 self.logger.info(f"📥 Fetching files page (token: {page_token[:20] if page_token else 'initial'}...)")
+                await self._get_fresh_datasource()
                 files_response = await self.drive_data_source.files_list(**list_params)
 
                 files = files_response.get("files", [])
@@ -831,6 +863,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
                 # Fetch changes
                 self.logger.info(f"📥 Fetching changes page (token: {current_page_token[:20]}...)")
+                await self._get_fresh_datasource()
                 changes_response = await self.drive_data_source.changes_list(**changes_params)
 
                 self.logger.info(f"changes_response keys: {changes_response.keys()}")
@@ -1284,6 +1317,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Fetch app user
         fields = 'user(displayName,emailAddress,permissionId),storageQuota(limit,usage,usageInDrive)'
+        await self._get_fresh_datasource()
         user_about = await self.drive_data_source.about_get(fields=fields)
         await self._create_app_user(user_about)
 
@@ -1354,6 +1388,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             # Get user information
             fields = 'user(displayName,emailAddress,permissionId)'
+            await self._get_fresh_datasource()
             user_about = await self.drive_data_source.about_get(fields=fields)
             user_id = user_about.get('user', {}).get('permissionId')
             user_email = user_about.get('user', {}).get('emailAddress')
@@ -1409,6 +1444,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             # Fetch fresh file from Google Drive API
             try:
+                await self._get_fresh_datasource()
                 file_metadata = await self.drive_data_source.files_get(
                     fileId=file_id,
                     supportsAllDrives=True
