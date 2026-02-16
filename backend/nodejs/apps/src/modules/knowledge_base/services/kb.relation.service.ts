@@ -285,7 +285,7 @@ export class RecordRelationService {
         orgId: reindexPayload.orgId,
         connector: connectorNormalized,
         connectorId: reindexPayload.connectorId,
-        statusFilters: ['FAILED'],
+        statusFilters: reindexPayload.statusFilters,
       };
 
       const event: SyncEvent = {
