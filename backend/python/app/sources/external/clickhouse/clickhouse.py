@@ -64,10 +64,10 @@ class ClickHouseDataSource:
         column_oriented: Optional[bool] = None,
         use_numpy: Optional[bool] = None,
         max_str_len: Optional[int] = None,
-        query_tz: Optional[Union[str, Any]] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        query_tz: Optional[Union[str, object]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
     ) -> ClickHouseResponse:
         """Execute a SELECT or DESCRIBE query and return structured results
@@ -149,13 +149,13 @@ class ClickHouseDataSource:
         max_str_len: Optional[int] = None,
         use_na_values: Optional[bool] = None,
         query_tz: Optional[str] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
-        context: Optional[Any] = None,
-        external_data: Optional[Any] = None,
+        context: Optional[object] = None,
+        external_data: Optional[object] = None,
         use_extended_dtypes: Optional[bool] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and return results as a pandas DataFrame
 
         Args:
@@ -226,10 +226,10 @@ class ClickHouseDataSource:
         encoding: Optional[str] = None,
         use_none: Optional[bool] = None,
         max_str_len: Optional[int] = None,
-        context: Optional[Any] = None,
-        external_data: Optional[Any] = None,
+        context: Optional[object] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and return results as a numpy ndarray
 
         Args:
@@ -281,9 +281,9 @@ class ClickHouseDataSource:
         parameters: Optional[Union[Sequence, Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
         use_strings: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and return results as a PyArrow Table
 
         Args:
@@ -320,10 +320,10 @@ class ClickHouseDataSource:
         parameters: Optional[Union[Sequence, Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
         use_strings: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None,
         dataframe_library: Optional[str] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and return results as a DataFrame with PyArrow dtype backend
 
         Args:
@@ -364,7 +364,7 @@ class ClickHouseDataSource:
         settings: Optional[Dict[str, Any]] = None,
         fmt: Optional[str] = None,
         use_database: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
     ) -> ClickHouseResponse:
         """Execute a query and return raw bytes in the specified ClickHouse format
@@ -412,7 +412,7 @@ class ClickHouseDataSource:
         data: Optional[Union[str, bytes]] = None,
         settings: Optional[Dict[str, Any]] = None,
         use_database: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
     ) -> ClickHouseResponse:
         """Execute a DDL or DML command (CREATE, DROP, ALTER, SET, etc.) and return the result
@@ -463,7 +463,7 @@ class ClickHouseDataSource:
         column_type_names: Optional[Sequence[str]] = None,
         column_oriented: Optional[bool] = None,
         settings: Optional[Dict[str, Any]] = None,
-        context: Optional[Any] = None,
+        context: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
     ) -> ClickHouseResponse:
         """Insert multiple rows of Python objects into a ClickHouse table
@@ -503,15 +503,7 @@ class ClickHouseDataSource:
 
         try:
             summary = self._sdk.insert(**kwargs)
-            summary_data = {}
-            if hasattr(summary, 'written_rows'):
-                summary_data['written_rows'] = summary.written_rows
-            if hasattr(summary, 'written_bytes'):
-                summary_data['written_bytes'] = summary.written_bytes
-            if hasattr(summary, 'query_id'):
-                summary_data['query_id'] = summary.query_id
-            if hasattr(summary, 'summary'):
-                summary_data['summary'] = summary.summary
+            summary_data = {attr: getattr(summary, attr) for attr in ['written_rows', 'written_bytes', 'query_id', 'summary'] if hasattr(summary, attr)}
             return ClickHouseResponse(
                 success=True,
                 data=summary_data,
@@ -523,13 +515,13 @@ class ClickHouseDataSource:
     def insert_df(
         self,
         table: str,
-        df: Any,
+        df: object,
         database: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
         column_names: Optional[Sequence[str]] = None,
         column_types: Optional[Sequence[Any]] = None,
         column_type_names: Optional[Sequence[str]] = None,
-        context: Optional[Any] = None,
+        context: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
     ) -> ClickHouseResponse:
         """Insert a pandas DataFrame into a ClickHouse table
@@ -566,15 +558,7 @@ class ClickHouseDataSource:
 
         try:
             summary = self._sdk.insert_df(**kwargs)
-            summary_data = {}
-            if hasattr(summary, 'written_rows'):
-                summary_data['written_rows'] = summary.written_rows
-            if hasattr(summary, 'written_bytes'):
-                summary_data['written_bytes'] = summary.written_bytes
-            if hasattr(summary, 'query_id'):
-                summary_data['query_id'] = summary.query_id
-            if hasattr(summary, 'summary'):
-                summary_data['summary'] = summary.summary
+            summary_data = {attr: getattr(summary, attr) for attr in ['written_rows', 'written_bytes', 'query_id', 'summary'] if hasattr(summary, attr)}
             return ClickHouseResponse(
                 success=True,
                 data=summary_data,
@@ -586,7 +570,7 @@ class ClickHouseDataSource:
     def insert_arrow(
         self,
         table: str,
-        arrow_table: Any,
+        arrow_table: object,
         database: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
         transport_settings: Optional[Dict[str, str]] = None
@@ -613,15 +597,7 @@ class ClickHouseDataSource:
 
         try:
             summary = self._sdk.insert_arrow(**kwargs)
-            summary_data = {}
-            if hasattr(summary, 'written_rows'):
-                summary_data['written_rows'] = summary.written_rows
-            if hasattr(summary, 'written_bytes'):
-                summary_data['written_bytes'] = summary.written_bytes
-            if hasattr(summary, 'query_id'):
-                summary_data['query_id'] = summary.query_id
-            if hasattr(summary, 'summary'):
-                summary_data['summary'] = summary.summary
+            summary_data = {attr: getattr(summary, attr) for attr in ['written_rows', 'written_bytes', 'query_id', 'summary'] if hasattr(summary, attr)}
             return ClickHouseResponse(
                 success=True,
                 data=summary_data,
@@ -633,7 +609,7 @@ class ClickHouseDataSource:
     def insert_df_arrow(
         self,
         table: str,
-        df: Any,
+        df: object,
         database: Optional[str] = None,
         settings: Optional[Dict[str, Any]] = None,
         transport_settings: Optional[Dict[str, str]] = None
@@ -660,15 +636,7 @@ class ClickHouseDataSource:
 
         try:
             summary = self._sdk.insert_df_arrow(**kwargs)
-            summary_data = {}
-            if hasattr(summary, 'written_rows'):
-                summary_data['written_rows'] = summary.written_rows
-            if hasattr(summary, 'written_bytes'):
-                summary_data['written_bytes'] = summary.written_bytes
-            if hasattr(summary, 'query_id'):
-                summary_data['query_id'] = summary.query_id
-            if hasattr(summary, 'summary'):
-                summary_data['summary'] = summary.summary
+            summary_data = {attr: getattr(summary, attr) for attr in ['written_rows', 'written_bytes', 'query_id', 'summary'] if hasattr(summary, attr)}
             return ClickHouseResponse(
                 success=True,
                 data=summary_data,
@@ -681,7 +649,7 @@ class ClickHouseDataSource:
         self,
         table: str,
         column_names: Optional[Sequence[str]] = None,
-        insert_block: Optional[Union[str, bytes, Any]] = None,
+        insert_block: Optional[Union[str, bytes, object]] = None,
         settings: Optional[Dict[str, Any]] = None,
         fmt: Optional[str] = None,
         compression: Optional[str] = None,
@@ -717,15 +685,7 @@ class ClickHouseDataSource:
 
         try:
             summary = self._sdk.raw_insert(**kwargs)
-            summary_data = {}
-            if hasattr(summary, 'written_rows'):
-                summary_data['written_rows'] = summary.written_rows
-            if hasattr(summary, 'written_bytes'):
-                summary_data['written_bytes'] = summary.written_bytes
-            if hasattr(summary, 'query_id'):
-                summary_data['query_id'] = summary.query_id
-            if hasattr(summary, 'summary'):
-                summary_data['summary'] = summary.summary
+            summary_data = {attr: getattr(summary, attr) for attr in ['written_rows', 'written_bytes', 'query_id', 'summary'] if hasattr(summary, attr)}
             return ClickHouseResponse(
                 success=True,
                 data=summary_data,
@@ -743,13 +703,13 @@ class ClickHouseDataSource:
         column_formats: Optional[Dict[str, Union[str, Dict[str, str]]]] = None,
         encoding: Optional[str] = None,
         use_none: Optional[bool] = None,
-        context: Optional[Any] = None,
-        query_tz: Optional[Union[str, Any]] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        context: Optional[object] = None,
+        query_tz: Optional[Union[str, object]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as column-oriented blocks for memory-efficient processing
 
         Args:
@@ -810,13 +770,13 @@ class ClickHouseDataSource:
         column_formats: Optional[Dict[str, Union[str, Dict[str, str]]]] = None,
         encoding: Optional[str] = None,
         use_none: Optional[bool] = None,
-        context: Optional[Any] = None,
-        query_tz: Optional[Union[str, Any]] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        context: Optional[object] = None,
+        query_tz: Optional[Union[str, object]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as row-oriented blocks for memory-efficient processing
 
         Args:
@@ -877,13 +837,13 @@ class ClickHouseDataSource:
         column_formats: Optional[Dict[str, Union[str, Dict[str, str]]]] = None,
         encoding: Optional[str] = None,
         use_none: Optional[bool] = None,
-        context: Optional[Any] = None,
-        query_tz: Optional[Union[str, Any]] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        context: Optional[object] = None,
+        query_tz: Optional[Union[str, object]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as individual rows for memory-efficient processing
 
         Args:
@@ -947,13 +907,13 @@ class ClickHouseDataSource:
         max_str_len: Optional[int] = None,
         use_na_values: Optional[bool] = None,
         query_tz: Optional[str] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
-        context: Optional[Any] = None,
-        external_data: Optional[Any] = None,
+        context: Optional[object] = None,
+        external_data: Optional[object] = None,
         use_extended_dtypes: Optional[bool] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as pandas DataFrames per block
 
         Args:
@@ -1024,10 +984,10 @@ class ClickHouseDataSource:
         encoding: Optional[str] = None,
         use_none: Optional[bool] = None,
         max_str_len: Optional[int] = None,
-        context: Optional[Any] = None,
-        external_data: Optional[Any] = None,
+        context: Optional[object] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as numpy arrays per block
 
         Args:
@@ -1079,9 +1039,9 @@ class ClickHouseDataSource:
         parameters: Optional[Union[Sequence, Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
         use_strings: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as PyArrow Tables per block
 
         Args:
@@ -1118,10 +1078,10 @@ class ClickHouseDataSource:
         parameters: Optional[Union[Sequence, Dict[str, Any]]] = None,
         settings: Optional[Dict[str, Any]] = None,
         use_strings: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None,
         dataframe_library: Optional[str] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and stream results as Arrow-backed DataFrames per block
 
         Args:
@@ -1162,9 +1122,9 @@ class ClickHouseDataSource:
         settings: Optional[Dict[str, Any]] = None,
         fmt: Optional[str] = None,
         use_database: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Execute a query and return a raw IO stream of bytes in the specified ClickHouse format
 
         Args:
@@ -1210,17 +1170,17 @@ class ClickHouseDataSource:
         column_oriented: Optional[bool] = None,
         use_numpy: Optional[bool] = None,
         max_str_len: Optional[int] = None,
-        context: Optional[Any] = None,
-        query_tz: Optional[Union[str, Any]] = None,
-        column_tzs: Optional[Dict[str, Union[str, Any]]] = None,
+        context: Optional[object] = None,
+        query_tz: Optional[Union[str, object]] = None,
+        column_tzs: Optional[Dict[str, Union[str, object]]] = None,
         utc_tz_aware: Optional[bool] = None,
         use_na_values: Optional[bool] = None,
         streaming: Optional[bool] = None,
         as_pandas: Optional[bool] = None,
-        external_data: Optional[Any] = None,
+        external_data: Optional[object] = None,
         use_extended_dtypes: Optional[bool] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Build a reusable QueryContext for repeated queries with the same configuration
 
         Args:
@@ -1306,7 +1266,7 @@ class ClickHouseDataSource:
         settings: Optional[Dict[str, Any]] = None,
         data: Optional[Sequence[Sequence[Any]]] = None,
         transport_settings: Optional[Dict[str, str]] = None
-    ) -> Any:
+    ) -> object:
         """Build a reusable InsertContext for repeated inserts to the same table
 
         Args:
@@ -1348,7 +1308,7 @@ class ClickHouseDataSource:
 
     def data_insert(
         self,
-        context: Any
+        context: object
     ) -> ClickHouseResponse:
         """Execute an insert using a pre-built InsertContext
 
@@ -1362,15 +1322,7 @@ class ClickHouseDataSource:
 
         try:
             summary = self._sdk.data_insert(**kwargs)
-            summary_data = {}
-            if hasattr(summary, 'written_rows'):
-                summary_data['written_rows'] = summary.written_rows
-            if hasattr(summary, 'written_bytes'):
-                summary_data['written_bytes'] = summary.written_bytes
-            if hasattr(summary, 'query_id'):
-                summary_data['query_id'] = summary.query_id
-            if hasattr(summary, 'summary'):
-                summary_data['summary'] = summary.summary
+            summary_data = {attr: getattr(summary, attr) for attr in ['written_rows', 'written_bytes', 'query_id', 'summary'] if hasattr(summary, attr)}
             return ClickHouseResponse(
                 success=True,
                 data=summary_data,

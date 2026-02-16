@@ -1,4 +1,3 @@
-# ruff: noqa
 """
 ClickHouse API example demonstrating:
 1. Connection & Server Info (ping, version, min_version check)
@@ -18,7 +17,7 @@ ClickHouse API example demonstrating:
 """
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 
 from app.sources.client.clickhouse.clickhouse import (
     ClickHouseClient,
@@ -26,7 +25,6 @@ from app.sources.client.clickhouse.clickhouse import (
     ClickHouseResponse,
 )
 from app.sources.external.clickhouse.clickhouse import ClickHouseDataSource
-
 
 # ---------------------------------------------------------------------------
 # 1. Connection & Server Info
