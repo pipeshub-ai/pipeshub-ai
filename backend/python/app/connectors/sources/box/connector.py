@@ -177,6 +177,9 @@ class BoxConnector(BaseConnector):
     HTTP_NOT_FOUND = 404
     current_user_id: Optional[str] = None
 
+    # Box only retains admin_logs_streaming events for 2 weeks. If last sync was longer ago, do full sync.
+    BOX_EVENT_STREAM_RETENTION_DAYS = 14
+
     def __init__(
         self,
         logger: Logger,
@@ -1095,15 +1098,24 @@ class BoxConnector(BaseConnector):
             # 2. DECISION LOGIC
             if cursor_data and cursor_data.get("cursor"):
                 cursor_val = cursor_data.get("cursor")
-                self.logger.info(f"✅ [Smart Sync] Found existing cursor: {cursor_val}")
-                self.logger.info("🚀 [Smart Sync] Switching to INCREMENTAL SYNC path.")
+                cursor_updated_at_ms = cursor_data.get("cursor_updated_at")
+                now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                retention_ms = self.BOX_EVENT_STREAM_RETENTION_DAYS * 24 * 3600 * 1000
 
-                # Hand off to the incremental engine
-                await self.run_incremental_sync()
-                return
+                if cursor_updated_at_ms is not None and (now_ms - cursor_updated_at_ms) < retention_ms:
+                    self.logger.info(f"✅ [Smart Sync] Found existing cursor: {cursor_val} (within retention window)")
+                    self.logger.info("🚀 [Smart Sync] Switching to INCREMENTAL SYNC path.")
+                    await self.run_incremental_sync()
+                    return
+                else:
+                    self.logger.info(
+                        f"⚪ [Smart Sync] Cursor too old or missing timestamp (> {self.BOX_EVENT_STREAM_RETENTION_DAYS} days). "
+                        "Box retains events only 2 weeks. Starting FULL SYNC."
+                    )
 
-            # NO CURSOR FOUND PROCEED WITH FULL SYNC
-            self.logger.info("⚪ [Smart Sync] No cursor found. Starting FULL SYNC & Anchoring.")
+            # NO CURSOR OR CURSOR TOO OLD: PROCEED WITH FULL SYNC
+            if not (cursor_data and cursor_data.get("cursor")):
+                self.logger.info("⚪ [Smart Sync] No cursor found. Starting FULL SYNC & Anchoring.")
 
             # ANCHOR THE STREAM
             try:
@@ -1119,9 +1131,10 @@ class BoxConnector(BaseConnector):
                     next_stream_pos = data.get('next_stream_position')
 
                     if next_stream_pos:
+                        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
                         await self.box_cursor_sync_point.update_sync_point(
                             key,
-                            {"cursor": next_stream_pos}
+                            {"cursor": next_stream_pos, "cursor_updated_at": now_ms}
                         )
                         self.logger.info(f"⚓ [Smart Sync] Anchored Event Stream at: {next_stream_pos}")
                     else:
@@ -1221,7 +1234,11 @@ class BoxConnector(BaseConnector):
 
                 if next_stream_position:
                     stream_position = next_stream_position
-                    await self.box_cursor_sync_point.update_sync_point(key, {"cursor": stream_position})
+                    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+                    await self.box_cursor_sync_point.update_sync_point(
+                        key,
+                        {"cursor": stream_position, "cursor_updated_at": now_ms}
+                    )
                     self.logger.debug(f"💾 [Incremental] Updated cursor to: {stream_position}")
 
         except Exception as e:
