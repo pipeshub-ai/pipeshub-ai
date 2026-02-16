@@ -285,6 +285,92 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Gmail connector: {ex}", exc_info=True)
             raise
 
+    async def _get_fresh_datasource(self) -> None:
+        """
+        Ensure gmail_data_source has ALWAYS-FRESH OAuth credentials.
+
+        Creates a new Credentials object when credentials change.
+        After calling this, use self.gmail_data_source directly.
+
+        The datasource wraps a Google client by reference, so replacing
+        the client's credentials automatically updates the datasource.
+        """
+        if not self.gmail_client:
+            raise Exception("Gmail client not initialized. Call init() first.")
+
+        if not self.gmail_data_source:
+            raise Exception("Gmail data source not initialized. Call init() first.")
+
+        # Fetch current credentials from etcd (source of truth)
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config"
+        )
+
+        if not config:
+            raise Exception("Google Gmail configuration not found")
+
+        credentials_config = config.get("credentials", {}) or {}
+        fresh_access_token = credentials_config.get("access_token", "")
+        fresh_refresh_token = credentials_config.get("refresh_token", "")
+
+        if not fresh_access_token and not fresh_refresh_token:
+            raise Exception("No OAuth credentials available")
+
+        # Get current credentials from the Google client
+        current_client = self.gmail_client.get_client()
+
+        if hasattr(current_client, '_http') and hasattr(current_client._http, 'credentials'):
+            current_credentials = current_client._http.credentials
+            current_token = getattr(current_credentials, 'token', None)
+            current_refresh_token = getattr(current_credentials, 'refresh_token', None)
+
+            # Detect if credentials changed (especially after re-authentication)
+            credentials_changed = False
+
+            # Refresh token change is critical - indicates re-authentication
+            if current_refresh_token != fresh_refresh_token:
+                self.logger.info("🔄 Refresh token changed - user re-authenticated, updating credentials")
+                credentials_changed = True
+
+            # Access token change might indicate external token refresh
+            elif current_token != fresh_access_token:
+                self.logger.debug("🔄 Access token changed, updating credentials")
+                credentials_changed = True
+
+            # Create new Credentials object if changed
+            if credentials_changed:
+                from google.oauth2.credentials import Credentials
+
+                self.logger.debug("🔨 Creating new Google Credentials object with fresh tokens")
+
+                # Get scopes and client info from current credentials
+                scopes = getattr(current_credentials, 'scopes', None)
+                client_id = getattr(current_credentials, 'client_id', None)
+                client_secret = getattr(current_credentials, 'client_secret', None)
+
+                # Create new credentials object (read-only properties require new object)
+                new_credentials = Credentials(
+                    token=fresh_access_token,
+                    refresh_token=fresh_refresh_token,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=scopes,
+                )
+
+                # Update expiry if available
+                token_expiry_ms = credentials_config.get("access_token_expiry_time")
+                if token_expiry_ms:
+                    from datetime import datetime, timezone
+                    token_expiry = datetime.fromtimestamp(
+                        token_expiry_ms / 1000, timezone.utc
+                    ).replace(tzinfo=None)
+                    new_credentials.expiry = token_expiry
+
+                # Replace the credentials object in the client
+                current_client._http.credentials = new_credentials
+                self.logger.info("✅ Credentials updated successfully")
+
     async def _get_existing_record(self, external_record_id: str) -> Optional[Record]:
         """Get existing record from data store."""
         try:
@@ -938,6 +1024,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             )
 
             # Get user profile to extract email
+            await self._get_fresh_datasource()
             user_profile = await self.gmail_data_source.users_get_profile(userId="me")
             user_email = user_profile.get("emailAddress")
             if not user_email:
@@ -1661,6 +1748,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Get user profile to extract historyId
             try:
+                await self._get_fresh_datasource()
                 profile = await self.gmail_data_source.users_get_profile(userId="me")
                 history_id = profile.get('historyId')
                 self.logger.info(f"Retrieved historyId {history_id} for user {user_email}")
@@ -1679,6 +1767,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             while True:
                 try:
                     # Fetch threads list
+                    await self._get_fresh_datasource()
                     threads_response = await self.gmail_data_source.users_threads_list(
                         userId="me",
                         maxResults=100,
@@ -1700,6 +1789,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                         try:
                             # Get full thread with all messages
+                            await self._get_fresh_datasource()
                             thread = await self.gmail_data_source.users_threads_get(
                                 userId="me",
                                 id=thread_id,
@@ -1877,6 +1967,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
         while True:
             try:
+                await self._get_fresh_datasource()
                 history_response = await self.gmail_data_source.users_history_list(
                     userId="me",
                     startHistoryId=start_history_id,
@@ -1927,6 +2018,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         """
         try:
             # Get full thread to see all messages
+            await self._get_fresh_datasource()
             thread = await self.gmail_data_source.users_threads_get(
                 userId="me",
                 id=thread_id,
@@ -2068,6 +2160,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                     # Fetch full message details
                     try:
+                        await self._get_fresh_datasource()
                         full_message = await self.gmail_data_source.users_messages_get(
                             userId="me",
                             id=message_id,
@@ -2286,6 +2379,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Get latest historyId from user profile if available
             try:
+                await self._get_fresh_datasource()
                 profile = await self.gmail_data_source.users_get_profile(userId="me")
                 current_history_id = profile.get('historyId')
                 if current_history_id:
@@ -2336,6 +2430,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.info("Starting sync for Google Gmail Individual")
 
             # Get user profile
+            await self._get_fresh_datasource()
             user_profile = await self.gmail_data_source.users_get_profile(userId="me")
             await self._create_app_user(user_profile)
 
@@ -2444,6 +2539,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 return None
 
             try:
+                await self._get_fresh_datasource()
                 user_profile = await self.gmail_data_source.users_get_profile(userId="me")
                 user_email = user_profile.get("emailAddress")
             except Exception as e:
@@ -2489,6 +2585,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Fetch fresh message from Gmail API
             try:
+                await self._get_fresh_datasource()
                 message = await self.gmail_data_source.users_messages_get(
                     userId="me",
                     id=message_id,
@@ -2569,6 +2666,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                 # Fetch parent message to get permissions
                 try:
+                    await self._get_fresh_datasource()
                     parent_message = await self.gmail_data_source.users_messages_get(
                         userId="me",
                         id=parent_message_id,
@@ -2654,6 +2752,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Fetch parent message from Gmail API
             try:
+                await self._get_fresh_datasource()
                 parent_message = await self.gmail_data_source.users_messages_get(
                     userId="me",
                     id=parent_message_id,

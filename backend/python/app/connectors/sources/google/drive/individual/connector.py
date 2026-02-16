@@ -281,6 +281,92 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.error(f"❌ Error initializing Google Drive connector: {ex}", exc_info=True)
             raise
 
+    async def _get_fresh_datasource(self) -> None:
+        """
+        Ensure drive_data_source has ALWAYS-FRESH OAuth credentials.
+
+        Creates a new Credentials object when credentials change.
+        After calling this, use self.drive_data_source directly.
+
+        The datasource wraps a Google client by reference, so replacing
+        the client's credentials automatically updates the datasource.
+        """
+        if not self.google_client:
+            raise Exception("Google client not initialized. Call init() first.")
+
+        if not self.drive_data_source:
+            raise Exception("Drive data source not initialized. Call init() first.")
+
+        # Fetch current credentials from etcd (source of truth)
+        config = await self.config_service.get_config(
+            f"/services/connectors/{self.connector_id}/config"
+        )
+
+        if not config:
+            raise Exception("Google Drive configuration not found")
+
+        credentials_config = config.get("credentials", {}) or {}
+        fresh_access_token = credentials_config.get("access_token", "")
+        fresh_refresh_token = credentials_config.get("refresh_token", "")
+
+        if not fresh_access_token and not fresh_refresh_token:
+            raise Exception("No OAuth credentials available")
+
+        # Get current credentials from the Google client
+        current_client = self.google_client.get_client()
+
+        if hasattr(current_client, '_http') and hasattr(current_client._http, 'credentials'):
+            current_credentials = current_client._http.credentials
+            current_token = getattr(current_credentials, 'token', None)
+            current_refresh_token = getattr(current_credentials, 'refresh_token', None)
+
+            # Detect if credentials changed (especially after re-authentication)
+            credentials_changed = False
+
+            # Refresh token change is critical - indicates re-authentication
+            if current_refresh_token != fresh_refresh_token:
+                self.logger.info("🔄 Refresh token changed - user re-authenticated, updating credentials")
+                credentials_changed = True
+
+            # Access token change might indicate external token refresh
+            elif current_token != fresh_access_token:
+                self.logger.debug("🔄 Access token changed, updating credentials")
+                credentials_changed = True
+
+            # Create new Credentials object if changed
+            if credentials_changed:
+                from google.oauth2.credentials import Credentials
+
+                self.logger.debug("🔨 Creating new Google Credentials object with fresh tokens")
+
+                # Get scopes and client info from current credentials
+                scopes = getattr(current_credentials, 'scopes', None)
+                client_id = getattr(current_credentials, 'client_id', None)
+                client_secret = getattr(current_credentials, 'client_secret', None)
+
+                # Create new credentials object (read-only properties require new object)
+                new_credentials = Credentials(
+                    token=fresh_access_token,
+                    refresh_token=fresh_refresh_token,
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    scopes=scopes,
+                )
+
+                # Update expiry if available
+                token_expiry_ms = credentials_config.get("access_token_expiry_time")
+                if token_expiry_ms:
+                    from datetime import datetime, timezone
+                    token_expiry = datetime.fromtimestamp(
+                        token_expiry_ms / 1000, timezone.utc
+                    ).replace(tzinfo=None)
+                    new_credentials.expiry = token_expiry
+
+                # Replace the credentials object in the client
+                current_client._http.credentials = new_credentials
+                self.logger.info("✅ Credentials updated successfully")
+
     async def _process_drive_item(
         self,
         metadata: dict,
@@ -679,6 +765,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Get user info
         fields = 'user(displayName,emailAddress,permissionId)'
+        await self._get_fresh_datasource()
         user_about = await self.drive_data_source.about_get(fields=fields)
         user_id = user_about.get('user', {}).get('permissionId')
         user_email = user_about.get('user', {}).get('emailAddress')
@@ -716,6 +803,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         """
         try:
             # Get start page token for future incremental syncs
+            await self._get_fresh_datasource()
             start_token_response = await self.drive_data_source.changes_get_start_page_token()
             start_page_token = start_token_response.get("startPageToken")
 
@@ -744,6 +832,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
                 # Fetch files
                 self.logger.info(f"📥 Fetching files page (token: {page_token[:20] if page_token else 'initial'}...)")
+                await self._get_fresh_datasource()
                 files_response = await self.drive_data_source.files_list(**list_params)
 
                 files = files_response.get("files", [])
@@ -831,6 +920,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
                 # Fetch changes
                 self.logger.info(f"📥 Fetching changes page (token: {current_page_token[:20]}...)")
+                await self._get_fresh_datasource()
                 changes_response = await self.drive_data_source.changes_list(**changes_params)
 
                 self.logger.info(f"changes_response keys: {changes_response.keys()}")
@@ -1284,6 +1374,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         # Fetch app user
         fields = 'user(displayName,emailAddress,permissionId),storageQuota(limit,usage,usageInDrive)'
+        await self._get_fresh_datasource()
         user_about = await self.drive_data_source.about_get(fields=fields)
         await self._create_app_user(user_about)
 
@@ -1354,6 +1445,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             # Get user information
             fields = 'user(displayName,emailAddress,permissionId)'
+            await self._get_fresh_datasource()
             user_about = await self.drive_data_source.about_get(fields=fields)
             user_id = user_about.get('user', {}).get('permissionId')
             user_email = user_about.get('user', {}).get('emailAddress')
@@ -1409,6 +1501,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             # Fetch fresh file from Google Drive API
             try:
+                await self._get_fresh_datasource()
                 file_metadata = await self.drive_data_source.files_get(
                     fileId=file_id,
                     supportsAllDrives=True
