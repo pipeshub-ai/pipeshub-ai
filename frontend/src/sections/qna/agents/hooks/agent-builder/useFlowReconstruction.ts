@@ -325,8 +325,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           // Use friendly name if available, otherwise fallback to modelName
           const displayName = matchingModel?.modelFriendlyName || modelConfig.modelName || 'AI Model';
           const modelFriendlyName = matchingModel?.modelFriendlyName;
-          
-          console.log('matchingModel', matchingModel);
+
           const llmNode: Node<NodeData> = {
             id: `llm-${(nodeCounter += 1)}`,
             type: 'flowNode',
