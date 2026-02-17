@@ -2805,6 +2805,7 @@ export const reindexFailedRecords =
         orgId,
         app: normalizeAppName(app),
         connectorId,
+        statusFilters: req.body.statusFilters,
       };
 
       const reindexResponse =
