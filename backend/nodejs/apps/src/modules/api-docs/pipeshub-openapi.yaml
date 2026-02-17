@@ -11538,6 +11538,106 @@ paths:
         '404':
           description: Knowledge base not found
 
+  /knowledgeBase/{kbId}/children:
+    get:
+      tags:
+        - Records
+      summary: Get KB children (alias for records)
+      description: |
+        Retrieve a paginated list of children (folders and records) within a specific knowledge base.<br><br>
+        <b>Overview:</b><br>
+        This is an alias endpoint for <code>/knowledgeBase/{kbId}/records</code>. It returns all direct children of the KB root, including both folders and records.<br><br>
+        <b>Filtering:</b><br>
+        <ul>
+        <li><b>search:</b> Search by record name (partial match, max 1000 chars)</li>
+        <li><b>recordTypes:</b> FILE, WEBPAGE, COMMENT, MESSAGE, EMAIL, TICKET</li>
+        <li><b>origins:</b> UPLOAD (manual uploads) or CONNECTOR (synced)</li>
+        <li><b>indexingStatus:</b> Filter by processing state</li>
+        <li><b>dateFrom/dateTo:</b> Creation date range (Unix timestamps)</li>
+        </ul>
+        <b>Sorting:</b><br>
+        Default sorts by <code>createdAtTimestamp</code> descending (newest first).
+      operationId: getKBChildren
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Knowledge base ID
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: search
+          in: query
+          description: Search query for record names
+          schema:
+            type: string
+            maxLength: 1000
+        - name: recordTypes
+          in: query
+          description: Filter by record types (comma-separated)
+          schema:
+            type: string
+        - name: origins
+          in: query
+          description: Filter by origin
+          schema:
+            type: string
+        - name: indexingStatus
+          in: query
+          description: Filter by indexing status
+          schema:
+            type: string
+        - name: dateFrom
+          in: query
+          description: Start date filter (Unix timestamp)
+          schema:
+            type: integer
+            format: int64
+        - name: dateTo
+          in: query
+          description: End date filter (Unix timestamp)
+          schema:
+            type: integer
+            format: int64
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Successful operation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordsResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: No access to this knowledge base
+        '404':
+          description: Knowledge base not found
+
   /knowledgeBase/record/{recordId}:
     get:
       tags:
@@ -11933,6 +12033,71 @@ paths:
           description: Insufficient permissions
         '404':
           description: Folder not found
+
+  /knowledgeBase/{kbId}/folder/{folderId}/children:
+    get:
+      tags:
+        - Folders
+      summary: Get folder children (alias for folder contents)
+      description: |
+        Retrieve the children (subfolders and records) of a folder.<br><br>
+        <b>Overview:</b><br>
+        This is an alias endpoint for <code>/knowledgeBase/{kbId}/folder/{folderId}</code>. Returns paginated list of records within the folder, with same filtering options as KB-level record listing.<br><br>
+        <b>Navigation:</b><br>
+        Use this endpoint to browse folder hierarchies. Response includes folder metadata and child items.
+      operationId: getFolderChildren
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Knowledge base ID
+          schema:
+            type: string
+        - name: folderId
+          in: path
+          required: true
+          description: Folder ID
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 100
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            default: createdAtTimestamp
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+            default: desc
+      responses:
+        '200':
+          description: Folder children retrieved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordsResponse'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Folder or knowledge base not found
 
   /knowledgeBase/{kbId}/folder/{folderId}/subfolder:
     post:
@@ -19225,117 +19390,6 @@ paths:
                 timestamp: 1703520000000
         '500':
           description: Service is unhealthy
-
-  /connector/drive/webhook:
-    post:
-      tags:
-        - Connector Service
-      summary: "[Connector Service] Google Drive webhook"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Webhook endpoint for Google Drive push notifications.<br><br>
-
-        <b>Service:</b> Connector Service<br>
-        <b>Port:</b> 8088<br>
-        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
-
-        <b>Authentication:</b> None required - uses Google's push notification verification<br><br>
-
-        <b>Note:</b> This endpoint receives real-time change notifications from
-        Google Drive when files are created, modified, or deleted.
-      operationId: driveWebhook
-      security: []
-      servers:
-        - url: http://localhost:8088
-          description: Connector Service (Internal)
-      responses:
-        '200':
-          description: Webhook processed
-        '400':
-          description: Invalid webhook payload
-
-  /connector/gmail/webhook:
-    get:
-      tags:
-        - Webhooks
-      summary: "[Connector Service] Gmail webhook verification"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        GET handler for Gmail Pub/Sub webhook verification.<br><br>
-
-        <b>Service:</b> Connector Service<br>
-        <b>Port:</b> 8088<br>
-        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
-
-        <b>Authentication:</b> None required - uses Google Pub/Sub verification<br><br>
-
-        <b>Note:</b> Google Pub/Sub may send GET requests for subscription verification.
-      operationId: gmailWebhookVerify
-      security: []
-      servers:
-        - url: http://localhost:8088
-          description: Connector Service (Internal)
-      responses:
-        '200':
-          description: Verification acknowledged
-
-    post:
-      tags:
-        - Webhooks
-      summary: "[Connector Service] Gmail webhook"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Webhook endpoint for Gmail Pub/Sub notifications.<br><br>
-
-        <b>Service:</b> Connector Service<br>
-        <b>Port:</b> 8088<br>
-        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
-
-        <b>Authentication:</b> None required - uses Google Pub/Sub verification<br><br>
-
-        <b>Note:</b> This endpoint receives notifications when new emails arrive
-        or email labels change.
-      operationId: gmailWebhook
-      security: []
-      servers:
-        - url: http://localhost:8088
-          description: Connector Service (Internal)
-      responses:
-        '200':
-          description: Webhook processed
-
-  /connector/admin/webhook:
-    post:
-      tags:
-        - Webhooks
-      summary: "[Connector Service] Google Workspace Admin webhook"
-      description: |
-        ⚠️ <b>INTERNAL SERVICE ENDPOINT</b><br><br>
-
-        Webhook endpoint for Google Workspace Admin push notifications.<br><br>
-
-        <b>Service:</b> Connector Service<br>
-        <b>Port:</b> 8088<br>
-        <b>Base URL:</b> <code>http://localhost:8088</code><br><br>
-
-        <b>Authentication:</b> Verified via Google Workspace webhook signature<br><br>
-
-        <b>Note:</b> This endpoint receives notifications about user and group
-        changes from Google Workspace Admin directory (e.g., user created,
-        deleted, suspended, group membership changes).
-      operationId: adminWebhook
-      security: []
-      servers:
-        - url: http://localhost:8088
-          description: Connector Service (Internal)
-      responses:
-        '200':
-          description: Webhook processed
-        '401':
-          description: Unauthorized webhook request
 
   /connector/api/v1/internal/stream/record/{record_id}:
     get:
