@@ -6,10 +6,10 @@ import mimetypes
 import os
 import tempfile
 import time
+from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from urllib.parse import parse_qs, urlencode, urlparse
 
-from pathlib import Path
 import jwt
 from dependency_injector.wiring import Provide, inject
 from fastapi import (

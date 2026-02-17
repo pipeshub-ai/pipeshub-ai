@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from app.config.configuration_service import ConfigurationService
@@ -26,6 +27,11 @@ except ImportError:
     print("Google API client libraries not found. Please install them using 'pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib'")
     raise
 
+class CredentialKeys(Enum):
+    CLIENT_ID = "clientId"
+    CLIENT_SECRET = "clientSecret"
+    ACCESS_TOKEN = "access_token"
+    REFRESH_TOKEN = "refresh_token"
 
 @dataclass
 class GoogleAuthConfig:
