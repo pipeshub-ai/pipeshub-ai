@@ -334,9 +334,12 @@ class ConfigurationService:
                 success = False
 
             if success:
-                # Invalidate local cache (cross-process handled by store auto-publish / etcd watch)
-                self.cache.pop(key, None)
+                # Update cache with value
+                self.cache[key] = value
                 self.logger.debug("✅ Successfully updated config for key: %s", key)
+
+                # Publish cache invalidation for other processes (Redis only)
+                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to update config for key: %s", key)
 
@@ -352,9 +355,12 @@ class ConfigurationService:
             success = await self.store.delete_key(key)
 
             if success:
-                # Invalidate local cache (cross-process handled by store auto-publish / etcd watch)
+                # Remove from cache
                 self.cache.pop(key, None)
                 self.logger.debug("✅ Successfully deleted config for key: %s", key)
+
+                # Publish cache invalidation for other processes (Redis only)
+                await self._publish_cache_invalidation(key)
             else:
                 self.logger.error("❌ Failed to delete config for key: %s", key)
 

@@ -229,10 +229,6 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             # Notify watchers
             await self._notify_watchers(key, value)
 
-            # Auto-publish cache invalidation so that any ConfigurationService
-            # (in this or other processes) invalidates its LRU cache.
-            await self.publish_cache_invalidation(key)
-
             return True
 
         except Exception as e:
@@ -261,9 +257,6 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             # Notify watchers
             await self._notify_watchers(key, value)
-
-            # Auto-publish cache invalidation
-            await self.publish_cache_invalidation(key)
 
         except KeyError:
             raise
@@ -305,9 +298,6 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             if result > 0:
                 # Notify watchers about deletion
                 await self._notify_watchers(key, None)
-
-                # Auto-publish cache invalidation
-                await self.publish_cache_invalidation(key)
 
             return result > 0
 
