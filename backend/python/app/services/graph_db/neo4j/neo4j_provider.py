@@ -6407,10 +6407,10 @@ class Neo4jProvider(IGraphDBProvider):
             AND r.origin = "CONNECTOR"
             AND r.connectorId = $connector_id
             AND r.isDeleted <> true
-            OPTIONAL MATCH (r)-[:IS_OF_TYPE]->(f:File)
-            WHERE f.isFile = true OR f IS NULL
-            WITH r
-            WHERE f IS NULL OR f.isFile = true
+            AND NOT EXISTS {
+                MATCH (r)-[:IS_OF_TYPE]->(f:File)
+                WHERE f.isFile = false
+            }
             RETURN r
             """
 

@@ -234,7 +234,7 @@ class Health:
         logger = container.logger()
 
         # Skip ArangoDB health check if using a different graph database
-        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        data_store = os.getenv("DATA_STORE", "arangodb").lower()
         if data_store != "arangodb":
             logger.info(f"⏭️ Skipping ArangoDB health check (DATA_STORE={data_store})")
             return

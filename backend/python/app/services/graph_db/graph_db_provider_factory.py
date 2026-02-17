@@ -45,8 +45,8 @@ class GraphDBProviderFactory:
         Create and initialize a graph database provider.
 
         The provider type is determined by the DATA_STORE environment variable:
-        - "arangodb": Creates ArangoHTTPProvider (HTTP-based, fully async)
-        - "neo4j": Creates Neo4jProvider (default)
+        - "arangodb": Creates ArangoHTTPProvider (HTTP-based, fully async) (default)
+        - "neo4j": Creates Neo4jProvider
 
         Args:
             logger: Logger instance for logging operations
@@ -76,7 +76,7 @@ class GraphDBProviderFactory:
             logger.info("🏭 GraphDBProviderFactory: Creating database provider...")
 
             # Read provider type from DATA_STORE environment variable
-            provider_type = os.getenv("DATA_STORE", "neo4j").lower()
+            provider_type = os.getenv("DATA_STORE", "arangodb").lower()
             logger.info(f"📦 Creating {provider_type} provider (from DATA_STORE env)...")
 
             # Create HTTP-based ArangoDB provider

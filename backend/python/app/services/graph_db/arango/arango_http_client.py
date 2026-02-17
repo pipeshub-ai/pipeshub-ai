@@ -17,6 +17,7 @@ from app.config.constants.http_status_code import HttpStatusCode
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
+ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 
 
 class ArangoHTTPClient:
@@ -872,9 +873,9 @@ class ArangoHTTPClient:
                     error_data = await resp.json()
                     error_msg = error_data.get("errorMessage", await resp.text())
 
-                    # Check if schema is already configured (error code 1207 or duplicate message)
+                    # Check if schema is already configured (error code ARANGO_ERROR_SCHEMA_DUPLICATE or duplicate message)
                     error_num = error_data.get("errorNum", 0)
-                    if error_num == 1207 or "duplicate" in error_msg.lower():
+                    if error_num == ARANGO_ERROR_SCHEMA_DUPLICATE or "duplicate" in error_msg.lower():
                         self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
                         return True
 
@@ -883,7 +884,7 @@ class ArangoHTTPClient:
 
         except Exception as e:
             error_msg = str(e)
-            if "1207" in error_msg or "duplicate" in error_msg.lower():
+            if str(ARANGO_ERROR_SCHEMA_DUPLICATE) in error_msg or "duplicate" in error_msg.lower():
                 self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
                 return True
             self.logger.error(f"❌ Error updating collection schema: {error_msg}")

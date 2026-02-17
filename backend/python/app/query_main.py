@@ -160,7 +160,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Tools DB and registry - only for ArangoDB
     import os
-    data_store_type = os.getenv("DATA_STORE", "neo4j").lower()
+    data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
 
     if data_store_type == "arangodb":
         arango_config_dict = await container.config_service().get_config(

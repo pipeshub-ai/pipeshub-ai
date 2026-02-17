@@ -307,7 +307,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Also resolve arango_service for ArangoDB-specific operations (like migrations)
     # This is only needed when DATA_STORE=arangodb
     import os
-    data_store_type = os.getenv("DATA_STORE", "neo4j").lower()
+    data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
     if data_store_type == "arangodb":
         app.state.arango_service = await app_container.arango_service()
         logger.info("✅ ArangoDB service resolved for migrations")

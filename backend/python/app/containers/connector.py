@@ -61,7 +61,7 @@ class ConnectorAppContainer(BaseAppContainer):
     async def _create_arango_service(logger, arango_client, kafka_service, config_service) -> BaseArangoService | None:
         """Async factory to create and connect BaseArangoService (with schema init allowed)"""
         # Skip ArangoDB service creation if using a different graph database
-        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        data_store = os.getenv("DATA_STORE", "arangodb").lower()
         if data_store != "arangodb":
             logger.info(f"⏭️ Skipping ArangoDB service creation (DATA_STORE={data_store})")
             return None
@@ -335,7 +335,7 @@ async def initialize_container(container) -> bool:
         await Health.system_health_check(container)
 
         # Conditionally initialize ArangoDB service based on DATA_STORE
-        data_store = os.getenv("DATA_STORE", "neo4j").lower()
+        data_store = os.getenv("DATA_STORE", "arangodb").lower()
         if data_store == "arangodb":
             logger.info("Ensuring ArangoDB service is initialized")
             # Arango_service is needed for migrations
