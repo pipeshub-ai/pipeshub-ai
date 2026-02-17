@@ -11,10 +11,10 @@ from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
 )
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.connectors.core.base.token_service.toolset_token_refresh_service import (
     ToolsetTokenRefreshService,
 )
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class StartupService:

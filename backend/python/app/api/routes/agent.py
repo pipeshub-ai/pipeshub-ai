@@ -3,7 +3,6 @@ Agent API Routes
 Handles agent instances, templates, chat, and permissions using graph-based architecture
 """
 
-import asyncio
 import json
 import uuid
 from logging import Logger
@@ -18,7 +17,6 @@ from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph
@@ -28,6 +26,7 @@ from app.modules.agents.qna.memory_optimizer import (
 )
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter()
@@ -118,7 +117,6 @@ async def get_services(request: Request) -> Dict[str, Any]:
     container = request.app.container
 
     retrieval_service = await container.retrieval_service()
-    arango_service = await container.arango_service()
     graph_provider = await container.graph_provider()
     reranker_service = container.reranker_service()
     config_service = container.config_service()
@@ -133,7 +131,6 @@ async def get_services(request: Request) -> Dict[str, Any]:
 
     return {
         "retrieval_service": retrieval_service,
-        "arango_service": arango_service,
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
@@ -161,10 +158,10 @@ def _get_user_context(request: Request) -> Dict[str, Any]:
     }
 
 
-async def _get_user_document(user_id: str, arango_service: BaseArangoService, logger: Logger) -> Dict[str, Any]:
+async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
     """Get user document with validation"""
     try:
-        user = await arango_service.get_user_by_user_id(user_id)
+        user = await graph_provider.get_user_by_user_id(user_id)
         if not user or not isinstance(user, dict):
             raise HTTPException(status_code=404, detail="User not found")
 
@@ -180,10 +177,10 @@ async def _get_user_document(user_id: str, arango_service: BaseArangoService, lo
         raise HTTPException(status_code=500, detail="Failed to retrieve user information")
 
 
-async def _get_org_info(user_info: Dict[str, Any], arango_service: BaseArangoService, logger: Logger) -> Dict[str, Any]:
+async def _get_org_info(user_info: Dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> Dict[str, Any]:
     """Get organization information with validation"""
     try:
-        org_doc = await arango_service.get_document(user_info["orgId"], CollectionNames.ORGS.value)
+        org_doc = await graph_provider.get_document(user_info["orgId"], CollectionNames.ORGS.value)
         if not org_doc or not isinstance(org_doc, dict):
             raise HTTPException(status_code=404, detail="Organization not found")
 
@@ -323,7 +320,7 @@ async def _create_toolset_edges(
     toolsets_with_tools: Dict[str, Dict[str, Any]],
     user_info: Dict[str, Any],
     user_key: str,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     logger: Logger
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Create toolset nodes and edges for agent using batch operations"""
@@ -366,7 +363,7 @@ async def _create_toolset_edges(
 
     # Batch create all toolset nodes
     try:
-        result = await arango_service.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value)
+        result = await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value)
         if not result:
             return created_toolsets, [{"name": "all", "error": "Failed to create toolset nodes"}]
     except Exception as e:
@@ -385,7 +382,7 @@ async def _create_toolset_edges(
 
     # Batch create agent -> toolset edges
     try:
-        await arango_service.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value)
+        await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value)
     except Exception as e:
         logger.error(f"Failed to create agent-toolset edges: {e}")
 
@@ -431,7 +428,7 @@ async def _create_toolset_edges(
     # Batch create all tool nodes
     if tool_nodes:
         try:
-            result = await arango_service.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value)
+            result = await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value)
             if not result:
                 logger.warning("Failed to create tool nodes")
         except Exception as e:
@@ -440,7 +437,7 @@ async def _create_toolset_edges(
     # Batch create toolset -> tool edges
     if toolset_tool_edges:
         try:
-            await arango_service.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value)
+            await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value)
         except Exception as e:
             logger.error(f"Failed to create toolset-tool edges: {e}")
 
@@ -470,7 +467,7 @@ async def _create_knowledge_edges(
     agent_key: str,
     knowledge_sources: Dict[str, Dict[str, Any]],
     user_key: str,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     logger: Logger
 ) -> List[Dict[str, Any]]:
     """Create knowledge nodes and edges for agent using batch operations"""
@@ -508,7 +505,7 @@ async def _create_knowledge_edges(
 
     # Batch create all knowledge nodes
     try:
-        result = await arango_service.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value)
+        result = await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value)
         if not result:
             logger.warning("Failed to create knowledge nodes")
             return created_knowledge
@@ -528,7 +525,7 @@ async def _create_knowledge_edges(
 
     # Batch create agent -> knowledge edges
     try:
-        await arango_service.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+        await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value)
     except Exception as e:
         logger.error(f"Failed to create agent-knowledge edges: {e}")
 
@@ -631,12 +628,10 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
 
         services = await get_services(request)
         logger = services["logger"]
-        arango_service = services["arango_service"]
         graph_provider = services["graph_provider"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
         config_service = services["config_service"]
-        llm = services["llm"]
         user_context = _get_user_context(request)
 
         # Check cache first
@@ -651,9 +646,9 @@ async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
             return JSONResponse(content=cached_response)
 
         # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], logger)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["arango_service"], logger)
+        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Build and execute graph
         initial_state = build_initial_state(
@@ -765,7 +760,6 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
     try:
         services = await get_services(request)
         logger = services["logger"]
-        arango_service = services["arango_service"]
         graph_provider = services["graph_provider"]
         reranker_service = services["reranker_service"]
         retrieval_service = services["retrieval_service"]
@@ -773,9 +767,9 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
         llm = services["llm"]
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["arango_service"], services["logger"])
+        org_info = await _get_org_info(user_context, services["graph_provider"], services["logger"])
 
         return StreamingResponse(
             stream_response(
@@ -804,7 +798,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         body = _parse_request_body(await request.body())
         _validate_required_fields(body, ["name", "description", "systemPrompt"])
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
         time = get_epoch_timestamp_in_ms()
         template_key = str(uuid.uuid4())
 
@@ -835,11 +829,11 @@ async def create_agent_template(request: Request) -> JSONResponse:
             "updatedAtTimestamp": time,
         }
 
-        result = await services["arango_service"].batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
+        result = await services["graph_provider"].batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create agent template")
 
-        result = await services["arango_service"].batch_create_edges([user_template_access], CollectionNames.PERMISSION.value)
+        result = await services["graph_provider"].batch_create_edges([user_template_access], CollectionNames.PERMISSION.value)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to create template access")
 
@@ -865,8 +859,8 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        templates = await services["arango_service"].get_all_agent_templates(user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        templates = await services["graph_provider"].get_all_agent_templates(user_doc["_key"])
 
         return JSONResponse(
             status_code=200,
@@ -890,8 +884,8 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        template = await services["arango_service"].get_template(template_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
 
         if not template:
             raise AgentTemplateNotFoundError(template_id)
@@ -922,13 +916,13 @@ async def share_agent_template(request: Request, template_id: str) -> JSONRespon
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        template = await services["arango_service"].get_template(template_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        template = await services["graph_provider"].get_template(template_id, user_doc["_key"])
 
         if not template:
             raise AgentTemplateNotFoundError(template_id)
 
-        result = await services["arango_service"].share_agent_template(template_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].share_agent_template(template_id, user_doc["_key"], user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to share agent template")
 
@@ -948,7 +942,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
     """Clone an agent template"""
     try:
         services = await get_services(request)
-        cloned_template_id = await services["arango_service"].clone_agent_template(template_id)
+        cloned_template_id = await services["graph_provider"].clone_agent_template(template_id)
 
         if not cloned_template_id:
             raise HTTPException(status_code=500, detail="Failed to clone agent template")
@@ -975,8 +969,8 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        result = await services["arango_service"].delete_agent_template(template_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        result = await services["graph_provider"].delete_agent_template(template_id, user_doc["_key"])
 
         if not result:
             raise HTTPException(status_code=500, detail="Failed to delete agent template")
@@ -1000,9 +994,9 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
         user_context = _get_user_context(request)
 
         body = _parse_request_body(await request.body())
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
 
-        result = await services["arango_service"].update_agent_template(template_id, body, user_doc["_key"])
+        result = await services["graph_provider"].update_agent_template(template_id, body, user_doc["_key"])
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent template")
 
@@ -1032,7 +1026,7 @@ async def create_agent(request: Request) -> JSONResponse:
         body = _parse_request_body(await request.body())
         _validate_required_fields(body, ["name"])
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], logger)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
         time = get_epoch_timestamp_in_ms()
 
@@ -1068,14 +1062,15 @@ async def create_agent(request: Request) -> JSONResponse:
         }
 
         # Wrap ALL creation operations in a single transaction
-        transaction = None
         created_toolsets = []
         failed_toolsets = []
         created_knowledge = []
 
         try:
             # Start transaction for ALL agent creation operations
-            transaction = services["arango_service"].db.begin_transaction(
+            graph_provider = services["graph_provider"]
+            transaction_id = await graph_provider.begin_transaction(
+                read=[],
                 write=[
                     CollectionNames.AGENT_INSTANCES.value,
                     CollectionNames.PERMISSION.value,
@@ -1090,9 +1085,7 @@ async def create_agent(request: Request) -> JSONResponse:
             logger.debug(f"Started transaction for agent creation: {agent_key}")
 
             # Step 1: Create agent node
-            # Use transaction's collection method
-            agent_collection = transaction.collection(CollectionNames.AGENT_INSTANCES.value)
-            agent_collection.insert(agent)
+            await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id)
             logger.debug(f"Created agent node: {agent_key}")
 
             # Step 2: Create permission edge
@@ -1104,15 +1097,15 @@ async def create_agent(request: Request) -> JSONResponse:
                 "createdAtTimestamp": time,
                 "updatedAtTimestamp": time,
             }
-            permission_collection = transaction.collection(CollectionNames.PERMISSION.value)
-            permission_collection.insert(permission_edge)
+            await graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value, transaction=transaction_id)
             logger.debug(f"Created permission edge for agent: {agent_key}")
 
             # Step 3: Create toolsets and tools (within same transaction)
             if toolsets_with_tools:
                 toolset_mapping = {}
+                toolset_nodes = []
 
-                # Create toolset nodes
+                # Prepare toolset nodes
                 for toolset_name, toolset_data in toolsets_with_tools.items():
                     from app.agents.constants.toolset_constants import (
                         normalize_app_name,
@@ -1134,36 +1127,39 @@ async def create_agent(request: Request) -> JSONResponse:
                         "updatedAtTimestamp": time
                     }
 
-                    toolset_collection = transaction.collection(CollectionNames.AGENT_TOOLSETS.value)
-                    toolset_collection.insert(toolset_node)
-
+                    toolset_nodes.append(toolset_node)
                     toolset_mapping[toolset_name] = {
                         "key": toolset_key,
                         "displayName": display_name,
                         "tools": tools_list
                     }
 
+                # Batch create toolset nodes
+                if toolset_nodes:
+                    await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id)
+
                 # Create agent -> toolset edges
-                agent_toolset_collection = transaction.collection(CollectionNames.AGENT_HAS_TOOLSET.value)
+                agent_toolset_edges = []
                 for toolset_name, toolset_info in toolset_mapping.items():
-                    agent_toolset_edge = {
+                    agent_toolset_edges.append({
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
-                    }
-                    agent_toolset_collection.insert(agent_toolset_edge)
+                    })
+                if agent_toolset_edges:
+                    await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id)
 
                 # Create tool nodes and edges
                 tool_mapping = {}
-                tool_collection = transaction.collection(CollectionNames.AGENT_TOOLS.value)
-                toolset_tool_collection = transaction.collection(CollectionNames.TOOLSET_HAS_TOOL.value)
+                tool_nodes = []
+                toolset_tool_edges = []
 
                 for toolset_name, toolset_info in toolset_mapping.items():
                     for tool_data in toolset_info["tools"]:
                         tool_name = tool_data["name"]
                         full_name = tool_data["fullName"]
-                        description = tool_data["description"]
+                        description = tool_data.get("description", "")
                         tool_key = str(uuid.uuid4())
 
                         tool_node = {
@@ -1176,7 +1172,7 @@ async def create_agent(request: Request) -> JSONResponse:
                             "createdAtTimestamp": time,
                             "updatedAtTimestamp": time
                         }
-                        tool_collection.insert(tool_node)
+                        tool_nodes.append(tool_node)
 
                         tool_mapping[full_name] = {
                             "key": tool_key,
@@ -1185,13 +1181,20 @@ async def create_agent(request: Request) -> JSONResponse:
                         }
 
                         # Create toolset -> tool edge
-                        toolset_tool_edge = {
+                        toolset_tool_edges.append({
                             "_from": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
                             "_to": f"{CollectionNames.AGENT_TOOLS.value}/{tool_key}",
                             "createdAtTimestamp": time,
                             "updatedAtTimestamp": time,
-                        }
-                        toolset_tool_collection.insert(toolset_tool_edge)
+                        })
+
+                # Batch create tool nodes
+                if tool_nodes:
+                    await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id)
+
+                # Batch create toolset -> tool edges
+                if toolset_tool_edges:
+                    await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
 
                 # Build response for created toolsets
                 for toolset_name, toolset_info in toolset_mapping.items():
@@ -1217,9 +1220,9 @@ async def create_agent(request: Request) -> JSONResponse:
             # Step 4: Create knowledge sources (within same transaction)
             if knowledge_sources:
                 knowledge_mapping = {}
+                knowledge_nodes = []
 
-                # Create knowledge nodes
-                knowledge_collection = transaction.collection(CollectionNames.AGENT_KNOWLEDGE.value)
+                # Prepare knowledge nodes
                 for connector_id, knowledge_data in knowledge_sources.items():
                     knowledge_key = str(uuid.uuid4())
                     filters = knowledge_data["filters"]
@@ -1235,23 +1238,28 @@ async def create_agent(request: Request) -> JSONResponse:
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time
                     }
-                    knowledge_collection.insert(knowledge_node)
+                    knowledge_nodes.append(knowledge_node)
 
                     knowledge_mapping[connector_id] = {
                         "key": knowledge_key,
                         "filters": filters
                     }
 
+                # Batch create knowledge nodes
+                if knowledge_nodes:
+                    await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id)
+
                 # Create agent -> knowledge edges
-                agent_knowledge_collection = transaction.collection(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+                agent_knowledge_edges = []
                 for connector_id, knowledge_info in knowledge_mapping.items():
-                    agent_knowledge_edge = {
+                    agent_knowledge_edges.append({
                         "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                         "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
-                    }
-                    agent_knowledge_collection.insert(agent_knowledge_edge)
+                    })
+                if agent_knowledge_edges:
+                    await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id)
 
                 # Build response for created knowledge
                 for connector_id, knowledge_info in knowledge_mapping.items():
@@ -1264,15 +1272,15 @@ async def create_agent(request: Request) -> JSONResponse:
                 logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
 
             # Commit transaction - ALL or NOTHING
-            await asyncio.to_thread(lambda: transaction.commit_transaction())
-            transaction = None
+            await graph_provider.commit_transaction(transaction_id)
+            transaction_id = None
             logger.info(f"✅ Successfully created agent {agent_key} with all components")
 
         except Exception as e:
             # Rollback on ANY error - ensures no partial state
-            if transaction:
+            if transaction_id:
                 try:
-                    await asyncio.to_thread(lambda: transaction.abort_transaction())
+                    await graph_provider.rollback_transaction(transaction_id)
                     logger.warning(f"Rolled back agent creation transaction for {agent_key}")
                 except Exception as abort_error:
                     logger.error(f"Failed to abort transaction: {abort_error}")
@@ -1316,8 +1324,8 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        agent = await services["arango_service"].get_agent(agent_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1348,8 +1356,8 @@ async def get_agents(request: Request) -> JSONResponse:
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        agents = await services["arango_service"].get_all_agents(user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        agents = await services["graph_provider"].get_all_agents(user_doc["_key"])
 
         if not agents:
             raise HTTPException(status_code=404, detail="No agents found")
@@ -1378,11 +1386,11 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         user_context = _get_user_context(request)
 
         body = _parse_request_body(await request.body())
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], logger)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
 
         # Check permissions
-        agent = await services["arango_service"].get_agent(agent_id, user_key)
+        agent = await services["graph_provider"].get_agent(agent_id, user_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
@@ -1390,7 +1398,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             raise PermissionDeniedError("edit this agent (only owner can edit)")
 
         # Update agent document
-        result = await services["arango_service"].update_agent(agent_id, body, user_key)
+        result = await services["graph_provider"].update_agent(agent_id, body, user_key)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent")
 
@@ -1400,10 +1408,12 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
 
             # Use transaction for atomic delete-then-create operation
-            transaction = None
+            graph_provider = services["graph_provider"]
+            transaction_id = None
             try:
                 # Start transaction for atomic operations
-                transaction = services["arango_service"].db.begin_transaction(
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[],
                     write=[
                         CollectionNames.AGENT_HAS_TOOLSET.value,
                         CollectionNames.AGENT_TOOLSETS.value,
@@ -1418,10 +1428,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
 
                 # Get all toolset edges from agent
-                toolset_edges = await services["arango_service"].get_edges_from_node(
+                toolset_edges = await graph_provider.get_edges_from_node(
                     agent_full_id,
                     CollectionNames.AGENT_HAS_TOOLSET.value,
-                    transaction=transaction
+                    transaction=transaction_id
                 )
 
                 # Extract toolset keys and full IDs
@@ -1441,10 +1451,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 all_tool_keys = []
                 all_tool_full_ids = []
                 for toolset_full_id in toolset_full_ids:
-                    tool_edges = await services["arango_service"].get_edges_from_node(
+                    tool_edges = await graph_provider.get_edges_from_node(
                         toolset_full_id,
                         CollectionNames.TOOLSET_HAS_TOOL.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
 
                     for edge in tool_edges:
@@ -1463,10 +1473,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # This must be done first before deleting tool nodes
                 total_tool_edges_deleted = 0
                 for tool_full_id in all_tool_full_ids:
-                    count = await services["arango_service"].delete_all_edges_for_node(
+                    count = await graph_provider.delete_all_edges_for_node(
                         tool_full_id,
                         CollectionNames.TOOLSET_HAS_TOOL.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
                     total_tool_edges_deleted += count
 
@@ -1475,10 +1485,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # Step 2: Delete tool nodes (now safe, all their edges are gone)
                 deleted_tool_nodes = 0
                 if all_tool_keys:
-                    result = await services["arango_service"].delete_nodes(
+                    result = await graph_provider.delete_nodes(
                         all_tool_keys,
                         CollectionNames.AGENT_TOOLS.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
                     deleted_tool_nodes = len(all_tool_keys) if result else 0
                     logger.debug(f"Deleted {deleted_tool_nodes} tool node(s)")
@@ -1487,10 +1497,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # Note: We don't check TOOLSET_HAS_TOOL again - those edges were deleted in Step 1
                 total_toolset_edges_deleted = 0
                 for toolset_full_id in toolset_full_ids:
-                    count = await services["arango_service"].delete_all_edges_for_node(
+                    count = await graph_provider.delete_all_edges_for_node(
                         toolset_full_id,
                         CollectionNames.AGENT_HAS_TOOLSET.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
                     total_toolset_edges_deleted += count
 
@@ -1499,10 +1509,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # Step 4: Delete toolset nodes (now safe, all their edges are gone)
                 deleted_toolset_nodes = 0
                 if toolset_keys:
-                    result = await services["arango_service"].delete_nodes(
+                    result = await graph_provider.delete_nodes(
                         toolset_keys,
                         CollectionNames.AGENT_TOOLSETS.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
                     deleted_toolset_nodes = len(toolset_keys) if result else 0
                     logger.debug(f"Deleted {deleted_toolset_nodes} toolset node(s)")
@@ -1514,14 +1524,14 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
 
                 # Commit transaction after deletion
-                await asyncio.to_thread(lambda: transaction.commit_transaction())
-                transaction = None
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
                 logger.debug(f"Committed transaction for toolset deletion on agent {agent_id}")
 
             except Exception as e:
-                if transaction:
+                if transaction_id:
                     try:
-                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        await graph_provider.rollback_transaction(transaction_id)
                         logger.warning(f"Aborted transaction for toolset update on agent {agent_id}")
                     except Exception as abort_error:
                         logger.error(f"Failed to abort transaction: {abort_error}")
@@ -1536,7 +1546,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 try:
                     created_toolsets, failed_toolsets = await _create_toolset_edges(
                         agent_id, toolsets_with_tools, user_context, user_key,
-                        services["arango_service"], logger
+                        services["graph_provider"], logger
                     )
                     if failed_toolsets:
                         logger.warning(
@@ -1561,10 +1571,12 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
 
             # Use transaction for atomic delete-then-create operation
-            transaction = None
+            graph_provider = services["graph_provider"]
+            transaction_id = None
             try:
                 # Start transaction for atomic operations
-                transaction = services["arango_service"].db.begin_transaction(
+                transaction_id = await graph_provider.begin_transaction(
+                    read=[],
                     write=[
                         CollectionNames.AGENT_HAS_KNOWLEDGE.value,
                         CollectionNames.AGENT_KNOWLEDGE.value
@@ -1577,10 +1589,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # ========== PHASE 1: GATHER ALL INFORMATION (READ ONLY) ==========
 
                 # Get all knowledge edges from agent
-                knowledge_edges = await services["arango_service"].get_edges_from_node(
+                knowledge_edges = await graph_provider.get_edges_from_node(
                     agent_full_id,
                     CollectionNames.AGENT_HAS_KNOWLEDGE.value,
-                    transaction=transaction
+                    transaction=transaction_id
                 )
 
                 # Extract knowledge keys and full IDs
@@ -1601,10 +1613,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # Step 1: Delete agent -> knowledge edges
                 total_knowledge_edges_deleted = 0
                 for knowledge_full_id in knowledge_full_ids:
-                    count = await services["arango_service"].delete_all_edges_for_node(
+                    count = await graph_provider.delete_all_edges_for_node(
                         knowledge_full_id,
                         CollectionNames.AGENT_HAS_KNOWLEDGE.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
                     total_knowledge_edges_deleted += count
 
@@ -1613,10 +1625,10 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 # Step 2: Delete knowledge nodes (now safe, all their edges are gone)
                 deleted_knowledge_nodes = 0
                 if knowledge_keys:
-                    result = await services["arango_service"].delete_nodes(
+                    result = await graph_provider.delete_nodes(
                         knowledge_keys,
                         CollectionNames.AGENT_KNOWLEDGE.value,
-                        transaction=transaction
+                        transaction=transaction_id
                     )
                     deleted_knowledge_nodes = len(knowledge_keys) if result else 0
                     logger.debug(f"Deleted {deleted_knowledge_nodes} knowledge node(s)")
@@ -1627,14 +1639,14 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
 
                 # Commit transaction after deletion
-                await asyncio.to_thread(lambda: transaction.commit_transaction())
-                transaction = None
+                await graph_provider.commit_transaction(transaction_id)
+                transaction_id = None
                 logger.debug(f"Committed transaction for knowledge deletion on agent {agent_id}")
 
             except Exception as e:
-                if transaction:
+                if transaction_id:
                     try:
-                        await asyncio.to_thread(lambda: transaction.abort_transaction())
+                        await graph_provider.rollback_transaction(transaction_id)
                         logger.warning(f"Aborted transaction for knowledge update on agent {agent_id}")
                     except Exception as abort_error:
                         logger.error(f"Failed to abort transaction: {abort_error}")
@@ -1648,7 +1660,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             if knowledge_sources:
                 try:
                     created_knowledge = await _create_knowledge_edges(
-                        agent_id, knowledge_sources, user_key, services["arango_service"], logger
+                        agent_id, knowledge_sources, user_key, services["graph_provider"], logger
                     )
                     logger.info(f"Created {len(created_knowledge)} knowledge source(s) for agent {agent_id}")
                 except Exception as e:
@@ -1680,8 +1692,8 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        agent = await services["arango_service"].get_agent(agent_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1689,7 +1701,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_delete", False):
             raise PermissionDeniedError("delete this agent (only owner can delete)")
 
-        result = await services["arango_service"].delete_agent(agent_id, user_doc["_key"])
+        result = await services["graph_provider"].delete_agent(agent_id, user_doc["_key"])
         if not result:
             raise HTTPException(status_code=500, detail="Failed to delete agent")
 
@@ -1719,8 +1731,8 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        agent = await services["arango_service"].get_agent(agent_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1728,7 +1740,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_share", False):
             raise PermissionDeniedError("share this agent")
 
-        result = await services["arango_service"].share_agent(agent_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to share agent")
 
@@ -1754,8 +1766,8 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        agent = await services["arango_service"].get_agent(agent_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1763,7 +1775,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_share", False):
             raise PermissionDeniedError("unshare this agent")
 
-        result = await services["arango_service"].unshare_agent(agent_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to unshare agent")
 
@@ -1785,8 +1797,8 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         services = await get_services(request)
         user_context = _get_user_context(request)
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        permissions = await services["arango_service"].get_agent_permissions(agent_id, user_doc["_key"])
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        permissions = await services["graph_provider"].get_agent_permissions(agent_id, user_doc["_key"])
 
         if permissions is None:
             raise PermissionDeniedError("view permissions for this agent")
@@ -1821,8 +1833,8 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
         if not role:
             raise InvalidRequestError("Role is required")
 
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], services["logger"])
-        result = await services["arango_service"].update_agent_permission(agent_id, user_doc["_key"], user_ids, team_ids, role)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
+        result = await services["graph_provider"].update_agent_permission(agent_id, user_doc["_key"], user_ids, team_ids, role)
 
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent permission")
@@ -1848,7 +1860,6 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
     try:
         services = await get_services(request)
         logger = services["logger"]
-        arango_service = services["arango_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
         llm = services["llm"]
@@ -1858,12 +1869,12 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
 
 
         # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], logger)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["arango_service"], logger)
+        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Get agent
-        agent = await services["arango_service"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
         if not agent:
             raise AgentNotFoundError(agent_id)
 
@@ -1973,7 +1984,6 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         services = await get_services(request)
         logger = services["logger"]
         config_service = services["config_service"]
-        arango_service = services["arango_service"]
         graph_provider = services["graph_provider"]
         retrieval_service = services["retrieval_service"]
         # llm = services["llm"]
@@ -1996,12 +2006,12 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             raise LLMInitializationError()
 
         # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["arango_service"], logger)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["arango_service"], logger)
+        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Get agent
-        agent = await services["arango_service"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
         if not agent:
             raise AgentNotFoundError(agent_id)
 

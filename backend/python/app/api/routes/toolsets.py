@@ -22,8 +22,8 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
 )
 from app.connectors.core.registry.auth_builder import OAuthScopeType
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.connector import ConnectorAppContainer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.oauth_config import get_oauth_config
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -1285,7 +1285,7 @@ async def delete_toolset_config(
     toolset_type: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service])
+    graph_provider: IGraphDBProvider = Depends(Provide[ConnectorAppContainer.graph_provider])
 ) -> Dict[str, Any]:
     """Delete toolset configuration"""
     user_context = _get_user_context(request)
@@ -1297,7 +1297,7 @@ async def delete_toolset_config(
     normalized_name = normalize_app_name(toolset_type)
 
     try:
-        agent_names = await arango_service.check_toolset_in_use(normalized_name, user_id)
+        agent_names = await graph_provider.check_toolset_in_use(normalized_name, user_id)
         if agent_names:
             raise ToolsetInUseError(toolset_type, agent_names)
     except ToolsetInUseError:

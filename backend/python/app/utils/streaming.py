@@ -99,14 +99,14 @@ def supports_human_message_after_tool(llm: BaseChatModel) -> bool:
     return True
 
 
-def _get_schema_for_structured_output(is_agent: bool = False):
+def _get_schema_for_structured_output(is_agent: bool = False) -> Union[Type[AgentAnswerWithMetadataDict], Type[AnswerWithMetadataDict]]:
     """Get the appropriate TypedDict schema for structured output."""
     if is_agent:
         return AgentAnswerWithMetadataDict
     return AnswerWithMetadataDict
 
 
-def _get_schema_for_parsing(is_agent: bool = False):
+def _get_schema_for_parsing(is_agent: bool = False) -> Union[Type[AgentAnswerWithMetadataJSON], Type[AnswerWithMetadataJSON]]:
     """Get the appropriate Pydantic BaseModel schema for parsing."""
     if is_agent:
         return AgentAnswerWithMetadataJSON

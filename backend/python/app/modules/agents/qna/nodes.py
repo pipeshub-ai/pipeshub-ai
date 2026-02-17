@@ -3689,7 +3689,7 @@ async def respond_node(
         org_id = state.get("org_id", "")
         blob_store = state.get("blob_store")
         is_multimodal_llm = state.get("is_multimodal_llm", False)
-        arango_service = state.get("arango_service")
+        graph_provider = state.get("graph_provider")
 
         # Get context_length from config or use default
         DEFAULT_CONTEXT_LENGTH = 128000
@@ -3721,7 +3721,7 @@ async def respond_node(
         # Create tool_runtime_kwargs
         tool_runtime_kwargs = {
             "blob_store": blob_store,
-            "arango_service": arango_service,
+            "graph_provider": graph_provider,
             "org_id": org_id,
         }
 

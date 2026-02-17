@@ -482,7 +482,7 @@ class ToolsetTokenRefreshService:
             # 6. Update stored credentials
             config["credentials"] = new_token.to_dict()
             config["updatedAt"] = int(datetime.now().timestamp() * 1000)  # Epoch timestamp in ms
-            await self.configuration_service.create_config(config_path, config)
+            await self.configuration_service.set_config(config_path, config)
             self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
 
             return new_token
