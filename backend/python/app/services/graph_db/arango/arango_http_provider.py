@@ -665,138 +665,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error("❌ Failed to get record by id %s: %s", id, str(e))
             return None
 
-    async def get_connector_stats(
-        self,
-        org_id: str,
-        connector_id: str,
-    ) -> Dict:
-        """
-        Get connector statistics for a specific connector.
-
-        Args:
-            org_id: Organization ID
-            connector_id: Connector (app) ID
-
-        Returns:
-            Dict: success, message, data (stats and byRecordType)
-        """
-        try:
-            query = """
-            LET org_id = @org_id
-            LET connector = FIRST(
-                FOR doc IN @@apps
-                    FILTER doc._key == @connector_id
-                    RETURN doc
-            )
-            LET records = (
-                FOR doc IN @@records
-                    FILTER doc.orgId == org_id
-                    FILTER doc.origin == "CONNECTOR"
-                    FILTER doc.connectorId == @connector_id
-                    FILTER doc.recordType != @drive_record_type
-                    FILTER doc.isDeleted != true
-                    LET targetDoc = FIRST(
-                        FOR v IN 1..1 OUTBOUND doc._id @@is_of_type
-                            LIMIT 1
-                            RETURN v
-                    )
-                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
-                    RETURN doc
-            )
-            LET total_stats = {
-                total: LENGTH(records),
-                indexingStatus: {
-                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                    CONNECTOR_DISABLED: LENGTH(records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
-                }
-            }
-            LET by_record_type = (
-                FOR record_type IN UNIQUE(records[*].recordType)
-                    FILTER record_type != null
-                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
-                    RETURN {
-                        recordType: record_type,
-                        total: LENGTH(type_records),
-                        indexingStatus: {
-                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
-                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
-                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
-                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
-                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
-                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
-                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
-                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
-                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
-                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
-                            CONNECTOR_DISABLED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "CONNECTOR_DISABLED"]),
-                        }
-                    }
-            )
-            RETURN {
-                orgId: org_id,
-                connectorId: @connector_id,
-                origin: "CONNECTOR",
-                stats: total_stats,
-                byRecordType: by_record_type
-            }
-            """
-            bind_vars = {
-                "org_id": org_id,
-                "connector_id": connector_id,
-                "@records": CollectionNames.RECORDS.value,
-                "drive_record_type": RecordTypes.DRIVE.value,
-                "@apps": CollectionNames.APPS.value,
-                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
-            }
-            results = await self.execute_query(query, bind_vars=bind_vars)
-            if results:
-                return {
-                    "success": True,
-                    "data": results[0],
-                }
-            return {
-                "success": False,
-                "message": "No data found for the specified connector",
-                "data": {
-                    "org_id": org_id,
-                    "connector_id": connector_id,
-                    "origin": "CONNECTOR",
-                    "stats": {
-                        "total": 0,
-                        "indexingStatus": {
-                            "NOT_STARTED": 0,
-                            "IN_PROGRESS": 0,
-                            "COMPLETED": 0,
-                            "FAILED": 0,
-                            "FILE_TYPE_NOT_SUPPORTED": 0,
-                            "AUTO_INDEX_OFF": 0,
-                            "ENABLE_MULTIMODAL_MODELS": 0,
-                            "EMPTY": 0,
-                            "QUEUED": 0,
-                            "PAUSED": 0,
-                            "CONNECTOR_DISABLED": 0,
-                        },
-                    },
-                    "byRecordType": [],
-                },
-            }
-        except Exception as e:
-            self.logger.error("❌ Error getting connector stats: %s", str(e))
-            return {
-                "success": False,
-                "message": str(e),
-                "data": None,
-            }
-
     async def _check_record_group_permissions(
         self,
         record_group_id: str,
@@ -9803,6 +9671,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         CollectionNames.IS_OF_TYPE.value,
                         CollectionNames.BELONGS_TO.value,
                         CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.INHERIT_PERMISSIONS.value,
                     ],
                 )
             try:
@@ -9883,6 +9752,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     "updatedAtTimestamp": timestamp,
                 }
                 await self.batch_create_edges([kb_relationship_edge], CollectionNames.BELONGS_TO.value, transaction=txn_id)
+
+                # Create inheritPermission edge (RECORDS -> KB)
+                # KB folders inherit permissions from KB by default
+                inherit_permission_edge = {
+                    "from_id": folder_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                await self.batch_create_edges([inherit_permission_edge], CollectionNames.INHERIT_PERMISSIONS.value, transaction=txn_id)
+
                 if parent_folder_id:
                     parent_child_edge = {
                         "from_id": parent_folder_id,
@@ -11342,8 +11224,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
             valid_files.append(file_data)
         if not valid_files:
             return []
-        records = [f["record"] for f in valid_files]
+
+        # Enrich records with KB-specific fields
+        records = []
         file_records = [f["fileRecord"] for f in valid_files]
+
+        for file_data in valid_files:
+            record = file_data["record"].copy()  # Create a copy to avoid modifying original
+
+            # Determine externalParentId: null for immediate children of KB, parent_folder_id for nested
+            external_parent_id = parent_folder_id if parent_folder_id else None
+
+            # Add missing fields (using setdefault to only add if not already present)
+            record.setdefault("externalGroupId", kb_id)
+            record.setdefault("externalParentId", external_parent_id)
+            record.setdefault("externalRootGroupId", kb_id)
+            record.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
+            record.setdefault("lastSyncTimestamp", timestamp)
+            record.setdefault("isVLMOcrProcessed", False)
+            record.setdefault("extractionStatus", "NOT_STARTED")  # Files need extraction, unlike folders
+            record.setdefault("isLatestVersion", True)
+            record.setdefault("isDirty", False)
+
+            records.append(record)
+
         await self.batch_upsert_nodes(records, CollectionNames.RECORDS.value, transaction=transaction)
         await self.batch_upsert_nodes(file_records, CollectionNames.FILES.value, transaction=transaction)
         edges_to_create: List[Dict] = []
@@ -11379,15 +11283,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "createdAtTimestamp": timestamp,
                 "updatedAtTimestamp": timestamp,
             })
+            # Record -> KB inheritPermission edge
+            # KB records inherit permissions from KB by default
+            edges_to_create.append({
+                "from_id": record_id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": kb_id,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+
         parent_child = [e for e in edges_to_create if e.get("relationshipType") == "PARENT_CHILD"]
         is_of_type = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.FILES.value]
-        belongs_to = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value]
+        belongs_to = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and e.get("entityType")]
+        inherit_permission = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and not e.get("entityType")]
         if parent_child:
             await self.batch_create_edges(parent_child, CollectionNames.RECORD_RELATIONS.value, transaction=transaction)
         if is_of_type:
             await self.batch_create_edges(is_of_type, CollectionNames.IS_OF_TYPE.value, transaction=transaction)
         if belongs_to:
             await self.batch_create_edges(belongs_to, CollectionNames.BELONGS_TO.value, transaction=transaction)
+        if inherit_permission:
+            await self.batch_create_edges(inherit_permission, CollectionNames.INHERIT_PERMISSIONS.value, transaction=transaction)
         return valid_files
 
     async def _create_files_in_kb_root(
@@ -11519,6 +11437,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     CollectionNames.RECORD_RELATIONS.value,
                     CollectionNames.IS_OF_TYPE.value,
                     CollectionNames.BELONGS_TO.value,
+                    CollectionNames.INHERIT_PERMISSIONS.value,
                 ],
             )
             try:
