@@ -19,6 +19,7 @@ export const modelService = {
           isMultimodal: model.isMultimodal || false,
           isReasoning: model.isReasoning || false,
           contextLength: model.contextLength,
+          modelFriendlyName: model.modelFriendlyName || model.configuration?.modelFriendlyName,
         }));
       }
       return [];
@@ -31,10 +32,17 @@ export const modelService = {
   // Add new model
   async addModel(modelType: ModelType, modelData: ModelData): Promise<any> {
     try {
+      // Extract modelFriendlyName from configuration if present
+      const { modelFriendlyName, ...configWithoutFriendlyName } = modelData.configuration || {};
+      const configuration = {
+        ...configWithoutFriendlyName,
+        ...(modelFriendlyName && { modelFriendlyName }),
+      };
+
       const requestData = {
         modelType,
         provider: modelData.provider,
-        configuration: modelData.configuration,
+        configuration,
         isMultimodal: modelData.isMultimodal || false,
         isReasoning: modelData.isReasoning || false,
         isDefault: modelData.isDefault || false,
@@ -61,9 +69,16 @@ export const modelService = {
   // Update model
   async updateModel(modelType: ModelType, modelKey: string, modelData: ModelData): Promise<any> {
     try {
+      // Extract modelFriendlyName from configuration if present
+      const { modelFriendlyName, ...configWithoutFriendlyName } = modelData.configuration || {};
+      const configuration = {
+        ...configWithoutFriendlyName,
+        ...(modelFriendlyName && { modelFriendlyName }),
+      };
+
       const requestData = {
         provider: modelData.provider,
-        configuration: modelData.configuration,
+        configuration,
         isMultimodal: modelData.isMultimodal || false,
         isDefault: modelData.isDefault || false,
         isReasoning: modelData.isReasoning || false,
@@ -133,6 +148,7 @@ export const modelService = {
         isMultimodal: activeModel.isMultimodal,
         isReasoning: activeModel.isReasoning,
         contextLength: activeModel.contextLength,
+        modelFriendlyName: activeModel.modelFriendlyName || activeModel.configuration?.modelFriendlyName,
       };
     }
     return null;
@@ -147,6 +163,7 @@ export const modelService = {
         providerType: activeModel.provider,
         modelType: activeModel.provider,
         isMultimodal: activeModel.isMultimodal,
+        modelFriendlyName: activeModel.modelFriendlyName || activeModel.configuration?.modelFriendlyName,
       };
     }
     // Default embedding fallback
@@ -157,7 +174,7 @@ export const modelService = {
   },
 
   async updateLlmConfig(config: any): Promise<any> {
-    const { modelType, providerType, _provider, isMultimodal, isReasoning, ...cleanConfig } = config;
+    const { modelType, providerType, _provider, isMultimodal, isReasoning, modelFriendlyName, ...cleanConfig } = config;
     const provider = providerType || modelType || _provider;
     
     // Handle "other" provider case for Bedrock: use customProvider value
@@ -166,6 +183,12 @@ export const modelService = {
       delete cleanConfig.customProvider;
     }
 
+    // Include modelFriendlyName in configuration if provided
+    const configuration = {
+      ...cleanConfig,
+      ...(modelFriendlyName && { modelFriendlyName }),
+    };
+
     // Update or create model
     const models = await this.getAllModels('llm');
     const existingModel = models.find((m) => m.provider === provider && m.isDefault);
@@ -173,25 +196,25 @@ export const modelService = {
     if (existingModel) {
       return this.updateModel('llm', existingModel.modelKey || existingModel.id, {
         provider,
-        configuration: cleanConfig,
+        configuration,
         isDefault: true,
         isMultimodal: Boolean(isMultimodal),
         isReasoning: Boolean(isReasoning),
-        contextLength: cleanConfig.contextLength,
+        contextLength: configuration.contextLength,
       });
     }
     return this.addModel('llm', {
       provider,
-      configuration: cleanConfig,
+      configuration,
       isDefault: true,
       isMultimodal: Boolean(isMultimodal),
       isReasoning: Boolean(isReasoning),
-      contextLength: cleanConfig.contextLength,
+      contextLength: configuration.contextLength,
     });
   },
 
   async updateEmbeddingConfig(config: any): Promise<any> {
-    const { modelType, providerType, _provider, isMultimodal, ...cleanConfig } = config;
+    const { modelType, providerType, _provider, isMultimodal, modelFriendlyName, ...cleanConfig } = config;
     const provider = providerType || modelType || _provider;
     
     // Handle "other" provider case for Bedrock: use customProvider value
@@ -205,20 +228,26 @@ export const modelService = {
       return { status: 'success' };
     }
 
+    // Include modelFriendlyName in configuration if provided
+    const configuration = {
+      ...cleanConfig,
+      ...(modelFriendlyName && { modelFriendlyName }),
+    };
+
     const models = await this.getAllModels('embedding');
     const existingModel = models.find((m) => m.provider === provider && m.isDefault);
 
     if (existingModel) {
       return this.updateModel('embedding', existingModel.modelKey || existingModel.id, {
         provider,
-        configuration: cleanConfig,
+        configuration,
         isDefault: true,
         isMultimodal: Boolean(isMultimodal),
       });
     }
     return this.addModel('embedding', {
       provider,
-      configuration: cleanConfig,
+      configuration,
       isDefault: true,
       isMultimodal: Boolean(isMultimodal),
     });

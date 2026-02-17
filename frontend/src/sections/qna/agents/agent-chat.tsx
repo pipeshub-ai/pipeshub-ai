@@ -74,6 +74,8 @@ interface StreamingContextType {
 export interface Model {
   provider: string;
   modelName: string;
+  modelKey?: string;
+  modelFriendlyName?: string;
 }
 
 export interface ChatMode {
@@ -1147,7 +1149,11 @@ const AgentChat = () => {
       // Build the request body with persistent selections
       const requestBody = {
         query: trimmedInput,
+        modelKey: modelKey || currentModel?.modelKey,
         modelName: modelName || currentModel?.modelName,
+        modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+          ? currentModel.modelFriendlyName.trim() 
+          : undefined,
         chatMode: chatMode || currentMode?.id,
 
         // Tools: Use persistent selected tools (app_name.tool_name format)

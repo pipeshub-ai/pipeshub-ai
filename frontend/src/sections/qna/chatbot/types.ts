@@ -5,6 +5,7 @@ export interface Model {
   modelKey: string;
   isMultimodal: boolean;
   isDefault: boolean;
+  modelFriendlyName?: string;
 }
 
 export interface ChatMode {

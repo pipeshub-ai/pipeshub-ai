@@ -68,6 +68,15 @@ export const FIELD_TEMPLATES = {
     validation: z.string().min(1, 'Model is required'),
   },
 
+  modelFriendlyName: {
+    name: 'modelFriendlyName',
+    label: 'Model Friendly Name (Optional)',
+    placeholder: 'e.g., My Custom GPT-4',
+    icon: robotIcon,
+    required: false,
+    validation: z.string().optional(),
+  },
+
   // ENDPOINT FIELDS
   endpoint: {
     name: 'endpoint',

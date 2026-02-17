@@ -44,6 +44,10 @@ export const enterpriseSearchCreateSchema = z.object({
       .string()
       .min(1, { message: 'Chat mode is required' })
       .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
+      .optional(),
   }),
 });
 
@@ -98,6 +102,10 @@ export const addMessageParamsSchema = enterpriseSearchCreateSchema.extend({
       .string()
       .min(1, { message: 'Chat mode is required' })
       .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
+      .optional(),
   }),
 });
 
@@ -137,6 +145,10 @@ export const regenerateAnswersParamsSchema = z.object({
       .string()
       .min(1, { message: 'Chat mode is required' })
       .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
+      .optional(),
   }),
 });
 
@@ -173,6 +185,10 @@ export const regenerateAgentAnswersParamsSchema =
       chatMode: z
         .string()
         .min(1, { message: 'Chat mode is required' })
+        .optional(),
+      modelFriendlyName: z
+        .string()
+        .min(1, { message: 'Model friendly name is required' })
         .optional(),
     }),
   });
@@ -243,6 +259,10 @@ export const enterpriseSearchSearchSchema = z.object({
     chatMode: z
       .string()
       .min(1, { message: 'Chat mode is required' })
+      .optional(),
+    modelFriendlyName: z
+      .string()
+      .min(1, { message: 'Model friendly name is required' })
       .optional(),
   }),
 });

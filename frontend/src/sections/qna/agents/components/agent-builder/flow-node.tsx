@@ -39,6 +39,14 @@ interface FlowNodeProps {
   onDelete?: (nodeId: string) => void;
 }
 
+// Helper function to get model display name (friendly name or fallback to modelName)
+const getModelDisplayName = (config: { modelName?: string; modelFriendlyName?: string } | null | undefined): string => {
+  if (!config) return '';
+
+  // Prioritize friendly name, fallback to modelName
+  return (config.modelFriendlyName && config.modelFriendlyName.trim()) || (config.modelName && config.modelName.trim()) || '';
+};
+
 const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
@@ -572,7 +580,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                             fontWeight: 500,
                           }}
                         >
-                          {llmNode.config?.modelName || llmNode.label}
+                          {getModelDisplayName(llmNode.config) || llmNode.label}
                         </Typography>
                       </Box>
                     </Box>
@@ -1575,7 +1583,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 letterSpacing: '-0.025em',
               }}
             >
-              {normalizeDisplayName(data.label)}
+              {data.type.startsWith('llm-') 
+                ? normalizeDisplayName(getModelDisplayName(data.config) || data.label)
+                : normalizeDisplayName(data.label)}
             </Typography>
           </Box>
           {onDelete && (
@@ -2278,6 +2288,18 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               >
                 {formattedProvider(data.config?.provider || 'AI Provider')}
               </Typography>
+              {data.config?.modelName && (
+                <Typography
+                  sx={{
+                    fontSize: '0.65rem',
+                    color: colors.text.secondary,
+                    fontWeight: 500,
+                    mt: 0.5,
+                  }}
+                >
+                  {getModelDisplayName(data.config) || data.label}
+                </Typography>
+              )}
             </Box>
           </Box>
         )}

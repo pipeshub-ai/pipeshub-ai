@@ -207,6 +207,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
               isMultimodal: initalModel?.isMultimodal || false,
               isDefault: initalModel?.isDefault || false,
               isReasoning: initalModel?.isReasoning || false,
+              modelFriendlyName: initalModel?.modelFriendlyName,
             },
             inputs: [],
             outputs: ['response'],

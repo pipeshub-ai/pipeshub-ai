@@ -41,6 +41,8 @@ import { KnowledgeBase } from '../services/api';
 export interface Model {
   provider: string;
   modelName: string;
+  modelKey?: string;
+  modelFriendlyName?: string;
 }
 
 export interface ChatMode {
@@ -139,6 +141,12 @@ const normalizeDisplayName = (name: string): string =>
       return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
     })
     .join(' ');
+
+// Helper function to get model display name
+const getModelDisplayName = (model: { modelName: string; modelFriendlyName?: string } | null): string => {
+  if (!model) return '';
+  return model.modelFriendlyName || model.modelName;
+};
 
 const AgentChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
@@ -330,7 +338,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       // Pass the persistent selected items with correct IDs/names for API
       await onSubmit(
         trimmedValue,
-        selectedModel?.modelName,        
+        selectedModel?.modelKey,        
         selectedModel?.modelName,        
         selectedChatMode?.id,            
         selectedTools,                  
@@ -645,7 +653,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               </Tooltip>
 
               {/* Model Selector */}
-              <Tooltip title={`Model: ${selectedModel?.modelName || 'Select'}`}>
+              <Tooltip title={`Model: ${getModelDisplayName(selectedModel) || 'Select'}`}>
                 <Button
                   onClick={handleModelMenuOpen}
                   size="small"
@@ -667,7 +675,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                     },
                   }}
                 >
-                  {selectedModel?.modelName?.slice(0, 16) || 'Model'}
+                  {getModelDisplayName(selectedModel)?.slice(0, 16) || 'Model'}
                 </Button>
               </Tooltip>
             </Box>
@@ -707,7 +715,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
             >
               <Box>
                 <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem' }}>
-                  {model.modelName}
+                  {getModelDisplayName(model)}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
                   {normalizeDisplayName(model.provider)}

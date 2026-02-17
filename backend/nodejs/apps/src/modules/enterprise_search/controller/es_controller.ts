@@ -251,6 +251,7 @@ export const streamChat =
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
       };
 
@@ -620,6 +621,7 @@ export const createConversation =
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
+          modelFriendlyName: req.body.modelFriendlyName || null,
           chatMode: req.body.chatMode || 'quick',
         },
       };
@@ -1278,6 +1280,7 @@ export const addMessageStream =
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
       };
 
@@ -2513,6 +2516,7 @@ async function regenerateAnswersInternal(
       // New fields for multi-model support
       modelKey: req.body.modelKey || null,
       modelName: req.body.modelName || null,
+      modelFriendlyName: req.body.modelFriendlyName || null,
       chatMode: req.body.chatMode || 'quick',
     };
 
@@ -4655,6 +4659,7 @@ export const unshareAgent =
         chatMode: req.body.chatMode || 'quick',
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
       };
 
       logger.info('aiPayload', aiPayload);
@@ -4943,6 +4948,7 @@ export const createAgentConversation =
           // New fields for multi-model support
           modelKey: req.body.modelKey || null,
           modelName: req.body.modelName || null,
+          modelFriendlyName: req.body.modelFriendlyName || null,
           chatMode: req.body.chatMode || 'quick',
         },
       };
@@ -5565,6 +5571,7 @@ export const addMessageStreamToAgentConversation =
         // New fields for multi-model support
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
+        modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
       };
 

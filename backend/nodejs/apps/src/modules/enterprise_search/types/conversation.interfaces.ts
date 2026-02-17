@@ -183,4 +183,5 @@ export interface IAIModel {
   modelName: string;
   modelProvider: string;
   chatMode: string;
+  modelFriendlyName?: string;
 }

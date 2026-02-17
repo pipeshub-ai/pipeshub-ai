@@ -49,6 +49,12 @@ export type ChatInputProps = {
 };
 
 
+// Helper function to get model display name
+const getModelDisplayName = (model: { modelName: string; modelFriendlyName?: string } | null): string => {
+  if (!model) return '';
+  return model.modelFriendlyName || model.modelName;
+};
+
 const ChatInput: React.FC<ChatInputProps> = ({
   onSubmit,
   isLoading,
@@ -555,7 +561,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
 
                 {/* Model Selector */}
                 <Tooltip
-                  title={`AI Model: ${selectedModel ? `${formattedProvider(selectedModel.provider)} - ${selectedModel.modelName}` : 'Select AI model'}`}
+                  title={`AI Model: ${selectedModel ? `${formattedProvider(selectedModel.provider)} - ${getModelDisplayName(selectedModel)}` : 'Select AI model'}`}
                 >
                   <Box
                     onClick={handleModelMenuOpen}
@@ -583,7 +589,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                       variant="body2"
                       sx={{ fontSize: '0.8rem', fontWeight: 500, minWidth: '60px' }}
                     >
-                      {selectedModel?.modelName?.slice(0, 16) || ''}
+                      {getModelDisplayName(selectedModel)?.slice(0, 16) || ''}
                     </Typography>
                     <Icon icon={chevronDownIcon} width={12} height={12} />
                   </Box>
@@ -712,7 +718,8 @@ const ChatInput: React.FC<ChatInputProps> = ({
                 onClick={() => handleModelSelect(model)}
                 selected={
                   selectedModel?.provider === model.provider &&
-                  selectedModel?.modelName === model.modelName
+                  selectedModel?.modelName === model.modelName && 
+                  selectedModel?.modelKey === model.modelKey
                 }
                 sx={{
                   borderRadius: '8px',
@@ -741,7 +748,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                     fontWeight="medium"
                     sx={{ fontSize: '0.9rem', mb: 0.5 }}
                   >
-                    {model.modelName}
+                    {getModelDisplayName(model)}
                   </Typography>
                   <Typography
                     variant="caption"

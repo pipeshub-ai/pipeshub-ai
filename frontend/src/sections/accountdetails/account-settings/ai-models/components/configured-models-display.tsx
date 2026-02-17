@@ -348,7 +348,7 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
                                   color="text.secondary"
                                   sx={{ fontSize: '0.8125rem' }}
                                 >
-                                  {model.configuration?.model || 'Custom Model'}
+                                  {model.modelFriendlyName || model.configuration?.model || 'Custom Model'}
                                 </Typography>
                               </Box>
                             </Box>

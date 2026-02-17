@@ -259,6 +259,18 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         // Stepper mode validation without saving
         const formData = getValues();
 
+        // // Validate modelFriendlyName: can only be set when model is a single name (not comma-separated)
+        // const modelValue = formData.model || '';
+        // const hasMultipleModels = modelValue.includes(',');
+        // const hasFriendlyName = formData.modelFriendlyName && formData.modelFriendlyName.trim() !== '';
+
+        // if (hasMultipleModels && hasFriendlyName) {
+        //   return {
+        //     success: false,
+        //     error: 'Model friendly name can only be set when a single model name is provided (not comma-separated).',
+        //   };
+        // }
+
         if (providerConfig?.isSpecial) {
           return { success: true };
         }
@@ -308,6 +320,19 @@ const DynamicForm = forwardRef<DynamicFormRef, DynamicFormProps>((props, ref) =>
         return await new Promise<SaveResult>((resolve) => {
           handleSubmit(async (data: any) => {
             try {
+              // // Validate modelFriendlyName: can only be set when model is a single name (not comma-separated)
+              // const modelValue = data.model || '';
+              // const hasMultipleModels = modelValue.includes(',');
+              // const hasFriendlyName = data.modelFriendlyName && data.modelFriendlyName.trim() !== '';
+
+              // if (hasMultipleModels && hasFriendlyName) {
+              //   resolve({
+              //     success: false,
+              //     error: 'Model friendly name can only be set when a single model name is provided (not comma-separated).',
+              //   });
+              //   return;
+              // }
+
               const isLegacyModelType = ['llm', 'embedding'].includes(finalConfigType);
               const saveData = {
                 ...data,
