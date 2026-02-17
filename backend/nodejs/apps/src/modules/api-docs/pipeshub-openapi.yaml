@@ -19391,6 +19391,81 @@ paths:
         '500':
           description: Service is unhealthy
 
+  /connector/drive/webhook:
+    post:
+      deprecated: true
+      tags:
+        - Connector Service
+      summary: "[DEPRECATED] Google Drive webhook"
+      description: |
+        ⚠️ <b>DEPRECATED - This endpoint has been removed</b><br><br>
+        This webhook endpoint is no longer implemented in the codebase.
+      operationId: driveWebhook
+      security: []
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      responses:
+        '200':
+          description: Webhook processed
+        '400':
+          description: Invalid webhook payload
+
+  /connector/gmail/webhook:
+    get:
+      deprecated: true
+      tags:
+        - Webhooks
+      summary: "[DEPRECATED] Gmail webhook verification"
+      description: |
+        ⚠️ <b>DEPRECATED - This endpoint has been removed</b><br><br>
+        This webhook endpoint is no longer implemented in the codebase.
+      operationId: gmailWebhookVerify
+      security: []
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      responses:
+        '200':
+          description: Verification acknowledged
+
+    post:
+      deprecated: true
+      tags:
+        - Webhooks
+      summary: "[DEPRECATED] Gmail webhook"
+      description: |
+        ⚠️ <b>DEPRECATED - This endpoint has been removed</b><br><br>
+        This webhook endpoint is no longer implemented in the codebase.
+      operationId: gmailWebhook
+      security: []
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      responses:
+        '200':
+          description: Webhook processed
+
+  /connector/admin/webhook:
+    post:
+      deprecated: true
+      tags:
+        - Webhooks
+      summary: "[DEPRECATED] Google Workspace Admin webhook"
+      description: |
+        ⚠️ <b>DEPRECATED - This endpoint has been removed</b><br><br>
+        This webhook endpoint is no longer implemented in the codebase.
+      operationId: adminWebhook
+      security: []
+      servers:
+        - url: http://localhost:8088
+          description: Connector Service (Internal)
+      responses:
+        '200':
+          description: Webhook processed
+        '401':
+          description: Unauthorized webhook request
+
   /connector/api/v1/internal/stream/record/{record_id}:
     get:
       tags:
