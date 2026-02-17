@@ -446,7 +446,7 @@ class ToolLoader:
         blocked_tools = _get_recently_failed_tools(state, state_logger)
 
         # If cache exists and blocked tools haven't changed, return cached
-        # NOTE: We return cached registry tools here, but fetch_full_record_tool
+        # NOTE: We return cached registry tools here, but fetch_full_records_tool
         # is added dynamically in get_agent_tools() since it depends on state
         if cached_tools is not None and blocked_tools == cached_blocked_tools:
             if state_logger:
@@ -812,7 +812,7 @@ def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
     This is the main function to call when you need tools.
     It's simple, fast, and handles all complexity internally.
 
-    NOTE: Also adds dynamic tools like fetch_full_record_tool that aren't in the registry.
+    NOTE: Also adds dynamic tools like fetch_full_records_tool that aren't in the registry.
 
     Args:
         state: Chat state
@@ -823,7 +823,7 @@ def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
     # Get registry tools
     tools = ToolLoader.load_tools(state)
 
-    # Add dynamic fetch_full_record tool (like chatbot does)
+    # Add dynamic fetch_full_records tool (like chatbot does)
     # This tool is created dynamically based on virtual_record_id_to_result mapping
     virtual_record_id_to_result = state.get("virtual_record_id_to_result", {})
     if virtual_record_id_to_result:
@@ -833,11 +833,11 @@ def get_agent_tools(state: ChatState) -> List[ToolWrapper]:
             tools.append(fetch_tool)
             state_logger = state.get("logger")
             if state_logger:
-                state_logger.debug(f"✅ Added fetch_full_record_tool with {len(virtual_record_id_to_result)} records available")
+                state_logger.debug(f"✅ Added fetch_full_records_tool with {len(virtual_record_id_to_result)} records available")
         except Exception as e:
             state_logger = state.get("logger")
             if state_logger:
-                state_logger.warning(f"Failed to add fetch_full_record_tool: {e}")
+                state_logger.warning(f"Failed to add fetch_full_records_tool: {e}")
 
     return tools
 
