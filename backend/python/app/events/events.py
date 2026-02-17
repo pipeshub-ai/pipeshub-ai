@@ -124,11 +124,10 @@ class EventProcessor:
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
             })
             await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-
             # Copy all relationships from the processed duplicate to this document
             await self.graph_provider.copy_document_relationships(
                 processed_duplicate.get("_key"),
-                doc.get("_key")
+                doc.get("_key") or doc.get("id")
             )
             return True  # Duplicate handled
 
