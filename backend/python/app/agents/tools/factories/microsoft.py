@@ -2,7 +2,7 @@
 Client factories for Jira, Confluence, Slack, Microsoft, and Notion.
 """
 
-from typing import Optional
+from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
 from app.sources.client.microsoft.microsoft import MSGraphClient
@@ -14,6 +14,8 @@ from app.sources.client.microsoft.microsoft import MSGraphClient
 class MSGraphClientFactory(ClientFactory):
     """
     Factory for creating Microsoft Graph clients.
+
+    Supports both toolset-based and connector-based authentication.
 
     Attributes:
         service_name: Name of Microsoft service (one_drive, sharepoint, etc.)
@@ -28,15 +30,28 @@ class MSGraphClientFactory(ClientFactory):
         """
         self.service_name = service_name
 
-    async def create_client(self, config_service, logger, state=None, connector_instance_id: Optional[str] = None) -> MSGraphClient:
-        """Create Microsoft Graph client instance"""
-        from app.sources.client.microsoft.microsoft import GraphMode
+    async def create_client(
+        self,
+        config_service,
+        logger,
+        toolset_config: Dict[str, Any],
+        state=None
+    ) -> MSGraphClient:
+        """
+        Create Microsoft Graph client instance from toolset configuration.
 
-        return await MSGraphClient.build_from_services(
+        Args:
+            config_service: Configuration service instance
+            logger: Logger instance
+            state: Chat state (optional)
+            toolset_config: Toolset configuration from etcd (REQUIRED)
+
+        Returns:
+            MSGraphClient instance
+        """
+        return await MSGraphClient.build_from_toolset(
+            toolset_config=toolset_config,
             service_name=self.service_name,
             logger=logger,
-            config_service=config_service,
-            mode=GraphMode.APP,
-            connector_instance_id=connector_instance_id
         )
 

@@ -104,15 +104,19 @@ class ClientFactoryRegistry:
                 continue
 
             if app_name == "google":
-                # Register factories for Google sub-services
+                # Register factories for Google sub-services with TOOLSET names
+                # This ensures tools with app_name="googledrive" find the correct factory
                 for subdir, service_config in config.service_configs.items():
-                    cls.register(
-                        subdir,
-                        GoogleClientFactory(
-                            service_config["service_name"],
-                            service_config["version"]
-                        )
+                    # Create factory for the service
+                    factory = GoogleClientFactory(
+                        service_config["service_name"],
+                        service_config["version"]
                     )
+                    # Register with toolset name (e.g., "googledrive", "googlecalendar")
+                    toolset_name = f"google{subdir}"
+                    cls.register(toolset_name, factory)
+                    # Also register with original name for backward compatibility
+                    cls.register(subdir, factory)
 
             elif app_name == "jira":
                 cls.register(app_name, JiraClientFactory())

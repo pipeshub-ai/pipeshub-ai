@@ -7,12 +7,162 @@ from typing import List, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.github.github import GitHubClient, GitHubResponse
 from app.sources.external.github.github_ import GitHubDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_repository",
+        description="Create a new repository on GitHub",
+        parameters=[
+            {"name": "name", "type": "string", "description": "Repository name", "required": True},
+            {"name": "private", "type": "boolean", "description": "Make repository private", "required": False},
+            {"name": "description", "type": "string", "description": "Repository description", "required": False}
+        ],
+        tags=["repositories", "create"]
+    ),
+    ToolDefinition(
+        name="get_repository",
+        description="Get details of a specific repository",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True}
+        ],
+        tags=["repositories", "read"]
+    ),
+    ToolDefinition(
+        name="update_repository",
+        description="Update repository settings",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True}
+        ],
+        tags=["repositories", "update"]
+    ),
+    ToolDefinition(
+        name="create_issue",
+        description="Create a new issue in a repository",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True},
+            {"name": "title", "type": "string", "description": "Issue title", "required": True},
+            {"name": "body", "type": "string", "description": "Issue body", "required": False}
+        ],
+        tags=["issues", "create"]
+    ),
+    ToolDefinition(
+        name="get_issue",
+        description="Get details of a specific issue",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True},
+            {"name": "number", "type": "integer", "description": "Issue number", "required": True}
+        ],
+        tags=["issues", "read"]
+    ),
+    ToolDefinition(
+        name="close_issue",
+        description="Close an issue",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True},
+            {"name": "number", "type": "integer", "description": "Issue number", "required": True}
+        ],
+        tags=["issues", "update"]
+    ),
+    ToolDefinition(
+        name="create_pull_request",
+        description="Create a new pull request",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True},
+            {"name": "title", "type": "string", "description": "PR title", "required": True},
+            {"name": "head", "type": "string", "description": "Source branch", "required": True},
+            {"name": "base", "type": "string", "description": "Target branch", "required": True}
+        ],
+        tags=["pull-requests", "create"]
+    ),
+    ToolDefinition(
+        name="get_pull_request",
+        description="Get details of a pull request",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True},
+            {"name": "number", "type": "integer", "description": "PR number", "required": True}
+        ],
+        tags=["pull-requests", "read"]
+    ),
+    ToolDefinition(
+        name="merge_pull_request",
+        description="Merge a pull request",
+        parameters=[
+            {"name": "owner", "type": "string", "description": "Repository owner", "required": True},
+            {"name": "repo", "type": "string", "description": "Repository name", "required": True},
+            {"name": "number", "type": "integer", "description": "PR number", "required": True}
+        ],
+        tags=["pull-requests", "merge"]
+    ),
+    ToolDefinition(
+        name="search_repositories",
+        description="Search for repositories",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["repositories", "search"]
+    ),
+]
 
+
+# Register GitHub toolset
+@ToolsetBuilder("GitHub")\
+    .in_group("Development")\
+    .with_description("GitHub integration for repository management, issues, and pull requests")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="GitHub",
+            authorize_url="https://github.com/login/oauth/authorize",
+            token_url="https://github.com/login/oauth/access_token",
+            redirect_uri="toolsets/oauth/callback/github",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "repo",
+                    "read:org",
+                    "read:user",
+                    "user:email"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("GitHub Developer Settings"),
+                CommonFields.client_secret("GitHub Developer Settings")
+            ],
+            icon_path="/assets/icons/connectors/github.svg",
+            app_group="Development",
+            app_description="GitHub OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("GitHub Personal Access Token", "ghp_your-token-here")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/github.svg"))\
+    .build_decorator()
 class GitHub:
     """GitHub tools exposed to the agents using GitHubDataSource"""
 

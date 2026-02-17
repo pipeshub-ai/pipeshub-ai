@@ -60,6 +60,8 @@ import {
   createOIDCDiscoveryRouter,
 } from './modules/oauth_provider/routes';
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
+import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
+import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
 
 const loggerConfig = {
   service: 'Application',
@@ -81,6 +83,7 @@ export class Application {
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
+  private toolsetsContainer!: Container;
   private port: number;
 
   constructor() {
@@ -160,6 +163,10 @@ export class Application {
         appConfig,
       );
 
+      this.toolsetsContainer = await ToolsetsContainer.initialize(
+        configurationManagerConfig,
+      );
+
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
       this.tokenManagerContainer
@@ -207,6 +214,11 @@ export class Application {
         .inSingletonScope();
 
       this.oauthProviderContainer
+        .bind<PrometheusService>(PrometheusService)
+        .toSelf()
+        .inSingletonScope();
+
+      this.toolsetsContainer
         .bind<PrometheusService>(PrometheusService)
         .toSelf()
         .inSingletonScope();
@@ -404,6 +416,12 @@ export class Application {
     this.app.use(
       '/api/v1/configurationManager',
       createConfigurationManagerRouter(this.configurationManagerContainer),
+    );
+
+    // toolsets routes
+    this.app.use(
+      '/api/v1/toolsets',
+      createToolsetsRouter(this.toolsetsContainer)
     );
 
     this.app.use(

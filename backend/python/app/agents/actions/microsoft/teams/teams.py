@@ -1,17 +1,122 @@
 import json
 import logging
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.teams.teams import TeamsDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="send_message",
+        description="Send a message to a Teams channel",
+        parameters=[
+            {"name": "team_id", "type": "string", "description": "Team ID", "required": True},
+            {"name": "channel_id", "type": "string", "description": "Channel ID", "required": True},
+            {"name": "message", "type": "string", "description": "Message content", "required": True}
+        ],
+        tags=["messaging", "send"]
+    ),
+    ToolDefinition(
+        name="get_teams",
+        description="Get all teams",
+        parameters=[],
+        tags=["teams", "list"]
+    ),
+    ToolDefinition(
+        name="get_team",
+        description="Get team details",
+        parameters=[
+            {"name": "team_id", "type": "string", "description": "Team ID", "required": True}
+        ],
+        tags=["teams", "read"]
+    ),
+    ToolDefinition(
+        name="get_channels",
+        description="Get channels in a team",
+        parameters=[
+            {"name": "team_id", "type": "string", "description": "Team ID", "required": True}
+        ],
+        tags=["channels", "list"]
+    ),
+    ToolDefinition(
+        name="get_channel_messages",
+        description="Get messages from a channel",
+        parameters=[
+            {"name": "team_id", "type": "string", "description": "Team ID", "required": True},
+            {"name": "channel_id", "type": "string", "description": "Channel ID", "required": True}
+        ],
+        tags=["messages", "list"]
+    ),
+    ToolDefinition(
+        name="create_team",
+        description="Create a new team",
+        parameters=[
+            {"name": "display_name", "type": "string", "description": "Team name", "required": True}
+        ],
+        tags=["teams", "create"]
+    ),
+    ToolDefinition(
+        name="add_member",
+        description="Add a member to a team",
+        parameters=[
+            {"name": "team_id", "type": "string", "description": "Team ID", "required": True},
+            {"name": "user_id", "type": "string", "description": "User ID", "required": True}
+        ],
+        tags=["teams", "members"]
+    ),
+]
 
+
+# Register Microsoft Teams toolset
+@ToolsetBuilder("Microsoft Teams")\
+    .in_group("Microsoft 365")\
+    .with_description("Microsoft Teams integration for messaging and collaboration")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Teams",
+            authorize_url="https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            token_url="https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            redirect_uri="toolsets/oauth/callback/teams",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "Chat.ReadWrite",
+                    "ChannelMessage.ReadWrite",
+                    "Team.ReadBasic.All"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Azure App Registration"),
+                CommonFields.client_secret("Azure App Registration")
+            ],
+            icon_path="/assets/icons/connectors/teams.svg",
+            app_group="Microsoft 365",
+            app_description="Microsoft Teams OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/teams.svg"))\
+    .build_decorator()
 class Teams:
     """Microsoft Teams tool exposed to the agents"""
     def __init__(self, client: MSGraphClient) -> None:

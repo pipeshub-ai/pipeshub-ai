@@ -7,6 +7,7 @@ export interface NodeData extends Record<string, unknown> {
   id: string;
   type: string;
   label: string;
+  category?: string;
   config: Record<string, any>;
   description?: string;
   icon?: any;
@@ -57,6 +58,7 @@ export interface AgentBuilderCanvasWrapperProps {
   activeAgentConnectors: Connector[];
   configuredConnectors: Connector[];
   connectorRegistry: any[];
+  toolsets: any[];
   isBusiness: boolean;
   nodes: any[];
   edges: any[];
@@ -113,6 +115,7 @@ export interface UseAgentBuilderDataReturn {
   activeAgentConnectors: Connector[];
   configuredConnectors: Connector[];
   connectorRegistry: any[];
+  toolsets: any[]; // Toolsets with status (isConfigured, isAuthenticated)
   loading: boolean;
   loadedAgent: Agent | null;
   error: string | AgentBuilderError | null;

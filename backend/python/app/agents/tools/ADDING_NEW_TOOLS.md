@@ -510,7 +510,8 @@ Quick ways to confirm your tools are registered and usable:
 
 ```python
 # Anywhere in backend runtime context
-from app.modules.agents.qna.tool_registry import get_all_available_tool_names, get_tool_by_name
+from app.agents.tools.utils import get_all_available_tool_names
+from app.modules.agents.qna.tool_system import get_tool_by_name
 from app.modules.agents.qna.chat_state import ChatState
 
 state = ChatState()
@@ -647,12 +648,12 @@ Store secrets in your configuration service (etcd); client builders retrieve the
 **Debug Commands**:
 ```python
 # Check if tools are registered
-from app.modules.agents.qna.tool_registry import get_all_available_tool_names
+from app.agents.tools.utils import get_all_available_tool_names
 print(get_all_available_tool_names())
 
 # Test tool retrieval
 from app.modules.agents.qna.chat_state import ChatState
-from app.modules.agents.qna.tool_registry import get_tool_by_name
+from app.modules.agents.qna.tool_system import get_tool_by_name
 state = ChatState()
 tool = get_tool_by_name("linear.get_viewer", state)
 print(tool.description)

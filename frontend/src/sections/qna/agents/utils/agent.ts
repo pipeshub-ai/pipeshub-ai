@@ -4,7 +4,8 @@ import type {
   AgentFormData,
   AgentTemplateFormData,
   AgentFilterOptions,
-  ConnectorInstance,
+  ToolsetReference,
+  KnowledgeReference,
 } from 'src/types/agent';
 
 import chatIcon from '@iconify-icons/mdi/chat';
@@ -95,7 +96,6 @@ export const getInitialAgentFormData = (): AgentFormData => ({
   systemPrompt: '',
   tools: [],
   models: [],
-  kb: [],
   connectors: [], // Unified array with category field
   vectorDBs: [],
   tags: [],
@@ -455,6 +455,29 @@ export const getAppKnowledgeIcon = (appName: string) => {
   return iconMap[appName] || databaseIcon;
 };
 
+// Internal interface for building toolset data
+interface ToolsetDataInternal {
+  name: string; // Normalized toolset name (e.g., "googledrive")
+  displayName: string; // Display name (e.g., "Google Drive")
+  type: string; // Toolset type (e.g., "app")
+  tools: {
+    name: string; // Tool name (e.g., "get_files_list")
+    fullName: string; // Full name (e.g., "googledrive.get_files_list")
+    description?: string;
+  }[];
+}
+
+// Internal interface for building knowledge data
+interface KnowledgeDataInternal {
+  connectorId: string; // Connector instance ID
+  filters: {
+    recordGroups?: string[];
+    records?: string[];
+    [key: string]: any;
+  };
+  category: 'knowledge' | 'action';
+}
+
 // Extract agent configuration from flow nodes and edges
 export const extractAgentConfigFromFlow = (
   agentName: string,
@@ -462,173 +485,372 @@ export const extractAgentConfigFromFlow = (
   edges: any[],
   currentAgent?: Agent | null
 ) => {
-  const tools: string[] = [];
+  const toolsetsInternal: ToolsetDataInternal[] = []; // Toolset objects with nested tools
+  const knowledgeInternal: KnowledgeDataInternal[] = []; // Knowledge objects with connectorId and filters (includes both apps and KBs)
   const models: { provider: string; modelName: string; isReasoning: boolean, modelKey: string }[] = [];
-  const kb: string[] = [];
-  const connectors: ConnectorInstance[] = [];
   
-  // Helper function to add or update connector instance with category
-  const addConnectorInstance = (
-    id: string,
-    name: string,
-    type: string,
-    scope: string,
-    category: 'knowledge' | 'action'
+  // Helper function to add or update toolset with tools
+  const addToolsetWithTools = (
+    toolsetName: string,
+    displayName: string,
+    toolsetType: string,
+    toolsToAdd: { name: string; fullName: string; description?: string }[]
   ) => {
-    if (!id || !type) return;
+    if (!toolsetName || toolsToAdd.length === 0) return;
     
-    // Check if connector instance with same id and category already exists
-    const existingIndex = connectors.findIndex(
-      (ci) => ci.id === id && ci.category === category
-    );
+    const normalizedName = toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    
+    // Find existing toolset
+    const existingIndex = toolsetsInternal.findIndex((ts) => ts.name === normalizedName);
     
     if (existingIndex >= 0) {
-      // Update existing entry
-      connectors[existingIndex] = {
-        id,
-        name,
-        type,
-        scope: scope as 'personal' | 'team',
+      // Add tools to existing toolset (avoid duplicates)
+      toolsToAdd.forEach((tool) => {
+        if (!toolsetsInternal[existingIndex].tools.find((t) => t.fullName === tool.fullName)) {
+          toolsetsInternal[existingIndex].tools.push(tool);
+        }
+      });
+    } else {
+      // Add new toolset
+      toolsetsInternal.push({
+        name: normalizedName,
+        displayName: displayName || toolsetName,
+        type: toolsetType || 'app',
+        tools: toolsToAdd,
+      });
+    }
+  };
+
+  // Helper function to add knowledge source
+  // Properly merges filters, especially recordGroups and records arrays
+  const addKnowledgeSource = (
+    connectorId: string,
+    filters: { recordGroups?: string[]; records?: string[]; [key: string]: any },
+    category: 'knowledge' | 'action' = 'knowledge'
+  ) => {
+    if (!connectorId) return;
+    
+    // Normalize filters - ensure recordGroups and records are arrays
+    const normalizedFilters = {
+      recordGroups: Array.isArray(filters?.recordGroups) ? filters.recordGroups : [],
+      records: Array.isArray(filters?.records) ? filters.records : [],
+      ...filters,
+    };
+    
+    // Check if knowledge source with same connectorId already exists
+    const existingIndex = knowledgeInternal.findIndex((k) => k.connectorId === connectorId);
+    
+    if (existingIndex >= 0) {
+      // Merge with existing entry - combine arrays, preserve other fields
+      const existing = knowledgeInternal[existingIndex];
+      const existingRecordGroups = Array.isArray(existing.filters?.recordGroups) 
+        ? existing.filters.recordGroups 
+        : [];
+      const existingRecords = Array.isArray(existing.filters?.records) 
+        ? existing.filters.records 
+        : [];
+      
+      knowledgeInternal[existingIndex] = {
+        connectorId,
+        filters: {
+          ...existing.filters,
+          ...normalizedFilters,
+          // Merge arrays, removing duplicates
+          recordGroups: [...new Set([...existingRecordGroups, ...normalizedFilters.recordGroups])],
+          records: [...new Set([...existingRecords, ...normalizedFilters.records])],
+        },
         category,
       };
     } else {
       // Add new entry
-      connectors.push({
-        id,
-        name,
-        type,
-        scope: scope as 'personal' | 'team',
+      knowledgeInternal.push({
+        connectorId,
+        filters: normalizedFilters,
         category,
       });
     }
   };
 
-  // Extract tool connector instances from tool-group nodes (category: 'action')
-  nodes.forEach((node) => {
-    if (node.data.type.startsWith('tool-group-')) {
-      const connectorInstanceId = node.data.config?.connectorInstanceId || node.data.config?.id || node.id;
-      const connectorName = node.data.config?.connectorName || node.data.config?.name || node.data.label;
-      const connectorType = node.data.config?.connectorType || node.data.config?.type;
-      const scope = node.data.config?.scope || 'personal';
-      
-      addConnectorInstance(connectorInstanceId, connectorName, connectorType, scope, 'action');
-    }
-  });
-
-  // Extract tools connected directly to agent or through other nodes
-  // New flow: Tools can connect directly to agent's action handle
+  // Build a set of toolset node IDs that are connected to the agent via edges
+  // Only these toolsets should be included in the agent configuration
+  const connectedToolsetNodeIds = new Set<string>();
+  
   edges.forEach((edge) => {
     const sourceNode = nodes.find((n) => n.id === edge.source);
     const targetNode = nodes.find((n) => n.id === edge.target);
-
-    // If a tool is connected to the agent directly
-    if (sourceNode?.data.type.startsWith('tool-') && targetNode?.data.type === 'agent-core') {
-      const toolName = sourceNode.data.config?.fullName || sourceNode.data.config?.toolId;
-      if (toolName && !tools.includes(toolName)) {
-        tools.push(toolName);
-      }
+    
+    // If a toolset is connected to the agent
+    if (sourceNode?.data.type.startsWith('toolset-') && targetNode?.data.type === 'agent-core') {
+      connectedToolsetNodeIds.add(sourceNode.id);
+    }
+    // Also check reverse direction (agent -> toolset)
+    if (targetNode?.data.type.startsWith('toolset-') && sourceNode?.data.type === 'agent-core') {
+      connectedToolsetNodeIds.add(targetNode.id);
     }
   });
 
+  // Extract toolsets ONLY from nodes that are connected to the agent via edges
   nodes.forEach((node) => {
-    if (node.data.type.startsWith('tool-group-')) {
-      // Handle tool group nodes - extract all tools from the group
-      if (node.data.config?.tools && Array.isArray(node.data.config.tools)) {
-        node.data.config.tools.forEach((tool: any) => {
-          if (tool.fullName && !tools.includes(tool.fullName)) {
-            tools.push(tool.fullName);
-          }
-        });
-      }
-      // Also extract from selectedTools if present
-      if (node.data.config?.selectedTools && Array.isArray(node.data.config.selectedTools)) {
-        node.data.config.selectedTools.forEach((toolId: string) => {
-          // Find the tool in the tools array
-          const tool = node.data.config?.tools?.find((t: any) => t.toolId === toolId);
-          if (tool && tool.fullName && !tools.includes(tool.fullName)) {
-            tools.push(tool.fullName);
-          }
-        });
-      }
-    } else if (node.data.type.startsWith('tool-') && !node.data.type.startsWith('tool-group-')) {
-      // Handle individual tool nodes - can now connect directly to agent
-      const toolName = node.data.config?.fullName || node.data.config?.toolId;
-      if (toolName && !tools.includes(toolName)) {
-        tools.push(toolName);
-      }
-      
-      // Extract connector instance for this individual tool if present (category: 'action')
-      if (node.data.config?.connectorInstanceId && node.data.config?.connectorType) {
-        const connectorInstanceId = node.data.config.connectorInstanceId;
-        const connectorName = node.data.config.connectorName || node.data.config.connectorType;
-        const connectorType = node.data.config.connectorType;
-        const scope = node.data.config.scope || 'personal';
-        
-        addConnectorInstance(connectorInstanceId, connectorName, connectorType, scope, 'action');
-      }
-    } else if (node.data.type.startsWith('llm-')) {
-      models.push({
-        provider: node.data.config.provider || 'azureOpenAI',
-        modelName: node.data.config.modelName || node.data.config.model,
-        isReasoning: node.data.config.isReasoning || false,
-        modelKey: node.data.config.modelKey || '',
+    // Only process toolsets that are connected to the agent
+    if (!node.data.type.startsWith('toolset-') || !connectedToolsetNodeIds.has(node.id)) {
+      return;
+    }
+    
+    const toolsetConfig = node.data.config;
+    const toolsetName = toolsetConfig?.toolsetName || toolsetConfig?.name || node.data.label || '';
+    const displayName = toolsetConfig?.displayName || node.data.label || toolsetName;
+    const toolsetType = toolsetConfig?.type || toolsetConfig?.category || 'app';
+    const toolsFromConfig: { name: string; fullName: string; description?: string }[] = [];
+    
+    // Extract tools from the tools array
+    if (toolsetConfig?.tools && Array.isArray(toolsetConfig.tools)) {
+      toolsetConfig.tools.forEach((tool: any) => {
+        const toolName = tool.name || tool.toolName || '';
+        const normalizedToolsetName = toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const toolFullName = tool.fullName || `${normalizedToolsetName}.${toolName}`;
+        if (toolFullName && toolName) {
+          toolsFromConfig.push({
+            name: toolName,
+            fullName: toolFullName,
+            description: tool.description || '',
+          });
+        }
       });
-    } else if (node.data.type.startsWith('kb-') && node.data.type !== 'kb-group') {
-      // Individual knowledge base nodes
-      kb.push(node.data.config.kbId);
-    } else if (node.data.type.startsWith('app-') && node.data.type !== 'app-group') {
-      // Individual app knowledge nodes (connector instances from Knowledge section)
-      // Extract connector instance with category: 'knowledge'
-      const connectorInstanceId = node.data.config?.connectorInstanceId || node.data.config?.id || node.id;
-      const connectorName = node.data.config?.appDisplayName || node.data.config?.appName || node.data.label;
-      const connectorType = node.data.config?.connectorType || node.data.config?.appName || node.data.label;
-      const scope = node.data.config?.scope || 'personal';
-      
-      addConnectorInstance(connectorInstanceId, connectorName, connectorType, scope, 'knowledge');
+    }
+    
+    // Also check selectedTools array if present and tools array is empty
+    if (toolsFromConfig.length === 0 && toolsetConfig?.selectedTools && Array.isArray(toolsetConfig.selectedTools)) {
+      toolsetConfig.selectedTools.forEach((selectedToolName: string) => {
+        // Find the tool in the tools array if available
+        const tool = toolsetConfig?.tools?.find((t: any) => 
+          t.name === selectedToolName || t.toolName === selectedToolName
+        );
+        const normalizedToolsetName = toolsetName.toLowerCase().replace(/[^a-z0-9]/g, '');
+        const toolFullName = tool?.fullName || `${normalizedToolsetName}.${selectedToolName}`;
+        
+        if (!toolsFromConfig.find((t) => t.fullName === toolFullName)) {
+          toolsFromConfig.push({
+            name: tool?.name || tool?.toolName || selectedToolName,
+            fullName: toolFullName,
+            description: tool?.description || '',
+          });
+        }
+      });
+    }
+    
+    // Add toolset with its tools
+    if (toolsFromConfig.length > 0) {
+      addToolsetWithTools(toolsetName, displayName, toolsetType, toolsFromConfig);
     }
   });
 
-  // Handle app-group nodes - extract connector instances from selectedApps
-  const appKnowledgeGroupNode = nodes.find((node) => node.data.type === 'app-group');
-  if (appKnowledgeGroupNode && appKnowledgeGroupNode.data.config?.selectedApps) {
-    // Note: app-group nodes store connector instance IDs in selectedApps
-    appKnowledgeGroupNode.data.config.selectedApps.forEach((connectorInstanceId: string) => {
-      // Try to find the connector instance details from the node config
-      const connectorInfo = appKnowledgeGroupNode.data.config?.apps?.find(
-        (app: any) => app.id === connectorInstanceId
-      );
-      
-      if (connectorInfo) {
-        addConnectorInstance(
-          connectorInstanceId,
-          connectorInfo.name || connectorInfo.displayName || connectorInstanceId,
-          connectorInfo.type || connectorInfo.name || connectorInstanceId,
-          connectorInfo.scope || 'personal',
-          'knowledge'
-        );
-      } else {
-        // Fallback: use the ID as name and type
-        addConnectorInstance(
-          connectorInstanceId,
-          connectorInstanceId,
-          connectorInstanceId,
-          'personal',
-          'knowledge'
-        );
+  // Build sets of connected node IDs (similar to toolsets)
+  const connectedKnowledgeNodeIds = new Set<string>();
+  const connectedLLMNodeIds = new Set<string>();
+  
+  edges.forEach((edge) => {
+    const sourceNode = nodes.find((n) => n.id === edge.source);
+    const targetNode = nodes.find((n) => n.id === edge.target);
+    
+    // Knowledge nodes connected to agent
+    if ((sourceNode?.data.type.startsWith('kb-') && sourceNode.data.type !== 'kb-group') ||
+        (sourceNode?.data.type.startsWith('app-') && sourceNode.data.type !== 'app-group')) {
+      if (targetNode?.data.type === 'agent-core' && edge.targetHandle === 'knowledge') {
+        connectedKnowledgeNodeIds.add(sourceNode.id);
       }
+    }
+    
+    // LLM nodes connected to agent
+    if (sourceNode?.data.type.startsWith('llm-')) {
+      if (targetNode?.data.type === 'agent-core' && edge.targetHandle === 'llms') {
+        connectedLLMNodeIds.add(sourceNode.id);
+      }
+    }
+  });
+
+  // Extract models and knowledge from nodes - ONLY if connected to agent
+  nodes.forEach((node) => {
+    if (node.data.type.startsWith('llm-')) {
+      // Only include LLM if connected to agent
+      if (connectedLLMNodeIds.has(node.id)) {
+        models.push({
+          provider: node.data.config.provider || 'azureOpenAI',
+          modelName: node.data.config.modelName || node.data.config.model,
+          isReasoning: node.data.config.isReasoning || false,
+          modelKey: node.data.config.modelKey || '',
+        });
+      }
+    } else if (node.data.type.startsWith('kb-') && node.data.type !== 'kb-group') {
+      // Individual knowledge base nodes - Convert KB (record group) to knowledge format
+      // KBs ARE record groups themselves, so:
+      // - connectorId: KB connector instance ID from KB document (e.g., "knowledgeBase_orgId")
+      // - filters.recordGroups: Array containing the KB ID (record group ID)
+      // - filters.records: Optional array of specific record IDs within the KB
+      if (connectedKnowledgeNodeIds.has(node.id)) {
+        const kbId = node.data.config?.kbId;
+        if (kbId) {
+          // KBs are record groups - the kbId IS the record group ID
+          // Get KB connector instance ID from config (should be set from KB document's connectorId field)
+          // This is the actual KB connector instance ID, not the KB ID itself
+          const kbConnectorInstanceId = node.data.config?.connectorInstanceId || 
+                                       node.data.config?.kbConnectorId;
+          
+          if (!kbConnectorInstanceId) {
+            // If connectorId is not available, log warning but still proceed with KB ID as fallback
+            // The backend should ideally always have the connectorId from the KB document
+            console.warn(`KB node ${kbId} missing connectorInstanceId. Using KB ID as fallback.`);
+          }
+          
+          // Extract filters - KBs have the KB ID in recordGroups
+          const filters = {
+            recordGroups: [kbId], // KB ID is the record group ID
+            records: node.data.config?.selectedRecords || node.data.config?.filters?.records || [],
+            // Preserve any other filter fields
+            ...(node.data.config?.filters || {}),
+          };
+          
+          // Ensure recordGroups includes the kbId
+          if (!filters.recordGroups.includes(kbId)) {
+            filters.recordGroups = [kbId, ...filters.recordGroups];
+          }
+          
+          // Add to knowledge format - use connectorId from KB document, fallback to KB ID if not available
+          addKnowledgeSource(kbConnectorInstanceId || kbId, filters, 'knowledge');
+        }
+      }
+    } else if (node.data.type.startsWith('app-') && node.data.type !== 'app-group') {
+      // Individual app knowledge nodes (connector instances) - ONLY if connected to agent
+      // Apps are connectors, so:
+      // - connectorId: The connector instance ID
+      // - filters.recordGroups: Optional array of record group IDs within that connector
+      // - filters.records: Optional array of record IDs within that connector
+      if (connectedKnowledgeNodeIds.has(node.id)) {
+        const connectorInstanceId = node.data.config?.connectorInstanceId || node.data.config?.id;
+        
+        if (connectorInstanceId) {
+          // Extract filters from node config
+          // Apps can have recordGroups (record groups within the connector) and records
+          const nodeFilters = node.data.config?.filters || {};
+          const filters = {
+            // Preserve any other filter fields first
+            ...nodeFilters,
+            // Then override with explicit values
+            recordGroups: node.data.config?.selectedRecordGroups || 
+                         nodeFilters.recordGroups || 
+                         [],
+            records: node.data.config?.selectedRecords || 
+                    nodeFilters.records || 
+                    [],
+          };
+          
+          // Add to knowledge format
+          addKnowledgeSource(connectorInstanceId, filters, 'knowledge');
+        }
+      }
+    }
+  });
+
+  // Handle app-group nodes - extract knowledge sources from selectedApps
+  // ONLY if the app-group node is connected to agent
+  const appKnowledgeGroupNode = nodes.find((node) => node.data.type === 'app-group');
+  if (appKnowledgeGroupNode) {
+    // Check if app-group node is connected to agent (as source)
+    const isAppGroupConnected = edges.some((edge) => {
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const targetNode = nodes.find((n) => n.id === edge.target);
+      return sourceNode?.id === appKnowledgeGroupNode.id && 
+             targetNode?.data.type === 'agent-core' && 
+             edge.targetHandle === 'knowledge';
     });
+    
+    if (isAppGroupConnected && appKnowledgeGroupNode.data.config?.selectedApps) {
+      appKnowledgeGroupNode.data.config.selectedApps.forEach((connectorInstanceId: string) => {
+        // Get filters for this specific connector
+        const connectorFilters = appKnowledgeGroupNode.data.config?.appFilters?.[connectorInstanceId] || {
+          recordGroups: [],
+          records: [],
+        };
+        
+        // Add to knowledge format
+        addKnowledgeSource(connectorInstanceId, connectorFilters, 'knowledge');
+      });
+    }
   }
 
+  // Handle kb-group nodes - extract KB IDs from selectedKBs and convert to knowledge format
+  // ONLY if the kb-group node is connected to agent
   const kbGroupNode = nodes.find((node) => node.data.type === 'kb-group');
-  if (kbGroupNode && kbGroupNode.data.config?.selectedKBs) {
-    kbGroupNode.data.config.selectedKBs.forEach((kbId: string) => {
-      if (!kb.includes(kbId)) {
-        kb.push(kbId);
-      }
+  if (kbGroupNode) {
+    // Check if kb-group node is connected to agent (as source)
+    const isKBGroupConnected = edges.some((edge) => {
+      const sourceNode = nodes.find((n) => n.id === edge.source);
+      const targetNode = nodes.find((n) => n.id === edge.target);
+      return sourceNode?.id === kbGroupNode.id && 
+             targetNode?.data.type === 'agent-core' && 
+             edge.targetHandle === 'knowledge';
     });
+    
+    if (isKBGroupConnected && kbGroupNode.data.config?.selectedKBs) {
+      // Get KB connector instance IDs from group node config
+      // Each KB should have its connectorId stored in kbConnectorIds mapping
+      const kbConnectorIds = kbGroupNode.data.config?.kbConnectorIds || {};
+      const sharedConnectorId = kbGroupNode.data.config?.connectorInstanceId || 
+                                kbGroupNode.data.config?.kbConnectorId;
+      
+      kbGroupNode.data.config.selectedKBs.forEach((kbId: string) => {
+        // Each KB is a record group - convert to knowledge format
+        // KBs ARE record groups, so:
+        // - connectorId: KB connector instance ID from KB document (e.g., "knowledgeBase_orgId")
+        // - filters.recordGroups: Array containing the KB ID (record group ID)
+        // - filters.records: Optional array of specific record IDs within the KB
+        
+        // Get connectorId for this specific KB (from KB document's connectorId field)
+        // Should be stored in kbConnectorIds[kbId] when KB is added to the group
+        let connectorId = kbConnectorIds[kbId] || sharedConnectorId;
+        if (!connectorId) {
+          // Fallback: Use kbId as connectorId - backend will resolve to KB connector instance from record group
+          // This should ideally not happen if KB nodes properly store connectorId from KB document
+          console.warn(`KB group: KB ${kbId} missing connectorId. Using KB ID as fallback.`);
+          connectorId = kbId;
+        }
+        
+        // Get filters for this specific KB if available
+        const kbSpecificFilters = kbGroupNode.data.config?.kbFilters?.[kbId] || {};
+        const filters = {
+          ...kbSpecificFilters,
+          recordGroups: [kbId], // KB ID is the record group ID - always include it
+          records: kbSpecificFilters.records || [],
+        };
+        
+        // Ensure recordGroups includes the kbId (should always be first)
+        if (!filters.recordGroups.includes(kbId)) {
+          filters.recordGroups = [kbId, ...filters.recordGroups];
+        }
+        
+        // Add to knowledge format - use connectorId from KB document
+        addKnowledgeSource(connectorId, filters, 'knowledge');
+      });
+    }
   }
 
   const agentCoreNode = nodes.find((node) => node.data.type === 'agent-core');
+  
+  // Convert internal toolset data to ToolsetReference format (with id)
+  const toolsets: ToolsetReference[] = toolsetsInternal.map((ts) => ({
+    id: ts.name, // Use name as id since it's unique per toolset
+    name: ts.name,
+    displayName: ts.displayName,
+    type: ts.type,
+    tools: ts.tools,
+  }));
+  
+  // Convert internal knowledge data to KnowledgeReference format (with id)
+  const knowledge: KnowledgeReference[] = knowledgeInternal.map((k, index) => ({
+    id: k.connectorId || `knowledge-${index}`,
+    connectorId: k.connectorId,
+    filters: k.filters,
+  }));
+  
   return {
     name: agentName,
     description:
@@ -643,11 +865,9 @@ export const extractAgentConfigFromFlow = (
       agentCoreNode?.data.config?.systemPrompt ||
       currentAgent?.systemPrompt ||
       'You are a sophisticated flow-based AI agent that processes information through a visual workflow.',
-    tools,
+    toolsets, // ToolsetReference[] with id
+    knowledge, // KnowledgeReference[] with id (includes both apps and KBs)
     models,
-    kb,
-    connectors, // Unified array with category field
-    vectorDBs: [],
     tags: currentAgent?.tags || ['flow-based', 'visual-workflow']
   };
 };

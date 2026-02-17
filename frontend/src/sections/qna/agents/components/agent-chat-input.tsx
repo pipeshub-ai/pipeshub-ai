@@ -40,6 +40,7 @@ import { KnowledgeBase } from '../services/api';
 
 export interface Model {
   provider: string;
+  modelKey: string;
   modelName: string;
 }
 
@@ -182,71 +183,202 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   // This component just respects what's passed to it via props
 
   // Initialize selections from agent defaults (only once)
+  // Uses only the new graph-based format (toolsets and knowledge)
   useEffect(() => {
     if (agent && !initialized) {
-      // Initialize with agent's default tools
-      if (agent.tools && Array.isArray(agent.tools)) {
-        setSelectedTools([...agent.tools]);
+      // Initialize with agent's tools from toolsets
+      const toolsList: string[] = [];
+      if (agent.toolsets && Array.isArray(agent.toolsets)) {
+        agent.toolsets.forEach((toolset: any) => {
+          const tools = toolset.tools || [];
+          const selectedToolsFromToolset = toolset.selectedTools || [];
+          
+          // Extract from expanded tools array
+          if (tools.length > 0) {
+            tools.forEach((tool: any) => {
+              const fullName = tool.fullName || `${toolset.name}.${tool.name}`;
+              toolsList.push(fullName);
+            });
+          } else if (selectedToolsFromToolset.length > 0) {
+            // Fallback to selectedTools if no expanded tools
+            selectedToolsFromToolset.forEach((toolName: string) => {
+              const fullName = toolName.includes('.') ? toolName : `${toolset.name}.${toolName}`;
+              toolsList.push(fullName);
+            });
+          }
+        });
+      }
+      // Note: All tools selected by default means user can filter down
+      if (toolsList.length > 0) {
+        setSelectedTools(toolsList);
       }
 
-      // Initialize with agent's default KBs
-      if (agent.kb && Array.isArray(agent.kb)) {
-        setSelectedKBs([...agent.kb]);
-      }
-
-      // Initialize with agent's default apps
-      // Extract connector instance IDs from connectors with category='knowledge'
-      const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
-      if (knowledgeConnectorIds.length > 0) {
-        setSelectedApps([...knowledgeConnectorIds]);
+      // Initialize with agent's knowledge sources (includes both apps and KBs)
+      if (agent.knowledge && Array.isArray(agent.knowledge)) {
+        const knowledgeIds: string[] = [];
+        const kbIds: string[] = [];
+        
+        agent.knowledge.forEach((k: any) => {
+          const connectorId = k.connectorId;
+          if (connectorId) {
+            // Parse filters to extract KB record groups
+            const filters = k.filtersParsed || k.filters || {};
+            let filtersParsed = filters;
+            if (typeof filters === 'string') {
+              try {
+                filtersParsed = JSON.parse(filters);
+              } catch {
+                filtersParsed = {};
+              }
+            }
+            
+            const recordGroups = filtersParsed.recordGroups || [];
+            
+            // Check if this is a KB (has recordGroups)
+            if (recordGroups.length > 0) {
+              // Extract KB IDs from recordGroups
+              kbIds.push(...recordGroups);
+            } else {
+              // This is an app connector
+              knowledgeIds.push(connectorId);
+            }
+          }
+        });
+        
+        if (knowledgeIds.length > 0) {
+          setSelectedApps(knowledgeIds);
+        }
+        
+        if (kbIds.length > 0) {
+          setSelectedKBs([...new Set(kbIds)]); // Remove duplicates
+        }
       }
 
       setInitialized(true);
     }
   }, [agent, initialized]);
 
-  // Convert agent tools to tool options
+  // Convert agent toolsets to tool options for the selection dialog
+  // Uses only the new graph-based format (toolsets with nested tools)
   const agentToolOptions: ToolOption[] = useMemo(() => {
-    if (!agent?.tools) return [];
+    const toolOptions: ToolOption[] = [];
+    
+    if (agent?.toolsets && Array.isArray(agent.toolsets)) {
+      agent.toolsets.forEach((toolset: any) => {
+        const toolsetName = toolset.name || '';
+        const tools = toolset.tools || [];
+        const selectedToolsFromToolset = toolset.selectedTools || [];
+        
+        // Extract from expanded tools array
+        if (tools.length > 0) {
+          tools.forEach((tool: any) => {
+            const fullName = tool.fullName || `${toolsetName}.${tool.name}`;
+            const parts = fullName.split('.');
+            const app_name = parts[0] || toolsetName;
+            const tool_name = parts.slice(1).join('.') || tool.name || 'tool';
+            
+            toolOptions.push({
+              id: fullName,
+              label: fullName,
+              displayName: `${normalizeDisplayName(app_name)} • ${normalizeDisplayName(tool_name)}`,
+              app_name,
+              tool_name,
+              description: tool.description || `${normalizeDisplayName(app_name)} ${normalizeDisplayName(tool_name)} tool`,
+            });
+          });
+        } else if (selectedToolsFromToolset.length > 0) {
+          // Fallback to selectedTools if no expanded tools
+          selectedToolsFromToolset.forEach((toolName: string) => {
+            const fullName = toolName.includes('.') ? toolName : `${toolsetName}.${toolName}`;
+            const parts = fullName.split('.');
+            const app_name = parts[0] || toolsetName;
+            const tool_name = parts.slice(1).join('.') || toolName;
+            
+            toolOptions.push({
+              id: fullName,
+              label: fullName,
+              displayName: `${normalizeDisplayName(app_name)} • ${normalizeDisplayName(tool_name)}`,
+              app_name,
+              tool_name,
+              description: `${normalizeDisplayName(app_name)} ${normalizeDisplayName(tool_name)} tool`,
+            });
+          });
+        }
+      });
+    }
+    
+    return toolOptions;
+  }, [agent?.toolsets]);
 
-    return agent.tools.map((toolId: string) => {
-      const [app_name, tool_name] = toolId.split('.');
-      return {
-        id: toolId, // Keep full app_name.tool_name format for API
-        label: toolId,
-        displayName: `${normalizeDisplayName(app_name || '')} • ${normalizeDisplayName(tool_name || '')}`,
-        app_name: app_name || '',
-        tool_name: tool_name || '',
-        description: `${normalizeDisplayName(app_name || '')} ${normalizeDisplayName(tool_name || '')} tool`,
-      };
-    });
-  }, [agent?.tools]);
-
-  // Convert available KBs to KB options (filter by agent's KB list)
+  // Convert available KBs to KB options (extract from agent's knowledge array)
   const agentKBOptions: KBOption[] = useMemo(() => {
-    if (!agent?.kb || !availableKBs) return [];
+    if (!agent?.knowledge || !availableKBs) return [];
+    
+    // Extract KB IDs from knowledge array
+    const kbIds: string[] = [];
+    agent.knowledge.forEach((k: any) => {
+      const filters = k.filtersParsed || k.filters || {};
+      let filtersParsed = filters;
+      if (typeof filters === 'string') {
+        try {
+          filtersParsed = JSON.parse(filters);
+        } catch {
+          filtersParsed = {};
+        }
+      }
+      const recordGroups = filtersParsed.recordGroups || [];
+      kbIds.push(...recordGroups);
+    });
 
     return availableKBs
-      .filter((kb) => agent.kb.includes(kb.id))
+      .filter((kb) => kbIds.includes(kb.id))
       .map((kb) => ({
         id: kb.id, // Use KB ID for API
         name: kb.name,
         description: `Knowledge Base: ${kb.name}`,
       }));
-  }, [availableKBs, agent?.kb]);
+  }, [availableKBs, agent?.knowledge]);
 
-  // Convert agent connectors (knowledge category) to app options
+  // Convert agent knowledge to app options for the selection dialog
+  // Uses only the new graph-based format (knowledge with connectorId)
+  // Filters out KBs (only shows app connectors)
   const agentAppOptions: AppOption[] = useMemo(() => {
-    if (!agent?.connectors) return [];
-
-    return agent.connectors
-      .filter((ci: any) => ci.category === 'knowledge')
-      .map((connector: any) => ({
-        id: connector.id, // Use connector instance ID for API
-        name: connector.name || connector.type,
-        displayName: normalizeDisplayName(connector.name || connector.type),
-      }));
-  }, [agent?.connectors]);
+    const appOptions: AppOption[] = [];
+    
+    if (agent?.knowledge && Array.isArray(agent.knowledge)) {
+      agent.knowledge.forEach((k: any) => {
+        // Parse filters to check if this is a KB
+        const filters = k.filtersParsed || k.filters || {};
+        let filtersParsed = filters;
+        if (typeof filters === 'string') {
+          try {
+            filtersParsed = JSON.parse(filters);
+          } catch {
+            filtersParsed = {};
+          }
+        }
+        
+        const recordGroups = filtersParsed.recordGroups || [];
+        
+        // Only include app connectors (not KBs)
+        // KBs have recordGroups, apps don't (or have empty recordGroups)
+        if (recordGroups.length === 0) {
+          const connectorId = k.connectorId || '';
+          // Use displayName from backend if available, otherwise extract from connectorId
+          const displayName = k.displayName || k.name || 
+                            (connectorId.split('/').pop() || connectorId || 'Knowledge Source');
+          
+          appOptions.push({
+            id: connectorId,
+            name: displayName,
+            displayName: normalizeDisplayName(displayName),
+          });
+        }
+      });
+    }
+    
+    return appOptions;
+  }, [agent?.knowledge]);
 
   // All available apps for autocomplete
   const allAppOptions: AppOption[] = activeConnectors.map((app) => ({
@@ -330,7 +462,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       // Pass the persistent selected items with correct IDs/names for API
       await onSubmit(
         trimmedValue,
-        selectedModel?.modelName,        
+        selectedModel?.modelKey,        
         selectedModel?.modelName,        
         selectedChatMode?.id,            
         selectedTools,                  
@@ -422,13 +554,79 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
   };
 
   // Reset all selections to agent defaults
+  // Reset all selections to agent defaults
+  // Uses only the new graph-based format (toolsets and knowledge)
   const handleResetToDefaults = useCallback(() => {
     if (agent) {
-      setSelectedTools(agent.tools ? [...agent.tools] : []);
-      setSelectedKBs(agent.kb ? [...agent.kb] : []);
-      // Extract connector instance IDs from connectors with category='knowledge'
-      const knowledgeConnectorIds = agent.connectors?.filter((ci: any) => ci.category === 'knowledge').map((ci: any) => ci.id) || [];
-      setSelectedApps(knowledgeConnectorIds);
+      // Reset tools from toolsets
+      const toolsList: string[] = [];
+      if (agent.toolsets && Array.isArray(agent.toolsets)) {
+        agent.toolsets.forEach((toolset: any) => {
+          const tools = toolset.tools || [];
+          const selectedToolsFromToolset = toolset.selectedTools || [];
+          
+          if (tools.length > 0) {
+            tools.forEach((tool: any) => {
+              const fullName = tool.fullName || `${toolset.name}.${tool.name}`;
+              toolsList.push(fullName);
+            });
+          } else if (selectedToolsFromToolset.length > 0) {
+            selectedToolsFromToolset.forEach((toolName: string) => {
+              const fullName = toolName.includes('.') ? toolName : `${toolset.name}.${toolName}`;
+              toolsList.push(fullName);
+            });
+          }
+        });
+      }
+      setSelectedTools(toolsList);
+      
+      // Extract KB IDs from knowledge array
+      const kbIds: string[] = [];
+      if (agent.knowledge && Array.isArray(agent.knowledge)) {
+        agent.knowledge.forEach((k: any) => {
+          const filters = k.filtersParsed || k.filters || {};
+          let filtersParsed = filters;
+          if (typeof filters === 'string') {
+            try {
+              filtersParsed = JSON.parse(filters);
+            } catch {
+              filtersParsed = {};
+            }
+          }
+          const recordGroups = filtersParsed.recordGroups || [];
+          kbIds.push(...recordGroups);
+        });
+      }
+      setSelectedKBs([...new Set(kbIds)]); // Remove duplicates
+      
+      // Reset apps from knowledge (extract app connectors, not KBs)
+      if (agent.knowledge && Array.isArray(agent.knowledge)) {
+        const knowledgeIds: string[] = [];
+        agent.knowledge.forEach((k: any) => {
+          const connectorId = k.connectorId;
+          if (connectorId) {
+            // Parse filters to check if this is a KB
+            const filters = k.filtersParsed || k.filters || {};
+            let filtersParsed = filters;
+            if (typeof filters === 'string') {
+              try {
+                filtersParsed = JSON.parse(filters);
+              } catch {
+                filtersParsed = {};
+              }
+            }
+            
+            // Only add if it's not a KB (no recordGroups or empty recordGroups)
+            const recordGroups = filtersParsed.recordGroups || [];
+            if (recordGroups.length === 0) {
+              knowledgeIds.push(connectorId);
+            }
+          }
+        });
+        setSelectedApps(knowledgeIds);
+      } else {
+        setSelectedApps([]);
+      }
     }
   }, [agent]);
 
@@ -700,17 +898,17 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
           <Divider sx={{ mb: 0.5 }} />
           {availableModels.map((model) => (
             <MenuItem
-              key={`${model.provider}-${model.modelName}`}
+              key={`${model.provider || 'unknown'}-${model.modelName || 'model'}`}
               onClick={() => handleModelSelect(model)}
               selected={selectedModel?.modelName === model.modelName}
               sx={{ borderRadius: '6px', mb: 0.5, py: 0.5 }}
             >
               <Box>
                 <Typography variant="body2" fontWeight="medium" sx={{ fontSize: '0.8rem' }}>
-                  {model.modelName}
+                  {model.modelName || 'Unknown Model'}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                  {normalizeDisplayName(model.provider)}
+                  {normalizeDisplayName(model.provider || 'AI')}
                 </Typography>
               </Box>
             </MenuItem>
