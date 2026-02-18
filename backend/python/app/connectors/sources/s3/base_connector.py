@@ -335,9 +335,23 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            # Personal scope: only creator gets user-app relation; team scope: all active org users
+            if self.connector_scope == ConnectorScope.PERSONAL.value and self.created_by:
+                async with self.data_store_provider.transaction() as tx_store:
+                    creator_doc = await tx_store.get_user_by_user_id(self.created_by)
+                if creator_doc:
+                    creator = User.from_arango_user(creator_doc)
+                    app_users = self.get_app_users([creator])
+                    await self.data_entities_processor.on_new_app_users(app_users)
+                else:
+                    self.logger.warning(
+                        "Creator user not found for created_by %s; skipping user-app relation for personal connector",
+                        self.created_by,
+                    )
+            else:
+                all_active_users = await self.data_entities_processor.get_all_active_users()
+                app_users = self.get_app_users(all_active_users)
+                await self.data_entities_processor.on_new_app_users(app_users)
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
@@ -437,10 +451,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                     )
                 )
             else:
+                # Personal scope: only creator (USER) gets permission; never add ORG
                 if self.created_by:
                     try:
                         async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
+                            user = await tx_store.get_user_by_user_id(self.created_by)
                             if user and user.get("email"):
                                 permissions.append(
                                     Permission(
@@ -454,12 +469,9 @@ class S3CompatibleBaseConnector(BaseConnector):
                         self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
                 if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
+                    self.logger.warning(
+                        "Personal scope: no creator user resolved for bucket %s; record group will have no permission edges",
+                        bucket_name,
                     )
 
             record_group = RecordGroup(
@@ -1032,10 +1044,11 @@ class S3CompatibleBaseConnector(BaseConnector):
                     )
                 )
             else:
+                # Personal scope: only creator (USER) gets permission; never add ORG
                 if self.created_by:
                     try:
                         async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
+                            user = await tx_store.get_user_by_user_id(self.created_by)
                             if user and user.get("email"):
                                 permissions.append(
                                     Permission(
@@ -1048,14 +1061,7 @@ class S3CompatibleBaseConnector(BaseConnector):
                     except Exception as e:
                         self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
 
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
+                # Do not add ORG fallback for personal scope; documents stay restricted to creator only
 
             return permissions
         except Exception as e:
