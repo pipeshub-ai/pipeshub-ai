@@ -525,6 +525,138 @@ CLICKHOUSE_SDK_METHODS = {
 
 
 # ================================================================================
+# CLOUD ORG API METHOD DEFINITIONS
+# ================================================================================
+
+CLICKHOUSE_CLOUD_API_BASE_URL = 'https://api.clickhouse.cloud'
+
+CLICKHOUSE_ORG_API_METHODS = {
+    'list_organizations': {
+        'description': 'List organizations associated with the API key',
+        'http_method': 'GET',
+        'path': '/v1/organizations',
+        'path_params': [],
+        'query_params': [],
+        'body_params': [],
+        'required': [],
+    },
+
+    'get_organization': {
+        'description': 'Get organization details by ID',
+        'http_method': 'GET',
+        'path': '/v1/organizations/{organizationId}',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+        ],
+        'query_params': [],
+        'body_params': [],
+        'required': ['organization_id'],
+    },
+
+    'update_organization': {
+        'description': 'Update organization name, private endpoints, or core dumps settings',
+        'http_method': 'PATCH',
+        'path': '/v1/organizations/{organizationId}',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+        ],
+        'query_params': [],
+        'body_params': [
+            {'name': 'name', 'type': 'str', 'description': 'New organization name'},
+            {'name': 'private_endpoints', 'type': 'object', 'description': 'Private endpoints configuration'},
+            {'name': 'core_dumps', 'type': 'object', 'description': 'Core dumps configuration'},
+        ],
+        'required': ['organization_id'],
+    },
+
+    'list_organization_activities': {
+        'description': 'List activities for an organization with optional date filters',
+        'http_method': 'GET',
+        'path': '/v1/organizations/{organizationId}/activities',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+        ],
+        'query_params': [
+            {'name': 'from_date', 'api_name': 'from', 'type': 'str', 'description': 'Start date filter (ISO 8601 format)'},
+            {'name': 'to_date', 'api_name': 'to', 'type': 'str', 'description': 'End date filter (ISO 8601 format)'},
+        ],
+        'body_params': [],
+        'required': ['organization_id'],
+    },
+
+    'get_organization_activity': {
+        'description': 'Get a single organization activity by ID',
+        'http_method': 'GET',
+        'path': '/v1/organizations/{organizationId}/activities/{activityId}',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+            {'name': 'activity_id', 'api_name': 'activityId', 'type': 'str', 'description': 'Activity ID'},
+        ],
+        'query_params': [],
+        'body_params': [],
+        'required': ['organization_id', 'activity_id'],
+    },
+
+    'get_private_endpoint_config': {
+        'description': 'Get private endpoint configuration for an organization (deprecated)',
+        'http_method': 'GET',
+        'path': '/v1/organizations/{organizationId}/privateEndpointConfig',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+        ],
+        'query_params': [],
+        'body_params': [],
+        'required': ['organization_id'],
+        'deprecated': True,
+    },
+
+    'create_byoc_infrastructure': {
+        'description': 'Create a BYOC (Bring Your Own Cloud) infrastructure for an organization',
+        'http_method': 'POST',
+        'path': '/v1/organizations/{organizationId}/byocInfrastructure',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+        ],
+        'query_params': [],
+        'body_params': [
+            {'name': 'cloud_provider', 'type': 'str', 'description': 'Cloud provider (e.g. aws, gcp, azure)'},
+            {'name': 'region', 'type': 'str', 'description': 'Cloud region for the infrastructure'},
+            {'name': 'config', 'type': 'Dict[str, Any]', 'description': 'BYOC infrastructure configuration'},
+        ],
+        'required': ['organization_id'],
+    },
+
+    'delete_byoc_infrastructure': {
+        'description': 'Delete a BYOC infrastructure from an organization',
+        'http_method': 'DELETE',
+        'path': '/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+            {'name': 'byoc_infrastructure_id', 'api_name': 'byocInfrastructureId', 'type': 'str', 'description': 'BYOC infrastructure ID'},
+        ],
+        'query_params': [],
+        'body_params': [],
+        'required': ['organization_id', 'byoc_infrastructure_id'],
+    },
+
+    'update_byoc_infrastructure': {
+        'description': 'Update a BYOC infrastructure configuration',
+        'http_method': 'PATCH',
+        'path': '/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}',
+        'path_params': [
+            {'name': 'organization_id', 'api_name': 'organizationId', 'type': 'str', 'description': 'Organization ID'},
+            {'name': 'byoc_infrastructure_id', 'api_name': 'byocInfrastructureId', 'type': 'str', 'description': 'BYOC infrastructure ID'},
+        ],
+        'query_params': [],
+        'body_params': [
+            {'name': 'config', 'type': 'Dict[str, Any]', 'description': 'Updated BYOC infrastructure configuration'},
+        ],
+        'required': ['organization_id', 'byoc_infrastructure_id'],
+    },
+}
+
+
+# ================================================================================
 # GENERATOR CLASS
 # ================================================================================
 
@@ -764,6 +896,144 @@ class ClickHouseDataSourceGenerator:
 
         return "\n".join(lines)
 
+    # ================================================================================
+    # ORG API METHOD GENERATION
+    # ================================================================================
+
+    def _generate_org_api_method_signature(self, method_name: str, method_info: Dict) -> str:
+        """Generate async method signature for an org API method."""
+        params = ["self"]
+
+        # Required path params first
+        for param in method_info.get('path_params', []):
+            if param['name'] in method_info.get('required', []):
+                params.append(f"{param['name']}: str")
+
+        # Optional query params
+        for param in method_info.get('query_params', []):
+            params.append(f"{param['name']}: Optional[str] = None")
+
+        # Optional body params
+        for param in method_info.get('body_params', []):
+            ptype = param['type']
+            if not ptype.startswith('Optional['):
+                ptype = f"Optional[{ptype}]"
+            params.append(f"{param['name']}: {ptype} = None")
+
+        signature_params = ",\n        ".join(params)
+        return f"    async def {method_name}(\n        {signature_params}\n    ) -> ClickHouseResponse:"
+
+    def _generate_org_api_method_docstring(self, method_info: Dict) -> List[str]:
+        """Generate docstring for an org API method."""
+        desc = method_info['description']
+        if method_info.get('deprecated'):
+            desc += '\n\n        .. deprecated:: This endpoint is deprecated.'
+
+        lines = [f'        """{desc}', ""]
+
+        all_params = method_info.get('path_params', []) + method_info.get('query_params', []) + method_info.get('body_params', [])
+        if all_params:
+            lines.append("        Args:")
+            for param in all_params:
+                lines.append(f"            {param['name']}: {param['description']}")
+            lines.append("")
+
+        lines.extend([
+            "        Returns:",
+            "            ClickHouseResponse with operation result",
+        ])
+        lines.append('        """')
+        return lines
+
+    def _generate_org_api_method_body(self, method_name: str, method_info: Dict) -> List[str]:
+        """Generate the body of an org API method (HTTPRequest + execute)."""
+        lines = []
+        http_method = method_info['http_method']
+        path = method_info['path']
+
+        # Build path_params dict (only if there are path params to use)
+        path_params = method_info.get('path_params', [])
+        if path_params:
+            pp_parts = ", ".join(f"'{p['api_name']}': {p['name']}" for p in path_params)
+            lines.append(f"        path_params = {{{pp_parts}}}")
+
+        # Build query_params dict
+        query_params = method_info.get('query_params', [])
+        if query_params:
+            lines.append("        query_params = {}")
+            for qp in query_params:
+                lines.append(f"        if {qp['name']} is not None:")
+                lines.append(f"            query_params['{qp['api_name']}'] = {qp['name']}")
+        else:
+            lines.append("        query_params = {}")
+
+        # Build body dict (only if there are body params)
+        body_params = method_info.get('body_params', [])
+        if body_params:
+            lines.append("        body = {}")
+            for bp in body_params:
+                lines.append(f"        if {bp['name']} is not None:")
+                lines.append(f"            body['{bp['name']}'] = {bp['name']}")
+
+        # Build URL with path params interpolation
+        lines.append("")
+        if path_params:
+            lines.append(f"        url = self._cloud_api_base_url + '{path}'")
+            lines.append("        url = url.format(**path_params)")
+        else:
+            lines.append(f"        url = f\"{{self._cloud_api_base_url}}{path}\"")
+
+        # Build HTTPRequest
+        lines.append("")
+        lines.append("        request = HTTPRequest(")
+        lines.append("            url=url,")
+        lines.append(f"            method='{http_method}',")
+        lines.append("            query=query_params,")
+        if body_params:
+            lines.append("            body=body if body else None,")
+        lines.append("        )")
+
+        # Execute and handle response
+        human_desc = method_info['description']
+        success_msg = f"Successfully called {method_name}"
+        fail_msg = f"Failed to call {method_name}"
+
+        lines.append("")
+        lines.append("        try:")
+        lines.append("            response = await self._http_client.execute(request)")
+        lines.append("            response.raise_for_status()")
+        lines.append("            data = response.json()")
+        lines.append("            return ClickHouseResponse(")
+        lines.append("                success=True,")
+        lines.append("                data=data.get('result', data),")
+        lines.append(f"                message='{success_msg}'")
+        lines.append("            )")
+        lines.append("        except Exception as e:")
+        lines.append(f"            return ClickHouseResponse(success=False, error=str(e), message='{fail_msg}')")
+
+        return lines
+
+    def _generate_org_api_method(self, method_name: str, method_info: Dict) -> str:
+        """Generate a complete org API method."""
+        lines = []
+
+        # Signature
+        lines.append(self._generate_org_api_method_signature(method_name, method_info))
+
+        # Docstring
+        lines.extend(self._generate_org_api_method_docstring(method_info))
+
+        # Body
+        lines.extend(self._generate_org_api_method_body(method_name, method_info))
+
+        self.generated_methods.append({
+            'name': method_name,
+            'description': method_info['description'],
+            'return_handling': 'org_api',
+        })
+
+        return "\n".join(lines)
+
     def generate_datasource(self) -> str:
         """Generate the complete ClickHouse datasource class."""
 
@@ -772,7 +1042,8 @@ class ClickHouseDataSourceGenerator:
             'ClickHouse SDK DataSource - Auto-generated API wrapper',
             '',
             'Generated from clickhouse-connect SDK method signatures.',
-            'Uses the clickhouse-connect SDK for direct ClickHouse interactions.',
+            'Uses the clickhouse-connect SDK for direct ClickHouse interactions',
+            'and HTTP REST calls for ClickHouse Cloud Organization APIs.',
             'All methods have explicit parameter signatures - NO Any type for params, NO **kwargs.',
             '"""',
             '',
@@ -783,6 +1054,9 @@ class ClickHouseDataSourceGenerator:
             '    ClickHouseClient,',
             '    ClickHouseResponse,',
             ')',
+            'from app.sources.client.http.http_request import HTTPRequest',
+            '',
+            f"CLICKHOUSE_CLOUD_API_BASE_URL = '{CLICKHOUSE_CLOUD_API_BASE_URL}'",
             '',
             'logger = logging.getLogger(__name__)',
             '',
@@ -797,22 +1071,27 @@ class ClickHouseDataSourceGenerator:
             '    - Command execution (DDL/DML via command)',
             '    - Raw data operations (raw_query, raw_insert, raw_stream)',
             '    - Context and utility methods',
+            '    - Cloud Organization API operations (list/get/update orgs, activities, BYOC)',
             '',
             '    All methods have explicit parameter signatures - NO **kwargs.',
             '    Methods that return structured results return ClickHouseResponse objects.',
             '    Methods that return DataFrames, Arrow tables, or streams return raw SDK results.',
+            '    Org API methods are async and use the HTTP client for Cloud Control Plane calls.',
             '    """',
             '',
-            '    def __init__(self, client: ClickHouseClient) -> None:',
+            f"    def __init__(self, client: ClickHouseClient, cloud_api_base_url: str = CLICKHOUSE_CLOUD_API_BASE_URL) -> None:",
             '        """Initialize with ClickHouseClient.',
             '',
             '        Args:',
             '            client: ClickHouseClient instance with configured authentication',
+            '            cloud_api_base_url: Base URL for ClickHouse Cloud API (default: https://api.clickhouse.cloud)',
             '        """',
             '        self._client = client',
             '        self._sdk = client.get_sdk()',
             '        if self._sdk is None:',
             "            raise ValueError('ClickHouse SDK client is not initialized')",
+            '        self._http_client = client.get_http_client()',
+            '        self._cloud_api_base_url = cloud_api_base_url',
             '',
             "    def get_data_source(self) -> 'ClickHouseDataSource':",
             '        """Return the data source instance."""',
@@ -827,6 +1106,16 @@ class ClickHouseDataSourceGenerator:
         # Generate all SDK methods
         for method_name, method_info in CLICKHOUSE_SDK_METHODS.items():
             class_lines.append(self._generate_method(method_name, method_info))
+            class_lines.append("")
+
+        # Generate Cloud Org API methods
+        class_lines.append("    # ================================================================================")
+        class_lines.append("    # CLOUD ORGANIZATION API METHODS (async, HTTP-based)")
+        class_lines.append("    # ================================================================================")
+        class_lines.append("")
+
+        for method_name, method_info in CLICKHOUSE_ORG_API_METHODS.items():
+            class_lines.append(self._generate_org_api_method(method_name, method_info))
             class_lines.append("")
 
         return "\n".join(class_lines)
@@ -858,11 +1147,14 @@ class ClickHouseDataSourceGenerator:
             'Context': 0,
             'Utility': 0,
             'Command': 0,
+            'Cloud Org API': 0,
         }
 
         for method in self.generated_methods:
             name = method['name']
-            if 'stream' in name:
+            if method.get('return_handling') == 'org_api':
+                categories['Cloud Org API'] += 1
+            elif 'stream' in name:
                 categories['Streaming'] += 1
             elif name.startswith('query') or name.startswith('raw_query'):
                 categories['Query'] += 1
