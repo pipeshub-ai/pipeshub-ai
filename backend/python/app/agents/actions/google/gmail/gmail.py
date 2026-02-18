@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import List, Optional
@@ -20,7 +19,6 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
 logger = logging.getLogger(__name__)
@@ -137,18 +135,6 @@ class Gmail:
         """
         self.client = GoogleGmailDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            asyncio.get_running_loop()
-            # We're in an async context, use asyncio.run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run
-            return asyncio.run(coro)
 
     @tool(
         app_name="gmail",
@@ -174,7 +160,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def reply(
+    async def reply(
         self,
         message_id: str,
         mail_to: List[str],
@@ -212,10 +198,10 @@ class Gmail:
             )
 
             # Use GoogleGmailDataSource method
-            message = self._run_async(self.client.users_messages_send(
+            message = await self.client.users_messages_send(
                 userId="me",
                 body=message_body
-            ))
+            )
             return True, json.dumps({
                 "message_id": message.get("id", ""),
                 "message": message,
@@ -248,7 +234,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def draft_email(
+    async def draft_email(
         self,
         mail_to: List[str],
         mail_subject: str,
@@ -280,10 +266,10 @@ class Gmail:
             )
 
             # Use GoogleGmailDataSource method
-            draft = self._run_async(self.client.users_drafts_create(
+            draft = await self.client.users_drafts_create(
                 userId="me",
                 body={"message": message_body}
-            ))
+            )
             return True, json.dumps({
                 "draft_id": draft.get("id", ""),
                 "draft": draft,
@@ -316,7 +302,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def send_email(
+    async def send_email(
         self,
         mail_to: List[str],
         mail_subject: str,
@@ -354,10 +340,10 @@ class Gmail:
             )
 
             # Use GoogleGmailDataSource method
-            message = self._run_async(self.client.users_messages_send(
+            message = await self.client.users_messages_send(
                 userId="me",
                 body=message_body
-            ))
+            )
             return True, json.dumps({
                 "message_id": message.get("id", ""),
                 "message": message,
@@ -389,7 +375,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def search_emails(
+    async def search_emails(
         self,
         query: str,
         max_results: Optional[int] = 10,
@@ -406,12 +392,12 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            messages = self._run_async(self.client.users_messages_list(
+            messages = await self.client.users_messages_list(
                 userId="me",
                 q=query,
                 maxResults=max_results,
                 pageToken=page_token,
-            ))
+            )
             return True, json.dumps(messages)
         except Exception as e:
             logger.error(f"Failed to search emails: {e}")
@@ -441,7 +427,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_email_details(
+    async def get_email_details(
         self,
         message_id: str,
     ) -> tuple[bool, str]:
@@ -454,11 +440,11 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            message = self._run_async(self.client.users_messages_get(
+            message = await self.client.users_messages_get(
                 userId="me",
                 id=message_id,
                 format="full",
-            ))
+            )
             return True, json.dumps(message)
         except Exception as e:
             logger.error(f"Failed to get email details for {message_id}: {e}")
@@ -488,7 +474,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_email_attachments(
+    async def get_email_attachments(
         self,
         message_id: str,
     ) -> tuple[bool, str]:
@@ -501,11 +487,11 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method to get message details
-            message = self._run_async(self.client.users_messages_get(
+            message = await self.client.users_messages_get(
                 userId="me",
                 id=message_id,
                 format="full",
-            ))
+            )
 
             attachments = []
             if "payload" in message and "parts" in message["payload"]:
@@ -547,7 +533,7 @@ class Gmail:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_profile(
+    async def get_user_profile(
         self,
         user_id: Optional[str] = "me",
     ) -> tuple[bool, str]:
@@ -560,9 +546,9 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            profile = self._run_async(self.client.users_get_profile(
+            profile = await self.client.users_get_profile(
                 userId=user_id
-            ))
+            )
             return True, json.dumps({
                 "email_address": profile.get("emailAddress", ""),
                 "messages_total": profile.get("messagesTotal", 0),

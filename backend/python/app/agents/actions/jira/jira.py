@@ -1,10 +1,8 @@
-import asyncio
 import json
 import logging
 import re
-import threading
 import traceback
-from typing import Coroutine, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -316,42 +314,6 @@ class Jira:
             client: JIRA client object
         """
         self.client = JiraDataSource(client)
-        # Dedicated background event loop for running coroutines from sync context
-        self._bg_loop = asyncio.new_event_loop()
-        self._bg_loop_thread = threading.Thread(
-            target=self._start_background_loop,
-            daemon=True
-        )
-        self._bg_loop_thread.start()
-
-    def _start_background_loop(self) -> None:
-        """Start the background event loop"""
-        asyncio.set_event_loop(self._bg_loop)
-        self._bg_loop.run_forever()
-
-    def _run_async(self, coro: Coroutine[None, None, HTTPResponse]) -> HTTPResponse:
-        """Run a coroutine safely from sync context via a dedicated loop.
-
-        Args:
-            coro: Coroutine that returns HTTPResponse
-
-        Returns:
-            HTTPResponse from the executed coroutine
-        """
-        future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
-        return future.result()
-
-    def shutdown(self) -> None:
-        """Gracefully stop the background event loop and thread."""
-        try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
-                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
-            if getattr(self, "_bg_loop_thread", None) is not None:
-                self._bg_loop_thread.join()
-            if getattr(self, "_bg_loop", None) is not None:
-                self._bg_loop.close()
-        except Exception as exc:
-            logger.warning(f"Jira shutdown encountered an issue: {exc}")
 
     def _handle_response(
         self,
@@ -567,7 +529,7 @@ class Jira:
         except Exception as e:
             return False, f"Validation error: {e}"
 
-    def _resolve_user_to_account_id(
+    async def _resolve_user_to_account_id(
         self,
         project_key: str,
         query: str
@@ -583,12 +545,10 @@ class Jira:
         """
         try:
             # First try assignable users for the project
-            response = self._run_async(
-                self.client.find_assignable_users(
-                    project=project_key,
-                    query=query,
-                    maxResults=1
-                )
+            response = await self.client.find_assignable_users(
+                project=project_key,
+                query=query,
+                maxResults=1
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
@@ -597,11 +557,9 @@ class Jira:
                     return data[0].get('accountId')
 
             # Fallback: global user search
-            response = self._run_async(
-                self.client.find_users_by_query(
-                    query=query,
-                    maxResults=1
-                )
+            response = await self.client.find_users_by_query(
+                query=query,
+                maxResults=1
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
@@ -727,12 +685,12 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def validate_connection(self) -> Tuple[bool, str]:
+    async def validate_connection(self) -> Tuple[bool, str]:
         """Validate JIRA connection and provide diagnostics"""
         try:
             # Simply try to fetch the current user to validate the connection
             # This is more reliable than trying to access the underlying client
-            response = self._run_async(self.client.get_current_user())
+            response = await self.client.get_current_user()
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 user_data = response.json()
@@ -794,10 +752,10 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_current_user(self) -> Tuple[bool, str]:
+    async def get_current_user(self) -> Tuple[bool, str]:
         """Get the current authenticated JIRA user's details"""
         try:
-            response = self._run_async(self.client.get_current_user())
+            response = await self.client.get_current_user()
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 user_data = response.json()
@@ -854,7 +812,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def convert_text_to_adf(self, text: str) -> Tuple[bool, str]:
+    async def convert_text_to_adf(self, text: str) -> Tuple[bool, str]:
         """Convert plain text to Atlassian Document Format"""
         try:
             adf_document = self._convert_text_to_adf(text)
@@ -891,7 +849,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def create_issue(
+    async def create_issue(
         self,
         project_key: str,
         summary: str,
@@ -914,7 +872,7 @@ class Jira:
 
             # Resolve assignee
             if assignee_query and not assignee_account_id:
-                assignee_account_id = self._resolve_user_to_account_id(
+                assignee_account_id = await self._resolve_user_to_account_id(
                     project_key,
                     assignee_query
                 )
@@ -944,7 +902,7 @@ class Jira:
                 })
 
             # Create issue
-            response = self._run_async(self.client.create_issue(fields=fields))
+            response = await self.client.create_issue(fields=fields)
 
             # Handle reporter field errors by retrying without it
             if response.status == HttpStatusCode.BAD_REQUEST.value:
@@ -955,12 +913,12 @@ class Jira:
                     if 'reporter' in errors and 'reporter' in fields:
                         logger.info("Retrying without reporter field")
                         del fields['reporter']
-                        response = self._run_async(self.client.create_issue(fields=fields))
+                        response = await self.client.create_issue(fields=fields)
 
                     elif 'assignee' in errors and 'assignee' in fields:
                         logger.info("Retrying without assignee field")
                         del fields['assignee']
-                        response = self._run_async(self.client.create_issue(fields=fields))
+                        response = await self.client.create_issue(fields=fields)
                 except Exception:
                     pass
 
@@ -1017,7 +975,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def update_issue(
+    async def update_issue(
         self,
         issue_key: str,
         summary: Optional[str] = None,
@@ -1053,14 +1011,12 @@ class Jira:
             # Resolve assignee
             if assignee_query and not assignee_account_id:
                 # Get project key from issue to resolve assignee
-                issue_response = self._run_async(
-                    self.client.get_issue(issueIdOrKey=issue_key)
-                )
+                issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
                 if issue_response.status == HttpStatusCode.SUCCESS.value:
                     issue_data = issue_response.json()
                     project_key = issue_data.get("fields", {}).get("project", {}).get("key")
                     if project_key:
-                        assignee_account_id = self._resolve_user_to_account_id(
+                        assignee_account_id = await self._resolve_user_to_account_id(
                             project_key,
                             assignee_query
                         )
@@ -1083,9 +1039,7 @@ class Jira:
             if status:
                 try:
                     # Get available transitions for the issue
-                    transitions_response = self._run_async(
-                        self.client.get_transitions(issueIdOrKey=issue_key)
-                    )
+                    transitions_response = await self.client.get_transitions(issueIdOrKey=issue_key)
                     if transitions_response.status == HttpStatusCode.SUCCESS.value:
                         transitions_data = transitions_response.json()
                         transitions = transitions_data.get("transitions", [])
@@ -1101,20 +1055,16 @@ class Jira:
                     logger.warning(f"Could not get transitions for issue {issue_key}: {e}. Status update will be skipped.")
 
             # Update issue
-            response = self._run_async(
-                self.client.edit_issue(
-                    issueIdOrKey=issue_key,
-                    fields=fields if fields else None,
-                    transition=transition
-                )
+            response = await self.client.edit_issue(
+                issueIdOrKey=issue_key,
+                fields=fields if fields else None,
+                transition=transition
             )
 
             if response.status == HttpStatusCode.SUCCESS.value or response.status == HttpStatusCode.NO_CONTENT.value:
                 # If returnIssue was not set, fetch the updated issue
                 if response.status == HttpStatusCode.NO_CONTENT.value:
-                    issue_response = self._run_async(
-                        self.client.get_issue(issueIdOrKey=issue_key)
-                    )
+                    issue_response = await self.client.get_issue(issueIdOrKey=issue_key)
                     if issue_response.status == HttpStatusCode.SUCCESS.value:
                         data = issue_response.json()
                     else:
@@ -1175,10 +1125,10 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_projects(self) -> Tuple[bool, str]:
+    async def get_projects(self) -> Tuple[bool, str]:
         """Get all JIRA projects"""
         try:
-            response = self._run_async(self.client.get_all_projects())
+            response = await self.client.get_all_projects()
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
@@ -1229,12 +1179,10 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_project(self, project_key: str) -> Tuple[bool, str]:
+    async def get_project(self, project_key: str) -> Tuple[bool, str]:
         """Get a specific JIRA project"""
         try:
-            response = self._run_async(
-                self.client.get_project(projectIdOrKey=project_key)
-            )
+            response = await self.client.get_project(projectIdOrKey=project_key)
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
@@ -1285,7 +1233,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_issues(
+    async def get_issues(
         self,
         project_key: str,
         days: Optional[int] = None,
@@ -1299,13 +1247,11 @@ class Jira:
             jql = f'project = "{escaped_project_key}" AND updated >= -{time_filter}d ORDER BY updated DESC'
 
             # Use enhanced search endpoint (standard search has been removed - 410 Gone)
-            response = self._run_async(
-                self.client.search_and_reconsile_issues_using_jql_post(
-                    jql=jql,
-                    maxResults=max_results or 50,
-                    # Explicitly request key field to ensure issue keys are returned
-                    fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
-                )
+            response = await self.client.search_and_reconsile_issues_using_jql_post(
+                jql=jql,
+                maxResults=max_results or 50,
+                # Explicitly request key field to ensure issue keys are returned
+                fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
@@ -1361,12 +1307,10 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_issue(self, issue_key: str) -> Tuple[bool, str]:
+    async def get_issue(self, issue_key: str) -> Tuple[bool, str]:
         """Get a specific JIRA issue"""
         try:
-            response = self._run_async(
-                self.client.get_issue(issueIdOrKey=issue_key)
-            )
+            response = await self.client.get_issue(issueIdOrKey=issue_key)
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
@@ -1438,7 +1382,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
+    async def search_issues(self, jql: str, maxResults: Optional[int] = None) -> Tuple[bool, str]:
         """Search for JIRA issues using the enhanced search endpoint"""
         try:
             # Validate and fix JQL query
@@ -1454,13 +1398,11 @@ class Jira:
             # Use the enhanced search endpoint (POST /rest/api/3/search/jql)
             # The standard search endpoint (/rest/api/3/search) has been removed (410 Gone)
             logger.info(f"Calling Jira search API with JQL: {fixed_jql}")
-            response = self._run_async(
-                self.client.search_and_reconsile_issues_using_jql_post(
-                    jql=fixed_jql,
-                    maxResults=maxResults or 50,
-                    # Explicitly request key field to ensure issue keys are returned
-                    fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
-                )
+            response = await self.client.search_and_reconsile_issues_using_jql_post(
+                jql=fixed_jql,
+                maxResults=maxResults or 50,
+                # Explicitly request key field to ensure issue keys are returned
+                fields=["key", "summary", "status", "assignee", "reporter", "created", "updated", "priority", "issuetype"]
             )
 
             logger.info(f"Jira search API response status: {response.status}")
@@ -1584,7 +1526,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
+    async def add_comment(self, issue_key: str, comment: str) -> Tuple[bool, str]:
 
         try:
             # Convert plain text comment to ADF format if it's a string
@@ -1607,11 +1549,9 @@ class Jira:
                     "guidance": "Comment must be a string (plain text) or dict (ADF format)"
                 })
 
-            response = self._run_async(
-                self.client.add_comment(
-                    issueIdOrKey=issue_key,
-                    body_body=comment_body  # Pass ADF dict directly
-                )
+            response = await self.client.add_comment(
+                issueIdOrKey=issue_key,
+                body_body=comment_body  # Pass ADF dict directly
             )
 
             if response.status == HttpStatusCode.SUCCESS.value or response.status == HttpStatusCode.CREATED.value:
@@ -1664,12 +1604,10 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_comments(self, issue_key: str) -> Tuple[bool, str]:
+    async def get_comments(self, issue_key: str) -> Tuple[bool, str]:
         """Get comments for an issue"""
         try:
-            response = self._run_async(
-                self.client.get_comments(issueIdOrKey=issue_key)
-            )
+            response = await self.client.get_comments(issueIdOrKey=issue_key)
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
@@ -1725,7 +1663,7 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def search_users(
+    async def search_users(
         self,
         query: str,
         max_results: Optional[int] = None
@@ -1748,11 +1686,9 @@ class Jira:
 
             # Use find_users_for_picker which is more reliable than find_users
             # The /rest/api/3/user/picker endpoint always requires query and works correctly
-            response = self._run_async(
-                self.client.find_users_for_picker(
-                    query=query,
-                    maxResults=max_results or 20
-                )
+            response = await self.client.find_users_for_picker(
+                query=query,
+                maxResults=max_results or 20
             )
 
             if response.status == HttpStatusCode.SUCCESS.value:
@@ -1815,12 +1751,10 @@ class Jira:
         ],
         category=ToolCategory.PROJECT_MANAGEMENT
     )
-    def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
+    async def get_project_metadata(self, project_key: str) -> Tuple[bool, str]:
         """Get project metadata"""
         try:
-            response = self._run_async(
-                self.client.get_project(projectIdOrKey=project_key)
-            )
+            response = await self.client.get_project(projectIdOrKey=project_key)
 
             if response.status != HttpStatusCode.SUCCESS.value:
                 return self._handle_response(
@@ -1906,7 +1840,7 @@ class Jira:
     # ) -> Tuple[bool, str]:
     #     """Get assignable users for a project"""
     #     try:
-    #         response = self._run_async(
+    #         response = await
     #             self.client.find_assignable_users(
     #                 project=project_key,
     #                 query=query,

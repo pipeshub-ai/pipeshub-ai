@@ -1,8 +1,6 @@
-import asyncio
 import json
 import logging
-import threading
-from typing import Any, Coroutine, Dict, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -119,42 +117,6 @@ class Confluence:
             client: Confluence client object
         """
         self.client = ConfluenceDataSource(client)
-        # Dedicated background event loop for running coroutines from sync context
-        self._bg_loop = asyncio.new_event_loop()
-        self._bg_loop_thread = threading.Thread(
-            target=self._start_background_loop,
-            daemon=True
-        )
-        self._bg_loop_thread.start()
-
-    def _start_background_loop(self) -> None:
-        """Start the background event loop"""
-        asyncio.set_event_loop(self._bg_loop)
-        self._bg_loop.run_forever()
-
-    def _run_async(self, coro: Coroutine[None, None, HTTPResponse]) -> HTTPResponse:
-        """Run a coroutine safely from sync context via a dedicated loop.
-
-        Args:
-            coro: Coroutine that returns HTTPResponse
-
-        Returns:
-            HTTPResponse from the executed coroutine
-        """
-        future = asyncio.run_coroutine_threadsafe(coro, self._bg_loop)
-        return future.result()
-
-    def shutdown(self) -> None:
-        """Gracefully stop the background event loop and thread."""
-        try:
-            if getattr(self, "_bg_loop", None) is not None and self._bg_loop.is_running():
-                self._bg_loop.call_soon_threadsafe(self._bg_loop.stop)
-            if getattr(self, "_bg_loop_thread", None) is not None:
-                self._bg_loop_thread.join()
-            if getattr(self, "_bg_loop", None) is not None:
-                self._bg_loop.close()
-        except Exception as exc:
-            logger.warning(f"Confluence shutdown encountered an issue: {exc}")
 
     def _handle_response(
         self,
@@ -192,7 +154,7 @@ class Confluence:
                 "details": error_text
             })
 
-    def _resolve_space_id(self, space_identifier: str) -> str:
+    async def _resolve_space_id(self, space_identifier: str) -> str:
         """Helper method to resolve space key to space ID if needed.
 
         Args:
@@ -208,7 +170,7 @@ class Confluence:
         except ValueError:
             # It's a space key, try to resolve it
             try:
-                response = self._run_async(self.client.get_spaces())
+                response = await self.client.get_spaces()
                 if response.status == HttpStatusCode.SUCCESS.value:
                     spaces = response.json()
                     for space in spaces.get('results', []):
@@ -244,7 +206,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def create_page(
+    async def create_page(
         self,
         space_id: str,
         page_title: str,
@@ -301,7 +263,7 @@ class Confluence:
                 }
             }
 
-            response = self._run_async(self.client.create_page(body=body))
+            response = await self.client.create_page(body=body)
             return self._handle_response(response, "Page created successfully")
 
         except Exception as e:
@@ -333,7 +295,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def get_page_content(self, page_id: str) -> Tuple[bool, str]:
+    async def get_page_content(self, page_id: str) -> Tuple[bool, str]:
         """Get the content of a page in Confluence.
 
         Args:
@@ -349,11 +311,9 @@ class Confluence:
             except ValueError:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
-            response = self._run_async(
-                self.client.get_page_by_id(
-                    id=page_id_int,
-                    body_format="storage"
-                )
+            response = await self.client.get_page_by_id(
+                id=page_id_int,
+                body_format="storage"
             )
             return self._handle_response(response, "Page content fetched successfully")
 
@@ -386,7 +346,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def get_pages_in_space(self, space_id: str) -> Tuple[bool, str]:
+    async def get_pages_in_space(self, space_id: str) -> Tuple[bool, str]:
         """Get all pages in a space.
 
         Args:
@@ -397,9 +357,7 @@ class Confluence:
         """
         try:
             resolved_space_id = self._resolve_space_id(space_id)
-            response = self._run_async(
-                self.client.get_pages_in_space(id=resolved_space_id)
-            )
+            response = await self.client.get_pages_in_space(id=resolved_space_id)
             return self._handle_response(response, "Pages fetched successfully")
 
         except Exception as e:
@@ -431,7 +389,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def update_page_title(self, page_id: str, new_title: str) -> Tuple[bool, str]:
+    async def update_page_title(self, page_id: str, new_title: str) -> Tuple[bool, str]:
         """Update the title of a page.
 
         Args:
@@ -448,11 +406,9 @@ class Confluence:
             except ValueError:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
-            response = self._run_async(
-                self.client.update_page_title(
-                    id=page_id_int,
-                    body={"title": new_title}
-                )
+            response = await self.client.update_page_title(
+                id=page_id_int,
+                body={"title": new_title}
             )
             return self._handle_response(response, "Page title updated successfully")
 
@@ -485,7 +441,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def get_child_pages(self, page_id: str) -> Tuple[bool, str]:
+    async def get_child_pages(self, page_id: str) -> Tuple[bool, str]:
         """Get child pages of a page.
 
         Args:
@@ -501,9 +457,7 @@ class Confluence:
             except ValueError:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
-            response = self._run_async(
-                self.client.get_child_pages(id=page_id_int)
-            )
+            response = await self.client.get_child_pages(id=page_id_int)
             return self._handle_response(response, "Child pages fetched successfully")
 
         except Exception as e:
@@ -535,7 +489,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def search_pages(
+    async def search_pages(
         self,
         title: str,
         space_id: Optional[str] = None
@@ -554,9 +508,7 @@ class Confluence:
             if space_id:
                 kwargs["space_id"] = [space_id]
 
-            response = self._run_async(
-                self.client.get_pages(**kwargs)
-            )
+            response = await self.client.get_pages(**kwargs)
             return self._handle_response(response, "Search completed successfully")
 
         except Exception as e:
@@ -588,14 +540,14 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def get_spaces(self) -> Tuple[bool, str]:
+    async def get_spaces(self) -> Tuple[bool, str]:
         """Get all spaces accessible to the user.
 
         Returns:
             Tuple of (success, json_response)
         """
         try:
-            response = self._run_async(self.client.get_spaces())
+            response = await self.client.get_spaces()
             return self._handle_response(response, "Spaces fetched successfully")
 
         except Exception as e:
@@ -627,7 +579,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def get_space(self, space_id: str) -> Tuple[bool, str]:
+    async def get_space(self, space_id: str) -> Tuple[bool, str]:
         """Get details of a specific space.
 
         Args:
@@ -643,9 +595,7 @@ class Confluence:
             except ValueError:
                 return False, json.dumps({"error": f"Invalid space_id format: '{space_id}' is not a valid integer"})
 
-            response = self._run_async(
-                self.client.get_space_by_id(id=space_id_int)
-            )
+            response = await self.client.get_space_by_id(id=space_id_int)
             return self._handle_response(response, "Space fetched successfully")
 
         except Exception as e:
@@ -679,7 +629,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def update_page(
+    async def update_page(
         self,
         page_id: str,
         page_title: Optional[str] = None,
@@ -735,11 +685,9 @@ class Confluence:
                 return False, json.dumps({"error": "At least one of page_title or page_content must be provided"})
 
             # Get current page to preserve spaceId and version
-            current_response = self._run_async(
-                self.client.get_page_by_id(
-                    id=page_id_int,
-                    body_format="storage"
-                )
+            current_response = await self.client.get_page_by_id(
+                id=page_id_int,
+                body_format="storage"
             )
 
             if current_response.status != HttpStatusCode.SUCCESS.value:
@@ -787,11 +735,9 @@ class Confluence:
                 # Preserve existing body
                 body["body"] = current_data.get("body", {})
 
-            response = self._run_async(
-                self.client.update_page(
-                    id=page_id_int,
-                    body=body
-                )
+            response = await self.client.update_page(
+                id=page_id_int,
+                body=body
             )
             return self._handle_response(response, "Page updated successfully")
 
@@ -824,7 +770,7 @@ class Confluence:
         ],
         category=ToolCategory.DOCUMENTATION
     )
-    def get_page_versions(self, page_id: str) -> Tuple[bool, str]:
+    async def get_page_versions(self, page_id: str) -> Tuple[bool, str]:
         """Get version history of a page.
 
         Args:
@@ -840,9 +786,7 @@ class Confluence:
             except ValueError:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
-            response = self._run_async(
-                self.client.get_page_versions(id=page_id_int)
-            )
+            response = await self.client.get_page_versions(id=page_id_int)
             return self._handle_response(response, "Page versions fetched successfully")
 
         except Exception as e:
@@ -875,7 +819,7 @@ class Confluence:
         category=ToolCategory.DOCUMENTATION,
         llm_description="Add a comment to a Confluence page. The comment_text parameter accepts plain text - it will be automatically formatted with HTML escaping and proper structure for Confluence."
     )
-    def comment_on_page(
+    async def comment_on_page(
         self,
         page_id: str,
         comment_text: str,
@@ -920,12 +864,10 @@ class Confluence:
                 }
             }
 
-            response = self._run_async(
-                self.client.create_footer_comment(
-                    pageId=str(page_id_int),
-                    body_body=comment_body,  # Pass as dict, not string
-                    parentCommentId=parent_comment_id
-                )
+            response = await self.client.create_footer_comment(
+                pageId=str(page_id_int),
+                body_body=comment_body,  # Pass as dict, not string
+                parentCommentId=parent_comment_id
             )
 
             return self._handle_response(response, "Comment added successfully")

@@ -943,14 +943,22 @@ class Neo4jProvider(IGraphDBProvider):
 
             relationship_type = edge_collection_to_relationship(collection)
 
-            # Process edges - only generic format is supported
+            # Process edges - support both ArangoDB format (_from, _to) and generic format (from_id, to_id)
             edge_data = []
             for edge in edges:
-                # Generic format: from_id, to_id, from_collection, to_collection
-                from_key = edge.get("from_id")
-                to_key = edge.get("to_id")
-                from_collection = edge.get("from_collection", "")
-                to_collection = edge.get("to_collection", "")
+                # Try ArangoDB format first (_from, _to)
+                if "_from" in edge and "_to" in edge:
+                    from_collection, from_key = self._parse_arango_id(edge["_from"])
+                    to_collection, to_key = self._parse_arango_id(edge["_to"])
+                # Fallback to generic format
+                elif "from_id" in edge and "to_id" in edge:
+                    from_key = edge["from_id"]
+                    to_key = edge["to_id"]
+                    from_collection = edge.get("from_collection", "")
+                    to_collection = edge.get("to_collection", "")
+                else:
+                    self.logger.warning(f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}")
+                    continue
 
                 if not from_key or not to_key or not from_collection or not to_collection:
                     self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
@@ -961,7 +969,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 # Extract edge properties (excluding format-specific fields)
                 props = {k: v for k, v in edge.items() if k not in [
-                    "from_id", "to_id", "from_collection", "to_collection"
+                    "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
                 ]}
 
                 edge_data.append({
@@ -11296,6 +11304,9 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
+            # Create reverse mapping from label to collection
+            label_to_collection = {v: k for k, v in COLLECTION_TO_LABEL.items()}
+
             edges = []
             for result in results:
                 edge_dict = result.get("r", {})  # properties(r) already returns a dict
@@ -11305,17 +11316,9 @@ class Neo4jProvider(IGraphDBProvider):
                 # Determine target collection from labels
                 target_collection = "records"  # Default
                 for label in target_labels:
-                    if label in ["RecordGroup", "App", "User", "Group", "Team", "File"]:
-                        # Map label back to collection
-                        label_to_collection = {
-                            "RecordGroup": "recordGroups",
-                            "App": "apps",
-                            "User": "users",
-                            "Group": "groups",
-                            "Team": "teams",
-                            "File": "files"
-                        }
-                        target_collection = label_to_collection.get(label, "records")
+                    # Use reverse mapping to get collection from label
+                    if label in label_to_collection:
+                        target_collection = label_to_collection[label]
                         break
 
                 # Convert to ArangoDB edge format
@@ -15415,25 +15418,46 @@ class Neo4jProvider(IGraphDBProvider):
             tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
             knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
 
-            # Get user's teams first
-            user_teams_query = f"""
-            MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
-            WHERE p.type = 'USER'
-            RETURN t.id AS team_id
-            """
+            # user_id is the user's _key (internal ID), not userId (external ID)
+            # This matches ArangoHTTPProvider behavior where user_id is used directly as user_key
+            user_key = user_id
 
-            user_teams_result = await self.client.execute_query(
-                user_teams_query,
-                parameters={"user_id": user_id},
+            # Get user document by id (which is the _key) to extract userId for team queries
+            user_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})
+            RETURN u
+            LIMIT 1
+            """
+            user_result = await self.client.execute_query(
+                user_query,
+                parameters={"user_key": user_key},
                 txn_id=transaction
             )
-            user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return None
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # Get user's teams - need userId (external ID) for team lookup
+            user_team_ids = []
+            if user_result:
+                try:
+                    user_dict = dict(user_result[0]["u"])
+                    user_doc = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
+                    actual_user_id = user_doc.get("userId")
+
+                    if actual_user_id:
+                        # Get user's teams using userId (external ID)
+                        user_teams_query = f"""
+                        MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
+                        WHERE p.type = 'USER'
+                        RETURN t.id AS team_id
+                        """
+                        user_teams_result = await self.client.execute_query(
+                            user_teams_query,
+                            parameters={"user_id": actual_user_id},
+                            txn_id=transaction
+                        )
+                        user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+                except Exception as e:
+                    self.logger.warning(f"Error getting user teams: {str(e)}")
+                    # Continue without teams - individual permission check will still work
 
             # Check individual user permissions on the agent
             individual_query = f"""
@@ -15481,6 +15505,7 @@ class Neo4jProvider(IGraphDBProvider):
                     access_type = "TEAM"
 
             if not agent_data:
+                self.logger.warning(f"No permissions found for user {user_key} on agent {agent_id}")
                 return None
 
             # Convert to ArangoDB format
@@ -15496,13 +15521,17 @@ class Neo4jProvider(IGraphDBProvider):
             toolsets_query = f"""
             MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_toolset_rel}]->(ts:{toolset_label})
             OPTIONAL MATCH (ts)-[tr:{toolset_has_tool_rel}]->(tool:{tool_label})
-            WITH agent, ts, collect(DISTINCT {{
-                _key: tool.id,
-                name: tool.toolName,
-                fullName: tool.fullName,
-                toolsetName: tool.toolsetName,
-                description: tool.description
-            }}) AS tools
+            WITH agent, ts, collect(DISTINCT CASE
+                WHEN tool IS NOT NULL THEN {{
+                    _key: tool.id,
+                    name: tool.name,
+                    fullName: tool.fullName,
+                    toolsetName: tool.toolsetName,
+                    description: tool.description
+                }}
+                ELSE null
+            END) AS tools_raw
+            WITH agent, ts, [t IN tools_raw WHERE t IS NOT NULL] AS tools
             RETURN {{
                 _key: ts.id,
                 name: ts.name,
@@ -15562,25 +15591,37 @@ class Neo4jProvider(IGraphDBProvider):
 
                     if is_kb and record_groups:
                         # For KBs: Get KB name from record group document
-                        first_kb_id = record_groups[0]
-                        kb_doc = await self.get_document(first_kb_id, CollectionNames.RECORD_GROUPS.value, transaction=transaction)
-                        if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
-                            knowledge_item["name"] = kb_doc.get("groupName", "")
-                            knowledge_item["type"] = "KB"
-                            knowledge_item["displayName"] = kb_doc.get("groupName", "")
-                            knowledge_item["connectorId"] = kb_doc.get("connectorId") or knowledge_item["connectorId"]
-                        else:
+                        try:
+                            first_kb_id = record_groups[0]
+                            kb_doc = await self.get_document(first_kb_id, CollectionNames.RECORD_GROUPS.value, transaction=transaction)
+                            if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
+                                knowledge_item["name"] = kb_doc.get("groupName", "")
+                                knowledge_item["type"] = "KB"
+                                knowledge_item["displayName"] = kb_doc.get("groupName", "")
+                                knowledge_item["connectorId"] = kb_doc.get("connectorId") or knowledge_item["connectorId"]
+                            else:
+                                knowledge_item["name"] = knowledge_item["connectorId"]
+                                knowledge_item["type"] = "UNKNOWN"
+                                knowledge_item["displayName"] = knowledge_item["connectorId"]
+                        except Exception as e:
+                            self.logger.warning(f"Error getting KB document {first_kb_id}: {str(e)}")
                             knowledge_item["name"] = knowledge_item["connectorId"]
                             knowledge_item["type"] = "UNKNOWN"
                             knowledge_item["displayName"] = knowledge_item["connectorId"]
                     else:
                         # For apps: Get connector instance name from APPS collection
-                        app_doc = await self.get_document(knowledge_item["connectorId"], CollectionNames.APPS.value, transaction=transaction)
-                        if app_doc:
-                            knowledge_item["name"] = app_doc.get("name", "")
-                            knowledge_item["type"] = app_doc.get("type", "APP")
-                            knowledge_item["displayName"] = app_doc.get("name", "")
-                        else:
+                        try:
+                            app_doc = await self.get_document(knowledge_item["connectorId"], CollectionNames.APPS.value, transaction=transaction)
+                            if app_doc:
+                                knowledge_item["name"] = app_doc.get("name", "")
+                                knowledge_item["type"] = app_doc.get("type", "APP")
+                                knowledge_item["displayName"] = app_doc.get("name", "")
+                            else:
+                                knowledge_item["name"] = knowledge_item["connectorId"]
+                                knowledge_item["type"] = "UNKNOWN"
+                                knowledge_item["displayName"] = knowledge_item["connectorId"]
+                        except Exception as e:
+                            self.logger.warning(f"Error getting app document {knowledge_item['connectorId']}: {str(e)}")
                             knowledge_item["name"] = knowledge_item["connectorId"]
                             knowledge_item["type"] = "UNKNOWN"
                             knowledge_item["displayName"] = knowledge_item["connectorId"]
@@ -15603,11 +15644,9 @@ class Neo4jProvider(IGraphDBProvider):
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return []
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
 
             # Get user's teams
             user_teams_query = f"""
@@ -15762,8 +15801,7 @@ class Neo4jProvider(IGraphDBProvider):
                     update_data["models"] = []
 
             # Update the agent using update_node method
-            agent_path = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            result = await self.update_node(agent_path, update_data, transaction=transaction)
+            result = await self.update_node(agent_id, CollectionNames.AGENT_INSTANCES.value, update_data, transaction=transaction)
 
             if not result:
                 self.logger.error(f"Failed to update agent {agent_id}")
@@ -15805,8 +15843,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
             # Soft delete the agent using update_node
-            agent_path = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            result = await self.update_node(agent_path, update_data, transaction=transaction)
+            result = await self.update_node(agent_id, CollectionNames.AGENT_INSTANCES.value, update_data, transaction=transaction)
 
             if not result:
                 self.logger.error(f"Failed to delete agent {agent_id}")
@@ -16100,11 +16137,9 @@ class Neo4jProvider(IGraphDBProvider):
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return []
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
 
             # Get user's teams
             user_teams_query = f"""
@@ -16203,25 +16238,46 @@ class Neo4jProvider(IGraphDBProvider):
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return None
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
 
-            # Get user's teams
-            user_teams_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(t:{team_label})
-            WHERE p.type = 'USER'
-            RETURN t.id AS team_id
+            # Get user document by id to extract userId for team queries
+            user_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})
+            RETURN u
+            LIMIT 1
             """
-
-            user_teams_result = await self.client.execute_query(
-                user_teams_query,
+            user_result = await self.client.execute_query(
+                user_query,
                 parameters={"user_key": user_key},
                 txn_id=transaction
             )
-            user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+
+            # Get user's teams - need userId (external ID) for team lookup
+            user_team_ids = []
+            if user_result:
+                try:
+                    user_dict = dict(user_result[0]["u"])
+                    user_doc = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
+                    actual_user_id = user_doc.get("userId")
+
+                    if actual_user_id:
+                        # Get user's teams using userId (external ID)
+                        user_teams_query = f"""
+                        MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
+                        WHERE p.type = 'USER'
+                        RETURN t.id AS team_id
+                        """
+                        user_teams_result = await self.client.execute_query(
+                            user_teams_query,
+                            parameters={"user_id": actual_user_id},
+                            txn_id=transaction
+                        )
+                        user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+                except Exception as e:
+                    self.logger.warning(f"Error getting user teams: {str(e)}")
+                    # Continue without teams - individual permission check will still work
 
             # Check individual user permissions on the template
             individual_query = f"""
@@ -16302,11 +16358,9 @@ class Neo4jProvider(IGraphDBProvider):
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return False
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
 
             # Check if user is OWNER
             owner_check_query = f"""
@@ -16398,11 +16452,9 @@ class Neo4jProvider(IGraphDBProvider):
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return False
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
 
             # Check if user is OWNER
             permission_query = f"""
@@ -16436,8 +16488,7 @@ class Neo4jProvider(IGraphDBProvider):
             }
 
             # Soft delete the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(template_id, CollectionNames.AGENT_TEMPLATES.value, update_data, transaction=transaction)
 
             if not result:
                 self.logger.error(f"Failed to delete template {template_id}")
@@ -16457,11 +16508,9 @@ class Neo4jProvider(IGraphDBProvider):
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # Get user document
-            user_doc = await self.get_user_by_user_id(user_id)
-            if not user_doc:
-                return False
-            user_key = user_doc.get("id") or user_doc.get("_key")
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
 
             # Check if user is OWNER
             permission_query = f"""
@@ -16494,8 +16543,7 @@ class Neo4jProvider(IGraphDBProvider):
                     update_data[field] = template_updates[field]
 
             # Update the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(template_id, CollectionNames.AGENT_TEMPLATES.value, update_data, transaction=transaction)
 
             if not result:
                 self.logger.error(f"Failed to update template {template_id}")

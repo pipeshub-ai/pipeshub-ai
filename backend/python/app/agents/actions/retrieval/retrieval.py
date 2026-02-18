@@ -15,7 +15,6 @@ from typing import Any, Dict, List, Optional
 from langgraph.types import StreamWriter
 from pydantic import BaseModel, Field
 
-from app.agents.actions.utils import run_async
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
@@ -99,7 +98,7 @@ class Retrieval:
             "Find information about Q4 results"
         ]
     )
-    def search_internal_knowledge(
+    async def search_internal_knowledge(
         self,
         query: Optional[str] = None,
         text: Optional[str] = None,
@@ -146,14 +145,14 @@ class Retrieval:
 
             # === SEARCH ===
             logger_instance.debug(f"Executing retrieval with limit: {adjusted_limit}")
-            results = run_async(retrieval_service.search_with_filters(
+            results = await retrieval_service.search_with_filters(
                 queries=[search_query],
                 org_id=org_id,
                 user_id=user_id,
                 limit=adjusted_limit,
                 filter_groups=filter_groups,
                 graph_provider=graph_provider,
-            ))
+            )
 
             if results is None:
                 logger_instance.warning("Retrieval service returned None")
@@ -203,13 +202,13 @@ class Retrieval:
 
             virtual_record_id_to_result = {}
 
-            flattened_results = run_async(get_flattened_results(
+            flattened_results = await get_flattened_results(
                 search_results,
                 blob_store,
                 org_id,
                 is_multimodal_llm,
                 virtual_record_id_to_result
-            ))
+            )
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
             # === RERANK ===
@@ -220,11 +219,11 @@ class Retrieval:
 
             if should_rerank and reranker_service:
                 logger_instance.debug("Re-ranking results")
-                final_results = run_async(reranker_service.rerank(
+                final_results = await reranker_service.rerank(
                     query=search_query,
                     documents=flattened_results,
                     top_k=adjusted_limit,
-                ))
+                )
             else:
                 final_results = search_results if not flattened_results else flattened_results
 

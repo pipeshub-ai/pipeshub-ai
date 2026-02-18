@@ -17754,7 +17754,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER tool != null
                             RETURN {{
                                 _key: tool._key,
-                                name: tool.toolName,
+                                name: tool.name,
                                 fullName: tool.fullName,
                                 toolsetName: tool.toolsetName,
                                 description: tool.description

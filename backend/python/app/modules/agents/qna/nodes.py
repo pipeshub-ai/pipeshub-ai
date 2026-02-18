@@ -12,7 +12,6 @@ Enterprise-grade agent system with:
 
 
 import asyncio
-import functools
 import json
 import logging
 import os
@@ -1025,15 +1024,17 @@ class ToolExecutor:
 
     @staticmethod
     async def _run_tool(tool: object, args: Dict[str, Any]) -> Union[Dict[str, Any], str, Tuple[bool, str], List[Any], None]:
-        """Run tool using appropriate method"""
+        """Run tool using appropriate method - all tools run in the same event loop as FastAPI"""
         if hasattr(tool, 'arun'):
+            # Tool has async arun() - use it directly (no thread executor)
             return await tool.arun(args)
         elif hasattr(tool, '_run'):
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, functools.partial(tool._run, **args))
+            # Sync _run() - call directly (shouldn't happen if tools are properly async)
+            # This is a fallback for backwards compatibility
+            return tool._run(**args)
         else:
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, functools.partial(tool.run, **args))
+            # Fallback to run() method
+            return tool.run(**args)
 
     @staticmethod
     def _process_retrieval_output(result: Union[Dict[str, Any], str, Tuple[bool, str], List[Any], None], state: ChatState, log: logging.Logger) -> str:

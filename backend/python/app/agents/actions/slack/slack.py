@@ -6,7 +6,6 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.agents.actions.response_transformer import ResponseTransformer
 from app.agents.actions.slack.config import SlackResponse
-from app.agents.actions.utils import run_async
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
 from app.agents.tools.models import ToolIntent
@@ -484,7 +483,7 @@ class Slack:
 
         return result
 
-    def _resolve_channel(self, channel: str) -> str:
+    async def _resolve_channel(self, channel: str) -> str:
         """Resolve a channel name (e.g., '#testing' or 'testing') to a channel ID (e.g., 'C1234567890').
 
         This method handles cases where the LLM provides channel names instead of IDs.
@@ -517,7 +516,7 @@ class Slack:
                 return channel
 
             # Try to find channel by name
-            clist = run_async(self.client.conversations_list())
+            clist = await self.client.conversations_list()
             cl_resp = self._handle_slack_response(clist)
 
             if cl_resp.success and cl_resp.data and isinstance(cl_resp.data, dict):
@@ -558,7 +557,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
+    async def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
         """Send a message to a channel using Slack's mrkdwn format.
 
         The message will be automatically converted from standard markdown to Slack's mrkdwn format.
@@ -579,18 +578,18 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # Convert standard markdown to Slack mrkdwn format
             slack_message = self._convert_markdown_to_slack_mrkdwn(message)
 
             # Use chat_post_message to support markdown formatting
             # mrkdwn=True enables Slack's markdown parsing (enabled by default, but explicit for clarity)
-            response = run_async(self.client.chat_post_message(
+            response = await self.client.chat_post_message(
                 channel=chan,
                 text=slack_message,
                 mrkdwn=True
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -625,7 +624,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_channel_history(self, channel: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get the history of a channel"""
         """
         Args:
@@ -638,10 +637,10 @@ class Slack:
             chan = self._resolve_channel(channel)
 
             # Use SlackDataSource method
-            response = run_async(self.client.conversations_history(
+            response = await self.client.conversations_history(
                 channel=chan,
                 limit=limit
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             if not slack_response.success or not slack_response.data:
                 return (slack_response.success, slack_response.to_json())
@@ -661,7 +660,7 @@ class Slack:
                 id_to_email: dict[str, str] = {}
                 for uid in user_ids:
                     try:
-                        uresp = run_async(self.client.users_info(user=uid))
+                        uresp = await self.client.users_info(user=uid)
                         u = self._handle_slack_response(uresp)
                         if u.success and u.data and isinstance(u.data, dict):
                             user_obj = u.data.get('user') or {}
@@ -763,7 +762,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_channel_info(self, channel: str) -> Tuple[bool, str]:
+    async def get_channel_info(self, channel: str) -> Tuple[bool, str]:
         """Get the info of a channel"""
         """
         Args:
@@ -773,10 +772,10 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # Use SlackDataSource method
-            response = run_async(self.client.conversations_info(channel=chan))
+            response = await self.client.conversations_info(channel=chan)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -807,11 +806,11 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_info(self, user: str) -> Tuple[bool, str]:
+    async def get_user_info(self, user: str) -> Tuple[bool, str]:
         """Get the info of a user"""
         try:
             try:
-                user_id = self._resolve_user_identifier(user, allow_ambiguous=False)
+                user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
             except AmbiguousUserError as e:
                 # Build helpful error message
                 matches_list = []
@@ -833,7 +832,7 @@ class Slack:
                 user_id = user
                 logger.debug(f"Could not resolve user '{user}', trying as-is: {user_id}")
 
-            response = run_async(self.client.users_info(user=user_id))
+            response = await self.client.users_info(user=user_id)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except AmbiguousUserError:
@@ -864,7 +863,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def fetch_channels(self) -> Tuple[bool, str]:
+    async def fetch_channels(self) -> Tuple[bool, str]:
         """Fetch all channels"""
         """
         Returns:
@@ -872,7 +871,7 @@ class Slack:
         """
         try:
             # Use SlackDataSource method
-            response = run_async(self.client.conversations_list())
+            response = await self.client.conversations_list()
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -903,7 +902,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def search_all(self, query: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Search messages, files, and channels in Slack"""
         """
         Args:
@@ -914,10 +913,10 @@ class Slack:
         """
         try:
             # Use SlackDataSource method
-            response = run_async(self.client.search_messages(
+            response = await self.client.search_messages(
                 query=query,
                 count=limit
-            ))
+            )
             transformed_response = (
                 ResponseTransformer(response)
                 .remove(
@@ -962,7 +961,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_channel_members(self, channel: str) -> Tuple[bool, str]:
+    async def get_channel_members(self, channel: str) -> Tuple[bool, str]:
         """Get the members of a channel"""
         """
         Args:
@@ -972,10 +971,10 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # Use SlackDataSource method
-            response = run_async(self.client.conversations_members(channel=chan))
+            response = await self.client.conversations_members(channel=chan)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1008,7 +1007,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
+    async def get_channel_members_by_id(self, channel_id: str) -> Tuple[bool, str]:
         """Get the members of a channel by ID"""
         """
         Args:
@@ -1018,7 +1017,7 @@ class Slack:
         """
         try:
             # Use SlackDataSource method
-            response = run_async(self.client.conversations_members(channel=channel_id))
+            response = await self.client.conversations_members(channel=channel_id)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1048,10 +1047,10 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def resolve_user(self, user_id: str) -> Tuple[bool, str]:
+    async def resolve_user(self, user_id: str) -> Tuple[bool, str]:
         """Resolve a Slack user ID to display name and email"""
         try:
-            response = run_async(self.client.users_info(user=user_id))
+            response = await self.client.users_info(user=user_id)
             slack_response = self._handle_slack_response(response)
             if not slack_response.success or not slack_response.data:
                 return (slack_response.success, slack_response.to_json())
@@ -1092,7 +1091,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def check_token_info(self) -> Tuple[bool, str]:
+    async def check_token_info(self) -> Tuple[bool, str]:
         """Check Slack token information and available scopes"""
         """
         Returns:
@@ -1100,7 +1099,7 @@ class Slack:
         """
         try:
             # Use SlackDataSource method
-            response = run_async(self.client.check_token_scopes())
+            response = await self.client.check_token_scopes()
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1131,12 +1130,12 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def send_direct_message(self, user: str, message: str) -> Tuple[bool, str]:
+    async def send_direct_message(self, user: str, message: str) -> Tuple[bool, str]:
         """Send a direct message to a user"""
         try:
             # Try to resolve the user (don't allow ambiguous matches)
             try:
-                user_id = self._resolve_user_identifier(user, allow_ambiguous=False)
+                user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
             except AmbiguousUserError as e:
                 # Build helpful error message with matching users
                 matches_list = []
@@ -1159,7 +1158,7 @@ class Slack:
                 return (False, SlackResponse(success=False, error=f"User '{user}' not found. Please use email address or Slack user ID.").to_json())
 
             # Open DM conversation
-            response = run_async(self.client.conversations_open(users=[user_id]))
+            response = await self.client.conversations_open(users=[user_id])
             slack_response = self._handle_slack_response(response)
 
             if not slack_response.success:
@@ -1173,11 +1172,11 @@ class Slack:
             # Convert markdown and send
             slack_message = self._convert_markdown_to_slack_mrkdwn(message)
 
-            message_response = run_async(self.client.chat_post_message(
+            message_response = await self.client.chat_post_message(
                 channel=channel_id,
                 text=slack_message,
                 mrkdwn=True
-            ))
+            )
             message_slack_response = self._handle_slack_response(message_response)
             return (message_slack_response.success, message_slack_response.to_json())
 
@@ -1212,7 +1211,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def reply_to_message(self, channel: str, message: str, thread_ts: Optional[str] = None, latest_message: Optional[bool] = None) -> Tuple[bool, str]:
+    async def reply_to_message(self, channel: str, message: str, thread_ts: Optional[str] = None, latest_message: Optional[bool] = None) -> Tuple[bool, str]:
         """Reply to a specific message in a channel"""
         """
         Args:
@@ -1225,11 +1224,11 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # If latest_message is True, get the latest message timestamp
             if latest_message and not thread_ts:
-                history_response = run_async(self.client.conversations_history(channel=chan, limit=1))
+                history_response = await self.client.conversations_history(channel=chan, limit=1)
                 history_slack_response = self._handle_slack_response(history_response)
 
                 if not history_slack_response.success or not history_slack_response.data:
@@ -1248,12 +1247,12 @@ class Slack:
             slack_message = self._convert_markdown_to_slack_mrkdwn(message)
 
             # Send reply
-            response = run_async(self.client.chat_post_message(
+            response = await self.client.chat_post_message(
                 channel=chan,
                 text=slack_message,
                 thread_ts=thread_ts,
                 mrkdwn=True
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
 
@@ -1285,7 +1284,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
+    async def send_message_to_multiple_channels(self, channels: List[str], message: str) -> Tuple[bool, str]:
         """Send a message to multiple channels. Message will be auto-converted from standard markdown to Slack mrkdwn."""
         """Send the same message to multiple channels"""
         """
@@ -1307,11 +1306,11 @@ class Slack:
                     # Resolve channel name to channel ID if needed
                     chan = self._resolve_channel(channel)
 
-                    response = run_async(self.client.chat_post_message(
+                    response = await self.client.chat_post_message(
                         channel=chan,
                         text=slack_message,
                         mrkdwn=True
-                    ))
+                    )
                     slack_response = self._handle_slack_response(response)
                     results.append({
                         "channel": channel,
@@ -1361,7 +1360,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
+    async def add_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Add a reaction to a message"""
         """
         Args:
@@ -1373,13 +1372,13 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
-            response = run_async(self.client.reactions_add(
+            response = await self.client.reactions_add(
                 channel=chan,
                 timestamp=timestamp,
                 name=name
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1410,7 +1409,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
+    async def search_messages(self, query: str, channel: Optional[str] = None, count: Optional[int] = None, sort: Optional[str] = None) -> Tuple[bool, str]:
         """Search for messages in Slack"""
         """
         Args:
@@ -1429,11 +1428,11 @@ class Slack:
                 channel_name = channel[1:] if channel.startswith('#') else channel
                 search_query = f"in:{channel_name} {query}"
 
-            response = run_async(self.client.search_messages(
+            response = await self.client.search_messages(
                 query=search_query,
                 count=count,
                 sort=sort
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
 
@@ -1465,7 +1464,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, expiration: Optional[str] = None) -> Tuple[bool, str]:
+    async def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, expiration: Optional[str] = None) -> Tuple[bool, str]:
         """Set user status"""
         """
         Args:
@@ -1486,7 +1485,7 @@ class Slack:
             if expiration:
                 kwargs["status_expiration"] = int(expiration)
 
-            response = run_async(self.client.users_profile_set(**kwargs))
+            response = await self.client.users_profile_set(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
 
@@ -1518,7 +1517,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
+    async def schedule_message(self, channel: str, message: str, post_at: str) -> Tuple[bool, str]:
         """Schedule a message to be sent at a specific time"""
         """
         Args:
@@ -1530,16 +1529,16 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # Convert standard markdown to Slack mrkdwn format
             slack_message = self._convert_markdown_to_slack_mrkdwn(message)
 
-            response = run_async(self.client.chat_schedule_message(
+            response = await self.client.chat_schedule_message(
                 channel=chan,
                 text=slack_message,
                 post_at=int(post_at)
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
 
@@ -1571,7 +1570,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
+    async def pin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Pin a message to a channel"""
         """
         Args:
@@ -1582,12 +1581,12 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
-            response = run_async(self.client.pins_add(
+            response = await self.client.pins_add(
                 channel=chan,
                 timestamp=timestamp
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1618,7 +1617,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
+    async def get_unread_messages(self, channel: str) -> Tuple[bool, str]:
         """Get unread messages from a channel"""
         """
         Args:
@@ -1628,14 +1627,14 @@ class Slack:
         """
         try:
             # Get channel info to check for unread count
-            info_response = run_async(self.client.conversations_info(channel=channel))
+            info_response = await self.client.conversations_info(channel=channel)
             info_slack_response = self._handle_slack_response(info_response)
 
             if not info_slack_response.success:
                 return (info_slack_response.success, info_slack_response.to_json())
 
             # Get recent messages
-            history_response = run_async(self.client.conversations_history(channel=channel, limit=50))
+            history_response = await self.client.conversations_history(channel=channel, limit=50)
             history_slack_response = self._handle_slack_response(history_response)
 
             if not history_slack_response.success:
@@ -1692,7 +1691,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
+    async def get_scheduled_messages(self, channel: Optional[str] = None) -> Tuple[bool, str]:
         """Get scheduled messages"""
         """
         Args:
@@ -1705,7 +1704,7 @@ class Slack:
             if channel:
                 kwargs["channel"] = channel
 
-            response = run_async(self.client.chat_scheduled_messages_list(**kwargs))
+            response = await self.client.chat_scheduled_messages_list(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1736,7 +1735,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
+    async def send_message_with_mentions(self, channel: str, message: str, mentions: Optional[List[str]] = None) -> Tuple[bool, str]:
         """Send a message with user mentions"""
         """
         Args:
@@ -1748,7 +1747,7 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             # Process mentions if provided
             processed_message = message
@@ -1756,7 +1755,7 @@ class Slack:
                 for mention in mentions:
                     # Resolve user identifier to user ID
                     try:
-                        user_id = self._resolve_user_identifier(mention, allow_ambiguous=False)
+                        user_id = await self._resolve_user_identifier(mention, allow_ambiguous=False)
                         if user_id:
                             processed_message = processed_message.replace(f"@{mention}", f"<@{user_id}>")
                         else:
@@ -1768,11 +1767,11 @@ class Slack:
             # Convert standard markdown to Slack mrkdwn format
             slack_message = self._convert_markdown_to_slack_mrkdwn(processed_message)
 
-            response = run_async(self.client.chat_post_message(
+            response = await self.client.chat_post_message(
                 channel=chan,
                 text=slack_message,
                 mrkdwn=True
-            ))
+            )
 
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
@@ -1805,7 +1804,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get list of all users in the organization"""
         """
         Args:
@@ -1821,7 +1820,7 @@ class Slack:
             if limit:
                 kwargs["limit"] = limit
 
-            response = run_async(self.client.users_list(**kwargs))
+            response = await self.client.users_list(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1852,7 +1851,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_conversations(self, user: str, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_user_conversations(self, user: str, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get conversations for a specific user"""
         """
         Args:
@@ -1872,7 +1871,7 @@ class Slack:
             if limit:
                 kwargs["limit"] = limit
 
-            response = run_async(self.client.users_conversations(**kwargs))
+            response = await self.client.users_conversations(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1903,7 +1902,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
+    async def get_user_groups(self, include_users: Optional[bool] = None, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get list of user groups in the organization"""
         """
         Args:
@@ -1919,7 +1918,7 @@ class Slack:
             if include_disabled is not None:
                 kwargs["include_disabled"] = include_disabled
 
-            response = run_async(self.client.usergroups_list(**kwargs))
+            response = await self.client.usergroups_list(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1950,7 +1949,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
+    async def get_user_group_info(self, usergroup: str, include_disabled: Optional[bool] = None) -> Tuple[bool, str]:
         """Get information about a specific user group"""
         """
         Args:
@@ -1964,7 +1963,7 @@ class Slack:
             if include_disabled is not None:
                 kwargs["include_disabled"] = include_disabled
 
-            response = run_async(self.client.usergroups_info(**kwargs))
+            response = await self.client.usergroups_info(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1995,7 +1994,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_channels(self, user: str, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
+    async def get_user_channels(self, user: str, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
         """Get channels that a specific user is a member of"""
         """
         Args:
@@ -2012,7 +2011,7 @@ class Slack:
             if types:
                 kwargs["types"] = types
 
-            response = run_async(self.client.users_conversations(**kwargs))
+            response = await self.client.users_conversations(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2043,7 +2042,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
+    async def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
         """
         Args:
@@ -2055,7 +2054,7 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             kwargs = {
                 "channel": chan,
@@ -2064,7 +2063,7 @@ class Slack:
             if as_user is not None:
                 kwargs["as_user"] = as_user
 
-            response = run_async(self.client.chat_delete(**kwargs))
+            response = await self.client.chat_delete(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2095,7 +2094,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
+    async def update_message(self, channel: str, timestamp: str, text: str, blocks: Optional[List[Dict]] = None, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Update an existing message"""
         """
         Args:
@@ -2109,7 +2108,7 @@ class Slack:
         """
         try:
             # Resolve channel name to channel ID if needed
-            chan = self._resolve_channel(channel)
+            chan = await self._resolve_channel(channel)
 
             kwargs = {
                 "channel": chan,
@@ -2121,7 +2120,7 @@ class Slack:
             if as_user is not None:
                 kwargs["as_user"] = as_user
 
-            response = run_async(self.client.chat_update(**kwargs))
+            response = await self.client.chat_update(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2152,7 +2151,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
+    async def get_message_permalink(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Get a permalink for a specific message"""
         """
         Args:
@@ -2162,10 +2161,10 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the permalink
         """
         try:
-            response = run_async(self.client.chat_get_permalink(
+            response = await self.client.chat_get_permalink(
                 channel=channel,
                 message_ts=timestamp
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2196,7 +2195,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
+    async def get_reactions(self, channel: str, timestamp: str, full: Optional[bool] = None) -> Tuple[bool, str]:
         """Get reactions for a specific message"""
         """
         Args:
@@ -2214,7 +2213,7 @@ class Slack:
             if full is not None:
                 kwargs["full"] = full
 
-            response = run_async(self.client.reactions_get(**kwargs))
+            response = await self.client.reactions_get(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2245,7 +2244,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
+    async def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""
         """
         Args:
@@ -2256,11 +2255,11 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the removal details
         """
         try:
-            response = run_async(self.client.reactions_remove(
+            response = await self.client.reactions_remove(
                 channel=channel,
                 timestamp=timestamp,
                 name=name
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2291,7 +2290,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
+    async def get_pinned_messages(self, channel: str) -> Tuple[bool, str]:
         """Get pinned messages from a channel"""
         """
         Args:
@@ -2300,7 +2299,7 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the pinned messages
         """
         try:
-            response = run_async(self.client.pins_list(channel=channel))
+            response = await self.client.pins_list(channel=channel)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2331,7 +2330,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
+    async def unpin_message(self, channel: str, timestamp: str) -> Tuple[bool, str]:
         """Unpin a message from a channel"""
         """
         Args:
@@ -2341,10 +2340,10 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the unpin details
         """
         try:
-            response = run_async(self.client.pins_remove(
+            response = await self.client.pins_remove(
                 channel=channel,
                 timestamp=timestamp
-            ))
+            )
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2376,7 +2375,7 @@ class Slack:
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
+    async def get_thread_replies(self, channel: str, timestamp: str, limit: Optional[int] = None) -> Tuple[bool, str]:
         """Get replies in a thread"""
         """
         Args:
@@ -2394,7 +2393,7 @@ class Slack:
             if limit:
                 kwargs["limit"] = limit
 
-            response = run_async(self.client.conversations_replies(**kwargs))
+            response = await self.client.conversations_replies(**kwargs)
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -2402,7 +2401,7 @@ class Slack:
             slack_response = self._handle_slack_error(e)
             return (slack_response.success, slack_response.to_json())
 
-    def _resolve_user_identifier(self, user_identifier: str, allow_ambiguous: bool = False) -> Optional[str]:
+    async def _resolve_user_identifier(self, user_identifier: str, allow_ambiguous: bool = False) -> Optional[str]:
         """Resolve user identifier (email, display name, or user ID) to user ID.
 
         Args:
@@ -2432,7 +2431,7 @@ class Slack:
             if '@' in user_identifier:
                 try:
                     email = user_identifier.strip()
-                    response = run_async(self.client.users_lookup_by_email(email=email))
+                    response = await self.client.users_lookup_by_email(email=email)
                     slack_response = self._handle_slack_response(response)
                     if slack_response.success and slack_response.data:
                         user_id = slack_response.data.get('user', {}).get('id')
@@ -2448,7 +2447,7 @@ class Slack:
             partial_matches = []
 
             while True:
-                users_response = run_async(self.client.users_list(cursor=cursor, limit=1000))
+                users_response = await self.client.users_list(cursor=cursor, limit=1000)
                 users_slack_response = self._handle_slack_response(users_response)
 
                 if not users_slack_response.success or not users_slack_response.data:
@@ -2618,7 +2617,7 @@ class Slack:
     #                 "value": option
     #             })
 
-    #         response = run_async(self.client.chat_post_message(
+    #         response = await self.client.chat_post_message(
     #             channel=channel,
     #             text=f"Poll: {question}",
     #             blocks=blocks
@@ -2652,7 +2651,7 @@ class Slack:
     #         A tuple with a boolean indicating success/failure and a JSON string with the archive details
     #     """
     #     try:
-    #         response = run_async(self.client.conversations_archive(channel=channel))
+    #         response = await self.client.conversations_archive(channel=channel))
     #         slack_response = self._handle_slack_response(response)
     #         return (slack_response.success, slack_response.to_json())
     #     except Exception as e:
@@ -2709,7 +2708,7 @@ class Slack:
 #             if blocks:
 #                 kwargs["blocks"] = blocks
 
-#             response = run_async(self.client.chat_post_message(**kwargs))
+#             response = await self.client.chat_post_message(**kwargs))
 #             slack_response = self._handle_slack_response(response)
 #             return (slack_response.success, slack_response.to_json())
 #         except Exception as e:
@@ -2753,7 +2752,7 @@ class Slack:
 #             if initial_comment:
 #                 kwargs["initial_comment"] = initial_comment
 
-#             response = run_async(self.client.files_upload(**kwargs))
+#             response = await self.client.files_upload(**kwargs))
 #             slack_response = self._handle_slack_response(response)
 #             return (slack_response.success, slack_response.to_json())
 
@@ -2785,7 +2784,7 @@ class Slack:
 #             if is_private is not None:
 #                 kwargs["is_private"] = is_private
 
-#             response = run_async(self.client.conversations_create(**kwargs))
+#             response = await self.client.conversations_create(**kwargs))
 #             slack_response = self._handle_slack_response(response)
 
 #             # Set topic and purpose if provided and channel was created successfully
@@ -2794,13 +2793,13 @@ class Slack:
 
 #                 if topic and channel_id:
 #                     try:
-#                         run_async(self.client.conversations_set_topic(channel=channel_id, topic=topic))
+#                         await self.client.conversations_set_topic(channel=channel_id, topic=topic))
 #                     except Exception as e:
 #                         logger.warning(f"Failed to set topic: {e}")
 
 #                 if purpose and channel_id:
 #                     try:
-#                         run_async(self.client.conversations_set_purpose(channel=channel_id, purpose=purpose))
+#                         await self.client.conversations_set_purpose(channel=channel_id, purpose=purpose))
 #                     except Exception as e:
 #                         logger.warning(f"Failed to set purpose: {e}")
 
@@ -2847,7 +2846,7 @@ class Slack:
 
 #             for user in users:
 #                 try:
-#                     user_id = self._resolve_user_identifier(user, allow_ambiguous=False)
+#                     user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
 #                     if user_id:
 #                         user_ids.append(user_id)
 #                     else:
@@ -2887,7 +2886,7 @@ class Slack:
 #             # Resolve channel name to channel ID if needed
 #             chan = self._resolve_channel(channel)
 
-#             response = run_async(self.client.conversations_invite(
+#             response = await self.client.conversations_invite(
 #                 channel=chan,
 #                 users=user_ids
 #             ))
@@ -2927,7 +2926,7 @@ class Slack:
 #             A tuple with a boolean indicating success/failure and a JSON string with the rename details
 #         """
 #         try:
-#             response = run_async(self.client.conversations_rename(
+#             response = await self.client.conversations_rename(
 #                 channel=channel,
 #                 name=name
 #             ))
@@ -2966,7 +2965,7 @@ class Slack:
 #             A tuple with a boolean indicating success/failure and a JSON string with the topic details
 #         """
 #         try:
-#             response = run_async(self.client.conversations_set_topic(
+#             response = await self.client.conversations_set_topic(
 #                 channel=channel,
 #                 topic=topic
 #             ))
@@ -3005,7 +3004,7 @@ class Slack:
 #             A tuple with a boolean indicating success/failure and a JSON string with the purpose details
 #         """
 #         try:
-#             response = run_async(self.client.conversations_set_purpose(
+#             response = await self.client.conversations_set_purpose(
 #                 channel=channel,
 #                 purpose=purpose
 #             ))
@@ -3048,7 +3047,7 @@ class Slack:
 #             if timestamp:
 #                 kwargs["ts"] = timestamp
 
-#             response = run_async(self.client.conversations_mark(**kwargs))
+#             response = await self.client.conversations_mark(**kwargs))
 #             slack_response = self._handle_slack_response(response)
 #             return (slack_response.success, slack_response.to_json())
 #         except Exception as e:

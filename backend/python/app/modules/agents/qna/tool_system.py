@@ -491,35 +491,42 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 original_tool_name = tool_wrapper.name
                 sanitized_tool_name = _sanitize_tool_name_if_needed(original_tool_name, llm)
 
-                # Create a wrapper function that preserves the tool_wrapper binding
-                # This ensures the state is accessible when the tool is executed
-                # Use a closure to capture tool_wrapper correctly (avoiding Python loop closure issue)
-                def make_tool_func(wrapper: RegistryToolWrapper) -> Callable[..., object]:
-                    def tool_func(**kwargs: object) -> object:
-                        return wrapper._run(**kwargs)
-                    return tool_func
+                # Create an async wrapper function that calls tool_wrapper.arun()
+                # This ensures proper async execution in the same event loop as FastAPI
+                def make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
+                    async def async_tool_func(**kwargs) -> str:
+                        """Async tool function that wraps RegistryToolWrapper.arun()"""
+                        # Call arun with kwargs as a dict (arun handles both formats)
+                        result = await wrapper.arun(kwargs)
+                        # Convert result to string if needed (StructuredTool expects string)
+                        if isinstance(result, (tuple, list)) and len(result) == 2:
+                            # Handle (bool, str) tuple format
+                            return str(result[1]) if result[0] else str(result[1])
+                        return str(result) if not isinstance(result, str) else result
+                    return async_tool_func
 
-                tool_func = make_tool_func(tool_wrapper)
+                async_tool_func = make_async_tool_func(tool_wrapper)
 
                 # Create StructuredTool with schema if available
                 if args_schema:
                     # Use schema for validation
                     structured_tool = StructuredTool.from_function(
-                        func=tool_func,
-                        name=sanitized_tool_name,  # Use sanitized name if needed
+                        func=async_tool_func,
+                        name=sanitized_tool_name,
                         description=tool_wrapper.description,
                         args_schema=args_schema,
                     )
                 else:
                     # Fallback: no schema (for legacy tools without Pydantic schemas)
                     structured_tool = StructuredTool.from_function(
-                        func=tool_func,
-                        name=sanitized_tool_name,  # Use sanitized name if needed
+                        func=async_tool_func,
+                        name=sanitized_tool_name,
                         description=tool_wrapper.description,
                     )
 
-                # Store original name for reference (useful for backward compatibility)
+                # Store original name and wrapper reference for backward compatibility
                 setattr(structured_tool, '_original_name', original_tool_name)
+                setattr(structured_tool, '_tool_wrapper', tool_wrapper)
                 structured_tools.append(structured_tool)
             except Exception as tool_error:
                 # Log but continue processing other tools

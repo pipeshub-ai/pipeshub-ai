@@ -2,6 +2,8 @@
 Enhanced wrapper to adapt registry tools to LangChain format with proper client initialization.
 """
 
+import asyncio
+import inspect
 import json
 from typing import Callable, Dict, List, Optional, Union
 
@@ -303,8 +305,29 @@ class RegistryToolWrapper(BaseTool):
         """
         return self.chat_state
 
+    async def arun(self, *args, **kwargs) -> Union[str, tuple]:
+        """Async execution - runs directly in the event loop, no thread executor needed.
+
+        This ensures tools run in the same event loop as FastAPI and Neo4j driver.
+        All tool methods should be async to avoid event loop conflicts.
+        """
+        try:
+            # Extract arguments - arun can be called with args[0] as dict or **kwargs
+            if args and isinstance(args[0], dict):
+                arguments = args[0]
+            else:
+                arguments = kwargs if kwargs else {}
+
+            result = await self._execute_tool_async(arguments)
+            # Preserve tuple structure for success detection
+            if isinstance(result, (tuple, list)) and len(result) == TOOL_RESULT_TUPLE_LENGTH:
+                return result
+            return self._format_result(result)
+        except Exception as e:
+            return self._format_error(e, kwargs if kwargs else (args[0] if args else {}))
+
     def _run(self, **kwargs: Union[str, int, bool, dict, list, None]) -> Union[str, tuple]:
-        """Execute the registry tool.
+        """Execute the registry tool (sync fallback - should not be used in async context).
 
         Args:
             **kwargs: Tool arguments
@@ -354,12 +377,97 @@ class RegistryToolWrapper(BaseTool):
         """
         return hasattr(func, '__qualname__') and '.' in func.__qualname__
 
+    async def _execute_tool_async(
+        self,
+        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+    ) -> ToolResult:
+        """Execute the registry tool function asynchronously.
+
+        Args:
+            arguments: Tool arguments
+
+        Returns:
+            Tool execution result
+        """
+        tool_function = self.registry_tool.function
+
+        if self._is_class_method(tool_function):
+            return await self._execute_class_method_async(tool_function, arguments)
+        else:
+            # If it's a regular function, check if it's async
+            # Use inspect.iscoroutinefunction for better compatibility
+            if inspect.iscoroutinefunction(tool_function):
+                return await tool_function(**arguments)
+            else:
+                return tool_function(**arguments)
+
+    async def _execute_class_method_async(
+        self,
+        tool_function: Callable,
+        arguments: Dict[str, Union[str, int, bool, dict, list, None]]
+    ) -> ToolResult:
+        """Execute a class method asynchronously by creating an instance.
+
+        Args:
+            tool_function: Tool function to execute
+            arguments: Function arguments
+        Returns:
+            Execution result
+
+        Raises:
+            RuntimeError: If method execution fails
+        """
+        try:
+            class_name = tool_function.__qualname__.split('.')[0]
+            module_name = tool_function.__module__
+
+            action_module = __import__(module_name, fromlist=[class_name])
+            action_class = getattr(action_module, class_name)
+
+            # Pass tool full name for toolset auth lookup
+            tool_full_name = self.name  # self.name is "app_name.tool_name"
+            instance = self.instance_creator.create_instance(
+                action_class,
+                self.app_name,
+                tool_full_name
+            )
+
+            bound_method = getattr(instance, self.tool_name)
+
+            try:
+                # Always call the method first - the @tool decorator may wrap `async def` such that
+                # iscoroutinefunction() returns False on the bound method, but calling it still
+                # returns a coroutine. Detect and await it at runtime.
+                result = bound_method(**arguments)
+                # Check if the result is actually a coroutine (handles decorator-wrapped async methods)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return result
+            finally:
+                # Teardown background resources if the action provides shutdown()
+                shutdown = getattr(instance, 'shutdown', None)
+                if callable(shutdown):
+                    try:
+                        # Check if shutdown is async too
+                        if inspect.iscoroutinefunction(shutdown):
+                            await shutdown()
+                        else:
+                            shutdown()
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            raise RuntimeError(
+                f"Failed to execute class method "
+                f"'{self.app_name}.{self.tool_name}': {str(e)}"
+            ) from e
+
     def _execute_class_method(
         self,
         tool_function: Callable,
         arguments: Dict[str, Union[str, int, bool, dict, list, None]]
     ) -> ToolResult:
-        """Execute a class method by creating an instance.
+        """Execute a class method by creating an instance (sync fallback).
 
         Args:
             tool_function: Tool function to execute

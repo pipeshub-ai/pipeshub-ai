@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import Optional
@@ -19,7 +18,6 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
 logger = logging.getLogger(__name__)
@@ -144,18 +142,6 @@ class GoogleDrive:
         """
         self.client = GoogleDriveDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            asyncio.get_running_loop()
-            # We're in an async context, use asyncio.run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run
-            return asyncio.run(coro)
 
     @tool(
         app_name="drive",
@@ -180,7 +166,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def get_files_list(
+    async def get_files_list(
         self,
         corpora: Optional[str] = None,
         drive_id: Optional[str] = None,
@@ -224,7 +210,7 @@ class GoogleDrive:
                     formatted_query = query.replace(' = ', '=').replace(' =', '=').replace('= ', '=')
 
             # Use GoogleDriveDataSource method
-            files = self._run_async(self.client.files_list(
+            files = await self.client.files_list(
                 corpora=corpora,
                 driveId=drive_id,
                 orderBy=order_by,
@@ -232,7 +218,7 @@ class GoogleDrive:
                 pageToken=page_token,
                 q=formatted_query,
                 spaces=spaces
-            ))
+            )
 
             # Get files list
             files_list = files.get("files", [])
@@ -318,7 +304,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def get_file_details(
+    async def get_file_details(
         self,
         fileId: Optional[str] = None,
         acknowledge_abuse: Optional[bool] = None,
@@ -341,11 +327,11 @@ class GoogleDrive:
                 })
 
             # Use GoogleDriveDataSource method
-            file = self._run_async(self.client.files_get(
+            file = await self.client.files_get(
                 fileId=fileId,
                 acknowledgeAbuse=acknowledge_abuse,
                 supportsAllDrives=supports_all_drives
-            ))
+            )
 
             return True, json.dumps(file)
         except Exception as e:
@@ -376,7 +362,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def create_folder(
+    async def create_folder(
         self,
         folderName: Optional[str] = None,
         parent_folder_id: Optional[str] = None
@@ -405,7 +391,7 @@ class GoogleDrive:
                 folder_metadata["parents"] = [parent_folder_id]
 
             # Use GoogleDriveDataSource method - pass body in kwargs
-            folder = self._run_async(self.client.files_create(
+            folder = await self.client.files_create(
                 enforceSingleParent=True,
                 ignoreDefaultVisibility=True,
                 keepRevisionForever=False,
@@ -414,7 +400,7 @@ class GoogleDrive:
                 supportsTeamDrives=False,
                 useContentAsIndexableText=False,
                 **{"body": folder_metadata}  # Pass metadata as body in kwargs
-            ))
+            )
 
             return True, json.dumps({
                 "folder_id": folder.get("id", ""),
@@ -451,7 +437,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def search_files(
+    async def search_files(
         self,
         query: str,
         page_size: Optional[int] = None,
@@ -475,11 +461,11 @@ class GoogleDrive:
                 formatted_query = query
 
             # Use GoogleDriveDataSource method
-            files = self._run_async(self.client.files_list(
+            files = await self.client.files_list(
                 q=formatted_query,
                 pageSize=page_size,
                 orderBy=order_by
-            ))
+            )
 
             return True, json.dumps({
                 "files": files.get("files", []),
@@ -515,7 +501,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def get_drive_info(self) -> tuple[bool, str]:
+    async def get_drive_info(self) -> tuple[bool, str]:
         """Get information about the user's Drive"""
         """
         Returns:
@@ -523,7 +509,7 @@ class GoogleDrive:
         """
         try:
             # Use GoogleDriveDataSource method
-            about = self._run_async(self.client.about_get())
+            about = await self.client.about_get()
 
             return True, json.dumps({
                 "user": about.get("user", {}),
@@ -561,7 +547,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def get_shared_drives(
+    async def get_shared_drives(
         self,
         page_size: Optional[int] = None,
         query: Optional[str] = None
@@ -576,10 +562,10 @@ class GoogleDrive:
         """
         try:
             # Use GoogleDriveDataSource method
-            drives = self._run_async(self.client.drives_list(
+            drives = await self.client.drives_list(
                 pageSize=page_size,
                 q=query
-            ))
+            )
 
             return True, json.dumps({
                 "drives": drives.get("drives", []),
@@ -614,7 +600,7 @@ class GoogleDrive:
         ],
         category=ToolCategory.FILE_STORAGE
     )
-    def get_file_permissions(
+    async def get_file_permissions(
         self,
         file_id: str,
         page_size: Optional[int] = None
@@ -629,10 +615,10 @@ class GoogleDrive:
         """
         try:
             # Use GoogleDriveDataSource method
-            permissions = self._run_async(self.client.permissions_list(
+            permissions = await self.client.permissions_list(
                 fileId=file_id,
                 pageSize=page_size
-            ))
+            )
 
             return True, json.dumps({
                 "permissions": permissions.get("permissions", []),

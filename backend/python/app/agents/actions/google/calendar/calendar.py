@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import List, Optional
@@ -19,7 +18,6 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 from app.utils.time_conversion import prepare_iso_timestamps
 
@@ -126,18 +124,6 @@ class GoogleCalendar:
         """
         self.client = GoogleCalendarDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            asyncio.get_running_loop()
-            # We're in an async context, use asyncio.run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run
-            return asyncio.run(coro)
 
     @tool(
         app_name="calendar",
@@ -162,7 +148,7 @@ class GoogleCalendar:
         ],
         category=ToolCategory.CALENDAR
     )
-    def get_calendar_events(
+    async def get_calendar_events(
         self,
         calendar_id: Optional[str] = None,
         max_results: Optional[int] = None,
@@ -190,7 +176,7 @@ class GoogleCalendar:
             tuple[bool, str]: True if the events are fetched, False otherwise
         """
         try:
-            events = self._run_async(self.client.events_list(
+            events = await self.client.events_list(
                 calendarId=calendar_id or "primary",
                 maxResults=max_results,
                 timeMin=time_min,
@@ -200,7 +186,7 @@ class GoogleCalendar:
                 q=query,
                 showDeleted=show_deleted,
                 timeZone=time_zone,
-            ))
+            )
 
             return True, json.dumps(events)
         except Exception as e:
@@ -231,7 +217,7 @@ class GoogleCalendar:
         ],
         category=ToolCategory.CALENDAR
     )
-    def create_calendar_event(
+    async def create_calendar_event(
         self,
         event_start_time: str,
         event_end_time: str,
@@ -300,10 +286,10 @@ class GoogleCalendar:
                 event_config["end"] = {"date": event_end_time_iso.split("T")[0]}
 
             # Use GoogleCalendarDataSource method
-            event = self._run_async(self.client.events_insert(
+            event = await self.client.events_insert(
                 calendarId="primary",
                 body=event_config
-            ))
+            )
 
             return True, json.dumps({
                 "event_id": event.get("id", ""),
@@ -345,7 +331,7 @@ class GoogleCalendar:
         ],
         category=ToolCategory.CALENDAR
     )
-    def update_calendar_event(
+    async def update_calendar_event(
         self,
         event_id: str,
         event_title: Optional[str] = None,
@@ -378,10 +364,10 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method to get event
-            event = self._run_async(self.client.events_get(
+            event = await self.client.events_get(
                 calendarId="primary",
                 eventId=event_id
-            ))
+            )
 
             if event_title:
                 event["summary"] = event_title
@@ -415,11 +401,11 @@ class GoogleCalendar:
                     event["end"] = {"dateTime": event_end_time_iso}
 
             # Use GoogleCalendarDataSource method to update event
-            updated_event = self._run_async(self.client.events_update(
+            updated_event = await self.client.events_update(
                 calendarId="primary",
                 eventId=event_id,
                 body=event
-            ))
+            )
 
             return True, json.dumps({
                 "success": True,
@@ -463,7 +449,7 @@ class GoogleCalendar:
         ],
         category=ToolCategory.CALENDAR
     )
-    def delete_calendar_event(
+    async def delete_calendar_event(
         self,
         event_id: str,
     ) -> tuple[bool, str]:
@@ -476,10 +462,10 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method
-            self._run_async(self.client.events_delete(
+            await self.client.events_delete(
                 calendarId="primary",
                 eventId=event_id
-            ))
+            )
 
             return True, json.dumps({
                 "message": f"Event {event_id} deleted successfully"
@@ -511,7 +497,7 @@ class GoogleCalendar:
         ],
         category=ToolCategory.CALENDAR
     )
-    def get_calendar_list(self) -> tuple[bool, str]:
+    async def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
         """
         Returns:
@@ -519,7 +505,7 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method
-            calendars = self._run_async(self.client.calendar_list_list())
+            calendars = await self.client.calendar_list_list()
             return True, json.dumps(calendars)
         except Exception as e:
             logger.error(f"Failed to get calendar list: {e}")
@@ -549,7 +535,7 @@ class GoogleCalendar:
         ],
         category=ToolCategory.CALENDAR
     )
-    def get_calendar_list_by_id(
+    async def get_calendar_list_by_id(
         self,
         calendar_id: Optional[str] = None
     ) -> tuple[bool, str]:
@@ -562,9 +548,9 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method
-            calendar = self._run_async(self.client.calendars_get(
+            calendar = await self.client.calendars_get(
                 calendarId=calendar_id or "primary"
-            ))
+            )
             return True, json.dumps(calendar)
         except Exception as e:
             logger.error(f"Failed to get calendar by ID: {e}")
