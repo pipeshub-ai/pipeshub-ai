@@ -620,6 +620,12 @@ export class StorageController {
         createdAt: Date.now(),
       });
 
+      if (storageType === StorageVendor.S3 && currentResponse?.data) {
+        document.s3 = { url: currentResponse.data };
+      } else if (storageType === StorageVendor.AzureBlob && currentResponse?.data) {
+        document.azureBlob = { url: currentResponse.data };
+      }
+
       // Single save at the end
       await document.save();
 
