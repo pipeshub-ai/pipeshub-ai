@@ -1241,16 +1241,12 @@ class SharePointConnector(BaseConnector):
             if not file_record:
                 return None
 
-            # self.logger.info(f"\n\n\n\n\nFile record: {file_record.record_name}")
-
             permissions = await self._get_item_permissions(site_id, drive_id, item_id)
-
-            # self.logger.info(f"Permissions: {permissions}")
 
             if is_root:
                 file_record.inherit_permissions = True
 
-            if existing_record:
+            if existing_record and permissions:
                 is_updated = True
                 permissions_changed = True
 
@@ -1873,6 +1869,7 @@ class SharePointConnector(BaseConnector):
                     is_updated = False
                     metadata_changed = False
                     content_changed = False
+                    permissions_changed = False
 
                     if existing_record:
                         # Use eTag for change detection (same pattern as drive items)
@@ -1888,7 +1885,8 @@ class SharePointConnector(BaseConnector):
                         permissions, should_inherit = await self._get_page_permissions(site_id, page.id)
                         page_record.inherit_permissions = should_inherit
 
-                        if permissions:
+
+                        if existing_record and permissions:
                             permissions_changed = True
                             is_updated = True
 
@@ -2729,11 +2727,11 @@ class SharePointConnector(BaseConnector):
             self.logger.warning(f"❌ Could not get drive permissions for {drive_id}: {e}")
             return [], True
 
-    async def _get_item_permissions(self, site_id: str, drive_id: str, item_id: str) -> tuple[List[Permission], bool]:
+    async def _get_item_permissions(self, site_id: str, drive_id: str, item_id: str) -> List[Permission]:
         """Get permissions for a drive item.
 
         Returns:
-            tuple: (permissions list, should_inherit boolean)
+            List[Permission]: permissions list
         """
         try:
             permissions = []
@@ -2801,20 +2799,22 @@ class SharePointConnector(BaseConnector):
                 "Accept": "application/json;odata=verbose"
             }
 
-            # Step 1: Resolve the GUID page_id to an integer list item ID
-            list_item_id = await self._resolve_page_list_item_id(site_web_url, page_id, headers)
-            if not list_item_id:
-                self.logger.debug(f"Could not resolve list item ID for page {page_id}")
-                return [], True
+            # Use a single ClientSession for all HTTP calls within this method
+            # (including the helper _resolve_page_list_item_id) to reuse TCP connections.
+            async with aiohttp.ClientSession() as session:
+                # Step 1: Resolve the GUID page_id to an integer list item ID
+                list_item_id = await self._resolve_page_list_item_id(site_web_url, page_id, headers, session=session)
+                if not list_item_id:
+                    self.logger.debug(f"Could not resolve list item ID for page {page_id}")
+                    return [], True
 
-            # Step 2: Check if the page has unique permissions
-            has_unique_url = (
-                f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-                f"/items({list_item_id})/HasUniqueRoleAssignments"
-            )
+                # Step 2: Check if the page has unique permissions
+                has_unique_url = (
+                    f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
+                    f"/items({list_item_id})/HasUniqueRoleAssignments"
+                )
 
-            async with self.rate_limiter:
-                async with aiohttp.ClientSession() as session:
+                async with self.rate_limiter:
                     async with session.get(has_unique_url, headers=headers) as resp:
                         if resp.status != HTTPStatus.OK:
                             resp_text = await resp.text()
@@ -2826,19 +2826,18 @@ class SharePointConnector(BaseConnector):
                         data = await resp.json()
                         has_unique = data.get('d', {}).get('HasUniqueRoleAssignments', False)
 
-            if not has_unique:
-                self.logger.debug(f"Page {page_id} (item {list_item_id}) inherits permissions from site")
-                return [], True
+                if not has_unique:
+                    self.logger.debug(f"Page {page_id} (item {list_item_id}) inherits permissions from site")
+                    return [], True
 
-            # Step 3: Fetch the actual role assignments
-            role_assignments_url = (
-                f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-                f"/items({list_item_id})/roleassignments"
-                f"?$expand=Member,RoleDefinitionBindings"
-            )
+                # Step 3: Fetch the actual role assignments
+                role_assignments_url = (
+                    f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
+                    f"/items({list_item_id})/roleassignments"
+                    f"?$expand=Member,RoleDefinitionBindings"
+                )
 
-            async with self.rate_limiter:
-                async with aiohttp.ClientSession() as session:
+                async with self.rate_limiter:
                     async with session.get(role_assignments_url, headers=headers) as resp:
                         if resp.status != HTTPStatus.OK:
                             resp_text = await resp.text()
@@ -2848,14 +2847,11 @@ class SharePointConnector(BaseConnector):
                             )
                             return [], True
                         data = await resp.json()
-                        self.logger.debug(f"Role assignments data: {data}")
 
             role_assignments = data.get('d', {}).get('results', [])
             permissions = self._convert_rest_role_assignments_to_permissions(role_assignments, site_id)
 
-            self.logger.debug(
-                f"\n\n\n\n\n\nPage {page_id} (item {list_item_id}) has {len(permissions)} unique permissions"
-            )
+
             return permissions, False
 
         except Exception as e:
@@ -2864,7 +2860,11 @@ class SharePointConnector(BaseConnector):
 
 
     async def _resolve_page_list_item_id(
-        self, site_web_url: str, page_id: str, headers: dict
+        self,
+        site_web_url: str,
+        page_id: str,
+        headers: dict,
+        session: Optional[aiohttp.ClientSession] = None,
     ) -> Optional[int]:
         """
         Resolve a Graph Pages API GUID to the integer list item ID
@@ -2874,21 +2874,33 @@ class SharePointConnector(BaseConnector):
         1. If page_id is already numeric, use it directly
         2. Filter by GUID field
         3. Filter by UniqueId
+
+        Args:
+            session: Optional shared aiohttp.ClientSession. When provided the
+                     existing session (and its TCP connection pool) is reused
+                     instead of opening a new one for every strategy.
         """
         # If it's already numeric, use directly
         if page_id.isdigit():
             return int(page_id)
 
-        # Strategy 1: Filter Site Pages list by UniqueId (GUID)
-        # The GUID from Graph Pages API typically matches the list item's UniqueId
-        filter_url = (
-            f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-            f"/items?$filter=GUID eq '{page_id}'&$select=Id"
-        )
+        # If no session was provided by the caller, create one that lives for the
+        # duration of this method so all three strategies share TCP connections.
+        owned_session = None
+        if session is None:
+            owned_session = aiohttp.ClientSession()
+            session = owned_session
 
         try:
-            async with self.rate_limiter:
-                async with aiohttp.ClientSession() as session:
+            # Strategy 1: Filter Site Pages list by UniqueId (GUID)
+            # The GUID from Graph Pages API typically matches the list item's UniqueId
+            filter_url = (
+                f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
+                f"/items?$filter=GUID eq '{page_id}'&$select=Id"
+            )
+
+            try:
+                async with self.rate_limiter:
                     async with session.get(filter_url, headers=headers) as resp:
                         if resp.status == HTTPStatus.OK:
                             data = await resp.json()
@@ -2899,18 +2911,17 @@ class SharePointConnector(BaseConnector):
                             self.logger.debug(
                                 f"GUID filter failed (status {resp.status}), trying UniqueId approach"
                             )
-        except Exception as e:
-            self.logger.debug(f"GUID filter lookup failed: {e}")
+            except Exception as e:
+                self.logger.debug(f"GUID filter lookup failed: {e}")
 
-        # Strategy 2: Try using getitembyuniqueid
-        unique_id_url = (
-            f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-            f"/getitembyuniqueid('{page_id}')?$select=Id"
-        )
+            # Strategy 2: Try using getitembyuniqueid
+            unique_id_url = (
+                f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
+                f"/getitembyuniqueid('{page_id}')?$select=Id"
+            )
 
-        try:
-            async with self.rate_limiter:
-                async with aiohttp.ClientSession() as session:
+            try:
+                async with self.rate_limiter:
                     async with session.get(unique_id_url, headers=headers) as resp:
                         if resp.status == HTTPStatus.OK:
                             data = await resp.json()
@@ -2923,19 +2934,18 @@ class SharePointConnector(BaseConnector):
                                 f"UniqueId lookup failed: status={resp.status}, "
                                 f"response={resp_text[:300]}"
                             )
-        except Exception as e:
-            self.logger.debug(f"UniqueId lookup failed: {e}")
+            except Exception as e:
+                self.logger.debug(f"UniqueId lookup failed: {e}")
 
-        # Strategy 3: Fallback — iterate items to find matching GUID
-        # (expensive, but as a last resort)
-        fallback_url = (
-            f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-            f"/items?$select=Id,GUID&$top=500"
-        )
+            # Strategy 3: Fallback — iterate items to find matching GUID
+            # (expensive, but as a last resort)
+            fallback_url = (
+                f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
+                f"/items?$select=Id,GUID&$top=500"
+            )
 
-        try:
-            async with self.rate_limiter:
-                async with aiohttp.ClientSession() as session:
+            try:
+                async with self.rate_limiter:
                     async with session.get(fallback_url, headers=headers) as resp:
                         if resp.status == HTTPStatus.OK:
                             data = await resp.json()
@@ -2943,8 +2953,13 @@ class SharePointConnector(BaseConnector):
                             for item in results:
                                 if item.get('GUID', '').lower() == page_id.lower():
                                     return item.get('Id')
-        except Exception as e:
-            self.logger.debug(f"Fallback GUID scan failed: {e}")
+            except Exception as e:
+                self.logger.debug(f"Fallback GUID scan failed: {e}")
+
+        finally:
+            # Only close the session if we created it here (not the caller's session)
+            if owned_session is not None:
+                await owned_session.close()
 
         self.logger.warning(f"Could not resolve page GUID {page_id} to list item ID")
         return None
@@ -3099,89 +3114,16 @@ class SharePointConnector(BaseConnector):
         permissions = []
         has_org_permission = False  # Track if "Everyone except external users" is found
 
-        for perm in msgraph_permissions:
-            try:
+        # A single ClientSession is shared across all _check_site_group_for_org_access
+        # calls in the loop below to avoid opening a new TCP connection per iteration.
+        async with aiohttp.ClientSession() as shared_session:
+            for perm in msgraph_permissions:
+                try:
 
-                # Handle user permissions
-                if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
-                    if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
-                        user = perm.granted_to_v2.user
-                        permissions.append(Permission(
-                            external_id=user.id,
-                            email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                            entity_type=EntityType.USER
-                        ))
-
-                    # Handle group permissions - need to distinguish between real Azure AD groups
-                    # and Azure AD groups that are auto-mapped to SharePoint site roles
-                    if hasattr(perm.granted_to_v2, 'group') and perm.granted_to_v2.group:
-                        group = perm.granted_to_v2.group
-
-                        # Check if this is a role mapping (Owners/Members/Visitors)
-                        # by looking at the site_user login_name suffix
-                        is_role_mapping = False
-                        site_user_id = None
-
-                        if hasattr(perm.granted_to_v2, 'site_user') and perm.granted_to_v2.site_user:
-                            site_user = perm.granted_to_v2.site_user
-                            login_name = getattr(site_user, 'login_name', '')
-
-                            # Check for role mapping suffixes: _o (owners), _m (members), _v (visitors)
-                            if login_name and ('_o' in login_name.split('|')[-1] or
-                                            '_m' in login_name.split('|')[-1] or
-                                            '_v' in login_name.split('|')[-1]):
-                                is_role_mapping = True
-                                site_user_id = site_user.id
-
-                        # If it's a role mapping, use composite ID (site_id + site_user_id)
-                        # Otherwise, use the Azure AD group ID directly
-                        if is_role_mapping and site_user_id:
-                            external_id = f"{site_id}-{site_user_id}"
-                            self.logger.debug(f"Role mapping detected: {group.display_name} -> {external_id}")
-                        else:
-                            external_id = group.id
-                            self.logger.debug(f"True Azure AD group: {group.display_name} -> {external_id}")
-
-                        permissions.append(Permission(
-                            external_id=external_id,
-                            email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                            entity_type=EntityType.GROUP
-                        ))
-
-                    # Handle pure SharePoint site groups (no Azure AD backing)
-                    elif hasattr(perm.granted_to_v2, 'site_group') and perm.granted_to_v2.site_group:
-                        site_group = perm.granted_to_v2.site_group
-                        # Use composite ID for local site groups
-                        external_id = f"{site_id}-{site_group.id}"
-
-                        self.logger.debug(f"Pure SharePoint site group: {site_group.display_name} -> {external_id}")
-
-                        # Check if this group contains "Everyone except external users"
-                        if not has_org_permission:
-                            has_org_permission = await self._check_site_group_for_org_access(site_id, site_group.id)
-
-                        permissions.append(Permission(
-                            external_id=external_id,
-                            email=site_group.additional_data.get("email", None) if hasattr(site_group, 'additional_data') else None,
-                            type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                            entity_type=EntityType.GROUP
-                        ))
-
-                # Handle group permissions in granted_to_identities_v2
-                if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
-                    for identity in perm.granted_to_identities_v2:
-                        if hasattr(identity, 'group') and identity.group:
-                            group = identity.group
-                            permissions.append(Permission(
-                                external_id=group.id,
-                                email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
-                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
-                                entity_type=EntityType.GROUP
-                            ))
-                        elif hasattr(identity, 'user') and identity.user:
-                            user = identity.user
+                    # Handle user permissions
+                    if hasattr(perm, 'granted_to_v2') and perm.granted_to_v2:
+                        if hasattr(perm.granted_to_v2, 'user') and perm.granted_to_v2.user:
+                            user = perm.granted_to_v2.user
                             permissions.append(Permission(
                                 external_id=user.id,
                                 email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
@@ -3189,27 +3131,105 @@ class SharePointConnector(BaseConnector):
                                 entity_type=EntityType.USER
                             ))
 
-                # Handle link permissions (anyone with link)
-                if hasattr(perm, 'link') and perm.link:
-                    link = perm.link
-                    if link.scope == "anonymous":
-                        permissions.append(Permission(
-                            external_id="anyone_with_link",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ANYONE_WITH_LINK
-                        ))
-                    elif link.scope == "organization":
-                        permissions.append(Permission(
-                            external_id="anyone_in_org",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ORG
-                        ))
+                        # Handle group permissions - need to distinguish between real Azure AD groups
+                        # and Azure AD groups that are auto-mapped to SharePoint site roles
+                        if hasattr(perm.granted_to_v2, 'group') and perm.granted_to_v2.group:
+                            group = perm.granted_to_v2.group
 
-            except Exception as e:
-                self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
-                continue
+                            # Check if this is a role mapping (Owners/Members/Visitors)
+                            # by looking at the site_user login_name suffix
+                            is_role_mapping = False
+                            site_user_id = None
+
+                            if hasattr(perm.granted_to_v2, 'site_user') and perm.granted_to_v2.site_user:
+                                site_user = perm.granted_to_v2.site_user
+                                login_name = getattr(site_user, 'login_name', '')
+
+                                # Check for role mapping suffixes: _o (owners), _m (members), _v (visitors)
+                                if login_name and ('_o' in login_name.split('|')[-1] or
+                                                '_m' in login_name.split('|')[-1] or
+                                                '_v' in login_name.split('|')[-1]):
+                                    is_role_mapping = True
+                                    site_user_id = site_user.id
+
+                            # If it's a role mapping, use composite ID (site_id + site_user_id)
+                            # Otherwise, use the Azure AD group ID directly
+                            if is_role_mapping and site_user_id:
+                                external_id = f"{site_id}-{site_user_id}"
+                                self.logger.debug(f"Role mapping detected: {group.display_name} -> {external_id}")
+                            else:
+                                external_id = group.id
+                                self.logger.debug(f"True Azure AD group: {group.display_name} -> {external_id}")
+
+                            permissions.append(Permission(
+                                external_id=external_id,
+                                email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
+                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                entity_type=EntityType.GROUP
+                            ))
+
+                        # Handle pure SharePoint site groups (no Azure AD backing)
+                        elif hasattr(perm.granted_to_v2, 'site_group') and perm.granted_to_v2.site_group:
+                            site_group = perm.granted_to_v2.site_group
+                            # Use composite ID for local site groups
+                            external_id = f"{site_id}-{site_group.id}"
+
+                            self.logger.debug(f"Pure SharePoint site group: {site_group.display_name} -> {external_id}")
+
+                            # Check if this group contains "Everyone except external users"
+                            if not has_org_permission:
+                                has_org_permission = await self._check_site_group_for_org_access(
+                                    site_id, site_group.id, session=shared_session
+                                )
+
+                            permissions.append(Permission(
+                                external_id=external_id,
+                                email=site_group.additional_data.get("email", None) if hasattr(site_group, 'additional_data') else None,
+                                type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                entity_type=EntityType.GROUP
+                            ))
+
+                    # Handle group permissions in granted_to_identities_v2
+                    if hasattr(perm, 'granted_to_identities_v2') and perm.granted_to_identities_v2:
+                        for identity in perm.granted_to_identities_v2:
+                            if hasattr(identity, 'group') and identity.group:
+                                group = identity.group
+                                permissions.append(Permission(
+                                    external_id=group.id,
+                                    email=group.additional_data.get("email", None) if hasattr(group, 'additional_data') else None,
+                                    type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                    entity_type=EntityType.GROUP
+                                ))
+                            elif hasattr(identity, 'user') and identity.user:
+                                user = identity.user
+                                permissions.append(Permission(
+                                    external_id=user.id,
+                                    email=user.additional_data.get("email", None) if hasattr(user, 'additional_data') else None,
+                                    type=map_msgraph_role_to_permission_type(perm.roles[0] if perm.roles else "read"),
+                                    entity_type=EntityType.USER
+                                ))
+
+                    # Handle link permissions (anyone with link)
+                    if hasattr(perm, 'link') and perm.link:
+                        link = perm.link
+                        if link.scope == "anonymous":
+                            permissions.append(Permission(
+                                external_id="anyone_with_link",
+                                email=None,
+                                type=map_msgraph_role_to_permission_type(link.type),
+                                entity_type=EntityType.ANYONE_WITH_LINK
+                            ))
+                        elif link.scope == "organization":
+                            permissions.append(Permission(
+                                external_id="anyone_in_org",
+                                email=None,
+                                type=map_msgraph_role_to_permission_type(link.type),
+                                entity_type=EntityType.ORG
+                            ))
+
+                except Exception as e:
+                    self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
+                    continue
 
         # Add organization permission if "Everyone except external users" was found
         if has_org_permission:
@@ -3222,13 +3242,21 @@ class SharePointConnector(BaseConnector):
 
         return permissions
 
-    async def _check_site_group_for_org_access(self, site_id: str, site_group_id: str) -> bool:
+    async def _check_site_group_for_org_access(
+        self,
+        site_id: str,
+        site_group_id: str,
+        session: Optional[aiohttp.ClientSession] = None,
+    ) -> bool:
         """
         Check if a SharePoint site group contains "Everyone except external users" member.
 
         Args:
             site_id: The site ID to get the site URL from cache
             site_group_id: The SharePoint site group ID to check
+            session: Optional shared aiohttp.ClientSession. When provided the
+                     existing session (and its TCP connection pool) is reused
+                     across the multiple calls made from _convert_to_permissions.
 
         Returns:
             bool: True if "Everyone except external users" is found, False otherwise
@@ -3257,7 +3285,13 @@ class SharePointConnector(BaseConnector):
                 "Accept": "application/json;odata=verbose"
             }
 
-            async with aiohttp.ClientSession() as session:
+            # Reuse the caller's session when available; otherwise open a short-lived one.
+            owned_session = None
+            if session is None:
+                owned_session = aiohttp.ClientSession()
+                session = owned_session
+
+            try:
                 async with session.get(users_url, headers=headers) as response:
                     if response.status == HTTPStatus.OK:
                         data = await response.json()
@@ -3277,6 +3311,9 @@ class SharePointConnector(BaseConnector):
                     else:
                         self.logger.debug(f"Failed to fetch site group members: {response.status}")
                         return False
+            finally:
+                if owned_session is not None:
+                    await owned_session.close()
 
         except Exception as e:
             self.logger.debug(f"Error checking site group for org access: {e}")
