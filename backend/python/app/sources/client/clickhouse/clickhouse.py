@@ -1,20 +1,26 @@
 """ClickHouse client implementation.
 
-This module provides clients for interacting with ClickHouse using the
-clickhouse-connect SDK with either:
-1. Username/Password authentication
-2. Access Token authentication
+This module provides clients for interacting with ClickHouse using either:
+1. The clickhouse-connect SDK for database operations
+2. HTTP REST clients for API calls (e.g., Cloud Control Plane API)
+
+Authentication methods:
+1. Username/Password authentication (Basic Auth for HTTP, credentials for SDK)
+2. Access Token authentication (Bearer for HTTP, access_token for SDK)
 
 SDK Documentation: https://clickhouse.com/docs/en/integrations/python
+Cloud API Reference: https://clickhouse.com/docs/en/cloud/manage/api
 """
 
+import base64
 import logging
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, ValidationError
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
 
 logger = logging.getLogger(__name__)
@@ -170,26 +176,126 @@ class ClickHouseClientViaToken:
         return self.host
 
 
+class ClickHouseHTTPClientViaCredentials(HTTPClient):
+    """ClickHouse HTTP REST client via username/password credentials (Basic Auth).
+
+    Uses HTTP Basic Authentication for ClickHouse API calls.
+
+    Args:
+        host: ClickHouse server hostname
+        port: HTTP interface port (default 8123)
+        username: ClickHouse username (default "default")
+        password: ClickHouse password (default "")
+        database: Default database (default "default")
+        secure: Use HTTPS (default False)
+        timeout: Request timeout in seconds (default 30.0)
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int = 8123,
+        username: str = "default",
+        password: str = "",
+        database: str = "default",
+        secure: bool = False,
+        timeout: float = 30.0,
+    ) -> None:
+        token = base64.b64encode(f"{username}:{password}".encode()).decode()
+        super().__init__(token=token, token_type="Basic", timeout=timeout)
+        self.host = host
+        self.port = port
+        self.database = database
+        self.secure = secure
+        self._base_url = self._build_base_url(host, port, secure)
+
+    @staticmethod
+    def _build_base_url(host: str, port: int, secure: bool) -> str:
+        scheme = "https" if secure else "http"
+        return f"{scheme}://{host}:{port}"
+
+    def get_base_url(self) -> str:
+        """Get the base URL for ClickHouse API."""
+        return self._base_url
+
+    def get_host(self) -> str:
+        """Return the ClickHouse server hostname."""
+        return self.host
+
+
+class ClickHouseHTTPClientViaToken(HTTPClient):
+    """ClickHouse HTTP REST client via Bearer token.
+
+    Uses Bearer token authentication for ClickHouse API calls.
+
+    Args:
+        host: ClickHouse server hostname
+        port: HTTP interface port (default 8443)
+        token: Bearer access token
+        database: Default database (default "default")
+        secure: Use HTTPS (default True)
+        timeout: Request timeout in seconds (default 30.0)
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int = 8443,
+        token: str = "",
+        database: str = "default",
+        secure: bool = True,
+        timeout: float = 30.0,
+    ) -> None:
+        super().__init__(token=token, token_type="Bearer", timeout=timeout)
+        self.host = host
+        self.port = port
+        self.database = database
+        self.secure = secure
+        self._base_url = self._build_base_url(host, port, secure)
+
+    @staticmethod
+    def _build_base_url(host: str, port: int, secure: bool) -> str:
+        scheme = "https" if secure else "http"
+        return f"{scheme}://{host}:{port}"
+
+    def get_base_url(self) -> str:
+        """Get the base URL for ClickHouse API."""
+        return self._base_url
+
+    def get_host(self) -> str:
+        """Return the ClickHouse server hostname."""
+        return self.host
+
+
 class ClickHouseClient(IClient):
-    """Builder class for ClickHouse SDK clients.
+    """Builder class for ClickHouse clients (SDK and HTTP).
 
     Provides a unified interface for creating ClickHouse clients
     using either username/password or access token authentication.
+    Holds both an SDK client (for database operations) and an HTTP
+    client (for REST API calls).
 
     Example usage:
         client = await ClickHouseClient.build_from_services(
             logger, config_service, connector_instance_id
         )
         sdk = client.get_sdk()
+        http_client = client.get_http_client()
     """
 
-    def __init__(self, client) -> None:
-        """Initialize with a ClickHouse auth holder client.
+    def __init__(
+        self,
+        client: Union[ClickHouseClientViaCredentials, ClickHouseClientViaToken],
+        http_client: Optional[Union[ClickHouseHTTPClientViaCredentials, ClickHouseHTTPClientViaToken]] = None,
+    ) -> None:
+        """Initialize with ClickHouse SDK and HTTP clients.
 
         Args:
-            client: ClickHouseClientViaCredentials or ClickHouseClientViaToken
+            client: ClickHouseClientViaCredentials or ClickHouseClientViaToken (SDK)
+            http_client: Optional ClickHouseHTTPClientViaCredentials or ClickHouseHTTPClientViaToken (HTTP)
         """
         self.client = client
+        self.http_client = http_client
 
     def get_client(self) -> object:
         """Return the auth holder client (satisfies IClient)."""
@@ -202,6 +308,16 @@ class ClickHouseClient(IClient):
     def get_host(self) -> str:
         """Return the ClickHouse server hostname."""
         return self.client.get_host()
+
+    def get_http_client(self) -> Optional[Union[ClickHouseHTTPClientViaCredentials, ClickHouseHTTPClientViaToken]]:
+        """Return the HTTP REST client."""
+        return self.http_client
+
+    def get_base_url(self) -> Optional[str]:
+        """Return the base URL from the HTTP client."""
+        if self.http_client is None:
+            return None
+        return self.http_client.get_base_url()
 
     @classmethod
     async def build_from_services(
@@ -251,6 +367,15 @@ class ClickHouseClient(IClient):
                     secure=secure,
                 )
                 client.create_client()
+                http_client = ClickHouseHTTPClientViaCredentials(
+                    host=host,
+                    port=port,
+                    username=username,
+                    password=password,
+                    database=database,
+                    secure=secure,
+                    timeout=config.timeout,
+                )
 
             elif auth_type == AuthType.TOKEN:
                 if not config.auth.token:
@@ -263,11 +388,19 @@ class ClickHouseClient(IClient):
                     secure=secure,
                 )
                 client.create_client()
+                http_client = ClickHouseHTTPClientViaToken(
+                    host=host,
+                    port=port,
+                    token=config.auth.token,
+                    database=database,
+                    secure=secure,
+                    timeout=config.timeout,
+                )
 
             else:
                 raise ValueError(f"Unsupported auth type: {auth_type}")
 
-            return cls(client=client)
+            return cls(client=client, http_client=http_client)
 
         except ValidationError as e:
             logger.error(f"Invalid ClickHouse connector configuration: {e}")
