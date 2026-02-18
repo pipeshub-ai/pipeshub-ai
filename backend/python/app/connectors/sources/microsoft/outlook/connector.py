@@ -2279,6 +2279,54 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting existing record {external_record_id}: {e}")
             return None
 
+    def _augment_email_html_with_metadata(self, email_body: str, record: MailRecord) -> str:
+        """Augment email HTML with searchable recipient metadata.
+
+        Prepends a hidden div containing email metadata (from, to, cc, bcc, subject)
+        to the HTML content. This makes recipient information searchable while keeping
+        the original email HTML intact and visually unaffected.
+
+        Args:
+            email_body: Original HTML content from email body
+            record: MailRecord containing metadata (from, to, cc, bcc, subject)
+
+        Returns:
+            HTML string with prepended metadata div
+        """
+        metadata_lines = []
+
+        # Add From field
+        if record.from_email:
+            metadata_lines.append(f"From: {record.from_email}")
+
+        # Add To field
+        if record.to_emails:
+            to_list = ", ".join(record.to_emails)
+            metadata_lines.append(f"To: {to_list}")
+
+        # Add CC field
+        if record.cc_emails:
+            cc_list = ", ".join(record.cc_emails)
+            metadata_lines.append(f"CC: {cc_list}")
+
+        # Add BCC field
+        if record.bcc_emails:
+            bcc_list = ", ".join(record.bcc_emails)
+            metadata_lines.append(f"BCC: {bcc_list}")
+
+        # Add Subject field
+        if record.subject:
+            metadata_lines.append(f"Subject: {record.subject}")
+
+        # Build metadata div
+        if metadata_lines:
+            metadata_content = "\n".join(metadata_lines)
+            metadata_div = f'<div style="display:none;" class="email-metadata">\n{metadata_content}\n</div>\n'
+            return metadata_div + email_body
+
+        # If no metadata, return original body
+        return email_body
+
     async def stream_record(self, record: Record) -> StreamingResponse:
         """Stream record content (email or attachment)."""
         try:
@@ -2313,6 +2361,9 @@ class OutlookConnector(BaseConnector):
                 body_obj = self._safe_get_attr(post, 'body')
                 post_body = self._safe_get_attr(body_obj, 'content', '') if body_obj else ''
 
+                # Augment with metadata for indexing
+                if isinstance(record, MailRecord):
+                    post_body = self._augment_email_html_with_metadata(post_body, record)
                 async def generate_post() -> AsyncGenerator[bytes, None]:
                     yield post_body.encode('utf-8')
 
@@ -2367,7 +2418,9 @@ class OutlookConnector(BaseConnector):
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
                 body_obj = self._safe_get_attr(message, 'body')
                 email_body = self._safe_get_attr(body_obj, 'content', '') if body_obj else ''
-
+                # Augment with recipient metadata for indexing
+                if isinstance(record, MailRecord):
+                    email_body = self._augment_email_html_with_metadata(email_body, record)
                 async def generate_email() -> AsyncGenerator[bytes, None]:
                     yield email_body.encode('utf-8')
 
