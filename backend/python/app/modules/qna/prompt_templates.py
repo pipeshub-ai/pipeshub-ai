@@ -160,10 +160,9 @@ qna_prompt = """
 table_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
 * Block Group Type: table
 * Table Summary: {{ table_summary }}
-* Table Rows/Blocks:{% for row in table_rows %}
-  - Block Number: R{{record_number}}-{{row.block_index}}
-  - Block Content: {{row.content}}
-{% endfor %}
+* Table Data:
+{% if column_headers_joined %}table[{{table_row_count}}]{{'{'}}{{column_headers_joined}}{{'}'}}:{% else %}table[{{table_row_count}}]:{% endif %}{% for row in table_rows %}
+  [R{{record_number}}-{{row.block_index}}] {{row.content}}{% endfor %}
 """
 
 block_group_prompt = """* Block Group Number: R{{record_number}}-{{block_group_index}}
