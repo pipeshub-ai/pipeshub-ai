@@ -26,6 +26,10 @@ import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { StorageController } from '../controllers/storage.controller';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { DefaultStorageConfig } from '../../tokens_manager/services/cm.service';
+import multer from 'multer';
+import { storageEtcdPaths } from '../constants/constants';
+import { StorageVendor } from '../types/storage.service.types';
+import { BadRequestError } from '../../../libs/errors/http.errors';
 
 const logger = Logger.getInstance({ service: 'StorageRoutes' });
 
@@ -38,10 +42,65 @@ export function createStorageRouter(container: Container): Router {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   storageController.watchStorageType(keyValueStoreService);
 
+
+  const dontstorefile: multer.StorageEngine = {
+    _handleFile(_req, file, cb) {
+      let size = 0;
+      file.stream.on('data', (chunk: Buffer) => { size += chunk.length; });
+      file.stream.on('end', () => cb(null, { size } as any));
+      file.stream.on('error', cb);
+    },
+    _removeFile(_req, _file, cb) { cb(null); },
+  };
+
+  // skip buffering
+  const cloudOptimization = async (
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      const configStr =
+        (await keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
+      const { storageType } = JSON.parse(configStr);
+
+      if (storageType !== StorageVendor.S3 && storageType !== StorageVendor.AzureBlob) {
+        return next();
+      }
+
+      multer({
+        storage: dontstorefile,
+        limits: { files: 1 },
+        fileFilter: (_req, file, cb) => {
+          if (Object.values(extensionToMimeType).includes(file.mimetype)) {
+            cb(null, true);
+          } else {
+            cb(new BadRequestError(`Invalid file type: ${file.mimetype}`) as any);
+          }
+        },
+      }).single('file')(req as any, res, (err: any) => {
+        if (err) return next(err);
+        const file = (req as any).file;
+        if (!file) return next(new BadRequestError('File is required'));
+
+        req.body.fileBuffer = {
+          originalname: file.originalname,
+          mimetype: file.mimetype,
+          size: file.size,
+          buffer: Buffer.alloc(0),
+        };
+        storageController.uploadDocument(req as any, res, next);
+      });
+    } catch (error) {
+      next(error);
+    }
+  };
+
   router.post(
     '/upload',
     authMiddleware.authenticate,
     metricsMiddleware(container),
+    cloudOptimization,
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),
@@ -69,6 +128,7 @@ export function createStorageRouter(container: Container): Router {
     '/internal/upload',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
     metricsMiddleware(container),
+    cloudOptimization,
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: Object.values(extensionToMimeType),

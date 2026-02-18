@@ -311,8 +311,8 @@ export class StorageController {
       document.isDeleted = true;
       document.deletedByUserId = userId
         ? (new mongoose.Types.ObjectId(
-            userId,
-          ) as unknown as mongoose.Schema.Types.ObjectId)
+          userId,
+        ) as unknown as mongoose.Schema.Types.ObjectId)
         : undefined;
 
       await document.save();
@@ -491,12 +491,13 @@ export class StorageController {
 
       const uploadedFileExtension = path.extname(originalname);
 
-      if (document.extension !== uploadedFileExtension) {
-        throw new ForbiddenError('Update buffer failed: File format mismatch');
+      const norm = (e: string) => ((e = (e || '').trim().toLowerCase()) && (e.startsWith('.') ? e : '.' + e)) || '';
+      if (norm(document.extension) !== norm(uploadedFileExtension)) {
+        throw new ForbiddenError(`Uploaded file extension ${uploadedFileExtension} does not match the original document extension ${document.extension}`);
       }
 
       const adapter = await this.initializeStorageAdapter(req);
-      
+
       // Check if document changed (current vs last version)
       const isDocumentChanged = !(await this.compareDocuments(
         document,
@@ -552,8 +553,8 @@ export class StorageController {
           note: currentVersionNote,
           initiatedByUserId: userId
             ? (new mongoose.Types.ObjectId(
-                userId,
-              ) as unknown as mongoose.Schema.Types.ObjectId)
+              userId,
+            ) as unknown as mongoose.Schema.Types.ObjectId)
             : undefined,
           createdAt: Date.now(),
         });
@@ -613,8 +614,8 @@ export class StorageController {
         note: nextVersionNote,
         initiatedByUserId: userId
           ? (new mongoose.Types.ObjectId(
-              userId,
-            ) as unknown as mongoose.Schema.Types.ObjectId)
+            userId,
+          ) as unknown as mongoose.Schema.Types.ObjectId)
           : undefined,
         createdAt: Date.now(),
       });
@@ -725,8 +726,8 @@ export class StorageController {
         size: document.versionHistory[Number(version)]?.size,
         initiatedByUserId: userId
           ? (new mongoose.Types.ObjectId(
-              userId,
-            ) as unknown as mongoose.Schema.Types.ObjectId)
+            userId,
+          ) as unknown as mongoose.Schema.Types.ObjectId)
           : undefined,
         createdAt: Date.now(),
       });
@@ -758,7 +759,7 @@ export class StorageController {
         throw new NotFoundError('Document / Document Path does not exist');
       }
       const adapter = await this.initializeStorageAdapter(req);
-      
+
       const documentPath = document.documentPath.replace(
         /^records\//,
         `records/${documentId}/`,
