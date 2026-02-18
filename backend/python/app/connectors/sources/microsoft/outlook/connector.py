@@ -1,4 +1,5 @@
 import base64
+import html
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -2293,38 +2294,25 @@ class OutlookConnector(BaseConnector):
         Returns:
             HTML string with prepended metadata div
         """
-        metadata_lines = []
+        metadata_parts = {
+            "From": record.from_email,
+            "To": ", ".join(record.to_emails) if record.to_emails else None,
+            "CC": ", ".join(record.cc_emails) if record.cc_emails else None,
+            "BCC": ", ".join(record.bcc_emails) if record.bcc_emails else None,
+            "Subject": record.subject,
+        }
 
-        # Add From field
-        if record.from_email:
-            metadata_lines.append(f"From: {record.from_email}")
+        metadata_lines = [
+            f"{key}: {html.escape(value)}"
+            for key, value in metadata_parts.items()
+            if value
+        ]
 
-        # Add To field
-        if record.to_emails:
-            to_list = ", ".join(record.to_emails)
-            metadata_lines.append(f"To: {to_list}")
-
-        # Add CC field
-        if record.cc_emails:
-            cc_list = ", ".join(record.cc_emails)
-            metadata_lines.append(f"CC: {cc_list}")
-
-        # Add BCC field
-        if record.bcc_emails:
-            bcc_list = ", ".join(record.bcc_emails)
-            metadata_lines.append(f"BCC: {bcc_list}")
-
-        # Add Subject field
-        if record.subject:
-            metadata_lines.append(f"Subject: {record.subject}")
-
-        # Build metadata div
         if metadata_lines:
-            metadata_content = "\n".join(metadata_lines)
-            metadata_div = f'<div style="display:none;" class="email-metadata">\n{metadata_content}\n</div>\n'
+            metadata_content = "<br>\n".join(metadata_lines)
+            metadata_div = f'<div style="display:none;" class="email-metadata">{metadata_content}</div>\n'
             return metadata_div + email_body
 
-        # If no metadata, return original body
         return email_body
 
     async def stream_record(self, record: Record) -> StreamingResponse:
