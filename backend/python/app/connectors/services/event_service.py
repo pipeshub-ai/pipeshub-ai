@@ -125,16 +125,37 @@ class EventService:
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
+            full_sync = payload.get("fullSync", False)
             if not org_id:
                 raise ValueError("orgId is required")
 
-            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}")
+            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {full_sync}")
 
             connector = self._get_connector(connector_id)
             if not connector:
                 self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
                 return False
 
+            # If fullSync flag is set, delete all sync points for this connector
+            if full_sync:
+                self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
+                try:
+                    from app.config.constants.arangodb import CollectionNames
+                    deleted_count, success = await self.graph_provider._delete_nodes_by_connector_id(
+                        transaction=None,
+                        connector_id=connector_id,
+                        collection=CollectionNames.SYNC_POINTS.value
+                    )
+                    if success:
+                        self.logger.info(f"✅ Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                    else:
+                        self.logger.warning(f"⚠️ Failed to delete sync points for connector {connector_id}, continuing with sync")
+                except Exception as sync_point_error:
+                    self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {str(sync_point_error)}")
+                    # Continue with sync even if sync point deletion fails
+                    self.logger.warning("Continuing with sync despite sync point deletion failure")
+
+            # Run the sync
             asyncio.create_task(connector.run_sync())
             self.logger.info(f"Started sync for {connector_name} {connector_id} connector")
             return True

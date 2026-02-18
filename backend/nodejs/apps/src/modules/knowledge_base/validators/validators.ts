@@ -50,6 +50,7 @@ export const resyncConnectorSchema = z.object({
   body: z.object({
     connectorName: z.string().min(1),
     connectorId: z.string().min(1),
+    fullSync: z.boolean().optional(),
   }),
 });
 

@@ -2832,6 +2832,7 @@ export const resyncConnectorRecords =
       const orgId = req.user?.orgId;
       const connectorName = req.body.connectorName;
       const connectorId = req.body.connectorId;
+      const fullSync = req.body.fullSync || false;
       if (!userId || !orgId) {
         throw new BadRequestError('User not authenticated');
       }
@@ -2847,6 +2848,7 @@ export const resyncConnectorRecords =
         orgId,
         connectorName: normalizeAppName(connectorName),
         connectorId,
+        fullSync,
       };
 
       const resyncConnectorResponse =
