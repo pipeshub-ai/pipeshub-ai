@@ -4012,6 +4012,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction
         )
 
+    async def delete_inherit_permissions_relation_record_group(
+        self,
+        record_id: str,
+        record_group_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete INHERIT_PERMISSIONS edge from record to record group.
+        Called when a record's inherit_permissions is set to False after a placeholder was created.
+        """
+        await self.delete_edge(
+            from_id=record_id,
+            from_collection=CollectionNames.RECORDS.value,
+            to_id=record_group_id,
+            to_collection=CollectionNames.RECORD_GROUPS.value,
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=transaction
+        )
+
     async def get_all_documents(
         self,
         collection: str,
@@ -12848,12 +12867,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN record
         )
 
+        LET nested_records_via_parent = (
+            FOR entry_record IN user_direct_records
+                FOR child_record, edge IN 1..20 OUTBOUND entry_record._id recordRelations
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    FILTER child_record != null
+                    FILTER child_record.isDeleted != true
+                    FILTER child_record.orgId == @org_id
+
+                    // If child has any READ restrictions, user must have direct permission on it
+                    // If child has NO restrictions, it inherits from parent (user already has access)
+                    LET has_read_restriction = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == child_record._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+
+                    LET user_has_direct_permission = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._from == user_from
+                            FILTER perm._to == child_record._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+
+                    FILTER has_read_restriction == false OR user_has_direct_permission == true
+
+                    RETURN child_record
+        )
+
         // Combine all record sources and deduplicate
         LET accessible_records = UNION_DISTINCT(
             rg_inherited_records,
             user_direct_records,
             user_group_records,
-            user_org_records
+            user_org_records,
+            nested_records_via_parent
         )
 
         // ========== CHILDREN TRAVERSAL & INTERSECTION (for recordGroup/kb/record/folder parents) ==========
@@ -14942,7 +14992,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 AND record.isDeleted != true
                 AND record.orgId == @org_id
 
-                // Use permission role helper for records (unified for KB and Connector)
+                // Check if child has READ restrictions (any permission edges pointing to this record)
+                // This determines whether the child has explicit page-level permissions
+                LET has_read_restriction = LENGTH(
+                    FOR perm IN permission
+                        FILTER perm._to == record._id
+                        FILTER perm.role == "READER" OR perm.role == "OWNER" OR perm.role == "WRITER" OR perm.role == "EDITOR"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+
+                // Use permission role helper for records (checks all 10 paths including direct)
                 {record_permission_role_aql}
 
                 // Normalize permission_role: handle both array and string cases
@@ -14950,7 +15010,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
                     : permission_role
 
-                FILTER normalized_role != null AND normalized_role != ""
+                LET effective_role = has_read_restriction
+                    ? normalized_role
+                    : (normalized_role != null AND normalized_role != "" ? normalized_role : "READER")
+
+                FILTER effective_role != null AND effective_role != ""
 
                 // Get file info for folder detection
                 LET file_info = FIRST(
@@ -14993,7 +15057,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: effective_role
                 }}
         )
         """

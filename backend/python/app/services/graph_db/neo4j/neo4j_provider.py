@@ -3908,6 +3908,22 @@ class Neo4jProvider(IGraphDBProvider):
             transaction=transaction
         )
 
+    async def delete_inherit_permissions_relation_record_group(
+        self,
+        record_id: str,
+        record_group_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Delete INHERIT_PERMISSIONS edge from record to record group."""
+        await self.delete_edge(
+            from_id=record_id,
+            from_collection=CollectionNames.RECORDS.value,
+            to_id=record_group_id,
+            to_collection=CollectionNames.RECORD_GROUPS.value,
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=transaction
+        )
+
     async def batch_upsert_record_permissions(
         self,
         record_id: str,

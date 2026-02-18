@@ -369,6 +369,8 @@ class DataSourceEntitiesProcessor:
 
             if record.inherit_permissions:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+            else:
+                await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
             shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
