@@ -707,9 +707,9 @@ async def adf_to_text_with_images(
                 data_uri = await media_fetcher(media_id, alt_text)
                 if data_uri:
                     media_cache[media_id] = data_uri
-            except Exception:
-                # If fetch fails, we'll just use the alt text
-                pass
+            except Exception as e:
+                if logger:
+                    logger.debug(f"Failed to fetch media {media_id} for embedding: {e}")
 
     # Reuse the main adf_to_text function with the media cache
     return adf_to_text(adf_content, media_cache, logger)
@@ -1635,7 +1635,7 @@ class ConfluenceConnector(BaseConnector):
                                                         if mime_type.startswith("image/"):
                                                             embedded_image_ids.add(attachment_id)
                                 except Exception as comment_error:
-                                    self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}")
+                                    self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
 
                                 try:
                                     if content_type == "page":
@@ -1671,10 +1671,10 @@ class ConfluenceConnector(BaseConnector):
                                                         if mime_type.startswith("image/"):
                                                             embedded_image_ids.add(attachment_id)
                                 except Exception as comment_error:
-                                    self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}")
+                                    self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
 
                             except Exception as adf_error:
-                                self.logger.debug(f"Failed to fetch ADF content for embedded image detection: {adf_error}")
+                                self.logger.warning(f"Failed to detect embedded images for {content_type} {item_id}, all attachments will be created as FileRecords: {adf_error}")
                                 embedded_image_ids = set()
 
                             for attachment in attachments:
@@ -3530,7 +3530,8 @@ class ConfluenceConnector(BaseConnector):
                         attachments_data = attachments_result.get("results", [])
                         self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
                 except Exception as e:
-                    self.logger.warning(f"Failed to fetch attachments for streaming: {e}")
+                    self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
+                    attachments_data = []
 
                 attachment_children_map = await self._process_page_attachments_for_children(
                     attachments_data,
