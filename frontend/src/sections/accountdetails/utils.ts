@@ -218,6 +218,14 @@ export const allGroups = async () => {
     throw new Error('Error fetching groups');
   }
 };
+export const allblockedUsers = async () => {
+  try {
+    const response = await axios.get<GroupUser[]>(`${CONFIG.backendUrl}/api/v1/users/blockedUsers`); // Replace with the actual API endpoint
+    return response.data;
+  } catch (error) {
+    throw new Error('Error fetching blocked users');
+  }
+};
 
 export const resendInvite = async (userId: string) => {
   try {
@@ -378,3 +386,13 @@ export const getDataCollectionConsent = async (): Promise<boolean> => {
     throw new Error('Error editing the consent');
   }
 };
+
+export const unblockUser = async (userId: string) => {
+  try {
+    const response = await axios.put(`${CONFIG.backendUrl}/api/v1/users/unblock/${userId}`);
+    return response.data;
+  } catch (error) {
+    throw new Error('Error unblocking user');
+  }
+};
+

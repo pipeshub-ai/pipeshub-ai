@@ -24,11 +24,12 @@ import { Iconify } from 'src/components/iconify';
 import Users from './users';
 import Groups from './groups';
 import Invites from './invites';
-import { allGroups, getAllUsersWithGroups } from '../utils';
+import { allblockedUsers, allGroups, getAllUsersWithGroups } from '../utils';
 import { setCounts, setLoading } from '../../../store/user-and-groups-slice';
 
-import type { GroupUser, AppUserGroup } from '../types/group-details';
+import type { GroupUser, AppUserGroup, AppUser } from '../types/group-details';
 import type { CountsState } from '../../../store/user-and-groups-slice';
+import BlockedUsers from './blocked-users';
 
 interface RootState {
   counts: CountsState;
@@ -45,19 +46,29 @@ export default function UsersAndGroups() {
   const userCount = useSelector((state: RootState) => state.counts.usersCount);
   const groupCount = useSelector((state: RootState) => state.counts.groupsCount);
   const invitesCount = useSelector((state: RootState) => state.counts.invitesCount);
+  const blockedUsersCount = useSelector((state: RootState) => state.counts.blockedUsersCount);
+  const TAB_ROUTES = [
+    { key: 'users', path: '/account/company-settings/users' },
+    { key: 'groups', path: '/account/company-settings/groups' },
+    { key: 'invites', path: '/account/company-settings/invites' },
+    { key: 'blocked-users', path: '/account/company-settings/blocked-users' },
+  ];
+
   useEffect(() => {
     const fetchCounts = async (): Promise<void> => {
       dispatch(setLoading(true));
       try {
         const response: GroupUser[] = await getAllUsersWithGroups();
         const groups: AppUserGroup[] = await allGroups();
-        const loggedInUsers = response.filter((user) => user.hasLoggedIn===true);
-        const pendingUsers = response.filter((user) => user.hasLoggedIn===false);
+        const blockedUsers: GroupUser[] = await allblockedUsers();
+        const loggedInUsers = response.filter((user) => user.hasLoggedIn === true);
+        const pendingUsers = response.filter((user) => user.hasLoggedIn === false);
         dispatch(
           setCounts({
             usersCount: loggedInUsers.length,
             groupsCount: groups.length,
             invitesCount: pendingUsers.length,
+            blockedUsersCount: blockedUsers.length,
           })
         );
       } catch (error) {
@@ -71,25 +82,54 @@ export default function UsersAndGroups() {
   }, [dispatch]);
 
   useEffect(() => {
-    if (location.pathname.includes('users')) {
-      setTabValue(0);
-    } else if (location.pathname.includes('groups')) {
-      setTabValue(1);
-    } else if (location.pathname.includes('invites')) {
-      setTabValue(2);
+
+    // console.log('Current path:', tabValue);
+    const index = TAB_ROUTES.findIndex(route =>
+      location.pathname === route.path
+    );
+
+    if (index !== -1) {
+      setTabValue(index);
     }
   }, [location.pathname]);
 
-  const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
+  const handleTabChange = (
+    event: React.SyntheticEvent,
+
+    newValue: number
+  ) => {
     setTabValue(newValue);
-    if (newValue === 0) {
-      navigate('/account/company-settings/users');
-    } else if (newValue === 1) {
-      navigate('/account/company-settings/groups');
-    } else if (newValue === 2) {
-      navigate('/account/company-settings/invites');
-    }
+    navigate(TAB_ROUTES[newValue].path);
   };
+
+
+
+  // useEffect(() => {
+  //   if (location.pathname.includes('users')) {
+  //     setTabValue(0);
+  //   } else if (location.pathname.includes('groups')) {
+  //     setTabValue(1);
+  //   } else if (location.pathname.includes('invites')) {
+  //     setTabValue(2);
+  //   } else if (location.pathname.includes('blocked-users')) {
+  //     setTabValue(3);
+  //   }
+  // }, [location.pathname]);
+
+  // const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
+  //   console.log('Tab changed to:', newValue);
+  //   setTabValue(newValue);
+  //   if (newValue === 0) {
+  //     navigate('/account/company-settings/users');
+  //   } else if (newValue === 1) {
+  //     navigate('/account/company-settings/groups');
+  //   } else if (newValue === 2) {
+  //     navigate('/account/company-settings/invites');
+  //   }
+  //   else if (newValue === 3) {
+  //     navigate('/account/company-settings/blocked-users');
+  //   }
+  // };
 
   if (loading) {
     return (
@@ -202,6 +242,11 @@ export default function UsersAndGroups() {
             disableRipple
             sx={{ textTransform: 'none' }}
           />
+          <Tab
+            label={TabItem('Blocked Users', blockedUsersCount, emailIcon, tabValue === 3)}
+            disableRipple
+            sx={{ textTransform: 'none' }}
+          />
         </Tabs>
       </Box>
 
@@ -212,6 +257,8 @@ export default function UsersAndGroups() {
         {tabValue === 0 && <Users />}
         {tabValue === 1 && <Groups />}
         {tabValue === 2 && <Invites />}
+        {tabValue === 3 && <BlockedUsers />}
+
       </Box>
     </Box>
   );

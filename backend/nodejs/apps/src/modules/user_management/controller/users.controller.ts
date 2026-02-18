@@ -136,7 +136,7 @@ export class UserController {
     const orgId = req.user?.orgId;
     try {
       // Check if email should be included based on environment variable
-      const hideEmail = process.env.HIDE_EMAIL === 'true'; 
+      const hideEmail = process.env.HIDE_EMAIL === 'true';
 
       const user = await Users.findOne({
         _id: userId,
@@ -159,6 +159,111 @@ export class UserController {
       next(error);
     }
   }
+
+  async getBlockedUsers(
+    req: AuthenticatedUserRequest,
+    res: Response,
+  ): Promise<Response> {
+
+    try {
+      // 1. Use the ID as a STRING, not an ObjectId, to match your DB sample
+      const orgId = req.user?.orgId;
+      const blockedUsers = await UserCredentials.aggregate([
+        {
+          $match: {
+            orgId: orgId, // Matching the String in your screenshot
+            isBlocked: true,
+            isDeleted: false,
+          },
+        },
+        {
+          $lookup: {
+            from: 'users', // Check if your collection is 'users' or 'appusers'
+            let: { credUserId: '$userId' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    // Converting the String userId from Credentials 
+                    // to an ObjectId to match the Users collection _id
+                    $eq: ['$_id', { $toObjectId: '$$credUserId' }]
+                  }
+                }
+              }
+            ],
+            as: 'userProfile',
+          },
+        },
+        { $unwind: '$userProfile' },
+
+        {
+          $project: {
+            _id: '$userProfile._id',
+            email: '$userProfile.email',
+            orgId: '$userProfile.orgId',
+            fullName: '$userProfile.fullName',
+            hasLoggedIn: '$userProfile.hasLoggedIn',
+            slug: '$userProfile.slug',
+            createdAt: '$userProfile.createdAt',
+            updatedAt: '$userProfile.updatedAt',
+          },
+        },
+      ]);
+
+      return res.status(200).json(blockedUsers);
+    }
+    catch (error) {
+      console.error("getBlockedUsers error:", error);
+      return res.status(500).json({
+        message: "Failed to fetch blocked users",
+      });
+    }
+  }
+
+  async unblockUser(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> {
+    try {
+      const userId = req.params.id;
+      const orgId = req.user?.orgId;
+
+      if (!userId) {
+        res.status(400).json({ message: "User id is required" });
+      }
+
+      if (!orgId) {
+        res.status(401).json({ message: "Unauthorized" });
+      }
+
+      const credential = await UserCredentials.findOneAndUpdate(
+        {
+          userId,
+          orgId,
+          isBlocked: true,
+          isDeleted: false,
+        },
+        { $set: { isBlocked: false, wrongCredentialCount: 0 } },
+        { new: true }
+      );
+
+      if (!credential) {
+        res
+          .status(404)
+          .json({ message: "User not found or not blocked" });
+      }
+
+      res.status(200).json({
+        message: "User unblocked successfully",
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+
+
 
   async getUserEmailByUserId(
     req: AuthenticatedUserRequest,
@@ -451,16 +556,16 @@ export class UserController {
    */
   extractOAuthUserDetails(userInfo: any, email: string) {
     // Common OAuth/OIDC claims
-    const firstName = 
-      userInfo?.given_name || 
+    const firstName =
+      userInfo?.given_name ||
       userInfo?.first_name ||
       userInfo?.firstName;
-    const lastName = 
-      userInfo?.family_name || 
+    const lastName =
+      userInfo?.family_name ||
       userInfo?.last_name ||
       userInfo?.lastName;
-    const displayName = 
-      userInfo?.name || 
+    const displayName =
+      userInfo?.name ||
       userInfo?.displayName ||
       userInfo?.preferred_username;
 
@@ -554,7 +659,7 @@ export class UserController {
         // Only update email if it's different from the current email
         const currentEmail = user.email?.toLowerCase().trim();
         const newEmail = email?.toLowerCase().trim();
-        
+
         if (currentEmail !== newEmail) {
           // Email is being changed - validate uniqueness
           const existingUser = await Users.findOne({
@@ -569,7 +674,7 @@ export class UserController {
           user.email = email;
         }
       }
-    
+
       await user.save();
 
       await this.eventService.start();
@@ -1421,15 +1526,15 @@ export class UserController {
       if (!userId) {
         throw new BadRequestError('User ID is required');
       }
-      
+
       const { page, limit, search } = req.query;
-      
+
       // Validate search parameter for XSS and format specifiers
       if (search) {
         try {
           validateNoXSS(String(search), 'search parameter');
           validateNoFormatSpecifiers(String(search), 'search parameter');
-          
+
           if (String(search).length > 1000) {
             throw new BadRequestError('Search parameter too long (max 1000 characters)');
           }
@@ -1439,7 +1544,7 @@ export class UserController {
           );
         }
       }
-      
+
       const queryParams = new URLSearchParams();
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));

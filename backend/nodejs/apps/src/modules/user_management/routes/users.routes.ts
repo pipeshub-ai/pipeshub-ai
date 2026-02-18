@@ -218,6 +218,37 @@ export function createUserRouter(container: Container) {
   );
 
   router.get(
+    '/blockedUsers',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    userAdminCheck,
+
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.getBlockedUsers(req, res);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.put(
+    '/unblock/:id',
+    authMiddleware.authenticate,
+    userAdminCheck,
+
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.unblockUser(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.get(
     '/:id',
     authMiddleware.authenticate,
     ValidationMiddleware.validate(UserIdValidationSchema),
