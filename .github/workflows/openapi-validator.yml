@@ -1,0 +1,118 @@
+name: OpenAPI Spec Validation
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+
+permissions:
+  contents: read
+
+jobs:
+  validate-openapi:
+    name: OpenAPI Spec Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 1: Lint the spec with Spectral
+      - name: Install Spectral
+        run: npm install -g @stoplight/spectral-cli
+
+      - name: Lint OpenAPI spec with Spectral
+        run: spectral lint backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml --ruleset .spectral.yaml --fail-severity error
+
+      # Step 2: Detect breaking changes against main
+      - name: Detect breaking changes with oasdiff
+        if: github.event_name == 'pull_request'
+        uses: oasdiff/oasdiff-action/breaking@main
+        with:
+          base: https://raw.githubusercontent.com/${{ github.repository }}/main/backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+          revision: backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml
+          fail-on: ERR
+
+      # Step 3: Check route coverage (code routes vs spec)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Check route coverage
+        run: |
+          pip install pyyaml
+          python .github/scripts/check-route-coverage.py
+
+      # Step 4: Check that API route changes include spec updates
+      - name: Check OpenAPI spec is updated with route changes
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main --depth=1
+
+          CHANGED_FILES=$(git diff --name-only origin/main..HEAD)
+
+          # Primary: route definition patterns (added or removed lines)
+          ROUTE_PATTERN='^[+-].*(router\.(get|post|put|patch|delete|options|head)\(|app\.(get|post|put|patch|delete)\(|app\.use\(\s*['"'"'"]\/|@router\.(get|post|put|patch|delete)\(|@app\.(get|post|put|patch|delete)\(|APIRouter\(|app\.include_router\()'
+
+          # Secondary: API contract patterns for specific file types
+          VALIDATOR_PATTERN='^[+-].*z\.(object|string|number|boolean|array|any|enum|union|literal|nativeEnum)\('
+          CONTROLLER_PATTERN='^[+-].*(req\.(query|params|body)\b)'
+          PYTHON_SCHEMA_PATTERN='^[+-].*(class\s+\w+.*BaseModel|Field\(|Query\(|Path\(|Body\(|Header\(|response_model)'
+
+          HAS_ROUTE_CHANGES=false
+          AFFECTED_FILES=""
+
+          CODE_FILES=$(echo "$CHANGED_FILES" | grep -E '\.(ts|tsx|py|js|jsx)$' || true)
+          if [ -n "$CODE_FILES" ]; then
+            while IFS= read -r file; do
+              FILE_DIFF=$(git diff origin/main..HEAD -- "$file" 2>/dev/null || true)
+
+              # Primary: route definition changes in any file
+              if echo "$FILE_DIFF" | grep -qE "$ROUTE_PATTERN"; then
+                HAS_ROUTE_CHANGES=true
+                AFFECTED_FILES="$AFFECTED_FILES\n  - $file"
+                continue
+              fi
+
+              # Secondary: API contract changes in specific file types
+              case "$file" in
+                */controllers/*.ts|*/controllers/*.js)
+                  if echo "$FILE_DIFF" | grep -qE "$CONTROLLER_PATTERN"; then
+                    HAS_ROUTE_CHANGES=true
+                    AFFECTED_FILES="$AFFECTED_FILES\n  - $file (controller parameter change)"
+                  fi
+                  ;;
+                */validators/*.ts|*/validator/*.ts|*/validators/*.js|*/validator/*.js)
+                  if echo "$FILE_DIFF" | grep -qE "$VALIDATOR_PATTERN"; then
+                    HAS_ROUTE_CHANGES=true
+                    AFFECTED_FILES="$AFFECTED_FILES\n  - $file (validation schema change)"
+                  fi
+                  ;;
+                */schemas/*.py|*/models/*.py)
+                  if echo "$FILE_DIFF" | grep -qE "$PYTHON_SCHEMA_PATTERN"; then
+                    HAS_ROUTE_CHANGES=true
+                    AFFECTED_FILES="$AFFECTED_FILES\n  - $file (Python schema change)"
+                  fi
+                  ;;
+              esac
+            done <<< "$CODE_FILES"
+          fi
+
+          HAS_SPEC_CHANGES=$(echo "$CHANGED_FILES" | grep -c "pipeshub-openapi.yaml" || true)
+
+          if [ "$HAS_ROUTE_CHANGES" = true ] && [ "$HAS_SPEC_CHANGES" -eq 0 ]; then
+            echo "::error::OpenAPI spec update required! This PR modifies API routes but does not update pipeshub-openapi.yaml."
+            echo ""
+            echo "Affected files with route changes:"
+            echo -e "$AFFECTED_FILES"
+            echo ""
+            echo "Please update backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml to reflect the API changes."
+            exit 1
+          fi
+
+          if [ "$HAS_ROUTE_CHANGES" = true ] && [ "$HAS_SPEC_CHANGES" -gt 0 ]; then
+            echo "API route changes detected and OpenAPI spec is updated."
+          else
+            echo "No API route changes detected. OpenAPI spec update not required."
+          fi
