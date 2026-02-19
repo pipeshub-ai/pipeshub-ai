@@ -39,8 +39,12 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import (
+    FilterCategory,
     FilterCollection,
+    FilterField,
     FilterOperator,
+    FilterType,
+    IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -54,6 +58,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -156,6 +161,22 @@ def get_mimetype_enum_for_box(entry_type: str, filename: str = None) -> MimeType
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.file_extension_filter())
+        .add_filter_field(FilterField(
+            name="shared",
+            display_name="Index Items Shared by Me",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of items you have shared (with a link or collaboration)",
+            default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name="shared_with_me",
+            display_name="Index Items Shared With Me",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of items shared with you via collaboration",
+            default_value=True,
+        ))
         .with_webhook_config(True, ["FILE.UPLOADED", "FILE.DELETED", "FILE.MOVED", "FOLDER.CREATED", "COLLABORATION.CREATED", "COLLABORATION.ACCEPTED", "COLLABORATION.REMOVED"])
         .with_sync_strategies(["SCHEDULED", "MANUAL"])
         .with_scheduled_config(True, 60)
@@ -300,7 +321,6 @@ class BoxConnector(BaseConnector):
         user_id: str,
         user_email: str,
         record_group_id: str,
-        is_personal_folder: bool
     ) -> Optional[RecordUpdate]:
         """
         Process a single Box entry and detect changes.
@@ -360,6 +380,13 @@ class BoxConnector(BaseConnector):
 
             web_url = f"https://app.box.com/{entry_type}/{entry_id}"
 
+            # Shared by me: item has a shared link or was explicitly shared
+            is_shared = bool(entry.get('shared_link'))
+            # Shared with me: item is owned by someone else (e.g. from collaboration list)
+            owned_by = entry.get('owned_by') or {}
+            owner_id = str(owned_by.get('id', '')) if owned_by else ''
+            is_shared_with_me = bool(owner_id and owner_id != user_id)
+
             file_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
@@ -387,7 +414,9 @@ class BoxConnector(BaseConnector):
                 path=file_path,
                 etag=entry.get('etag'),
                 sha1_hash=entry.get('sha1'),
-                external_revision_id=entry.get('etag')
+                external_revision_id=entry.get('etag'),
+                is_shared=is_shared,
+                is_shared_with_me=is_shared_with_me,
             )
 
             # 1. Fetch explicit API permissions (Collaborators only)
@@ -418,6 +447,34 @@ class BoxConnector(BaseConnector):
                     )
 
             permissions = list(final_permissions_map.values())
+
+            # Respect indexing filters for shared / shared_with_me (same as Drive)
+            if self.indexing_filters:
+                shared_disabled = (
+                    file_record.is_shared
+                    and not file_record.is_shared_with_me
+                    and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED, default=True)
+                )
+                shared_with_me_disabled = (
+                    file_record.is_shared_with_me
+                    and not self.indexing_filters.is_enabled(IndexingFilterKey.SHARED_WITH_ME, default=True)
+                )
+                if shared_disabled or shared_with_me_disabled:
+                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            # Link shared-with-me records to the user's "Shared with Me" record group (for future collaboration sync)
+            if file_record.is_shared_with_me and user_email:
+                file_record.external_record_group_id = None
+                async with self.data_store_provider.transaction() as tx_store:
+                    shared_with_me_group = await tx_store.get_record_group_by_external_id(
+                        connector_id=self.connector_id,
+                        external_id=f"0S:{user_email}",
+                    )
+                    if shared_with_me_group:
+                        await tx_store.create_record_group_relation(
+                            file_record.id,
+                            shared_with_me_group.id,
+                        )
 
             # Determine if new or updated
             if existing_record:
@@ -515,7 +572,6 @@ class BoxConnector(BaseConnector):
         user_id: str,
         user_email: str,
         record_group_id: str,
-        is_personal_folder: bool
     ) -> AsyncGenerator[Tuple[Optional[FileRecord], List[Permission], RecordUpdate], None]:
         """
         Process Box items and yield FileRecord, permissions, and RecordUpdate.
@@ -526,7 +582,6 @@ class BoxConnector(BaseConnector):
                 user_id=user_id,
                 user_email=user_email,
                 record_group_id=record_group_id,
-                is_personal_folder=is_personal_folder
             )
 
             if record_update:
@@ -870,7 +925,18 @@ class BoxConnector(BaseConnector):
                     source_updated_at=int(datetime.fromisoformat(root_folder.get('modified_at', '').replace('Z', '+00:00')).timestamp() * 1000) if root_folder.get('modified_at') else None,
                 )
 
-                # User has owner permission on their own drive
+                # Shared with Me: virtual group for items shared with this user (e.g. via collaborations)
+                shared_with_me_record_group = RecordGroup(
+                    name=f"{user.full_name or user.email}'s Shared with Me",
+                    org_id=self.data_entities_processor.org_id,
+                    external_group_id=f"0S:{user.email}",
+                    connector_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    group_type=RecordGroupType.DRIVE,
+                    is_internal=True,
+                )
+
+                # User has owner permission on their own drive and on Shared with Me
                 drive_permissions = [Permission(
                     external_id=user.source_user_id,
                     email=user.email,
@@ -878,7 +944,10 @@ class BoxConnector(BaseConnector):
                     entity_type=EntityType.USER
                 )]
 
-                await self.data_entities_processor.on_new_record_groups([(record_group, drive_permissions)])
+                await self.data_entities_processor.on_new_record_groups([
+                    (record_group, drive_permissions),
+                    (shared_with_me_record_group, drive_permissions),
+                ])
 
             self.logger.info("Box record groups sync completed")
 
@@ -973,7 +1042,6 @@ class BoxConnector(BaseConnector):
                 user.source_user_id,
                 user.email,
                 current_record_group_id,
-                True
             ):
                 if record_update.is_deleted or record_update.is_updated:
                     await self._handle_record_updates(record_update)
@@ -1171,12 +1239,19 @@ class BoxConnector(BaseConnector):
         """
         self.logger.info("🔄 [Incremental] Starting Box Enterprise incremental sync.")
 
+        our_org_box_user_ids: Set[str] = set()
         try:
             self.logger.info("👥 [Incremental] Refreshing User list...")
             users = await self._sync_users()
 
             # Update the in-memory or DB map of users so we can link files to them later
             await self.data_entities_processor.on_new_app_users(users)
+
+            # Box user IDs that belong to our org (for distinguishing external vs internal shares)
+            our_org_box_user_ids = {
+                str(u.source_user_id) for u in (users or [])
+                if getattr(u, 'source_user_id', None)
+            }
 
             self.logger.info("🛡️ [Incremental] Refreshing Virtual Groups...")
             await self._ensure_virtual_groups()
@@ -1227,7 +1302,7 @@ class BoxConnector(BaseConnector):
 
                 if events:
                     self.logger.info(f"📥 [Incremental] Fetched {len(events)} new events from Box.")
-                    await self._process_event_batch(events)
+                    await self._process_event_batch(events, our_org_box_user_ids=our_org_box_user_ids)
                 else:
                     self.logger.info("ℹ️ [Incremental] Box says: No new events yet.")
                     has_more = False
@@ -1247,13 +1322,19 @@ class BoxConnector(BaseConnector):
     async def _process_event_batch(
         self,
         events: List[Dict],
+        our_org_box_user_ids: Optional[Set[str]] = None,
     ) -> None:
         """
         Deduplicates events by event_id (Box may return events more than once or out of order),
         handles deletions, and groups updates.
         Supports "Flat" dictionary schemas and fetches missing emails. Handles files and folders.
+
+        Shared-with-me: we only link to Shared with Me when the share is *from outside our org*
+        to a user in our org. Shares from our org to external users are ignored for the grantee;
+        shares from our org to our org (internal) are not added to Shared with Me.
         """
         items_to_sync: Dict[str, Tuple[str, str]] = {}  # item_id -> (owner_id, item_type)
+        items_to_sync_shared_with_me: List[Tuple[str, str, str, str]] = []  # (item_id, item_type, collaborator_box_id, collaborator_email)
         items_to_delete: set = set()
 
         DELETION_EVENTS = {
@@ -1271,9 +1352,13 @@ class BoxConnector(BaseConnector):
         COLLABORATION_GRANT_EVENTS = {
             'COLLABORATION_CREATED',
             'COLLABORATION_INVITE',
+            'COLLABORATION_INVITE_ACCEPTED',
             'COLLABORATION_ACCEPTED',
             'COLLABORATION.CREATED',
             'COLLABORATION.ACCEPTED',
+            'COLLABORATION_ADD',
+            'ADD_COLLABORATOR',
+            'COLLABORATION.INVITE',
         }
 
         def get_val(obj: Optional[object], key: str, default: Optional[object] = None) -> Optional[object]:
@@ -1382,10 +1467,38 @@ class BoxConnector(BaseConnector):
                             self.logger.warning(f"⚠️ Failed to fetch owner for {item_type} {item_id}: {e}")
 
                     if owner_id:
-                        # Queue for sync to refresh permissions
-                        items_to_sync[item_id] = (owner_id, item_type)
+                        # Queue for sync to refresh permissions (owner's drive)
+                        items_to_sync[item_id] = (str(owner_id), item_type)
                     else:
                         self.logger.warning(f"⚠️ Cannot sync {item_type} {item_id} - no owner found")
+
+                    # Queue for "Shared with Me" only when: collaborator is in our org AND owner is outside our org.
+                    # (Our org → external: we ignore for the grantee. External → our org: link to Shared with Me.)
+                    owner_in_our_org = (
+                        our_org_box_user_ids is not None
+                        and len(our_org_box_user_ids) > 0
+                        and str(owner_id) in our_org_box_user_ids
+                    )
+                    if item_id and granted_email and granted_user_box_id and not owner_in_our_org:
+                        collaborators_in_org = await self._get_app_users_by_emails([granted_email])
+                        if collaborators_in_org:
+                            items_to_sync_shared_with_me.append((
+                                str(item_id),
+                                item_type or 'file',
+                                str(granted_user_box_id),
+                                granted_email,
+                            ))
+                            self.logger.info(
+                                f"📥 Queued {item_type} {item_id} for Shared with Me (external→our org) for {granted_email}"
+                            )
+                        else:
+                            self.logger.debug(
+                                f"Skip Shared with Me for {item_id}: grantee {granted_email} not in our org"
+                            )
+                    elif owner_in_our_org and item_id and granted_email:
+                        self.logger.debug(
+                            f"Skip Shared with Me for {item_id}: owner in our org (internal share or our→external)"
+                        )
                 else:
                     self.logger.warning("⚠️ Collaboration grant skipped. Missing item ID")
 
@@ -1553,8 +1666,79 @@ class BoxConnector(BaseConnector):
                 if items['folders']:
                     self.logger.info(f"📁 Syncing {len(items['folders'])} folder(s) for owner {owner_id}")
                     await self._fetch_and_sync_folders_for_owner(owner_id, items['folders'])
-        else:
+
+        # 7. SYNC ITEMS AS "SHARED WITH ME" FOR COLLABORATORS (from COLLABORATION_* events)
+        if items_to_sync_shared_with_me:
+            self.logger.info(f"📥 Syncing {len(items_to_sync_shared_with_me)} item(s) as Shared with Me for collaborators")
+            await self._fetch_and_sync_items_as_shared_with_me(items_to_sync_shared_with_me)
+
+        if not items_to_sync and not items_to_sync_shared_with_me and not items_to_delete:
             self.logger.debug("ℹ️ No items to sync from this event batch")
+
+    async def _fetch_and_sync_items_as_shared_with_me(
+        self,
+        items: List[Tuple[str, str, str, str]],  # (item_id, item_type, collaborator_box_id, collaborator_email)
+    ) -> None:
+        """
+        For collaboration-grant events: fetch each item as the collaborator and upsert with
+        is_shared_with_me=True so the record is linked to their Shared with Me group.
+        """
+        if not items:
+            return
+        # Group by collaborator to minimize as-user context switches
+        by_collaborator: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}  # (box_id, email) -> [(item_id, item_type)]
+        for item_id, item_type, collab_box_id, collab_email in items:
+            key = (collab_box_id, collab_email)
+            if key not in by_collaborator:
+                by_collaborator[key] = []
+            by_collaborator[key].append((item_id, item_type))
+
+        for (collab_box_id, collab_email), collab_items in by_collaborator.items():
+            try:
+                await self.data_source.set_as_user_context(collab_box_id)
+                updates_to_push = []
+                for item_id, item_type in collab_items:
+                    try:
+                        if (item_type or "").lower() == "folder":
+                            folder_response = await self.data_source.folders_get_folder_by_id(item_id)
+                            if not folder_response.success:
+                                self.logger.warning(f"Failed to fetch folder {item_id} as shared-with-me: {folder_response.error}")
+                                continue
+                            entry = self._to_dict(folder_response.data)
+                        else:
+                            file_response = await self.data_source.files_get_file_by_id(item_id)
+                            if not file_response.success:
+                                self.logger.warning(f"Failed to fetch file {item_id} as shared-with-me: {file_response.error}")
+                                continue
+                            entry = self._to_dict(file_response.data)
+                        if not entry:
+                            continue
+                        update_obj = await self._process_box_entry(
+                            entry=entry,
+                            user_id=collab_box_id,
+                            user_email=collab_email,
+                            record_group_id=collab_box_id,
+                        )
+                        if update_obj:
+                            updates_to_push.append((update_obj.record, update_obj.new_permissions or []))
+                            if (item_type or "").lower() == "folder":
+                                batch_records = []
+                                await self._sync_folder_contents_recursively(
+                                    owner_id=collab_box_id,
+                                    folder_id=item_id,
+                                    batch_records=batch_records,
+                                    user_email=collab_email,
+                                )
+                                if batch_records:
+                                    await self.data_entities_processor.on_new_records(batch_records)
+                    except Exception as e:
+                        self.logger.warning(f"Error syncing shared-with-me item {item_id} for {collab_email}: {e}")
+                if updates_to_push:
+                    await self.data_entities_processor.on_new_records(updates_to_push)
+            except Exception as e:
+                self.logger.error(f"Error syncing shared-with-me for collaborator {collab_email}: {e}")
+            finally:
+                await self.data_source.clear_as_user_context()
 
     async def _fetch_and_sync_files_for_owner(self, owner_id: str, file_ids: List[str]) -> None:
         """
@@ -1610,7 +1794,6 @@ class BoxConnector(BaseConnector):
                     user_id=owner_id,
                     user_email="incremental_sync_user",
                     record_group_id=owner_id,
-                    is_personal_folder=True
                 )
 
                 if update_obj:
@@ -1669,7 +1852,6 @@ class BoxConnector(BaseConnector):
                         user_id=owner_id,
                         user_email="incremental_sync_user",
                         record_group_id=owner_id,
-                        is_personal_folder=True
                     )
 
                     if update_obj:
@@ -1712,7 +1894,6 @@ class BoxConnector(BaseConnector):
                         user_id=owner_id,
                         user_email="incremental_sync_user",
                         record_group_id=owner_id,
-                        is_personal_folder=True
                     )
 
                     if update_obj:
@@ -1739,14 +1920,22 @@ class BoxConnector(BaseConnector):
             # 6. ALWAYS Clear Context
             await self.data_source.clear_as_user_context()
 
-    async def _sync_folder_contents_recursively(self, owner_id: str, folder_id: str, batch_records: List) -> None:
+    async def _sync_folder_contents_recursively(
+        self,
+        owner_id: str,
+        folder_id: str,
+        batch_records: List,
+        user_email: Optional[str] = None,
+    ) -> None:
         """
         Recursively fetch all items in a folder, similar to _sync_folder_recursively but simpler.
         Used by incremental sync to handle new folders.
+        When user_email is provided (e.g. for shared-with-me sync), use it for Shared with Me group linking.
         """
         offset = 0
         limit = 1000
         fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
+        effective_email = user_email or "incremental_sync_user"
 
         while True:
             try:
@@ -1776,9 +1965,8 @@ class BoxConnector(BaseConnector):
                         update_obj = await self._process_box_entry(
                             entry=item,
                             user_id=owner_id,
-                            user_email="incremental_sync_user",
+                            user_email=effective_email,
                             record_group_id=owner_id,
-                            is_personal_folder=True
                         )
 
                         if update_obj:
@@ -1800,7 +1988,9 @@ class BoxConnector(BaseConnector):
 
                 # Recursively process subfolders
                 for sub_folder_id in sub_folders_to_traverse:
-                    await self._sync_folder_contents_recursively(owner_id, sub_folder_id, batch_records)
+                    await self._sync_folder_contents_recursively(
+                        owner_id, sub_folder_id, batch_records, user_email=user_email
+                    )
 
                 offset += len(items)
                 if offset >= total_count:
@@ -2011,7 +2201,6 @@ class BoxConnector(BaseConnector):
                             user_id=owner_id,
                             user_email="reindex_process",
                             record_group_id=owner_id,
-                            is_personal_folder=True
                         )
 
                         if update_result:
