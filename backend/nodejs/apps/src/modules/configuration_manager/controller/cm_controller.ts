@@ -2443,6 +2443,9 @@ export const getAvailableModelsByType =
           markDefault = true;
         }
 
+        // Only include modelFriendlyName if there's a single model (not comma-separated)
+        const shouldIncludeFriendlyName = modelNames.length === 1 && config.modelFriendlyName;
+
         for (const modelName of modelNames) {
           const flattenedModel = {
             modelType,
@@ -2452,6 +2455,7 @@ export const getAvailableModelsByType =
             isMultimodal: config.isMultimodal || false,
             isReasoning: config.isReasoning || false,
             isDefault: markDefault,
+            ...(shouldIncludeFriendlyName && { modelFriendlyName: config.modelFriendlyName }),
           };
           markDefault = false; // Only mark first model as default
           flattenedModels.push(flattenedModel);
@@ -2594,6 +2598,9 @@ export const addAIModelProvider =
         );
       } while (existingKeys.includes(modelKey));
 
+      // Extract modelFriendlyName from configuration if present
+      const modelFriendlyName = configuration.modelFriendlyName;
+
       // Prepare the new configuration
       const newConfig = {
         provider,
@@ -2603,6 +2610,7 @@ export const addAIModelProvider =
         isDefault,
         isReasoning,
         contextLength,
+        ...(modelFriendlyName && { modelFriendlyName }),
       };
 
       // If this is set as default, remove default flag from other models
@@ -2784,12 +2792,18 @@ export const updateAIModelProvider =
         return;
       }
 
+      // Extract modelFriendlyName from configuration if present
+      const modelFriendlyName = configuration.modelFriendlyName;
+
       // Update the model configuration
       targetModel.configuration = configuration;
       targetModel.isMultimodal = isMultimodal;
       targetModel.isDefault = isDefault;
       targetModel.isReasoning = isReasoning;
       targetModel.contextLength = contextLength || null;
+      if (modelFriendlyName !== undefined) {
+        targetModel.modelFriendlyName = modelFriendlyName;
+      }
       // If this is set as default, remove default flag from other models of the same type
       if (isDefault) {
         for (const config of aiModels[targetModelType]) {

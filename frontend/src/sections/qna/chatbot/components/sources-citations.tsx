@@ -123,6 +123,7 @@ interface SourcesAndCitationsProps {
     modelName?: string;
     modelKey?: string;
     chatMode?: string;
+    modelFriendlyName?: string;
   } | null;
 }
 
@@ -398,7 +399,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
           >
             Model:
           </Typography>
-          {modelInfo.modelName}
+          {modelInfo?.modelFriendlyName ? modelInfo?.modelFriendlyName : modelInfo?.modelName}
           {modelInfo.chatMode && (
             <Box
               component="span"
@@ -510,7 +511,7 @@ const SourcesAndCitations: React.FC<SourcesAndCitationsProps> = ({
                   '"Inter", "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
               }}
             >
-              {modelInfo.modelName}
+              {modelInfo.modelFriendlyName ? modelInfo.modelFriendlyName : modelInfo.modelName}
               {modelInfo.chatMode && (
                 <Box
                   component="span"

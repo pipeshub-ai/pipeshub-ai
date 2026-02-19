@@ -296,9 +296,35 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       const llmNodes: Node<NodeData>[] = [];
       if (agent.models && agent.models.length > 0) {
         agent.models.forEach((modelConfig, index) => {
-          const matchingModel = models.find(
-            (m) => m.modelName === modelConfig.modelName || m.provider === modelConfig.provider
-          );
+          // Match models with priority: modelKey > (modelName + provider) > modelName > provider
+          let matchingModel = null;
+          const modelConfigAny = modelConfig as any; // Type assertion for optional fields that may exist in runtime data
+          
+          // First, try to match by modelKey (most specific and unique identifier)
+          if (modelConfigAny.modelKey) {
+            matchingModel = models.find((m) => m.modelKey === modelConfigAny.modelKey);
+          }
+          
+          // If no match by modelKey, try matching by modelName AND provider together
+          if (!matchingModel && modelConfig.modelName && modelConfig.provider) {
+            matchingModel = models.find(
+              (m) => m.modelName === modelConfig.modelName && m.provider === modelConfig.provider
+            );
+          }
+          
+          // If still no match, try just modelName
+          if (!matchingModel && modelConfig.modelName) {
+            matchingModel = models.find((m) => m.modelName === modelConfig.modelName);
+          }
+          
+          // Last resort: match by provider only
+          if (!matchingModel && modelConfig.provider) {
+            matchingModel = models.find((m) => m.provider === modelConfig.provider);
+          }
+
+          // Use friendly name if available, otherwise fallback to modelName
+          const displayName = matchingModel?.modelFriendlyName || modelConfig.modelName || 'AI Model';
+          const modelFriendlyName = matchingModel?.modelFriendlyName;
 
           const llmNode: Node<NodeData> = {
             id: `llm-${(nodeCounter += 1)}`,
@@ -307,18 +333,17 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             data: {
               id: `llm-${nodeCounter - 1}`,
               type: `llm-${matchingModel?.modelKey || modelConfig.modelName?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
-              label:
-                modelConfig.modelName
-                  .trim() || 'AI Model',
+              label: displayName.trim(),
               description: `${formattedProvider(modelConfig.provider || 'AI')} language model`,
               icon: brainIcon,
               config: {
-                modelKey: matchingModel?.modelKey || modelConfig.modelName,
+                modelKey: matchingModel?.modelKey || modelConfigAny.modelKey || modelConfig.modelName,
                 modelName: modelConfig.modelName,
+                modelFriendlyName,
                 provider: modelConfig.provider,
-                modelType: matchingModel?.modelType || 'llm',
-                isMultimodal: matchingModel?.isMultimodal || false,
-                isDefault: matchingModel?.isDefault || false,
+                modelType: matchingModel?.modelType || modelConfigAny.modelType || 'llm',
+                isMultimodal: matchingModel?.isMultimodal ?? modelConfigAny.isMultimodal ?? false,
+                isDefault: matchingModel?.isDefault ?? modelConfigAny.isDefault ?? false,
                 isReasoning: modelConfig.isReasoning || false,
               },
               inputs: ['prompt', 'context'],
@@ -332,6 +357,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       } else if (models.length > 0) {
         // Add default model with optimal positioning
         const defaultModel = models[0];
+        const displayName = defaultModel.modelFriendlyName || defaultModel.modelName || 'AI Model';
         const llmNode: Node<NodeData> = {
           id: `llm-${(nodeCounter += 1)}`,
           type: 'flowNode',
@@ -339,14 +365,13 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           data: {
             id: `llm-${nodeCounter - 1}`,
             type: `llm-${defaultModel.modelKey || 'default'}`,
-            label:
-              defaultModel.modelName
-                .trim() || 'AI Model',
+            label: displayName.trim(),
             description: `${formattedProvider(defaultModel.provider || 'AI')} language model`,
             icon: brainIcon,
             config: {
               modelKey: defaultModel.modelKey,
               modelName: defaultModel.modelName,
+              modelFriendlyName: defaultModel.modelFriendlyName,
               provider: defaultModel.provider,
               modelType: defaultModel.modelType,
               isMultimodal: defaultModel.isMultimodal,

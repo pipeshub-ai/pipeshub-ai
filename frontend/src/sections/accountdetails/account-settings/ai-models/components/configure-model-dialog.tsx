@@ -221,6 +221,7 @@ const ModelConfigurationDialog: React.FC<ModelConfigurationDialogProps> = ({
           isMultimodal: currentProvider.editingModel!.isMultimodal === true,
           isReasoning: currentProvider.editingModel!.isReasoning === true,
           contextLength: currentProvider.editingModel!.contextLength,
+          modelFriendlyName: currentProvider.editingModel!.modelFriendlyName || currentProvider.editingModel!.configuration?.modelFriendlyName,
         };
       }
       return {

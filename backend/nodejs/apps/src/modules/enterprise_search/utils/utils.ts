@@ -42,12 +42,20 @@ const logger = new Logger({
 export const extractModelInfo = (
   body: any,
   defaultChatMode: string = 'quick',
-): IAIModel => ({
-  modelKey: body.modelKey || undefined,
-  modelName: body.modelName || undefined,
-  modelProvider: body.modelProvider || undefined,
-  chatMode: body.chatMode || defaultChatMode,
-});
+): IAIModel => {
+  // Use modelFriendlyName if provided and not empty, otherwise fallback to modelName for backward compatibility
+  const modelFriendlyName = body.modelFriendlyName && body.modelFriendlyName.trim() 
+    ? body.modelFriendlyName.trim() 
+    : (body.modelName || undefined);
+  
+  return {
+    modelKey: body.modelKey || undefined,
+    modelName: body.modelName || undefined,
+    modelProvider: body.modelProvider || undefined,
+    chatMode: body.chatMode || defaultChatMode,
+    modelFriendlyName: modelFriendlyName,
+  };
+};
 
 export const buildUserQueryMessage = (query: string): IMessage => ({
   messageType: 'user_query',

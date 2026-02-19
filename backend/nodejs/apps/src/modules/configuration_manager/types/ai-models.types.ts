@@ -9,6 +9,7 @@ export interface AIModelConfiguration {
   isDefault: boolean;
   isReasoning: boolean;
   contextLength?: number | null;
+  modelFriendlyName?: string;
   [key: string]: any;
 }
 

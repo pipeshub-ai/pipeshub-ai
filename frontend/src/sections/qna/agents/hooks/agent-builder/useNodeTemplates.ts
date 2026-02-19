@@ -101,11 +101,13 @@ export const useAgentBuilderNodeTemplates = (
       // LLM Nodes - Generated from available models
       ...availableModels.map((model: any) => {
         const modelName = model.modelName || 'Unknown Model';
-        const normalizedName = modelName
-          .trim();
+        const modelFriendlyName = model.modelFriendlyName;
+        // Use friendly name for display, fallback to modelName
+        const displayName = modelFriendlyName || modelName;
+        const normalizedName = displayName.trim();
         
         // Create unique type identifier using provider and modelName to avoid conflicts
-        const uniqueTypeId = `${model.provider}-${modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
+        const uniqueTypeId = `${model.provider}-${model.modelKey}-${model.modelName}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase();
         
         return {
           type: `llm-${uniqueTypeId}`,
@@ -115,6 +117,7 @@ export const useAgentBuilderNodeTemplates = (
           defaultConfig: {
             modelKey: model.modelKey,
             modelName: model.modelName,
+            modelFriendlyName,
             provider: model.provider,
             modelType: model.modelType,
             temperature: 0.7,

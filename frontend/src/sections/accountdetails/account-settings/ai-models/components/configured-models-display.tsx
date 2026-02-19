@@ -348,7 +348,7 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
                                   color="text.secondary"
                                   sx={{ fontSize: '0.8125rem' }}
                                 >
-                                  {model.configuration?.model || 'Custom Model'}
+                                  {model.modelFriendlyName || model.configuration?.model || 'Custom Model'}
                                 </Typography>
                               </Box>
                             </Box>
@@ -414,8 +414,22 @@ const ConfiguredModelsDisplay: React.FC<ConfiguredModelsDisplayProps> = ({
             boxShadow: theme.customShadows?.z8 || '0 4px 12px rgba(0,0,0,0.1)',
           },
         }}
+        transformOrigin={{ horizontal: 'right', vertical: 'top' }}
+        anchorOrigin={{ horizontal: 'right', vertical: 'bottom' }}
+        disablePortal={false}
       >
-        <MenuItem onClick={() => selectedModel && onEdit(selectedModel)}>
+        <MenuItem 
+          onClick={(e) => {
+            e.stopPropagation();
+            handleMenuClose(); // Close menu first
+            if (selectedModel) {
+              // Use setTimeout to ensure menu closes before dialog opens
+              setTimeout(() => {
+                onEdit(selectedModel);
+              }, 100);
+            }
+          }}
+        >
           <ListItemIcon>
             <Iconify icon={pencilIcon} width={16} height={16} />
           </ListItemIcon>

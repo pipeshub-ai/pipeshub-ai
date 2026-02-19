@@ -820,10 +820,10 @@ const ChatInterface = () => {
     }
 
     // Set model from conversation if available
-    if (conversationModelInfo.modelName) {
+    if (conversationModelInfo.modelName && conversationModelInfo.modelKey) {
       // Try to find matching model by modelName first
       let matchingModel = models.find(
-        (m) => m.modelName === conversationModelInfo.modelName
+        (m) => m.modelName === conversationModelInfo.modelName && m.modelKey === conversationModelInfo.modelKey
       );
 
       // If not found by name, try by modelKey
@@ -1317,6 +1317,9 @@ const ChatInterface = () => {
             query: trimmedInput,
             modelKey: currentModel?.modelKey,
             modelName: currentModel?.modelName,
+            modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+              ? currentModel.modelFriendlyName.trim() 
+              : undefined,
             chatMode: chatMode || currentMode?.id,
             filters: filters || currentFiltersValue,
           },
@@ -1972,6 +1975,9 @@ const ChatInterface = () => {
               filters: currentFiltersValue,
               modelKey: currentModel?.modelKey,
               modelName: currentModel?.modelName,
+              modelFriendlyName: currentModel?.modelFriendlyName && currentModel.modelFriendlyName.trim() 
+                ? currentModel.modelFriendlyName.trim() 
+                : undefined,
               chatMode: currentMode?.id || 'standard',
             }),
             signal: controller.signal,

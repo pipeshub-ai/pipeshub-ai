@@ -132,6 +132,7 @@ const messageSchema = new Schema<IMessage>(
       modelName: { type: String },
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
+      modelFriendlyName: { type: String },
     },
     // Reference data for follow-up queries (stores IDs from tool responses)
     referenceData: [referenceDataItemSchema],
@@ -172,6 +173,7 @@ const conversationSchema = new Schema<IConversation>(
       modelName: { type: String },
       modelProvider: { type: String },
       chatMode: { type: String, default: 'quick' },
+      modelFriendlyName: { type: String },
     },
     // Errors array to track errors during conversation
     conversationErrors: [
