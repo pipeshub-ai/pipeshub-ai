@@ -363,14 +363,21 @@ class DataSourceEntitiesProcessor:
         This should be called AFTER saving the record (when record.id is available).
         """
 
-        if not record.id or not record_group_id:
-            return
+        if record.id and record_group_id:
+            # Create a edge between the record and the record group if it doesn't exist
+            await tx_store.create_record_group_relation(record.id, record_group_id)
 
-        # Create a edge between the record and the record group if it doesn't exist
-        await tx_store.create_record_group_relation(record.id, record_group_id)
+            if record.inherit_permissions:
+                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+            else:
+                await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
-        if record.inherit_permissions:
-            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
+        if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
+            shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
+            if shared_with_me_record_group:
+                await tx_store.create_record_group_relation(record.id, shared_with_me_record_group.id)
+            else:
+                self.logger.warning(f"Shared with me record group with external ID {record.shared_with_me_record_group_id} not found in database")
 
     async def _prepare_ticket_user_edge(
         self,
@@ -717,6 +724,7 @@ class DataSourceEntitiesProcessor:
             raise
 
     async def _process_record(self, record: Record, permissions: List[Permission], tx_store: TransactionStore) -> Optional[Record]:
+        self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
 
@@ -734,7 +742,7 @@ class DataSourceEntitiesProcessor:
                 await self._handle_updated_record(record, existing_record, tx_store)
 
         # Link record to group AFTER saving (when record.id is available for edges)
-        if record_group_id:
+        if record_group_id or record.is_shared_with_me:
             await self._link_record_to_group(record, record_group_id, tx_store)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided

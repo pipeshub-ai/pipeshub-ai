@@ -7,9 +7,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_service import RetrievalService
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.query_transform import setup_query_transformation
 
 router = APIRouter()
@@ -39,11 +39,10 @@ async def get_retrieval_service(request: Request) -> RetrievalService:
     retrieval_service = await container.retrieval_service()
     return retrieval_service
 
-
-async def get_arango_service(request: Request) -> BaseArangoService:
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
     container: QueryAppContainer = request.app.container
-    arango_service = await container.arango_service()
-    return arango_service
+    graph_provider = await container.graph_provider()
+    return graph_provider
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -58,7 +57,7 @@ async def search(
     request: Request,
     body: SearchQuery,
     retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 )-> JSONResponse :
     """Perform semantic search across documents"""
     try:
@@ -81,7 +80,7 @@ async def search(
             logger.info(f"Search request with KB filtering: {kb_ids}")
 
             # Validate KB access
-            kb_validation = await arango_service.validate_user_kb_access(
+            kb_validation = await graph_provider.validate_user_kb_access(
                 user_id=request.state.user.get("userId"),
                 org_id=request.state.user.get("orgId"),
                 kb_ids=kb_ids
@@ -136,7 +135,6 @@ async def search(
             user_id=request.state.user.get("userId"),
             limit=body.limit,
             filter_groups=updated_filters,
-            arango_service=arango_service,
             knowledge_search=True,
         )
         custom_status_code = results.get("status_code", 500)

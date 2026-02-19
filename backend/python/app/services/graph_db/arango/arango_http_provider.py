@@ -7,19 +7,29 @@ This replaces the synchronous python-arango SDK with async HTTP calls.
 All operations are non-blocking and use aiohttp for async I/O.
 """
 import time
+import unicodedata
 import uuid
+from collections import defaultdict
 from logging import Logger
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
 
 from app.config.configuration_service import ConfigurationService
+
+if TYPE_CHECKING:
+    from fastapi import Request
+
+
 from app.config.constants.arangodb import (
     RECORD_TYPE_COLLECTION_MAPPING,
     CollectionNames,
     Connectors,
+    DepartmentNames,
     GraphNames,
     OriginTypes,
+    ProgressStatus,
+    RecordTypes,
 )
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -37,12 +47,100 @@ from app.models.entities import (
     User,
     WebpageRecord,
 )
+from app.schema.arango.documents import (
+    agent_schema,
+    agent_template_schema,
+    app_role_schema,
+    app_schema,
+    comment_record_schema,
+    department_schema,
+    file_record_schema,
+    link_record_schema,
+    mail_record_schema,
+    orgs_schema,
+    people_schema,
+    project_record_schema,
+    record_group_schema,
+    record_schema,
+    team_schema,
+    ticket_record_schema,
+    user_schema,
+    webpage_record_schema,
+)
+from app.schema.arango.edges import (
+    basic_edge_schema,
+    belongs_to_schema,
+    entity_relations_schema,
+    inherit_permissions_schema,
+    is_of_type_schema,
+    permissions_schema,
+    record_relations_schema,
+    user_app_relation_schema,
+    user_drive_relation_schema,
+)
+from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
+MAX_REINDEX_DEPTH = 100  # Maximum depth for reindexing records (unlimited depth is capped at this value)
+
+# Collection definitions with their schemas
+NODE_COLLECTIONS = [
+    (CollectionNames.RECORDS.value, record_schema),
+    (CollectionNames.DRIVES.value, None),
+    (CollectionNames.FILES.value, file_record_schema),
+    (CollectionNames.LINKS.value, link_record_schema),
+    (CollectionNames.MAILS.value, mail_record_schema),
+    (CollectionNames.WEBPAGES.value, webpage_record_schema),
+    (CollectionNames.COMMENTS.value, comment_record_schema),
+    (CollectionNames.PEOPLE.value, people_schema),
+    (CollectionNames.USERS.value, user_schema),
+    (CollectionNames.GROUPS.value, None),
+    (CollectionNames.ROLES.value, app_role_schema),
+    (CollectionNames.ORGS.value, orgs_schema),
+    (CollectionNames.ANYONE.value, None),
+    (CollectionNames.CHANNEL_HISTORY.value, None),
+    (CollectionNames.PAGE_TOKENS.value, None),
+    (CollectionNames.APPS.value, app_schema),
+    (CollectionNames.DEPARTMENTS.value, department_schema),
+    (CollectionNames.CATEGORIES.value, None),
+    (CollectionNames.LANGUAGES.value, None),
+    (CollectionNames.TOPICS.value, None),
+    (CollectionNames.SUBCATEGORIES1.value, None),
+    (CollectionNames.SUBCATEGORIES2.value, None),
+    (CollectionNames.SUBCATEGORIES3.value, None),
+    (CollectionNames.BLOCKS.value, None),
+    (CollectionNames.RECORD_GROUPS.value, record_group_schema),
+    (CollectionNames.AGENT_INSTANCES.value, agent_schema),
+    (CollectionNames.AGENT_TEMPLATES.value, agent_template_schema),
+    (CollectionNames.TICKETS.value, ticket_record_schema),
+    (CollectionNames.PROJECTS.value, project_record_schema),
+    (CollectionNames.SYNC_POINTS.value, None),
+    (CollectionNames.TEAMS.value, team_schema),
+    (CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, None)
+]
+
+EDGE_COLLECTIONS = [
+    (CollectionNames.IS_OF_TYPE.value, is_of_type_schema),
+    (CollectionNames.RECORD_RELATIONS.value, record_relations_schema),
+    (CollectionNames.ENTITY_RELATIONS.value, entity_relations_schema),
+    (CollectionNames.USER_DRIVE_RELATION.value, user_drive_relation_schema),
+    (CollectionNames.BELONGS_TO_DEPARTMENT.value, basic_edge_schema),
+    (CollectionNames.ORG_DEPARTMENT_RELATION.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO.value, belongs_to_schema),
+    (CollectionNames.INHERIT_PERMISSIONS.value, inherit_permissions_schema),
+    (CollectionNames.ORG_APP_RELATION.value, basic_edge_schema),
+    (CollectionNames.USER_APP_RELATION.value, user_app_relation_schema),
+    (CollectionNames.BELONGS_TO_CATEGORY.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_LANGUAGE.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_TOPIC.value, basic_edge_schema),
+    (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
+    (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
+    (CollectionNames.PERMISSION.value, permissions_schema),
+]
 
 
 class ArangoHTTPProvider(IGraphDBProvider):
@@ -329,6 +427,83 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to disconnect: {str(e)}")
             return False
 
+    async def ensure_schema(self) -> bool:
+        """
+        Ensure database schema is initialized (collections, graph, and departments seed).
+        Should be called only from the connector service during startup when schema init is enabled.
+        """
+        if not self.http_client:
+            self.logger.error("Cannot ensure schema: not connected")
+            return False
+
+        try:
+            self.logger.info("🚀 Ensuring ArangoDB schema (collections, graph, departments)...")
+
+            # 1. Create all collections (node + edge)
+            edge_collection_names = {ed["edge_collection"] for ed in EDGE_DEFINITIONS}
+            for col in CollectionNames:
+                name = col.value
+                is_edge = name in edge_collection_names
+                if not await self.http_client.has_collection(name):
+                    if not await self.http_client.create_collection(name, edge=is_edge):
+                        self.logger.warning(f"Failed to create collection '{name}', continuing")
+                else:
+                    self.logger.debug(f"Collection '{name}' already exists")
+
+            # 2. Create knowledge graph if it doesn't exist
+            has_knowledge = await self.http_client.has_graph(GraphNames.KNOWLEDGE_GRAPH.value)
+            if not has_knowledge:
+                # Only add edge definitions whose collections exist
+                valid_definitions = [
+                    ed for ed in EDGE_DEFINITIONS
+                    if await self.http_client.has_collection(ed["edge_collection"])
+                ]
+                if valid_definitions:
+                    if not await self.http_client.create_graph(
+                        GraphNames.KNOWLEDGE_GRAPH.value,
+                        valid_definitions,
+                    ):
+                        self.logger.warning("Failed to create knowledge graph, continuing")
+                else:
+                    self.logger.warning("No edge collections found for graph creation")
+            else:
+                self.logger.info("Knowledge graph already exists, skipping creation")
+
+            # 3. Seed departments collection with predefined department types
+            await self._ensure_departments_seed()
+
+            self.logger.info("✅ ArangoDB schema ensured successfully")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Error ensuring schema: {str(e)}")
+            return False
+
+    async def _ensure_departments_seed(self) -> None:
+        """Initialize departments collection with predefined department types if missing."""
+        try:
+            existing = await self.execute_query(
+                f"FOR d IN {CollectionNames.DEPARTMENTS.value} RETURN d.departmentName",
+                {},
+            )
+            existing_names = set() if not existing else {r for r in existing if r is not None}
+
+            new_departments = [
+                {"id": str(uuid.uuid4()), "departmentName": dept.value, "orgId": None}
+                for dept in DepartmentNames
+                if dept.value not in existing_names
+            ]
+
+            if new_departments:
+                self.logger.info(f"🚀 Inserting {len(new_departments)} department(s)")
+                await self.batch_upsert_nodes(
+                    new_departments,
+                    CollectionNames.DEPARTMENTS.value,
+                )
+                self.logger.info("✅ Departments seed completed")
+        except Exception as e:
+            self.logger.warning(f"Departments seed failed (non-fatal): {str(e)}")
+
     # ==================== Transaction Management ====================
 
     async def begin_transaction(self, read: List[str], write: List[str]) -> str:
@@ -404,6 +579,886 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to get document: {str(e)}")
             return None
+
+    def _create_typed_record_from_arango(
+        self, record_dict: Dict, type_doc: Optional[Dict]
+    ) -> Record:
+        """
+        Build a typed Record (FileRecord, MailRecord, etc.) from Arango record + type doc.
+        Matches BaseArangoService._create_typed_record_from_arango for same return type.
+        """
+        record_type = record_dict.get("recordType")
+
+        if not type_doc or record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            return Record.from_arango_base_record(record_dict)
+
+        try:
+            collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+
+            if collection == CollectionNames.FILES.value:
+                return FileRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.MAILS.value:
+                return MailRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.WEBPAGES.value:
+                return WebpageRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.TICKETS.value:
+                return TicketRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.COMMENTS.value:
+                return CommentRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.LINKS.value:
+                return LinkRecord.from_arango_record(type_doc, record_dict)
+            if collection == CollectionNames.PROJECTS.value:
+                return ProjectRecord.from_arango_record(type_doc, record_dict)
+            return Record.from_arango_base_record(record_dict)
+        except Exception as e:
+            self.logger.warning(
+                "Failed to create typed record for %s, falling back to base Record: %s",
+                record_type,
+                str(e),
+            )
+            return Record.from_arango_base_record(record_dict)
+
+    async def get_record_by_id(
+        self,
+        id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Record]:
+        """
+        Get record by internal ID (_key) with associated type document (file/mail/etc.).
+
+        Args:
+            id: Internal record ID (_key)
+            transaction: Optional transaction ID
+
+        Returns:
+            Optional[Record]: Typed Record instance (FileRecord, MailRecord, etc.) or None
+        """
+        try:
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @id
+                LET typeDoc = (
+                    FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                        FILTER edge._from == record._id
+                        LET doc = DOCUMENT(edge._to)
+                        FILTER doc != null
+                        RETURN doc
+                )[0]
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={"id": id},
+                transaction=transaction,
+            )
+            if not results:
+                return None
+            result = results[0]
+            return self._create_typed_record_from_arango(
+                result["record"],
+                result.get("typeDoc"),
+            )
+        except Exception as e:
+            self.logger.error("❌ Failed to get record by id %s: %s", id, str(e))
+            return None
+
+    async def _check_record_group_permissions(
+        self,
+        record_group_id: str,
+        user_key: str,
+        org_id: str,
+    ) -> Dict:
+        """
+        Check if user has permission to access a record group.
+
+        Returns:
+            Dict with 'allowed' (bool), 'reason' (str), and optionally 'role'
+        """
+        try:
+            query = """
+            LET userDoc = DOCUMENT(@@user_collection, @user_key)
+            FILTER userDoc != null
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+            LET directPermission = (
+                FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
+                    FOR perm IN @@permission
+                        FILTER perm._from == userDoc._id
+                        FILTER perm._to == rg._id
+                        FILTER perm.type == "USER"
+                        RETURN perm.role
+            )
+            LET groupPermission = (
+                FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
+                    FOR group, userToGroupEdge IN 1..1 ANY userDoc._id @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                        FOR perm IN @@permission
+                            FILTER perm._from == group._id
+                            FILTER perm._to == rg._id
+                            FILTER perm.type IN ["GROUP", "ROLE"]
+                            RETURN perm.role
+            )
+            LET orgPermission = (
+                FOR rg IN 0..10 OUTBOUND recordGroup @@inherit_permissions
+                    FOR org, belongsEdge IN 1..1 ANY userDoc._id @@belongs_to
+                        FILTER belongsEdge.entityType == "ORGANIZATION"
+                        FOR perm IN @@permission
+                            FILTER perm._from == org._id
+                            FILTER perm._to == rg._id
+                            FILTER perm.type == "ORG"
+                            RETURN perm.role
+            )
+            LET allPermissions = UNION_DISTINCT(directPermission, groupPermission, orgPermission)
+            LET hasPermission = LENGTH(allPermissions) > 0
+            LET rolePriority = { "OWNER": 4, "WRITER": 3, "READER": 2, "COMMENTER": 1 }
+            LET userRole = LENGTH(allPermissions) > 0 ? (
+                FIRST(FOR perm IN allPermissions SORT rolePriority[perm] DESC LIMIT 1 RETURN perm)
+            ) : null
+            RETURN { allowed: hasPermission, role: userRole }
+            """
+            bind_vars = {
+                "@user_collection": CollectionNames.USERS.value,
+                "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "user_key": user_key,
+                "record_group_id": record_group_id,
+                "org_id": org_id,
+            }
+            results = await self.execute_query(query, bind_vars=bind_vars)
+            result = results[0] if results else None
+            if result and result.get("allowed"):
+                return {
+                    "allowed": True,
+                    "role": result.get("role"),
+                    "reason": "User has permission to access record group",
+                }
+            return {
+                "allowed": False,
+                "role": None,
+                "reason": "User does not have permission to access this record group",
+            }
+        except Exception as e:
+            self.logger.error("❌ Error checking record group permissions: %s", str(e))
+            return {"allowed": False, "role": None, "reason": str(e)}
+
+    # ==================== Connector Registry Operations ====================
+
+    async def check_connector_name_exists(
+        self,
+        collection: str,
+        instance_name: str,
+        scope: str,
+        org_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Check if a connector instance name already exists for the given scope."""
+        try:
+            normalized_name = instance_name.strip().lower()
+
+            if scope == "personal":
+                query = """
+                FOR doc IN @@collection
+                    FILTER doc.scope == @scope
+                    FILTER doc.createdBy == @user_id
+                    FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                    LIMIT 1
+                    RETURN doc._key
+                """
+                bind_vars = {
+                    "@collection": collection,
+                    "scope": scope,
+                    "user_id": user_id,
+                    "normalized_name": normalized_name,
+                }
+            else:  # team scope
+                query = """
+                FOR edge IN @@edge_collection
+                    FILTER edge._from == @org_id
+                    FOR doc IN @@collection
+                        FILTER doc._id == edge._to
+                        FILTER doc.scope == @scope
+                        FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                        LIMIT 1
+                        RETURN doc._key
+                """
+                bind_vars = {
+                    "@collection": collection,
+                    "@edge_collection": CollectionNames.ORG_APP_RELATION.value,
+                    "org_id": f"{CollectionNames.ORGS.value}/{org_id}",
+                    "scope": scope,
+                    "normalized_name": normalized_name,
+                }
+
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return len(results) > 0
+
+        except Exception as e:
+            self.logger.error(f"Failed to check connector name exists: {e}")
+            return False
+
+    async def batch_update_connector_status(
+        self,
+        collection: str,
+        connector_keys: List[str],
+        is_active: bool,
+        is_agent_active: bool,
+        transaction: Optional[str] = None,
+    ) -> int:
+        """Batch update isActive and isAgentActive status for multiple connectors."""
+        try:
+            if not connector_keys:
+                return 0
+
+            current_timestamp = get_epoch_timestamp_in_ms()
+
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                UPDATE doc WITH {
+                    isActive: @is_active,
+                    isAgentActive: @is_agent_active,
+                    updatedAtTimestamp: @timestamp
+                } IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "@collection": collection,
+                "keys": connector_keys,
+                "is_active": is_active,
+                "is_agent_active": is_agent_active,
+                "timestamp": current_timestamp,
+            }
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return len(results)
+
+        except Exception as e:
+            self.logger.error(f"Failed to batch update connector status: {e}")
+            return 0
+
+    async def get_user_connector_instances(
+        self,
+        collection: str,
+        user_id: str,
+        org_id: str,
+        team_scope: str,
+        personal_scope: str,
+        transaction: Optional[str] = None,
+    ) -> List[Dict]:
+        """Get all connector instances accessible to a user (personal + team)."""
+        try:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._id != null
+                FILTER (
+                    doc.scope == @team_scope OR
+                    (doc.scope == @personal_scope AND doc.createdBy == @user_id)
+                )
+                RETURN doc
+            """
+            bind_vars = {
+                "@collection": collection,
+                "team_scope": team_scope,
+                "personal_scope": personal_scope,
+                "user_id": user_id,
+            }
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return results or []
+
+        except Exception as e:
+            self.logger.error(f"Failed to get user connector instances: {e}")
+            return []
+
+    async def get_filtered_connector_instances(
+        self,
+        collection: str,
+        edge_collection: str,
+        org_id: str,
+        user_id: str,
+        scope: Optional[str] = None,
+        search: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+        exclude_kb: bool = True,
+        kb_connector_type: Optional[str] = None,
+        is_admin: bool = False,
+        transaction: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict[str, int]]:
+        """Get filtered connector instances with pagination and scope counts."""
+        try:
+            # Build base query
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._id != null
+            """
+            bind_vars = {
+                "@collection": collection,
+            }
+
+            # Exclude KB if requested
+            if exclude_kb and kb_connector_type:
+                query += " FILTER doc.type != @kb_connector_type\n"
+                bind_vars["kb_connector_type"] = kb_connector_type
+
+            # Scope filter
+            if scope == "personal":
+                query += " FILTER doc.scope == @scope\n"
+                query += " FILTER (doc.createdBy == @user_id)\n"
+                bind_vars["scope"] = scope
+                bind_vars["user_id"] = user_id
+            elif scope == "team":
+                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)\n"
+                bind_vars["team_scope"] = "team"
+                bind_vars["user_id"] = user_id
+
+            # Search filter
+            if search:
+                query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)\n"
+                bind_vars["search"] = f"%{search.lower()}%"
+
+            # Count query
+            count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
+            count_result = await self.execute_query(count_query, bind_vars=bind_vars, transaction=transaction)
+            total_count = count_result[0] if count_result else 0
+
+            # Scope counts (personal and team)
+            scope_counts = {"personal": 0, "team": 0}
+
+            # Personal count
+            personal_count_query = """
+            FOR doc IN @@collection
+                FILTER doc._id != null
+                FILTER doc.scope == @personal_scope
+                FILTER doc.createdBy == @user_id
+                FILTER doc.isConfigured == true
+                COLLECT WITH COUNT INTO total
+                RETURN total
+            """
+            personal_bind_vars = {
+                "@collection": collection,
+                "personal_scope": "personal",
+                "user_id": user_id,
+            }
+            personal_result = await self.execute_query(personal_count_query, bind_vars=personal_bind_vars, transaction=transaction)
+            scope_counts["personal"] = personal_result[0] if personal_result else 0
+
+            # Team count (if admin or has team access)
+            if is_admin or scope == "team":
+                team_count_query = """
+                FOR doc IN @@collection
+                    FILTER doc._id != null
+                    FILTER doc.type != @kb_connector_type
+                    FILTER doc.scope == @team_scope
+                    FILTER doc.isConfigured == true
+                    COLLECT WITH COUNT INTO total
+                    RETURN total
+                """
+                team_bind_vars = {
+                    "@collection": collection,
+                    "kb_connector_type": kb_connector_type or "",
+                    "team_scope": "team",
+                }
+                team_result = await self.execute_query(team_count_query, bind_vars=team_bind_vars, transaction=transaction)
+                scope_counts["team"] = team_result[0] if team_result else 0
+
+            # Main query with pagination
+            query += " LIMIT @skip, @limit\n RETURN doc"
+            bind_vars["skip"] = skip
+            bind_vars["limit"] = limit
+
+            documents = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction) or []
+
+            return documents, total_count, scope_counts
+
+        except Exception as e:
+            self.logger.error(f"Failed to get filtered connector instances: {e}")
+            return [], 0, {"personal": 0, "team": 0}
+
+    async def reindex_record_group_records(
+        self,
+        record_group_id: str,
+        depth: int,
+        user_id: str,
+        org_id: str,
+    ) -> Dict:
+        """
+        Validate record group and user permissions for reindexing.
+        Does NOT publish events; caller (router/service) should publish.
+
+        Returns:
+            Dict with success, connectorId, connectorName, depth, recordGroupId, or error code/reason
+        """
+        try:
+            if depth == -1:
+                depth = MAX_REINDEX_DEPTH
+            elif depth < 0:
+                depth = 0
+            record_group = await self.get_document(record_group_id, CollectionNames.RECORD_GROUPS.value)
+            if not record_group:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"Record group not found: {record_group_id}",
+                }
+            rg = record_group if isinstance(record_group, dict) else {}
+            connector_id = rg.get("connectorId") or rg.get("id") or ""
+            connector_name = rg.get("connectorName") or ""
+            if not connector_id or not connector_name:
+                return {
+                    "success": False,
+                    "code": 400,
+                    "reason": "Record group does not have a connector id or name",
+                }
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"User not found: {user_id}",
+                }
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return {"success": False, "code": 404, "reason": "User key not found"}
+            permission_check = await self._check_record_group_permissions(
+                record_group_id, user_key, org_id
+            )
+            if not permission_check.get("allowed"):
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": permission_check.get("reason", "Permission denied"),
+                }
+            return {
+                "success": True,
+                "connectorId": connector_id,
+                "connectorName": connector_name,
+                "depth": depth,
+                "recordGroupId": record_group_id,
+                "userKey": user_key
+            }
+        except Exception as e:
+            self.logger.error("❌ Failed to validate record group reindex: %s", str(e))
+            return {"success": False, "code": 500, "reason": str(e)}
+
+    async def _reset_indexing_status_to_queued(self, record_id: str) -> None:
+        """Reset record indexing status to QUEUED (only if not already QUEUED or EMPTY)."""
+        try:
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not record:
+                return
+            current_status = record.get("indexingStatus")
+            if current_status in ("QUEUED", "EMPTY"):
+                return
+            doc = {"_key": record_id, "indexingStatus": "QUEUED"}
+            await self.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+        except Exception as e:
+            self.logger.error("❌ Failed to reset record %s to QUEUED: %s", record_id, str(e))
+
+    async def _check_record_permissions(
+        self,
+        record_id: str,
+        user_key: str,
+        check_drive_inheritance: bool = True,
+    ) -> Dict:
+        """
+        Generic permission checker for any record type.
+        Checks: Direct permissions, Group permissions, Domain permissions, Anyone permissions, and optionally Drive-level access
+
+        Args:
+            record_id: The record to check permissions for
+            user_key: The user to check permissions for
+            check_drive_inheritance: Whether to check for Drive-level inherited permissions
+
+        Returns:
+            Dict with 'permission' (role) and 'source' (where permission came from)
+        """
+        try:
+            user_from = f"{CollectionNames.USERS.value}/{user_key}"
+            record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
+            permission_query = """
+            LET user_from = @user_from
+            LET record_from = @record_from
+
+            // 1. Check direct user permissions on the record
+            LET direct_permission = FIRST(
+                FOR perm IN @@permission
+                    FILTER perm._from == user_from AND perm._to == record_from AND perm.type == "USER"
+                    RETURN perm.role
+            )
+
+            // 2. Check group permissions
+            LET group_permission = FIRST(
+                FOR permission IN @@permission
+                    FILTER permission._from == user_from
+                    LET group = DOCUMENT(permission._to)
+                    FILTER group != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == group._id AND perm._to == record_from
+                        RETURN perm.role
+            )
+
+            // 2.5 Check inherited group->record_group permissions
+            LET record_group_permission = FIRST(
+                // First hop: user -> group
+                FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                    // Second hop: group -> recordgroup
+                    FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id @@permission
+
+                    // Third hop: recordgroup -> record
+                    FOR rec, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id @@inherit_permissions
+                        FILTER rec._id == record_from
+
+                        // The role is on the final edge from the record group to the record
+                        RETURN groupToRecordGroupEdge.role
+            )
+
+            LET nested_record_group_permission = FIRST(
+                // First hop: user -> group/role
+                FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                // Second hop: group -> recordgroup
+                FOR recordGroup, groupToRgEdge IN 1..1 ANY group._id @@permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                // Third hop: recordgroup -> nested record groups (0 to 5 levels) -> record
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
+                    FILTER record._id == record_from
+                    FILTER IS_SAME_COLLECTION("records", record)
+
+                    RETURN groupToRgEdge.role
+            )
+
+            LET direct_user_record_group_permission = FIRST(
+                // Direct user -> record_group (with nested record groups support)
+                FOR recordGroup, userToRgEdge IN 1..1 ANY user_from @@permission
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Record group -> nested record groups (0 to 5 levels) -> record
+                    FOR record, edge, path IN 0..5 INBOUND recordGroup._id @@inherit_permissions
+                        // Only process if final vertex is the target record
+                        FILTER record._id == record_from AND IS_SAME_COLLECTION("records", record)
+
+                        LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+                        RETURN userToRgEdge.role
+            )
+
+            // 2.6 Check inherited recordGroup permissions (record -> recordGroup hierarchy via inherit_permissions)
+            // This handles any recordGroup hierarchy (spaces, folders, etc.) where permissions are inherited
+            LET inherited_record_group_permission = FIRST(
+                // Traverse up the recordGroup hierarchy (0 to 5 levels) from record
+                FOR recordGroup, inheritEdge, path IN 0..5 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Check if user has direct permission on any recordGroup in the hierarchy
+                    FOR perm IN @@permission
+                        FILTER perm._from == user_from AND perm._to == recordGroup._id AND perm.type == "USER"
+                        RETURN perm.role
+            )
+
+            // 2.7 Check group -> inherited recordGroup permission
+            LET group_inherited_record_group_permission = FIRST(
+                // Traverse up the recordGroup hierarchy from record
+                FOR recordGroup, inheritEdge, path IN 0..5 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Check if user's group has permission on any recordGroup in the hierarchy
+                    FOR group, userToGroupEdge IN 1..1 ANY user_from @@permission
+                        FILTER userToGroupEdge.type == "USER"
+                        FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                        FOR perm IN @@permission
+                            FILTER perm._from == group._id
+                            FILTER perm._to == recordGroup._id
+                            FILTER perm.type IN ["GROUP", "ROLE"]
+                            RETURN perm.role
+            )
+
+            // 3. Check domain/organization permissions
+            LET domain_permission = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from AND belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    FOR perm IN @@permission
+                        FILTER perm._from == org._id AND perm._to == record_from AND perm.type IN ["DOMAIN", "ORG"]
+                        RETURN perm.role
+            )
+
+            // 4. Check 'anyone' permissions (public sharing)
+            LET user_org_id = FIRST(
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from
+                    FILTER belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+                    RETURN org._key
+            )
+            LET anyone_permission = user_org_id ? FIRST(
+                FOR anyone_perm IN @@anyone
+                    FILTER anyone_perm.file_key == @record_id
+                    FILTER anyone_perm.organization == user_org_id
+                    FILTER anyone_perm.active == true
+                    RETURN anyone_perm.role
+            ) : null
+
+            LET org_record_group_permission = FIRST(
+                // User -> Organization -> RecordGroup -> Record (with nested record groups support)
+                FOR belongs_edge IN @@belongs_to
+                    FILTER belongs_edge._from == user_from AND belongs_edge.entityType == "ORGANIZATION"
+                    LET org = DOCUMENT(belongs_edge._to)
+                    FILTER org != null
+
+                    // Org -> record_group permission
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id @@permission
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        // Record group -> nested record groups (0 to 2 levels) -> record
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id @@inherit_permissions
+                            FILTER record._id == record_from
+                            FILTER IS_SAME_COLLECTION("records", record)
+
+                            LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+                            RETURN orgToRgEdge.role
+            )
+
+            // 5. Check Drive-level access (if enabled)
+            LET drive_access = @check_drive_inheritance ? FIRST(
+                // Get the file record to find its drive
+                FOR record IN @@records
+                    FILTER record._key == @record_id
+                    FOR file_edge IN @@is_of_type
+                        FILTER file_edge._from == record._id
+                        LET file = DOCUMENT(file_edge._to)
+                        FILTER file != null
+                        // Get the drive this file belongs to
+                        LET file_drive_id = file.driveId
+                        FILTER file_drive_id != null
+                        // Check if user has access to this drive
+                        FOR drive_edge IN @@user_drive_relation
+                            FILTER drive_edge._from == user_from
+                            LET drive = DOCUMENT(drive_edge._to)
+                            FILTER drive != null
+                            FILTER drive._key == file_drive_id OR drive.driveId == file_drive_id
+                            // Map drive access level to permission role
+                            LET drive_role = (
+                                drive_edge.access_level == "owner" ? "OWNER" :
+                                drive_edge.access_level IN ["writer", "fileOrganizer"] ? "WRITER" :
+                                drive_edge.access_level IN ["commenter", "reader"] ? "READER" :
+                                null
+                            )
+                            RETURN drive_role
+            ) : null
+
+            // Return the highest permission level found (in order of precedence)
+            LET final_permission = (
+                direct_permission ? direct_permission :
+                inherited_record_group_permission ? inherited_record_group_permission :
+                group_inherited_record_group_permission ? group_inherited_record_group_permission :
+                group_permission ? group_permission :
+                record_group_permission ? record_group_permission :
+                direct_user_record_group_permission ? direct_user_record_group_permission :
+                nested_record_group_permission ? nested_record_group_permission :
+                domain_permission ? domain_permission :
+                anyone_permission ? anyone_permission :
+                org_record_group_permission ? org_record_group_permission :
+                drive_access ? drive_access :
+                null
+            )
+            RETURN {
+                permission: final_permission,
+                source: (
+                    direct_permission ? "DIRECT" :
+                    inherited_record_group_permission ? "INHERITED_RECORD_GROUP" :
+                    group_inherited_record_group_permission ? "GROUP_INHERITED_RECORD_GROUP" :
+                    group_permission ? "GROUP" :
+                    record_group_permission ? "RECORD_GROUP" :
+                    direct_user_record_group_permission ? "DIRECT_USER_RECORD_GROUP" :
+                    nested_record_group_permission ? "NESTED_RECORD_GROUP" :
+                    domain_permission ? "DOMAIN" :
+                    anyone_permission ? "ANYONE" :
+                    org_record_group_permission ? "ORG_RECORD_GROUP" :
+                    drive_access ? "DRIVE_ACCESS" :
+                    "NONE"
+                )
+            }
+            """
+            bind_vars = {
+                "user_from": user_from,
+                "record_from": record_from,
+                "record_id": record_id,
+                "check_drive_inheritance": check_drive_inheritance,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                "@user_drive_relation": CollectionNames.USER_DRIVE_RELATION.value,
+            }
+            results = await self.execute_query(permission_query, bind_vars=bind_vars)
+            result = results[0] if results else None
+            if result and result.get("permission"):
+                return {"permission": result["permission"], "source": result.get("source", "NONE")}
+            return {"permission": None, "source": "NONE"}
+        except Exception as e:
+            self.logger.error("❌ Failed to check record permissions: %s", str(e))
+            return {"permission": None, "source": "ERROR", "error": str(e)}
+
+    async def reindex_single_record(
+        self,
+        record_id: str,
+        user_id: str,
+        org_id: str,
+        request: Optional["Request"] = None,
+        depth: int = 0,
+    ) -> Dict:
+        """
+        Reindex a single record with permission checks and event publishing.
+        Depth comes from caller: 0 = only this record (record-details, collections/KB);
+        >0 = include children (e.g. all-records tree uses 100). KB (UPLOAD) records use
+        record-events and ignore depth; connector records use sync-events with depth.
+
+        Args:
+            record_id: Record ID to reindex
+            user_id: External user ID
+            org_id: Organization ID
+            request: Optional request (unused in provider; for signature compatibility)
+            depth: Depth for children (0 = only this record; -1 or >MAX = normalized to MAX_REINDEX_DEPTH)
+
+        Returns:
+            Dict: success, recordId, recordName, connector, eventPublished, userRole; or error code/reason
+        """
+        try:
+            # Normalize depth only when including children (-1 or >MAX -> MAX_REINDEX_DEPTH); depth 0 stays 0
+            if depth != 0 and (depth == -1 or depth > MAX_REINDEX_DEPTH):
+                depth = MAX_REINDEX_DEPTH
+
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+            if not record:
+                return {"success": False, "code": 404, "reason": f"Record not found: {record_id}"}
+            rec = record if isinstance(record, dict) else {}
+            if rec.get("isDeleted"):
+                return {"success": False, "code": 400, "reason": "Cannot reindex deleted record"}
+            connector_name = rec.get("connectorName", "")
+            connector_id = rec.get("connectorId", "")
+            origin = rec.get("origin", "")
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return {"success": False, "code": 404, "reason": "User key not found"}
+            user_role = None
+            if origin == OriginTypes.UPLOAD.value:
+                kb_context = await self._get_kb_context_for_record(record_id)
+                if not kb_context:
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"Knowledge base context not found for record {record_id}",
+                    }
+                user_role = await self.get_user_kb_permission(kb_context.get("kb_id") or kb_context.get("id"), user_key)
+                if not user_role:
+                    return {
+                        "success": False,
+                        "code": 403,
+                        "reason": "Insufficient KB permissions. Required: OWNER, WRITER, READER",
+                    }
+            elif origin == OriginTypes.CONNECTOR.value:
+                perm_result = await self._check_record_permissions(record_id, user_key)
+                user_role = perm_result.get("permission")
+                if not user_role:
+                    return {
+                        "success": False,
+                        "code": 403,
+                        "reason": "Insufficient permissions. Required: OWNER, WRITER, READER",
+                    }
+                if connector_id:
+                    connector_doc = await self.get_document(connector_id, CollectionNames.APPS.value)
+                    if connector_doc and not connector_doc.get("isActive", False):
+                        return {
+                            "success": False,
+                            "code": 400,
+                            "reason": "Connector is disabled. Please enable the connector first.",
+                        }
+            else:
+                return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
+
+            await self._reset_indexing_status_to_queued(record_id)
+
+            # Create event data for router to publish
+            try:
+                # KB records should always use record-events, not sync-events
+                # They don't need connector-based batch reindexing
+                if origin == OriginTypes.UPLOAD.value:
+                    # Get file record for KB reindex event payload
+                    # KB uploads are always FILE records
+                    file_record = None
+                    if rec.get("recordType") == "FILE":
+                        file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+
+                    # Create reindex event payload for KB records
+                    payload = await self._create_reindex_event_payload(rec, file_record, user_id, request, record_id=record_id)
+                    event_data = {
+                        "eventType": "newRecord",  # Use newRecord for KB reindex (same as single record reindex)
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    # For connector records, use sync-events with connector reindex event
+                    connector_for_event = connector_name.replace(" ", "").lower() if connector_name else "unknown"
+                    event_type = f"{connector_for_event}.reindex"
+
+                    payload = {
+                        "orgId": org_id,
+                        "recordId": record_id,
+                        "depth": depth,
+                        "connectorId": connector_id,
+                        "connector": connector_for_event,  # Add connector field for consumer fallback
+                        "userKey": user_key
+                    }
+
+                    event_data = {
+                        "eventType": event_type,
+                        "topic": "sync-events",
+                        "payload": payload
+                    }
+
+                return {
+                    "success": True,
+                    "recordId": record_id,
+                    "recordName": rec.get("recordName"),
+                    "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
+                    "userRole": user_role,
+                    "eventData": event_data,
+                    "useBatchReindex": origin != OriginTypes.UPLOAD.value  # KB records don't use batch reindex
+                }
+
+            except Exception as event_error:
+                self.logger.error(f"❌ Failed to create reindex event data: {str(event_error)}")
+                # Return success but indicate event data creation failed
+                return {
+                    "success": True,
+                    "recordId": record_id,
+                    "recordName": rec.get("recordName"),
+                    "connector": connector_name if origin == OriginTypes.CONNECTOR.value else Connectors.KNOWLEDGE_BASE.value,
+                    "userRole": user_role,
+                    "eventData": None,
+                    "eventError": str(event_error)
+                }
+        except Exception as e:
+            self.logger.error("❌ Failed to reindex record %s: %s", record_id, str(e))
+            return {"success": False, "code": 500, "reason": str(e)}
 
     async def batch_upsert_nodes(
         self,
@@ -846,6 +1901,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         collection: str,
         filters: Dict[str, Any],
+        return_fields: Optional[List[str]] = None,
         transaction: Optional[str] = None
     ) -> List[Dict]:
         """
@@ -854,6 +1910,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             collection: Collection name
             filters: Field filters as dict
+            return_fields: Optional list of fields to return (None = all fields)
             transaction: Optional transaction ID
 
         Returns:
@@ -864,10 +1921,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
             f"doc.{field} == @{field}" for field in filters
         ])
 
+        # Build return clause
+        if return_fields:
+            return_clause = "{ " + ", ".join([f'"{field}": doc.{field}' for field in return_fields]) + " }"
+        else:
+            return_clause = "doc"
+
         query = f"""
         FOR doc IN {collection}
             FILTER {filter_conditions}
-            RETURN doc
+            RETURN {return_clause}
         """
 
         try:
@@ -1441,6 +2504,432 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to retrieve records by status for connector {connector_id}: {str(e)}")
             return []
 
+    async def get_records_by_record_group(
+        self,
+        record_group_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        user_key: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all records belonging to a record group up to a specified depth.
+        Includes:
+        - Records directly in the group
+        - Records in nested record groups up to depth levels
+
+        Args:
+            record_group_id: Record group ID
+            connector_id: Connector ID (all records in group are from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children and nested record groups (-1 = unlimited,
+                   0 = only direct records, 1 = direct + 1 level nested, etc.)
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving records for record group {record_group_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            # For depth=0, we set max_depth=0 so nested groups traversal returns nothing
+            max_depth = 100 if depth == -1 else (0 if depth < 0 else depth)
+
+            # Handle limit/offset for pagination
+            # Note: ArangoDB LIMIT syntax requires both offset and count: LIMIT offset, count
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored. "
+                    "Provide a limit value to use pagination."
+                )
+
+            collection_to_types = defaultdict(list)
+            for record_type, collection in RECORD_TYPE_COLLECTION_MAPPING.items():
+                collection_to_types[collection].append(record_type)
+
+            # Build dynamic typeDoc conditions
+            type_doc_conditions = []
+            bind_vars = {
+                "record_group_id": record_group_id,
+                "connector_id": connector_id,
+                "org_id": org_id,
+                "max_depth": max_depth,
+            }
+
+            folder_filter = '''
+                LET targetDoc = FIRST(
+                    FOR v IN 1..1 OUTBOUND record._id @@is_of_type
+                        LIMIT 1
+                        RETURN v
+                )
+
+                // If the record connects to a file collection, verify isFile == true
+                // For any other type (webpage, ticket, etc.), automatically accept
+                LET isValidRecord = (
+                    targetDoc != null AND IS_SAME_COLLECTION("files", targetDoc._id)
+                        ? targetDoc.isFile == true
+                        : true  // Not a file (webpage, ticket, etc.) - accept it
+                )
+
+                FILTER isValidRecord
+            '''
+
+            # Build dynamic typeDoc conditions
+            for collection, record_types in collection_to_types.items():
+                if len(record_types) == 1:
+                    type_check = f"record.recordType == @type_{record_types[0].lower()}"
+                    bind_vars[f"type_{record_types[0].lower()}"] = record_types[0]
+                else:
+                    type_checks = []
+                    for rt in record_types:
+                        type_checks.append(f"record.recordType == @type_{rt.lower()}")
+                        bind_vars[f"type_{rt.lower()}"] = rt
+                    type_check = " || ".join(type_checks)
+
+                condition = f"""({type_check}) ? (
+                        FOR edge IN {CollectionNames.IS_OF_TYPE.value}
+                            FILTER edge._from == record._id
+                            LET doc = DOCUMENT(edge._to)
+                            FILTER doc != null
+                            RETURN doc
+                    )[0]"""
+                type_doc_conditions.append(condition)
+
+            type_doc_expr = " :\n                    ".join(type_doc_conditions)
+            if type_doc_expr:
+                type_doc_expr += " :\n                    null"
+            else:
+                type_doc_expr = "null"
+
+            # Main query: Unified traversal approach using belongsTo edges
+            # Collect all record groups (starting + nested) then get records from all groups
+            # Build permission check fragments conditionally
+            if user_key:
+                rg_permission_aql = self._get_permission_role_aql("recordGroup", "nestedRg", "u")
+                record_permission_aql = self._get_permission_role_aql("record", "record", "u")
+                bind_vars["user_key"] = user_key
+
+                rg_permission_filter = f"""
+                    LET u = DOCUMENT("users", @user_key)
+
+                    {rg_permission_aql}
+
+                    LET rg_normalized_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+
+                    FILTER rg_normalized_role != null AND rg_normalized_role != ""
+                """
+
+                record_permission_filter = f"""
+                    LET u = DOCUMENT("users", @user_key)
+
+                    {record_permission_aql}
+
+                    LET rec_normalized_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+
+                    FILTER rec_normalized_role != null AND rec_normalized_role != ""
+                """
+            else:
+                rg_permission_filter = ""
+                record_permission_filter = ""
+
+            query = f"""
+            LET recordGroup = DOCUMENT(@@record_group_collection, @record_group_id)
+            FILTER recordGroup != null
+            FILTER recordGroup.orgId == @org_id
+
+            // Collect all record groups: starting group + nested groups up to max_depth
+            // Using belongsTo edges (child -> parent direction, so INBOUND from parent)
+            LET allRecordGroups = @max_depth > 0 ? UNION_DISTINCT(
+                [recordGroup],
+                (FOR nestedRg IN (
+                    FOR v IN 1..@max_depth INBOUND recordGroup._id {CollectionNames.BELONGS_TO.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", v)
+                        FILTER v.orgId == @org_id OR v.orgId == null
+                        RETURN v
+                )
+                    {rg_permission_filter}
+                    RETURN nestedRg
+                )
+            ) : [recordGroup]
+
+            // Get all records from all record groups via belongsTo edges
+            LET allRecordsRaw = (
+                FOR rg IN allRecordGroups
+                    FOR record IN (
+                        FOR edge IN {CollectionNames.BELONGS_TO.value}
+                            FILTER edge._to == rg._id
+                            FILTER STARTS_WITH(edge._from, "records/")
+                            LET rec = DOCUMENT(edge._from)
+                            FILTER rec != null
+                            FILTER rec.connectorId == @connector_id
+                            FILTER rec.isDeleted != true
+                            FILTER rec.orgId == @org_id OR rec.orgId == null
+                            FILTER rec.origin == "CONNECTOR"
+                            RETURN rec
+                    )
+                        {record_permission_filter}
+                        {folder_filter}
+                        RETURN record
+            )
+
+            // Deduplicate records by _id
+            LET allRecords = (
+                FOR record IN allRecordsRaw
+                    COLLECT recordId = record._id INTO groups
+                    RETURN groups[0].record
+            )
+
+            // Sort and paginate
+            FOR record IN allRecords
+                SORT record._key
+                {limit_clause}
+
+                LET typeDoc = (
+                    {type_doc_expr}
+                )
+
+                RETURN {{
+                    record: record,
+                    typeDoc: typeDoc
+                }}
+            """
+
+            bind_vars.update({
+                "@record_group_collection": CollectionNames.RECORD_GROUPS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+            })
+
+            if limit is not None:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Convert to typed records
+            typed_records = []
+            for result in results:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typeDoc")
+                )
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for record group {record_group_id}, connector {connector_id}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by record group {record_group_id}, connector {connector_id}: {str(e)}",
+                exc_info=True
+            )
+            return []
+
+    async def get_records_by_parent_record(
+        self,
+        parent_record_id: str,
+        connector_id: str,
+        org_id: str,
+        depth: int,
+        user_key: Optional[str] = None,
+        limit: Optional[int] = None,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Record]:
+        """
+        Get all child records of a parent record (folder) up to a specified depth.
+        Uses graph traversal on recordRelations edge collection. Parent record is always included.
+
+        Args:
+            parent_record_id: Record ID of the parent (folder)
+            connector_id: Connector ID (all records should be from same connector)
+            org_id: Organization ID (for security filtering)
+            depth: Depth for traversing children (-1 = unlimited, 0 = only parent,
+                   1 = direct children, 2 = children + grandchildren, etc.)
+            user_key: Optional user key for permission filtering
+            limit: Maximum number of records to return (for pagination)
+            offset: Number of records to skip (for pagination)
+            transaction: Optional transaction ID
+
+        Returns:
+            List[Record]: List of properly typed Record instances
+        """
+        try:
+            self.logger.info(
+                f"Retrieving child records for parent {parent_record_id}, "
+                f"connector {connector_id}, org {org_id}, depth {depth}, "
+                f"user_key: {user_key}, limit: {limit}, offset: {offset}"
+            )
+
+            # Validate depth - must be >= -1
+            if depth < -1:
+                raise ValueError(
+                    f"Depth must be >= -1 (where -1 means unlimited). Got: {depth}"
+                )
+
+            # Handle limit/offset for pagination
+            limit_clause = ""
+            if limit is not None:
+                limit_clause = "LIMIT @offset, @limit"
+            elif offset > 0:
+                self.logger.warning(
+                    f"Offset {offset} provided without limit - offset will be ignored."
+                )
+
+            # Determine max traversal depth (use 100 as practical unlimited)
+            max_depth = 100 if depth == -1 else depth
+
+            bind_vars = {
+                "record_id": f"{CollectionNames.RECORDS.value}/{parent_record_id}",
+                "max_depth": max_depth,
+                "connector_id": connector_id,
+                "org_id": org_id,
+            }
+
+            if limit is not None:
+                bind_vars["limit"] = limit
+                bind_vars["offset"] = offset
+
+            # Build permission check fragments conditionally
+            if user_key:
+                record_permission_aql = self._get_permission_role_aql("record", "record", "u")
+                bind_vars["user_key"] = user_key
+
+                permission_filter = f"""
+                    LET u = DOCUMENT("users", @user_key)
+
+                    {record_permission_aql}
+
+                    LET normalized_role = IS_ARRAY(permission_role)
+                        ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
+                        : permission_role
+
+                    FILTER normalized_role != null AND normalized_role != ""
+                """
+            else:
+                permission_filter = ""
+
+            # Single unified query using 0..max_depth traversal
+            # Depth 0 = parent, Depth 1+ = children at various levels
+            query = f"""
+            LET startRecord = DOCUMENT(@record_id)
+            FILTER startRecord != null
+
+            // Single traversal for parent (depth 0) and all children (depth 1+)
+            FOR v, e, p IN 0..@max_depth OUTBOUND startRecord {CollectionNames.RECORD_RELATIONS.value}
+                OPTIONS {{bfs: true, uniqueVertices: "global"}}
+
+                FILTER v.connectorId == @connector_id
+                FILTER v.orgId == @org_id OR v.orgId == null
+                FILTER v.isDeleted != true
+
+                LET typedRecord = FIRST(
+                    FOR rec IN 1..1 OUTBOUND v {CollectionNames.IS_OF_TYPE.value}
+                        LIMIT 1
+                        RETURN rec
+                )
+
+                FILTER typedRecord != null
+
+                LET record = v
+                {permission_filter}
+
+                LET result = {{
+                    record: v,
+                    typedRecord: typedRecord,
+                    depth: LENGTH(p.edges)
+                }}
+
+                SORT result.depth, result.record._key
+                {limit_clause}
+                RETURN result
+            """
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Convert to typed records
+            typed_records = []
+            for result in results:
+                record = self._create_typed_record_from_arango(
+                    result["record"],
+                    result.get("typedRecord")
+                )
+                typed_records.append(record)
+
+            self.logger.info(
+                f"✅ Successfully retrieved {len(typed_records)} typed records "
+                f"for parent record {parent_record_id} with depth {depth}"
+            )
+            return typed_records
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve records by parent record {parent_record_id}: {str(e)}",
+                exc_info=True
+            )
+            return []
+
+    async def get_documents_by_status(
+        self,
+        collection: str,
+        status: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all documents with a specific indexing status.
+
+        Args:
+            collection (str): Collection name
+            status (str): Status to filter by
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of matching documents
+        """
+        try:
+            query = """
+            FOR doc IN @@collection
+                FILTER doc.indexingStatus == @status
+                RETURN doc
+            """
+
+            bind_vars = {
+                "@collection": collection,
+                "status": status
+            }
+
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            return results if results else []
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get documents by status from {collection}: {str(e)}")
+            return []
+
     def _create_typed_record_from_arango(self, record_dict: Dict, type_doc: Optional[Dict]) -> Record:
         """
         Factory method to create properly typed Record instances from ArangoDB data.
@@ -1938,6 +3427,37 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get user by user ID failed: {str(e)}")
             return None
 
+    async def get_user_apps(self, user_key: str) -> List[Dict]:
+        """Get all apps (connectors) associated with a user by user document key (_key)."""
+        try:
+            query = f"""
+            FOR app IN OUTBOUND CONCAT('{CollectionNames.USERS.value}/', @user_key) {CollectionNames.USER_APP_RELATION.value}
+                RETURN app
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={"user_key": user_key},
+            )
+            return list(results) if results else []
+        except Exception as e:
+            self.logger.error("❌ Failed to get user apps: %s", str(e))
+            return []
+
+    async def _get_user_app_ids(self, user_id: str) -> List[str]:
+        """Get list of accessible app connector IDs for a user (user_id = external userId)."""
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return []
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return []
+            apps = await self.get_user_apps(user_key)
+            return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
+        except Exception as e:
+            self.logger.error("❌ Failed to get user app ids: %s", str(e))
+            return []
+
     async def get_users(
         self,
         org_id: str,
@@ -2267,7 +3787,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def get_all_orgs(
         self,
-        active: bool = True
+        active: bool = True,
+        transaction: Optional[str] = None
     ) -> List[Dict]:
         """
         Get all organizations.
@@ -2278,7 +3799,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         if active:
             return await self.get_nodes_by_filters(
                 collection=CollectionNames.ORGS.value,
-                filters={"isActive": True}
+                filters={"isActive": True},
+                transaction=transaction
             )
         else:
             # Get all orgs using execute_aql
@@ -2288,7 +3810,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             """
 
             try:
-                results = await self.http_client.execute_aql(query)
+                results = await self.http_client.execute_aql(query, txn_id=transaction)
                 return results if results else []
             except Exception as e:
                 self.logger.error(f"❌ Get all orgs failed: {str(e)}")
@@ -2490,6 +4012,25 @@ class ArangoHTTPProvider(IGraphDBProvider):
             transaction=transaction
         )
 
+    async def delete_inherit_permissions_relation_record_group(
+        self,
+        record_id: str,
+        record_group_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete INHERIT_PERMISSIONS edge from record to record group.
+        Called when a record's inherit_permissions is set to False after a placeholder was created.
+        """
+        await self.delete_edge(
+            from_id=record_id,
+            from_collection=CollectionNames.RECORDS.value,
+            to_id=record_group_id,
+            to_collection=CollectionNames.RECORD_GROUPS.value,
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=transaction
+        )
+
     async def get_all_documents(
         self,
         collection: str,
@@ -2543,6 +4084,180 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
             return []
+
+    async def get_departments(
+        self,
+        org_id: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get all departments that either have no org_id or match the given org_id.
+
+        Args:
+            org_id (Optional[str]): Organization ID to filter departments
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of department names
+        """
+        try:
+            if org_id:
+                query = f"""
+                FOR department IN {CollectionNames.DEPARTMENTS.value}
+                    FILTER department.orgId == null OR department.orgId == @org_id
+                    RETURN department.departmentName
+                """
+                bind_vars = {"org_id": org_id}
+            else:
+                query = f"""
+                FOR department IN {CollectionNames.DEPARTMENTS.value}
+                    RETURN department.departmentName
+                """
+                bind_vars = {}
+
+            results = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+            return [dept for dept in results] if results else []
+        except Exception as e:
+            self.logger.error(f"❌ Get departments failed: {str(e)}")
+            return []
+
+    async def update_queued_duplicates_status(
+        self,
+        record_id: str,
+        new_indexing_status: str,
+        virtual_record_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> int:
+        """
+        Find all QUEUED duplicate records with the same md5 hash and update their status.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            new_indexing_status (str): The new indexing status to set
+            virtual_record_id (Optional[str]): The virtual record ID to set on duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            int: Number of records updated
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding QUEUED duplicate records for record {record_id}"
+            )
+
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                record_query,
+                bind_vars={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            ref_record = None
+            if results:
+                try:
+                    ref_record = results[0]
+                except (IndexError, StopIteration):
+                    pass
+
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate update")
+                return 0
+
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
+
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                return 0
+
+            # Find all queued duplicate records directly from RECORDS collection
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            queued_records = list(results) if results else []
+
+            if not queued_records:
+                self.logger.info("✅ No QUEUED duplicate records found")
+                return 0
+
+            self.logger.info(
+                f"✅ Found {len(queued_records)} QUEUED duplicate record(s) to update"
+            )
+
+            # Update all queued records
+            current_timestamp = get_epoch_timestamp_in_ms()
+            updated_records = []
+
+            for queued_record in queued_records:
+                doc = dict(queued_record)
+
+                # Map indexing status to extraction status
+                # For EMPTY status, extraction status should also be EMPTY, not FAILED
+                if new_indexing_status == ProgressStatus.COMPLETED.value:
+                    extraction_status = ProgressStatus.COMPLETED.value
+                elif new_indexing_status == ProgressStatus.EMPTY.value:
+                    extraction_status = ProgressStatus.EMPTY.value
+                else:
+                    extraction_status = ProgressStatus.FAILED.value
+
+                update_data = {
+                    "indexingStatus": new_indexing_status,
+                    "lastIndexTimestamp": current_timestamp,
+                    "isDirty": False,
+                    "virtualRecordId": virtual_record_id,
+                    "extractionStatus": extraction_status,
+                }
+
+                doc.update(update_data)
+                updated_records.append(doc)
+
+            # Batch update all queued records
+            await self.batch_upsert_nodes(updated_records, CollectionNames.RECORDS.value, transaction)
+
+            self.logger.info(
+                f"✅ Successfully updated {len(queued_records)} QUEUED duplicate record(s) to status {new_indexing_status}"
+            )
+
+            return len(queued_records)
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to update queued duplicates status: {str(e)}"
+            )
+            return -1
 
     async def batch_upsert_record_permissions(
         self,
@@ -3879,6 +5594,625 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to remove user access {external_id} from {connector_id}: {str(e)}")
             raise
 
+    async def _collect_connector_entities(self, connector_id: str, transaction: Optional[str] = None) -> Dict:
+        """
+        Collect all entity IDs for a connector in a single pass.
+        Returns record keys, virtual record IDs, and full node IDs for edge deletion.
+        """
+        result = {
+            "record_keys": [],
+            "record_ids": [],
+            "virtual_record_ids": [],
+            "record_group_keys": [],
+            "role_keys": [],
+            "group_keys": [],
+            "all_node_ids": []
+        }
+
+        # Collect records
+        query = """
+        FOR r IN @@collection FILTER r.connectorId == @connector_id
+        RETURN { _key: r._key, virtualRecordId: r.virtualRecordId }
+        """
+        records_result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={
+                "@collection": CollectionNames.RECORDS.value,
+                "connector_id": connector_id
+            },
+            txn_id=transaction
+        )
+        for doc in (records_result or []):
+            result["record_keys"].append(doc["_key"])
+            result["record_ids"].append(f"records/{doc['_key']}")
+            if doc.get("virtualRecordId"):
+                result["virtual_record_ids"].append(doc["virtualRecordId"])
+
+        # Collect record groups
+        query = "FOR rg IN @@collection FILTER rg.connectorId == @connector_id RETURN rg._key"
+        record_groups_result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={
+                "@collection": CollectionNames.RECORD_GROUPS.value,
+                "connector_id": connector_id
+            },
+            txn_id=transaction
+        )
+        for key in (record_groups_result or []):
+            result["record_group_keys"].append(key)
+
+        # Collect roles
+        query = "FOR role IN @@collection FILTER role.connectorId == @connector_id RETURN role._key"
+        roles_result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={
+                "@collection": CollectionNames.ROLES.value,
+                "connector_id": connector_id
+            },
+            txn_id=transaction
+        )
+        for key in (roles_result or []):
+            result["role_keys"].append(key)
+
+        # Collect groups
+        query = "FOR grp IN @@collection FILTER grp.connectorId == @connector_id RETURN grp._key"
+        groups_result = await self.http_client.execute_aql(
+            query=query,
+            bind_vars={
+                "@collection": CollectionNames.GROUPS.value,
+                "connector_id": connector_id
+            },
+            txn_id=transaction
+        )
+        for key in (groups_result or []):
+            result["group_keys"].append(key)
+
+        # Build all_node_ids list for edge deletion
+        result["all_node_ids"].extend(result["record_ids"])
+        result["all_node_ids"].extend([f"recordGroups/{k}" for k in result["record_group_keys"]])
+        result["all_node_ids"].extend([f"roles/{k}" for k in result["role_keys"]])
+        result["all_node_ids"].extend([f"groups/{k}" for k in result["group_keys"]])
+        result["all_node_ids"].append(f"apps/{connector_id}")
+
+        self.logger.info(
+            f"📊 Collected entities for connector {connector_id}: "
+            f"records={len(result['record_keys'])}, "
+            f"recordGroups={len(result['record_group_keys'])}, "
+            f"roles={len(result['role_keys'])}, "
+            f"groups={len(result['group_keys'])}"
+        )
+
+        return result
+
+    async def _get_all_edge_collections(self) -> List[str]:
+        """
+        Get all edge collection names from the graph definition.
+        This makes the deletion future-proof when new edge types are added.
+
+        Raises:
+            Exception: If the graph or edge definitions cannot be retrieved.
+        """
+        graph_info = await self.http_client.get_graph(GraphNames.KNOWLEDGE_GRAPH.value)
+        if not graph_info:
+            raise Exception(f"Graph '{GraphNames.KNOWLEDGE_GRAPH.value}' not found")
+
+        # ArangoDB REST API returns graph info with 'graph' key containing the definition
+        graph_def = graph_info.get('graph', graph_info)  # Handle both nested and direct formats
+        edge_definitions = graph_def.get('edgeDefinitions', [])
+        edge_collections = [e.get('collection') for e in edge_definitions if e.get('collection')]
+
+        if not edge_collections:
+            raise Exception(f"Graph '{GraphNames.KNOWLEDGE_GRAPH.value}' has no edge collections defined")
+
+        self.logger.debug(f"📊 Found {len(edge_collections)} edge collections from graph")
+        return edge_collections
+
+    async def _delete_all_edges_for_nodes(
+        self,
+        transaction: str,
+        node_ids: List[str],
+        edge_collections: List[str]
+    ) -> Tuple[int, List[str]]:
+        """
+        Delete all edges where _from or _to matches any of the node_ids.
+        Iterates through each edge collection dynamically.
+
+        Returns:
+            Tuple of (total_deleted_count, list_of_failed_collections)
+        """
+        if not node_ids:
+            return (0, [])
+
+        total_deleted = 0
+        failed_collections = []
+
+        deletion_query = """
+        FOR edge IN @@edge_collection
+            FILTER edge._from IN @node_ids OR edge._to IN @node_ids
+            REMOVE edge IN @@edge_collection
+            RETURN 1
+        """
+
+        for edge_collection in edge_collections:
+            try:
+                results = await self.http_client.execute_aql(
+                    query=deletion_query,
+                    bind_vars={
+                        "@edge_collection": edge_collection,
+                        "node_ids": node_ids
+                    },
+                    txn_id=transaction
+                )
+                deleted_count = len(results or [])
+                total_deleted += deleted_count
+
+                if deleted_count > 0:
+                    self.logger.debug(f"🗑️ Deleted {deleted_count} edges from {edge_collection}")
+
+            except Exception as e:
+                self.logger.error(f"❌ Error deleting edges from {edge_collection}: {str(e)}")
+                failed_collections.append(edge_collection)
+                # Continue with other collections
+
+        if failed_collections:
+            self.logger.warning(f"⚠️ Failed to delete edges from {len(failed_collections)} collections: {failed_collections}")
+        else:
+            self.logger.info(f"✅ Deleted {total_deleted} total edges across all collections")
+
+        return (total_deleted, failed_collections)
+
+    async def _collect_isoftype_targets(self, transaction: str, record_ids: List[str]) -> Tuple[List[Dict], bool]:
+        """
+        Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
+        This must be called before _delete_all_edges_for_nodes to ensure we can find the targets.
+
+        Returns:
+            Tuple of (list_of_targets, success_flag)
+        """
+        if not record_ids:
+            return ([], True)
+
+        collect_query = """
+        FOR edge IN @@isOfType
+            FILTER edge._from IN @record_ids
+            LET target = PARSE_IDENTIFIER(edge._to)
+            RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query=collect_query,
+                bind_vars={
+                    "@isOfType": CollectionNames.IS_OF_TYPE.value,
+                    "record_ids": record_ids
+                },
+                txn_id=transaction
+            )
+            targets = results or []
+            self.logger.debug(f"📊 Collected {len(targets)} isOfType targets before edge deletion")
+            return (targets, True)
+        except Exception as e:
+            self.logger.error(f"❌ Error collecting isOfType targets: {str(e)}")
+            return ([], False)
+
+    async def _delete_isoftype_targets_from_collected(
+        self,
+        transaction: str,
+        targets: List[Dict],
+        edge_collections: List[str]
+    ) -> Tuple[int, List[str]]:
+        """
+        Delete isOfType target nodes using pre-collected targets.
+        This is called after edges are deleted, using targets collected before deletion.
+
+        Args:
+            transaction: The transaction ID
+            targets: List of target dicts with keys: collection, key, full_id (from _collect_isoftype_targets)
+            edge_collections: List of edge collection names for cleanup
+
+        Returns:
+            Tuple of (total_deleted_count, list_of_failed_collections)
+        """
+        if not targets:
+            return (0, [])
+
+        # Build list of type node IDs for edge cleanup
+        type_node_ids = [target["full_id"] for target in targets]
+
+        # Delete edges connected to type nodes BEFORE deleting the nodes
+        _, failed_edge_collections = await self._delete_all_edges_for_nodes(transaction, type_node_ids, edge_collections)
+        if failed_edge_collections:
+            raise Exception(
+                f"CRITICAL: Failed to delete edges from isOfType target nodes in {len(failed_edge_collections)} collections: {failed_edge_collections}. "
+                f"Transaction will be rolled back."
+            )
+
+        # Group targets by collection
+        targets_by_collection: Dict[str, List[str]] = {}
+        for target in targets:
+            coll = target["collection"]
+            key = target["key"]
+            if coll not in targets_by_collection:
+                targets_by_collection[coll] = []
+            targets_by_collection[coll].append(key)
+
+        # Delete from each collection and validate completeness
+        total_deleted = 0
+        total_expected = len(targets)
+        failed_collections = []
+
+        for collection, keys in targets_by_collection.items():
+            expected_count = len(keys)
+            deleted, failed_batches = await self._delete_nodes_by_keys(transaction, keys, collection)
+            total_deleted += deleted
+
+            # Check for failures: either failed batches OR incomplete deletion
+            if failed_batches > 0:
+                failed_collections.append(f"{collection} (failed batches: {failed_batches})")
+            elif deleted < expected_count:
+                failed_collections.append(f"{collection} (deleted {deleted}/{expected_count})")
+
+        # If any collection failed, raise exception to trigger rollback
+        if failed_collections:
+            raise Exception(
+                f"CRITICAL: Failed to delete isOfType targets from {len(failed_collections)} collections: {failed_collections}. "
+                f"Expected {total_expected} but deleted {total_deleted}. Transaction will be rolled back."
+            )
+
+        # Validate total deletion count matches expected
+        if total_deleted < total_expected:
+            raise Exception(
+                f"CRITICAL: Partial deletion of isOfType targets. Expected {total_expected} but deleted {total_deleted}. "
+                f"Transaction will be rolled back."
+            )
+
+        self.logger.info(f"✅ Deleted {total_deleted} isOfType target documents")
+        return (total_deleted, [])
+
+    async def _delete_nodes_by_keys(self, transaction: str, keys: List[str], collection: str, batch_size: int = 1000) -> Tuple[int, int]:
+        """
+        Delete documents by their _key values using batching.
+
+        Returns:
+            Tuple of (total_deleted_count, failed_batches_count)
+        """
+        if not keys:
+            return (0, 0)
+
+        total_deleted = 0
+        failed_batches = 0
+        total_batches = (len(keys) + batch_size - 1) // batch_size
+
+        # Process in batches to avoid query size limits
+        for i in range(0, len(keys), batch_size):
+            batch_keys = keys[i:i + batch_size]
+
+            query = """
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                REMOVE doc IN @@collection
+                RETURN 1
+            """
+
+            try:
+                results = await self.http_client.execute_aql(
+                    query=query,
+                    bind_vars={
+                        "@collection": collection,
+                        "keys": batch_keys
+                    },
+                    txn_id=transaction
+                )
+                deleted = len(results or [])
+                total_deleted += deleted
+            except Exception as e:
+                self.logger.error(f"❌ Error deleting batch {i//batch_size + 1}/{total_batches} from {collection}: {str(e)}")
+                failed_batches += 1
+                # Continue with next batch even if one fails
+
+        if failed_batches > 0:
+            self.logger.warning(
+                f"⚠️ Failed to delete {failed_batches}/{total_batches} batches from {collection}. "
+                f"Deleted {total_deleted}/{len(keys)} documents."
+            )
+        elif total_deleted > 0:
+            self.logger.debug(f"🗑️ Deleted {total_deleted} documents from {collection}")
+
+        return (total_deleted, failed_batches)
+
+    async def _delete_nodes_by_connector_id(self, transaction: str, connector_id: str, collection: str) -> Tuple[int, bool]:
+        """
+        Delete all documents with matching connectorId.
+
+        Returns:
+            Tuple of (deleted_count, success_flag)
+        """
+        query = """
+        FOR doc IN @@collection
+            FILTER doc.connectorId == @connector_id
+            REMOVE doc IN @@collection
+            RETURN 1
+        """
+
+        try:
+            results = await self.http_client.execute_aql(
+                query=query,
+                bind_vars={
+                    "@collection": collection,
+                    "connector_id": connector_id
+                },
+                txn_id=transaction
+            )
+            deleted = len(results or [])
+            if deleted > 0:
+                self.logger.debug(f"🗑️ Deleted {deleted} documents from {collection}")
+            return (deleted, True)
+        except Exception as e:
+            self.logger.error(f"❌ Error deleting from {collection}: {str(e)}")
+            return (0, False)
+
+    async def delete_connector_instance(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Delete a connector instance and ALL its related data using a generic graph-based approach.
+
+        This method dynamically discovers and deletes all edges connected to nodes,
+        making it future-proof when new collections/edges are added.
+
+        Flow:
+        1. Collect all node IDs (records, record groups, roles, groups, drives, app)
+        2. Get all edge collections from the graph definition
+        3. Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges
+        4. Delete all edges connected to these nodes (dynamically)
+        5. Delete isOfType target nodes using pre-collected targets
+        6. Delete the nodes themselves
+        7. Return virtualRecordIds for Qdrant cleanup
+
+        Classification nodes (departments, categories, topics, languages) are NOT deleted
+        as they are shared resources.
+        Users are NOT deleted - only userAppRelation edges are removed.
+
+        Args:
+            connector_id: The connector instance ID (_key in apps collection)
+            org_id: The organization ID for validation
+            transaction: Optional transaction ID (if None, will create a new transaction)
+
+        Returns:
+            Dict with success status, deletion counts, and virtualRecordIds for Qdrant
+        """
+        created_transaction = False
+        try:
+            self.logger.info(f"🗑️ Starting connector instance deletion for {connector_id}")
+
+            # Step 1: Verify connector exists
+            connector = await self.get_document(connector_id, CollectionNames.APPS.value, transaction=transaction)
+            if not connector:
+                return {
+                    "success": False,
+                    "error": f"Connector instance {connector_id} not found"
+                }
+
+            # Step 2: Collect all entities for this connector
+            collected = await self._collect_connector_entities(connector_id, transaction)
+
+            # Step 3: Get all edge collections from graph definition
+            edge_collections = await self._get_all_edge_collections()
+
+            # Step 4: Define all node collections that might have documents to delete
+            node_collections = [
+                CollectionNames.RECORDS.value,
+                CollectionNames.RECORD_GROUPS.value,
+                CollectionNames.ROLES.value,
+                CollectionNames.GROUPS.value,
+                CollectionNames.SYNC_POINTS.value,
+                CollectionNames.FILES.value,
+                CollectionNames.MAILS.value,
+                CollectionNames.WEBPAGES.value,
+                CollectionNames.COMMENTS.value,
+                CollectionNames.TICKETS.value,
+                CollectionNames.LINKS.value,
+                CollectionNames.PROJECTS.value,
+                CollectionNames.APPS.value,
+                CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value,
+            ]
+
+            # Start transaction if not provided
+            # Note: lock_timeout is set to 60 seconds (60000ms).
+            # For very large connector instances with millions of records, this may need to be increased.
+            # Consider implementing a more granular deletion strategy for extremely large datasets if timeouts occur.
+            if transaction is None:
+                transaction = await self.begin_transaction(
+                    read=edge_collections + node_collections,
+                    write=edge_collections + node_collections
+                )
+                created_transaction = True
+
+            try:
+                # Step 5: Collect isOfType targets BEFORE deleting edges
+                # If this fails, we can't properly clean up type nodes, so fail the transaction
+                isoftype_targets, isoftype_collect_success = await self._collect_isoftype_targets(
+                    transaction,
+                    collected["record_ids"]
+                )
+                if not isoftype_collect_success:
+                    raise Exception(
+                        "CRITICAL: Failed to collect isOfType targets. "
+                        "Cannot safely delete type nodes (files, mails, etc.). Transaction will be rolled back."
+                    )
+
+                # Step 6: Delete all edges connected to nodes (CRITICAL - all must succeed)
+                deleted_edges, failed_edge_collections = await self._delete_all_edges_for_nodes(
+                    transaction,
+                    collected["all_node_ids"],
+                    edge_collections
+                )
+                if failed_edge_collections:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete edges from {len(failed_edge_collections)} collections: {failed_edge_collections}. "
+                        f"Transaction will be rolled back to maintain data consistency."
+                    )
+
+                # Step 7: Delete isOfType target nodes (files, mails, etc.)
+                # This method will raise an exception if any failures occur
+                deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
+                    transaction,
+                    isoftype_targets,
+                    edge_collections
+                )
+
+                # Step 8: Delete records (CRITICAL - must succeed completely)
+                deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_keys"],
+                    CollectionNames.RECORDS.value
+                )
+                if len(collected["record_keys"]) > 0:
+                    if deleted_records == 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0. "
+                            f"Transaction will be rolled back."
+                        )
+                    elif deleted_records < len(collected["record_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_records}/{len(collected['record_keys'])} records. "
+                            f"Transaction will be rolled back to maintain data consistency."
+                        )
+                    if failed_record_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_record_batches} batch(es) of records. "
+                            f"Transaction will be rolled back."
+                        )
+
+                # Step 9: Delete record groups (CRITICAL - must succeed completely)
+                deleted_rg, failed_rg_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["record_group_keys"],
+                    CollectionNames.RECORD_GROUPS.value
+                )
+                if len(collected["record_group_keys"]) > 0:
+                    if deleted_rg < len(collected["record_group_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_rg}/{len(collected['record_group_keys'])} record groups. "
+                            f"Transaction will be rolled back."
+                        )
+                    if failed_rg_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_rg_batches} batch(es) of record groups. "
+                            f"Transaction will be rolled back."
+                        )
+
+                # Step 10: Delete roles (CRITICAL - must succeed completely)
+                deleted_roles, failed_roles_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["role_keys"],
+                    CollectionNames.ROLES.value
+                )
+                if len(collected["role_keys"]) > 0:
+                    if deleted_roles < len(collected["role_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_roles}/{len(collected['role_keys'])} roles. "
+                            f"Transaction will be rolled back."
+                        )
+                    if failed_roles_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_roles_batches} batch(es) of roles. "
+                            f"Transaction will be rolled back."
+                        )
+
+                # Step 11: Delete groups (CRITICAL - must succeed completely)
+                deleted_groups, failed_groups_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    collected["group_keys"],
+                    CollectionNames.GROUPS.value
+                )
+                if len(collected["group_keys"]) > 0:
+                    if deleted_groups < len(collected["group_keys"]):
+                        raise Exception(
+                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_groups}/{len(collected['group_keys'])} groups. "
+                            f"Transaction will be rolled back."
+                        )
+                    if failed_groups_batches > 0:
+                        raise Exception(
+                            f"CRITICAL: Failed to delete {failed_groups_batches} batch(es) of groups. "
+                            f"Transaction will be rolled back."
+                        )
+
+                # Step 12: Delete syncPoints and blocks (CRITICAL - must succeed)
+                deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.SYNC_POINTS.value
+                )
+                if not sync_success:
+                    raise Exception(
+                        "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                    )
+
+                # Step 13: Delete the app itself (CRITICAL - must succeed completely)
+                deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
+                    transaction,
+                    [connector_id],
+                    CollectionNames.APPS.value
+                )
+                if deleted_app == 0:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist. "
+                        f"Transaction will be rolled back."
+                    )
+                if failed_app_batches > 0:
+                    raise Exception(
+                        f"CRITICAL: Failed to delete app in {failed_app_batches} batch(es). "
+                        f"Transaction will be rolled back."
+                    )
+
+                # All operations succeeded completely - commit the transaction
+                if created_transaction:
+                    await self.commit_transaction(transaction)
+
+                self.logger.info(
+                    f"✅ Connector instance {connector_id} deleted successfully. "
+                    f"Records: {deleted_records}/{len(collected['record_keys'])}, "
+                    f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
+                    f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
+                    f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
+                    f"Edges: {deleted_edges}, "
+                    f"isOfType targets: {deleted_isoftype}"
+                )
+
+                return {
+                    "success": True,
+                    "deleted_records_count": deleted_records,
+                    "deleted_record_groups_count": deleted_rg,
+                    "deleted_roles_count": deleted_roles,
+                    "deleted_groups_count": deleted_groups,
+                    "deleted_edges_count": deleted_edges,
+                    "deleted_isoftype_targets_count": deleted_isoftype,
+                    "virtual_record_ids": collected["virtual_record_ids"],
+                    "connector_id": connector_id
+                }
+
+            except Exception as tx_error:
+                if created_transaction:
+                    try:
+                        await self.rollback_transaction(transaction)
+                    except Exception as abort_error:
+                        self.logger.error(
+                            f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
+                            f"Original error: {tx_error}"
+                        )
+                raise tx_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
+            return {
+                "success": False,
+                "error": f"Failed to delete connector instance: {str(e)}"
+            }
+
     # ==================== Connector-Specific Delete Methods ====================
 
     async def delete_knowledge_base_record(
@@ -4107,6 +6441,556 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
             return None
 
+    async def get_key_by_external_message_id(
+        self,
+        external_message_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get internal key by external message ID.
+
+        Args:
+            external_message_id (str): External message ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: Internal key if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🚀 Retrieving internal key for external message ID {external_message_id}"
+            )
+
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.externalRecordId == @external_message_id
+                RETURN record._key
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"external_message_id": external_message_id},
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(
+                    f"✅ Successfully retrieved internal key for external message ID {external_message_id}"
+                )
+                return results[0]
+            else:
+                self.logger.warning(
+                    f"⚠️ No internal key found for external message ID {external_message_id}"
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to retrieve internal key for external message ID {external_message_id}: {str(e)}"
+            )
+            return None
+
+    async def get_related_records_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        edge_collection: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get related records connected via a specific relation type.
+
+        Args:
+            record_id (str): Source record ID
+            relation_type (str): Relation type to filter by (e.g., "ATTACHMENT")
+            edge_collection (str): Edge collection name
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of related records with messageId, id/key, and relationType
+        """
+        try:
+            self.logger.info(
+                f"🚀 Getting related records for {record_id} with relation type {relation_type}"
+            )
+
+            query = f"""
+            FOR v, e IN 1..1 ANY '{CollectionNames.RECORDS.value}/{record_id}' {edge_collection}
+                FILTER e.relationType == @relation_type
+                RETURN {{
+                    messageId: v.externalRecordId,
+                    _key: v._key,
+                    id: v._key,
+                    relationType: e.relationType
+                }}
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"relation_type": relation_type},
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(
+                    f"✅ Found {len(results)} related records for {record_id}"
+                )
+                return results
+            else:
+                self.logger.info(
+                    f"ℹ️ No related records found for {record_id} with relation type {relation_type}"
+                )
+                return []
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to get related records for {record_id}: {str(e)}"
+            )
+            return []
+
+    async def get_message_id_header_by_key(
+        self,
+        record_key: str,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get messageIdHeader field from a mail record by its key.
+
+        Args:
+            record_key (str): Record key (_key or id)
+            collection (str): Collection name (e.g., "records" or "mails")
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: messageIdHeader value if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🚀 Getting messageIdHeader for record {record_key} in collection {collection}"
+            )
+
+            query = f"""
+            FOR record IN {collection}
+                FILTER record._key == @record_key
+                RETURN record.messageIdHeader
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"record_key": record_key},
+                txn_id=transaction
+            )
+
+            if results and results[0] is not None:
+                self.logger.info(
+                    f"✅ Found messageIdHeader for record {record_key}"
+                )
+                return results[0]
+            else:
+                self.logger.warning(
+                    f"⚠️ No messageIdHeader found for record {record_key}"
+                )
+                return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to get messageIdHeader for record {record_key}: {str(e)}"
+            )
+            return None
+
+    async def get_related_mails_by_message_id_header(
+        self,
+        message_id_header: str,
+        exclude_key: str,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Find all mail records with the same messageIdHeader, excluding a specific key.
+
+        Args:
+            message_id_header (str): messageIdHeader value to search for
+            exclude_key (str): Record key to exclude from results
+            collection (str): Collection name (e.g., "records" or "mails")
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of record keys (_key or id) matching the criteria
+        """
+        try:
+            self.logger.info(
+                f"🚀 Finding related mails with messageIdHeader {message_id_header}, excluding {exclude_key}"
+            )
+
+            query = f"""
+            FOR record IN {collection}
+                FILTER record.messageIdHeader == @message_id_header
+                AND record._key != @exclude_key
+                RETURN record._key
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "message_id_header": message_id_header,
+                    "exclude_key": exclude_key
+                },
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(
+                    f"✅ Found {len(results)} related mails with messageIdHeader {message_id_header}"
+                )
+                return results
+            else:
+                self.logger.info(
+                    f"ℹ️ No related mails found with messageIdHeader {message_id_header}"
+                )
+                return []
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to get related mails by messageIdHeader: {str(e)}"
+            )
+            return []
+
+    async def batch_update_nodes(
+        self,
+        node_ids: List[str],
+        updates: Dict[str, Any],
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch update multiple nodes with the same updates.
+
+        Args:
+            node_ids (List[str]): List of node IDs to update
+            updates (Dict[str, Any]): Dictionary of fields to update
+            collection (str): Collection name
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            self.logger.info(f"🚀 Batch updating {len(node_ids)} nodes in {collection}")
+
+            query = f"""
+            FOR doc IN {collection}
+                FILTER doc._key IN @keys
+                UPDATE doc WITH @updates IN {collection}
+                RETURN NEW
+            """
+
+            bind_vars = {
+                "keys": node_ids,
+                "updates": updates
+            }
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            if results:
+                self.logger.info(f"✅ Successfully batch updated {len(results)} nodes")
+                return True
+            else:
+                self.logger.warning("⚠️ No nodes were updated")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to batch update nodes: {str(e)}")
+            return False
+
+    async def count_connector_instances_by_scope(
+        self,
+        collection: str,
+        scope: str,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Count connector instances by scope with access control.
+
+        Args:
+            collection (str): Collection name
+            scope (str): Scope filter (personal/team)
+            user_id (Optional[str]): User ID for access control
+            is_admin (bool): Whether the user is an admin
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            int: Count of connector instances
+        """
+        try:
+            self.logger.info(f"🚀 Counting connector instances for scope {scope}")
+
+            query = f"""
+            FOR doc IN {collection}
+                FILTER doc._id != null
+                FILTER doc.scope == @scope
+                FILTER doc.isConfigured == true
+            """
+
+            bind_vars = {"scope": scope}
+
+            # Add user filter for personal scope
+            if scope == "personal" and user_id:
+                query += " FILTER doc.createdBy == @user_id"
+                bind_vars["user_id"] = user_id
+
+            query += " COLLECT WITH COUNT INTO total RETURN total"
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            count = results[0] if results else 0
+            self.logger.info(f"✅ Found {count} connector instances for scope {scope}")
+            return count
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to count connector instances by scope: {str(e)}")
+            return 0
+
+    async def check_connector_name_uniqueness(
+        self,
+        instance_name: str,
+        scope: str,
+        org_id: str,
+        user_id: str,
+        collection: str,
+        edge_collection: Optional[str] = None,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Check if connector instance name is unique based on scope.
+
+        Args:
+            instance_name (str): Name to check
+            scope (str): Connector scope (personal/team)
+            org_id (str): Organization ID
+            user_id (str): User ID (for personal scope)
+            collection (str): Collection name for connector instances
+            edge_collection (Optional[str]): Edge collection for org-connector relationship (for team scope)
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            bool: True if name is unique, False if already exists
+        """
+        try:
+            self.logger.info(
+                f"🚀 Checking name uniqueness for '{instance_name}' with scope {scope}"
+            )
+
+            normalized_name = instance_name.strip().lower()
+
+            if scope == "personal":
+                # For personal scope: check uniqueness within user's personal connectors
+                query = f"""
+                FOR doc IN {collection}
+                    FILTER doc.scope == @scope
+                    FILTER doc.createdBy == @user_id
+                    FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                    RETURN doc._key
+                """
+                bind_vars = {
+                    "scope": scope,
+                    "user_id": user_id,
+                    "normalized_name": normalized_name,
+                }
+            else:  # TEAM scope
+                # For team scope: check uniqueness within organization's team connectors
+                query = f"""
+                FOR edge IN {edge_collection}
+                    FILTER edge._from == @org_id
+                    FOR doc IN {collection}
+                        FILTER doc._id == edge._to
+                        FILTER doc.scope == @scope
+                        FILTER LOWER(TRIM(doc.name)) == @normalized_name
+                        RETURN doc._key
+                """
+                bind_vars = {
+                    "org_id": f"{CollectionNames.ORGS.value}/{org_id}",
+                    "scope": scope,
+                    "normalized_name": normalized_name,
+                }
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            existing = list(results) if results else []
+            is_unique = len(existing) == 0
+
+            self.logger.info(
+                f"✅ Name uniqueness check: '{instance_name}' is {'unique' if is_unique else 'not unique'}"
+            )
+            return is_unique
+
+        except Exception as e:
+            self.logger.error(f"❌ Error checking name uniqueness: {str(e)}")
+            # On error, allow the operation (fail-open to avoid blocking)
+            return True
+
+    async def get_connector_instances_with_filters(
+        self,
+        collection: str,
+        scope: Optional[str] = None,
+        user_id: Optional[str] = None,
+        is_admin: bool = False,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 20,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get connector instances with filters, pagination, and access control.
+
+        Args:
+            collection (str): Collection name
+            scope (Optional[str]): Scope filter (personal/team)
+            user_id (Optional[str]): User ID for access control
+            is_admin (bool): Whether the user is an admin
+            search (Optional[str]): Search query
+            page (int): Page number (1-indexed)
+            limit (int): Number of items per page
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Tuple[List[Dict], int]: (List of connector instances, total count)
+        """
+        try:
+            self.logger.info(
+                f"🚀 Getting connector instances with filters: scope={scope}, search={search}, page={page}"
+            )
+
+            # Build base query
+            query = f"""
+            FOR doc IN {collection}
+                FILTER doc._id != null
+            """
+
+            bind_vars = {}
+
+            # Add scope filter if specified
+            if scope:
+                query += " FILTER doc.scope == @scope"
+                bind_vars["scope"] = scope
+
+            # Add access control
+            if not is_admin:
+                # Non-admins can only see their own connectors
+                query += " FILTER (doc.createdBy == @user_id)"
+                bind_vars["user_id"] = user_id
+            else:
+                # Admins can see all team connectors + their personal connectors
+                query += " FILTER (doc.scope == @team_scope) OR (doc.createdBy == @user_id)"
+                bind_vars["team_scope"] = "team"
+                bind_vars["user_id"] = user_id
+
+            # Add search filter if specified
+            if search:
+                query += " FILTER (LOWER(doc.name) LIKE @search) OR (LOWER(doc.type) LIKE @search) OR (LOWER(doc.appGroup) LIKE @search)"
+                bind_vars["search"] = f"%{search.lower()}%"
+
+            # Get total count
+            count_query = query + " COLLECT WITH COUNT INTO total RETURN total"
+            count_results = await self.http_client.execute_aql(
+                count_query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+            total_count = count_results[0] if count_results else 0
+
+            # Add pagination
+            query += """
+                SORT doc.createdAtTimestamp DESC
+                LIMIT @offset, @limit
+                RETURN doc
+            """
+            bind_vars["offset"] = (page - 1) * limit
+            bind_vars["limit"] = limit
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            documents = list(results) if results else []
+
+            self.logger.info(f"✅ Found {len(documents)} connector instances (total: {total_count})")
+            return documents, total_count
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector instances with filters: {str(e)}")
+            return [], 0
+
+    async def get_connector_instances_by_scope_and_user(
+        self,
+        collection: str,
+        user_id: str,
+        team_scope: str,
+        personal_scope: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get connector instances by scope and user (for _get_all_connector_instances).
+
+        Args:
+            collection (str): Collection name
+            user_id (str): User ID
+            team_scope (str): Team scope value
+            personal_scope (str): Personal scope value
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of connector instance documents
+        """
+        try:
+            self.logger.info(f"🚀 Getting connector instances for user {user_id}")
+
+            query = f"""
+            FOR doc IN {collection}
+                FILTER doc._id != null
+                FILTER (
+                    doc.scope == @team_scope OR
+                    (doc.scope == @personal_scope AND doc.createdBy == @user_id)
+                )
+                RETURN doc
+            """
+
+            bind_vars = {
+                "team_scope": team_scope,
+                "personal_scope": personal_scope,
+                "user_id": user_id,
+            }
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            documents = list(results) if results else []
+            self.logger.info(f"✅ Found {len(documents)} connector instances")
+            return documents
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector instances by scope and user: {str(e)}")
+            return []
+
     async def get_user_sync_state(
         self,
         user_email: str,
@@ -4274,6 +7158,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
         except Exception as e:
             self.logger.error(f"❌ Update drive sync state failed: {str(e)}")
+
+    # ==================== Connector Registry Operations ====================
 
     async def store_page_token(
         self,
@@ -4991,25 +7877,65 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_id: str,
         transaction: Optional[str] = None
     ) -> Optional[str]:
-        """Get user's permission on a KB."""
+        """Get user's permission on a KB. Returns highest role from direct and team-based access."""
         try:
             self.logger.info(f"🔍 Checking permissions for user {user_id} on KB {kb_id}")
 
-            # Check for direct user permission
+            role_priority = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1,
+            }
+
+            # Check direct and team permissions, return highest role (OWNER > WRITER > READER > COMMENTER)
             query = """
             LET user_from = CONCAT('users/', @user_id)
             LET kb_to = CONCAT('recordGroups/', @kb_id)
 
-            // Check for direct user permission
+            // Direct user permission (with priority)
             LET direct_perm = FIRST(
                 FOR perm IN @@permissions_collection
                     FILTER perm._from == user_from
                     FILTER perm._to == kb_to
                     FILTER perm.type == "USER"
-                    RETURN perm.role
+                    RETURN { role: perm.role, priority: @role_priority[perm.role] || 0 }
             )
 
-            RETURN direct_perm
+            // Team-based: user -> teams via USER, team -> KB via TEAM
+            LET user_teams = (
+                FOR user_team_perm IN @@permissions_collection
+                    FILTER user_team_perm._from == user_from
+                    FILTER user_team_perm.type == "USER"
+                    FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                    RETURN {
+                        team_id: SPLIT(user_team_perm._to, '/')[1],
+                        role: user_team_perm.role,
+                        priority: @role_priority[user_team_perm.role] || 0
+                    }
+            )
+
+            LET team_roles = (
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm._to == kb_to
+                        FILTER kb_team_perm.type == "TEAM"
+                        RETURN { role: team_info.role, priority: team_info.priority }
+            )
+
+            // Combine direct + team roles and return highest permission
+            LET all_roles = UNION(
+                direct_perm != null ? [direct_perm] : [],
+                team_roles
+            )
+            LET best = FIRST(
+                FOR r IN all_roles
+                    SORT r.priority DESC
+                    LIMIT 1
+                    RETURN r.role
+            )
+            RETURN best
             """
 
             result = await self.http_client.execute_aql(
@@ -5017,6 +7943,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={
                     "kb_id": kb_id,
                     "user_id": user_id,
+                    "role_priority": role_priority,
                     "@permissions_collection": CollectionNames.PERMISSION.value,
                 },
                 txn_id=transaction
@@ -5031,6 +7958,3631 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check KB permission: {e}")
             return None
 
+    async def list_user_knowledge_bases(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str] = None,
+        permissions: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """
+        List knowledge bases with pagination, search, and filtering.
+        Includes both direct user permissions and team-based permissions.
+        For team-based access, returns the highest role from all common teams.
+        """
+        try:
+            # Build filter conditions
+            filter_conditions = []
+            if search:
+                filter_conditions.append("LIKE(LOWER(kb.groupName), LOWER(@search_term))")
+            permission_filter = ""
+            if permissions:
+                permission_filter = "FILTER final_role IN @permissions"
+            additional_filters = ""
+            if filter_conditions:
+                additional_filters = "AND " + " AND ".join(filter_conditions)
+
+            sort_field_map = {
+                "name": "kb.groupName",
+                "createdAtTimestamp": "kb.createdAtTimestamp",
+                "updatedAtTimestamp": "kb.updatedAtTimestamp",
+                "userRole": "final_role"
+            }
+            sort_field = sort_field_map.get(sort_by, "kb.groupName")
+            sort_direction = sort_order.upper()
+            role_priority_map = {
+                "OWNER": 4,
+                "WRITER": 3,
+                "READER": 2,
+                "COMMENTER": 1
+            }
+
+            main_query = f"""
+            LET direct_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == @user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(perm._to)
+                    FILTER kb != null
+                    FILTER kb.orgId == @org_id
+                    FILTER kb.groupType == @kb_type
+                    FILTER kb.connectorName == @kb_connector
+                    {additional_filters}
+                    RETURN {{
+                        kb_id: kb._key,
+                        kb_doc: kb,
+                        role: perm.role,
+                        priority: @role_priority[perm.role] || 0,
+                        is_direct: true
+                    }}
+            )
+
+            LET team_perms = (
+                LET user_teams = (
+                    FOR user_team_perm IN @@permissions_collection
+                        FILTER user_team_perm._from == @user_from
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        RETURN {{
+                            team_id: SPLIT(user_team_perm._to, '/')[1],
+                            role: user_team_perm.role,
+                            priority: @role_priority[user_team_perm.role] || 0
+                        }}
+                )
+
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm.type == "TEAM"
+                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        LET kb = DOCUMENT(kb_team_perm._to)
+                        FILTER kb != null
+                        FILTER kb.orgId == @org_id
+                        FILTER kb.groupType == @kb_type
+                        FILTER kb.connectorName == @kb_connector
+                        {additional_filters}
+                        RETURN {{
+                            kb_id: kb._key,
+                            kb_doc: kb,
+                            role: team_info.role,
+                            priority: team_info.priority,
+                            is_direct: false
+                        }}
+            )
+
+            LET all_perms = UNION(direct_perms, team_perms)
+
+            LET kb_roles = (
+                FOR perm IN all_perms
+                    COLLECT kb_id = perm.kb_id, kb_doc = perm.kb_doc INTO roles = perm
+                    LET sorted_roles = (
+                        FOR r IN roles
+                            SORT r.priority DESC, r.is_direct DESC
+                            LIMIT 1
+                            RETURN r.role
+                    )
+                    LET final_role = FIRST(sorted_roles)
+                    {permission_filter}
+                    RETURN {{
+                        kb_id: kb_id,
+                        kb_doc: kb_doc,
+                        userRole: final_role
+                    }}
+            )
+
+            LET kb_ids = kb_roles[*].kb_doc._id
+            LET all_folders = (
+                FOR edge IN @@belongs_to_kb
+                    FILTER edge._to IN kb_ids
+                    LET folder = DOCUMENT(edge._from)
+                    FILTER folder != null && folder.isFile == false
+                    RETURN {{
+                        kb_id: edge._to,
+                        folder: {{
+                            id: folder._key,
+                            name: folder.name,
+                            createdAtTimestamp: edge.createdAtTimestamp,
+                            path: folder.path,
+                            webUrl: folder.webUrl
+                        }}
+                    }}
+            )
+
+            FOR kb_role IN kb_roles
+                LET kb = kb_role.kb_doc
+                LET folders = all_folders[* FILTER CURRENT.kb_id == kb._id].folder
+                SORT {sort_field} {sort_direction}
+                LIMIT @skip, @limit
+                RETURN {{
+                    id: kb._key,
+                    name: kb.groupName,
+                    createdAtTimestamp: kb.createdAtTimestamp,
+                    updatedAtTimestamp: kb.updatedAtTimestamp,
+                    createdBy: kb.createdBy,
+                    userRole: kb_role.userRole,
+                    folders: folders
+                }}
+            """
+
+            count_query = f"""
+            LET direct_perms = (
+                FOR perm IN @@count_permissions_collection
+                    FILTER perm._from == @count_user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(perm._to)
+                    FILTER kb != null
+                    FILTER kb.orgId == @count_org_id
+                    FILTER kb.groupType == @count_kb_type
+                    FILTER kb.connectorName == @count_kb_connector
+                    {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
+                    RETURN {{
+                        kb_id: kb._key,
+                        role: perm.role,
+                        priority: @count_role_priority[perm.role] || 0,
+                        is_direct: true
+                    }}
+            )
+
+            LET team_perms = (
+                LET user_teams = (
+                    FOR user_team_perm IN @@count_permissions_collection
+                        FILTER user_team_perm._from == @count_user_from
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        RETURN {{
+                            team_id: SPLIT(user_team_perm._to, '/')[1],
+                            role: user_team_perm.role,
+                            priority: @count_role_priority[user_team_perm.role] || 0
+                        }}
+                )
+
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@count_permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm.type == "TEAM"
+                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        LET kb = DOCUMENT(kb_team_perm._to)
+                        FILTER kb != null
+                        FILTER kb.orgId == @count_org_id
+                        FILTER kb.groupType == @count_kb_type
+                        FILTER kb.connectorName == @count_kb_connector
+                        {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
+                        RETURN {{
+                            kb_id: kb._key,
+                            role: team_info.role,
+                            priority: team_info.priority,
+                            is_direct: false
+                        }}
+            )
+
+            LET all_perms = UNION(direct_perms, team_perms)
+
+            LET kb_roles = (
+                FOR perm IN all_perms
+                    COLLECT kb_id = perm.kb_id INTO roles = perm
+                    LET sorted_roles = (
+                        FOR r IN roles
+                            SORT r.priority DESC, r.is_direct DESC
+                            LIMIT 1
+                            RETURN r.role
+                    )
+                    LET final_role = FIRST(sorted_roles)
+                    {permission_filter.replace('@permissions', '@count_permissions') if permission_filter else ''}
+                    RETURN kb_id
+            )
+
+            RETURN LENGTH(kb_roles)
+            """
+
+            filters_query = """
+            LET direct_perms = (
+                FOR perm IN @@filters_permissions_collection
+                    FILTER perm._from == @filters_user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "recordGroups/")
+                    LET kb = DOCUMENT(perm._to)
+                    FILTER kb != null
+                    FILTER kb.orgId == @filters_org_id
+                    FILTER kb.groupType == @filters_kb_type
+                    FILTER kb.connectorName == @filters_kb_connector
+                    RETURN {
+                        kb_id: kb._key,
+                        permission: perm.role,
+                        kb_name: kb.groupName,
+                        priority: @filters_role_priority[perm.role] || 0,
+                        is_direct: true
+                    }
+            )
+
+            LET team_perms = (
+                LET user_teams = (
+                    FOR user_team_perm IN @@filters_permissions_collection
+                        FILTER user_team_perm._from == @filters_user_from
+                        FILTER user_team_perm.type == "USER"
+                        FILTER STARTS_WITH(user_team_perm._to, "teams/")
+                        RETURN {
+                            team_id: SPLIT(user_team_perm._to, '/')[1],
+                            role: user_team_perm.role,
+                            priority: @filters_role_priority[user_team_perm.role] || 0
+                        }
+                )
+
+                FOR team_info IN user_teams
+                    FOR kb_team_perm IN @@filters_permissions_collection
+                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
+                        FILTER kb_team_perm.type == "TEAM"
+                        FILTER STARTS_WITH(kb_team_perm._to, "recordGroups/")
+                        LET kb = DOCUMENT(kb_team_perm._to)
+                        FILTER kb != null
+                        FILTER kb.orgId == @filters_org_id
+                        FILTER kb.groupType == @filters_kb_type
+                        FILTER kb.connectorName == @filters_kb_connector
+                        RETURN {
+                            kb_id: kb._key,
+                            permission: team_info.role,
+                            kb_name: kb.groupName,
+                            priority: team_info.priority,
+                            is_direct: false
+                        }
+            )
+
+            LET all_perms = UNION(direct_perms, team_perms)
+
+            FOR perm IN all_perms
+                COLLECT kb_id = perm.kb_id INTO roles = perm
+                LET sorted_roles = (
+                    FOR r IN roles
+                        SORT r.priority DESC, r.is_direct DESC
+                        LIMIT 1
+                        RETURN r.permission
+                )
+                RETURN {
+                    permission: FIRST(sorted_roles),
+                    kb_name: FIRST(roles).kb_name
+                }
+            """
+
+            main_bind_vars: Dict[str, Any] = {
+                "user_from": f"users/{user_id}",
+                "org_id": org_id,
+                "kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "skip": skip,
+                "limit": limit,
+                "role_priority": role_priority_map,
+                "@permissions_collection": CollectionNames.PERMISSION.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+            }
+            if search:
+                main_bind_vars["search_term"] = f"%{search}%"
+            if permissions:
+                main_bind_vars["permissions"] = permissions
+
+            count_bind_vars: Dict[str, Any] = {
+                "count_user_from": f"users/{user_id}",
+                "count_org_id": org_id,
+                "count_kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "count_kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "count_role_priority": role_priority_map,
+                "@count_permissions_collection": CollectionNames.PERMISSION.value,
+            }
+            if search:
+                count_bind_vars["count_search_term"] = f"%{search}%"
+            if permissions:
+                count_bind_vars["count_permissions"] = permissions
+
+            filters_bind_vars = {
+                "filters_user_from": f"users/{user_id}",
+                "filters_org_id": org_id,
+                "filters_kb_type": Connectors.KNOWLEDGE_BASE.value,
+                "filters_kb_connector": Connectors.KNOWLEDGE_BASE.value,
+                "filters_role_priority": role_priority_map,
+                "@filters_permissions_collection": CollectionNames.PERMISSION.value,
+            }
+
+            kbs = await self.execute_query(main_query, main_bind_vars, transaction) or []
+            count_result = await self.execute_query(count_query, count_bind_vars, transaction) or []
+            total_count = count_result[0] if count_result and len(count_result) > 0 else 0
+            filter_data = await self.execute_query(filters_query, filters_bind_vars, transaction) or []
+
+            available_permissions = list(set(item["permission"] for item in filter_data if item.get("permission")))
+            available_filters = {
+                "permissions": available_permissions,
+                "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
+                "sortOrders": ["asc", "desc"]
+            }
+
+            self.logger.info(
+                f"✅ Found {len(kbs)} knowledge bases out of {total_count} total (including team-based access)"
+            )
+            return kbs, total_count, available_filters
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list knowledge bases with pagination: {str(e)}")
+            return [], 0, {
+                "permissions": [],
+                "sortFields": ["name", "createdAtTimestamp", "updatedAtTimestamp", "userRole"],
+                "sortOrders": ["asc", "desc"]
+            }
+
+    async def get_kb_children(
+        self,
+        kb_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: Optional[str] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """
+        Get KB root contents with folders_first pagination and level order traversal.
+        """
+        try:
+            def build_filters() -> Tuple[str, str, Dict]:
+                folder_conditions = []
+                record_conditions = []
+                bind_vars: Dict[str, Any] = {}
+
+                if search:
+                    folder_conditions.append(
+                        "LIKE(LOWER(folder_record.recordName), @search_term)"
+                    )
+                    record_conditions.append(
+                        "(LIKE(LOWER(record.recordName), @search_term) OR "
+                        "LIKE(LOWER(record.externalRecordId), @search_term))"
+                    )
+                    bind_vars["search_term"] = f"%{search.lower()}%"
+
+                if record_types:
+                    record_conditions.append("record.recordType IN @record_types")
+                    bind_vars["record_types"] = record_types
+
+                if origins:
+                    record_conditions.append("record.origin IN @origins")
+                    bind_vars["origins"] = origins
+
+                if connectors:
+                    record_conditions.append("record.connectorName IN @connectors")
+                    bind_vars["connectors"] = connectors
+
+                if indexing_status:
+                    record_conditions.append(
+                        "record.indexingStatus IN @indexing_status"
+                    )
+                    bind_vars["indexing_status"] = indexing_status
+
+                folder_filter = (
+                    " AND " + " AND ".join(folder_conditions) if folder_conditions else ""
+                )
+                record_filter = (
+                    " AND " + " AND ".join(record_conditions) if record_conditions else ""
+                )
+                return folder_filter, record_filter, bind_vars
+
+            folder_filter, record_filter, filter_vars = build_filters()
+
+            record_sort_map = {
+                "name": "record.recordName",
+                "created_at": "record.createdAtTimestamp",
+                "updated_at": "record.updatedAtTimestamp",
+                "size": "fileRecord.sizeInBytes",
+            }
+            record_sort_field = record_sort_map.get(sort_by, "record.recordName")
+            sort_direction = sort_order.upper()
+
+            main_query = f"""
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET allImmediateChildren = (
+                FOR belongsEdge IN @@belongs_to
+                    FILTER belongsEdge._to == kb._id
+                    FILTER belongsEdge.entityType == @kb_connector_type
+                    LET record = DOCUMENT(belongsEdge._from)
+                    FILTER IS_SAME_COLLECTION("records", record._id)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    LET isChild = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._to == record._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            RETURN 1
+                    ) > 0
+                    FILTER isChild == false
+                    RETURN record
+            )
+            LET allFolders = (
+                FOR record IN allImmediateChildren
+                    LET folder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER folder_file != null
+                    {folder_filter}
+                    LET direct_subfolders = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == record._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET child_record = DOCUMENT(relEdge._to)
+                            FILTER child_record != null
+                            LET child_file = FIRST(
+                                FOR isEdge IN @@is_of_type
+                                    FILTER isEdge._from == child_record._id
+                                    LET f = DOCUMENT(isEdge._to)
+                                    FILTER f != null AND f.isFile == false
+                                    RETURN 1
+                            )
+                            FILTER child_file != null
+                            RETURN 1
+                    )
+                    LET direct_records = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == record._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET child_record = DOCUMENT(relEdge._to)
+                            FILTER child_record != null AND child_record.isDeleted != true
+                            LET child_file = FIRST(
+                                FOR isEdge IN @@is_of_type
+                                    FILTER isEdge._from == child_record._id
+                                    LET f = DOCUMENT(isEdge._to)
+                                    FILTER f != null AND f.isFile == false
+                                    RETURN 1
+                            )
+                            FILTER child_file == null
+                            RETURN 1
+                    )
+                    SORT record.recordName ASC
+                    RETURN {{
+                        id: record._key,
+                        name: record.recordName,
+                        path: folder_file.path,
+                        level: 1,
+                        parent_id: null,
+                        webUrl: record.webUrl,
+                        recordGroupId: record.connectorId,
+                        type: "folder",
+                        createdAtTimestamp: record.createdAtTimestamp,
+                        updatedAtTimestamp: record.updatedAtTimestamp,
+                        counts: {{
+                            subfolders: direct_subfolders,
+                            records: direct_records,
+                            totalItems: direct_subfolders + direct_records
+                        }},
+                        hasChildren: direct_subfolders > 0 OR direct_records > 0
+                    }}
+            )
+            LET allRecords = (
+                FOR record IN allImmediateChildren
+                    LET record_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN 1
+                    )
+                    FILTER record_file == null
+                    {record_filter}
+                    LET fileEdge = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            RETURN isEdge
+                    )
+                    LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
+                    SORT {record_sort_field} {sort_direction}
+                    RETURN {{
+                        id: record._key,
+                        recordName: record.recordName,
+                        name: record.recordName,
+                        recordType: record.recordType,
+                        externalRecordId: record.externalRecordId,
+                        origin: record.origin,
+                        connectorName: record.connectorName || "KNOWLEDGE_BASE",
+                        indexingStatus: record.indexingStatus,
+                        version: record.version,
+                        isLatestVersion: record.isLatestVersion,
+                        createdAtTimestamp: record.createdAtTimestamp,
+                        updatedAtTimestamp: record.updatedAtTimestamp,
+                        sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                        sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                        webUrl: record.webUrl,
+                        orgId: record.orgId,
+                        type: "record",
+                        fileRecord: fileRecord ? {{
+                            id: fileRecord._key,
+                            name: fileRecord.name,
+                            extension: fileRecord.extension,
+                            mimeType: fileRecord.mimeType,
+                            sizeInBytes: fileRecord.sizeInBytes,
+                            webUrl: fileRecord.webUrl,
+                            path: fileRecord.path,
+                            isFile: fileRecord.isFile
+                        }} : null
+                    }}
+            )
+            LET totalFolders = LENGTH(allFolders)
+            LET totalRecords = LENGTH(allRecords)
+            LET totalCount = totalFolders + totalRecords
+            LET paginatedFolders = (
+                @skip < totalFolders ?
+                    SLICE(allFolders, @skip, @limit)
+                : []
+            )
+            LET foldersShown = LENGTH(paginatedFolders)
+            LET remainingLimit = @limit - foldersShown
+            LET recordSkip = @skip >= totalFolders ? (@skip - totalFolders) : 0
+            LET recordLimit = @skip >= totalFolders ? @limit : remainingLimit
+            LET paginatedRecords = (
+                recordLimit > 0 ?
+                    SLICE(allRecords, recordSkip, recordLimit)
+                : []
+            )
+            LET availableFilters = {{
+                recordTypes: UNIQUE(allRecords[*].recordType) || [],
+                origins: UNIQUE(allRecords[*].origin) || [],
+                connectors: UNIQUE(allRecords[*].connectorName) || [],
+                indexingStatus: UNIQUE(allRecords[*].indexingStatus) || []
+            }}
+            RETURN {{
+                success: true,
+                container: {{
+                    id: kb._key,
+                    name: kb.groupName,
+                    path: "/",
+                    type: "kb",
+                    webUrl: CONCAT("/kb/", kb._key),
+                    recordGroupId: kb._key
+                }},
+                folders: paginatedFolders,
+                records: paginatedRecords,
+                level: @level,
+                totalCount: totalCount,
+                counts: {{
+                    folders: LENGTH(paginatedFolders),
+                    records: LENGTH(paginatedRecords),
+                    totalItems: LENGTH(paginatedFolders) + LENGTH(paginatedRecords),
+                    totalFolders: totalFolders,
+                    totalRecords: totalRecords
+                }},
+                availableFilters: availableFilters,
+                paginationMode: "folders_first"
+            }}
+            """
+
+            bind_vars: Dict[str, Any] = {
+                "kb_id": kb_id,
+                "skip": skip,
+                "limit": limit,
+                "level": level,
+                "kb_connector_type": Connectors.KNOWLEDGE_BASE.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_vars,
+            }
+
+            results = await self.execute_query(main_query, bind_vars=bind_vars, transaction=transaction)
+            result = results[0] if results else None
+
+            if not result:
+                return {"success": False, "reason": "Knowledge base not found"}
+
+            self.logger.info(
+                f"✅ Retrieved KB children with folders_first pagination: "
+                f"{result['counts']['totalItems']} items"
+            )
+            return result
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to get KB children with folders_first pagination: {str(e)}"
+            )
+            return {"success": False, "reason": str(e)}
+
+    async def get_folder_children(
+        self,
+        kb_id: str,
+        folder_id: str,
+        skip: int,
+        limit: int,
+        level: int = 1,
+        search: Optional[str] = None,
+        record_types: Optional[List[str]] = None,
+        origins: Optional[List[str]] = None,
+        connectors: Optional[List[str]] = None,
+        indexing_status: Optional[List[str]] = None,
+        sort_by: str = "name",
+        sort_order: str = "asc",
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """
+        Get folder contents with folders_first pagination and level order traversal.
+        """
+        try:
+            def build_filters() -> Tuple[str, str, Dict]:
+                folder_conditions = []
+                record_conditions = []
+                bind_vars: Dict[str, Any] = {}
+
+                if search:
+                    folder_conditions.append(
+                        "LIKE(LOWER(subfolder_record.recordName), @search_term)"
+                    )
+                    record_conditions.append(
+                        "(LIKE(LOWER(record.recordName), @search_term) OR "
+                        "LIKE(LOWER(record.externalRecordId), @search_term))"
+                    )
+                    bind_vars["search_term"] = f"%{search.lower()}%"
+
+                if record_types:
+                    record_conditions.append("record.recordType IN @record_types")
+                    bind_vars["record_types"] = record_types
+
+                if origins:
+                    record_conditions.append("record.origin IN @origins")
+                    bind_vars["origins"] = origins
+
+                if connectors:
+                    record_conditions.append("record.connectorName IN @connectors")
+                    bind_vars["connectors"] = connectors
+
+                if indexing_status:
+                    record_conditions.append(
+                        "record.indexingStatus IN @indexing_status"
+                    )
+                    bind_vars["indexing_status"] = indexing_status
+
+                folder_filter = (
+                    " AND " + " AND ".join(folder_conditions) if folder_conditions else ""
+                )
+                record_filter = (
+                    " AND " + " AND ".join(record_conditions) if record_conditions else ""
+                )
+                return folder_filter, record_filter, bind_vars
+
+            folder_filter, record_filter, filter_vars = build_filters()
+
+            record_sort_map = {
+                "name": "record.recordName",
+                "created_at": "record.createdAtTimestamp",
+                "updated_at": "record.updatedAtTimestamp",
+                "size": "fileRecord.sizeInBytes",
+            }
+            record_sort_field = record_sort_map.get(sort_by, "record.recordName")
+            sort_direction = sort_order.upper()
+
+            main_query = f"""
+            LET folder_record = DOCUMENT("records", @folder_id)
+            FILTER folder_record != null
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+            FILTER folder_file != null
+            LET allSubfolders = (
+                FOR v, e, p IN 1..@level OUTBOUND folder_record._id @@record_relations
+                    FILTER e.relationshipType == "PARENT_CHILD"
+                    LET subfolder_record = v
+                    LET subfolder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == subfolder_record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER subfolder_file != null
+                    LET current_level = LENGTH(p.edges)
+                    {folder_filter}
+                    LET direct_subfolders = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == subfolder_record._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET child_record = DOCUMENT(relEdge._to)
+                            FILTER child_record != null
+                            LET child_file = FIRST(
+                                FOR isEdge IN @@is_of_type
+                                    FILTER isEdge._from == child_record._id
+                                    LET f = DOCUMENT(isEdge._to)
+                                    FILTER f != null AND f.isFile == false
+                                    RETURN 1
+                            )
+                            FILTER child_file != null
+                            RETURN 1
+                    )
+                    LET direct_records = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._from == subfolder_record._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            LET record = DOCUMENT(relEdge._to)
+                            FILTER record != null AND record.isDeleted != true
+                            LET child_file = FIRST(
+                                FOR isEdge IN @@is_of_type
+                                    FILTER isEdge._from == record._id
+                                    LET f = DOCUMENT(isEdge._to)
+                                    FILTER f != null AND f.isFile == false
+                                    RETURN 1
+                            )
+                            FILTER child_file == null
+                            RETURN 1
+                    )
+                    SORT subfolder_record.recordName ASC
+                    RETURN {{
+                        id: subfolder_record._key,
+                        name: subfolder_record.recordName,
+                        path: subfolder_file.path,
+                        level: current_level,
+                        parentId: p.edges[-1] ? PARSE_IDENTIFIER(p.edges[-1]._from).key : null,
+                        webUrl: subfolder_record.webUrl,
+                        type: "folder",
+                        createdAtTimestamp: subfolder_record.createdAtTimestamp,
+                        updatedAtTimestamp: subfolder_record.updatedAtTimestamp,
+                        counts: {{
+                            subfolders: direct_subfolders,
+                            records: direct_records,
+                            totalItems: direct_subfolders + direct_records
+                        }},
+                        hasChildren: direct_subfolders > 0 OR direct_records > 0
+                    }}
+            )
+            LET allRecords = (
+                FOR edge IN @@record_relations
+                    FILTER edge._from == folder_record._id
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(edge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    LET record_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN 1
+                    )
+                    FILTER record_file == null
+                    {record_filter}
+                    LET fileEdge = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == record._id
+                            RETURN isEdge
+                    )
+                    LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
+                    SORT {record_sort_field} {sort_direction}
+                    RETURN {{
+                        id: record._key,
+                        recordName: record.recordName,
+                        name: record.recordName,
+                        recordType: record.recordType,
+                        externalRecordId: record.externalRecordId,
+                        origin: record.origin,
+                        connectorName: record.connectorName || "KNOWLEDGE_BASE",
+                        indexingStatus: record.indexingStatus,
+                        version: record.version,
+                        isLatestVersion: record.isLatestVersion,
+                        createdAtTimestamp: record.createdAtTimestamp,
+                        updatedAtTimestamp: record.updatedAtTimestamp,
+                        sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp,
+                        sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp,
+                        webUrl: record.webUrl,
+                        orgId: record.orgId,
+                        type: "record",
+                        parent_folder_id: @folder_id,
+                        sizeInBytes: fileRecord ? fileRecord.sizeInBytes : 0,
+                        fileRecord: fileRecord ? {{
+                            id: fileRecord._key,
+                            name: fileRecord.name,
+                            extension: fileRecord.extension,
+                            mimeType: fileRecord.mimeType,
+                            sizeInBytes: fileRecord.sizeInBytes,
+                            webUrl: fileRecord.webUrl,
+                            path: fileRecord.path,
+                            isFile: fileRecord.isFile
+                        }} : null
+                    }}
+            )
+            LET totalSubfolders = LENGTH(allSubfolders)
+            LET totalRecords = LENGTH(allRecords)
+            LET totalCount = totalSubfolders + totalRecords
+            LET paginatedSubfolders = (
+                @skip < totalSubfolders ?
+                    SLICE(allSubfolders, @skip, @limit)
+                : []
+            )
+            LET subfoldersShown = LENGTH(paginatedSubfolders)
+            LET remainingLimit = @limit - subfoldersShown
+            LET recordSkip = @skip >= totalSubfolders ? (@skip - totalSubfolders) : 0
+            LET recordLimit = @skip >= totalSubfolders ? @limit : remainingLimit
+            LET paginatedRecords = (
+                recordLimit > 0 ?
+                    SLICE(allRecords, recordSkip, recordLimit)
+                : []
+            )
+            LET availableFilters = {{
+                recordTypes: UNIQUE(allRecords[*].recordType) || [],
+                origins: UNIQUE(allRecords[*].origin) || [],
+                connectors: UNIQUE(allRecords[*].connectorName) || [],
+                indexingStatus: UNIQUE(allRecords[*].indexingStatus) || []
+            }}
+            RETURN {{
+                success: true,
+                container: {{
+                    id: folder_record._key,
+                    name: folder_record.recordName,
+                    path: folder_file.path,
+                    type: "folder",
+                    webUrl: folder_record.webUrl,
+                }},
+                folders: paginatedSubfolders,
+                records: paginatedRecords,
+                level: @level,
+                totalCount: totalCount,
+                counts: {{
+                    folders: LENGTH(paginatedSubfolders),
+                    records: LENGTH(paginatedRecords),
+                    totalItems: LENGTH(paginatedSubfolders) + LENGTH(paginatedRecords),
+                    totalFolders: totalSubfolders,
+                    totalRecords: totalRecords
+                }},
+                availableFilters: availableFilters,
+                paginationMode: "folders_first"
+            }}
+            """
+
+            bind_vars = {
+                "folder_id": folder_id,
+                "skip": skip,
+                "limit": limit,
+                "level": level,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_vars,
+            }
+
+            results = await self.execute_query(
+                main_query, bind_vars=bind_vars, transaction=transaction
+            )
+            result = results[0] if results else None
+
+            if not result:
+                return {"success": False, "reason": "Folder not found"}
+
+            self.logger.info(
+                f"✅ Retrieved folder children with folders_first pagination: "
+                f"{result['counts']['totalItems']} items"
+            )
+            return result
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to get folder children with folders_first pagination: {str(e)}"
+            )
+            return {"success": False, "reason": str(e)}
+
+    def _normalize_name(self, name: Optional[str]) -> Optional[str]:
+        """Normalize a file/folder name to NFC and trim whitespace."""
+        if name is None:
+            return None
+        try:
+            return unicodedata.normalize("NFC", str(name)).strip()
+        except Exception:
+            return str(name).strip()
+
+    def _normalized_name_variants_lower(self, name: str) -> List[str]:
+        """Provide lowercase variants for equality comparisons (NFC and NFD)."""
+        nfc = self._normalize_name(name) or ""
+        try:
+            nfd = unicodedata.normalize("NFD", nfc)
+        except Exception:
+            nfd = nfc
+        return [nfc.lower(), nfd.lower()]
+
+    async def _check_name_conflict_in_parent(
+        self,
+        kb_id: str,
+        parent_folder_id: Optional[str],
+        item_name: str,
+        mime_type: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """Check if an item (folder or file) name already exists in the target parent."""
+        try:
+            name_variants = self._normalized_name_variants_lower(item_name)
+            parent_from = (
+                f"{CollectionNames.RECORDS.value}/{parent_folder_id}"
+                if parent_folder_id
+                else f"{CollectionNames.RECORD_GROUPS.value}/{kb_id}"
+            )
+            bind_vars: Dict[str, Any] = {
+                "parent_from": parent_from,
+                "name_variants": name_variants,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                "@files_collection": CollectionNames.FILES.value,
+            }
+            if mime_type:
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    FILTER edge._to LIKE "records/%"
+                    LET child = DOCUMENT(edge._to)
+                    FILTER child != null
+                    FILTER child.recordName != null
+                    FILTER child.mimeType == @mime_type
+                    LET child_name_l = LOWER(child.recordName)
+                    FILTER child_name_l IN @name_variants
+                    LET file_doc = DOCUMENT(@@files_collection, child._key)
+                    FILTER file_doc != null AND file_doc.isFile == true
+                    RETURN {
+                        id: child._key,
+                        name: child.recordName,
+                        type: "record",
+                        document_type: "records",
+                        mimeType: file_doc.mimeType
+                    }
+                """
+                bind_vars["mime_type"] = mime_type
+            else:
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    FILTER edge._to LIKE "records/%"
+                    LET folder_record = DOCUMENT(edge._to)
+                    FILTER folder_record != null
+                    LET folder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == folder_record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER folder_file != null
+                    LET child_name = folder_record.recordName
+                    FILTER child_name != null
+                    LET child_name_l = LOWER(child_name)
+                    FILTER child_name_l IN @name_variants
+                    RETURN {
+                        id: folder_record._key,
+                        name: child_name,
+                        type: "folder",
+                        document_type: "records"
+                    }
+                """
+                bind_vars["@is_of_type"] = CollectionNames.IS_OF_TYPE.value
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            conflicts = list(results) if results else []
+            return {"has_conflict": len(conflicts) > 0, "conflicts": conflicts}
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check name conflict: {str(e)}")
+            return {"has_conflict": False, "conflicts": []}
+
+    async def get_knowledge_base(
+        self,
+        kb_id: str,
+        user_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Get knowledge base with user permissions."""
+        try:
+            user_role = await self.get_user_kb_permission(kb_id, user_id, transaction=transaction)
+            query = """
+            FOR kb IN @@recordGroups_collection
+                FILTER kb._key == @kb_id
+                LET user_role = @user_role
+                LET folders = (
+                    FOR edge IN @@kb_to_folder_edges
+                        FILTER edge._to == kb._id
+                        FILTER STARTS_WITH(edge._from, 'records/')
+                        LET folder_record = DOCUMENT(edge._from)
+                        FILTER folder_record != null
+                        LET folder_file = FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == folder_record._id
+                                LET f = DOCUMENT(isEdge._to)
+                                FILTER f != null AND f.isFile == false
+                                RETURN f
+                        )
+                        FILTER folder_file != null
+                        RETURN {
+                            id: folder_record._key,
+                            name: folder_record.recordName,
+                            createdAtTimestamp: folder_record.createdAtTimestamp,
+                            updatedAtTimestamp: folder_record.updatedAtTimestamp,
+                            path: folder_file.path,
+                            webUrl: folder_record.webUrl,
+                            mimeType: folder_record.mimeType,
+                            sizeInBytes: folder_file.sizeInBytes
+                        }
+                )
+                RETURN {
+                    id: kb._key,
+                    name: kb.groupName,
+                    createdAtTimestamp: kb.createdAtTimestamp,
+                    updatedAtTimestamp: kb.updatedAtTimestamp,
+                    createdBy: kb.createdBy,
+                    userRole: user_role,
+                    folders: folders
+                }
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "user_role": user_role,
+                    "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                    "@kb_to_folder_edges": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                transaction=transaction,
+            )
+            result = results[0] if results else None
+            if result and not user_role:
+                self.logger.warning(f"⚠️ User {user_id} has no access to KB {kb_id}")
+                return None
+            if result:
+                self.logger.info("✅ Knowledge base retrieved successfully")
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get knowledge base: {str(e)}")
+            raise
+
+    async def update_knowledge_base(
+        self,
+        kb_id: str,
+        updates: Dict,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Update knowledge base."""
+        try:
+            query = """
+            FOR kb IN @@kb_collection
+                FILTER kb._key == @kb_id
+                UPDATE kb WITH @updates IN @@kb_collection
+                RETURN NEW
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "updates": updates,
+                    "@kb_collection": CollectionNames.RECORD_GROUPS.value,
+                },
+                transaction=transaction,
+            )
+            result = results[0] if results else None
+            if result:
+                self.logger.info("✅ Knowledge base updated successfully")
+                return True
+            self.logger.warning("⚠️ Knowledge base not found")
+            return False
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update knowledge base: {str(e)}")
+            raise
+
+    async def delete_knowledge_base(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """
+        Delete a knowledge base with ALL nested content
+        - All folders (recursive, any depth)
+        - All records in all folders
+        - All file records
+        - All edges (belongs_to_kb, record_relations, is_of_type, permissions)
+        - The KB document itself
+        """
+        try:
+            # Create transaction if not provided
+            should_commit = False
+            if transaction is None:
+                should_commit = True
+                try:
+                    transaction = await self.begin_transaction(
+                        read=[],
+                        write=[
+                            CollectionNames.RECORD_GROUPS.value,
+                            CollectionNames.FILES.value,
+                            CollectionNames.RECORDS.value,
+                            CollectionNames.RECORD_RELATIONS.value,
+                            CollectionNames.BELONGS_TO.value,
+                            CollectionNames.IS_OF_TYPE.value,
+                            CollectionNames.PERMISSION.value,
+                        ],
+                    )
+                    self.logger.info(f"🔄 Transaction created for complete KB {kb_id} deletion")
+                except Exception as tx_error:
+                    self.logger.error(f"❌ Failed to create transaction: {str(tx_error)}")
+                    return {"success": False}
+
+            try:
+                # Step 1: Get complete inventory of what we're deleting using graph traversal
+                # This collects ALL records/folders at any depth and FILES documents BEFORE edge deletion
+                inventory_query = """
+                LET kb = DOCUMENT("recordGroups", @kb_id)
+                FILTER kb != null
+                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+                LET all_records_and_folders = (
+                    FOR edge IN @@belongs_to_kb
+                        FILTER edge._to == kb_id_full
+                        LET record = DOCUMENT(edge._from)
+                        FILTER record != null
+                        FILTER IS_SAME_COLLECTION(@@records_collection, record._id)
+                        RETURN record
+                )
+                LET all_files_with_details = (
+                    FOR record IN all_records_and_folders
+                        FOR edge IN @@is_of_type
+                            FILTER edge._from == record._id
+                            LET file = DOCUMENT(edge._to)
+                            FILTER file != null
+                            RETURN {
+                                file_key: file._key,
+                                is_folder: file.isFile == false,
+                                record_key: record._key,
+                                record: record,
+                                file_doc: file
+                            }
+                )
+                // Separate folders and file records
+                LET folders = (
+                    FOR item IN all_files_with_details
+                        FILTER item.is_folder == true
+                        RETURN item.record_key
+                )
+                LET file_records = (
+                    FOR item IN all_files_with_details
+                        FILTER item.is_folder == false
+                        RETURN {
+                            record: item.record,
+                            file_record: item.file_doc
+                        }
+                )
+                RETURN {
+                    kb_exists: true,
+                    record_keys: all_records_and_folders[*]._key,
+                    file_keys: all_files_with_details[*].file_key,
+                    folder_keys: folders,
+                    records_with_details: file_records,
+                    total_folders: LENGTH(folders),
+                    total_records: LENGTH(all_records_and_folders)
+                }
+                """
+
+                inv_results = await self.execute_query(
+                    inventory_query,
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "@records_collection": CollectionNames.RECORDS.value,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    },
+                    transaction=transaction,
+                )
+
+                inventory = inv_results[0] if inv_results else {}
+
+                if not inventory.get("kb_exists"):
+                    self.logger.warning(f"⚠️ KB {kb_id} not found, deletion considered successful.")
+                    if should_commit:
+                        await self.commit_transaction(transaction)
+                    return {"success": True, "eventData": None}
+
+                records_with_details = inventory.get("records_with_details", [])
+                all_record_keys = inventory.get("record_keys", [])
+
+                self.logger.info(f"folder_keys: {inventory.get('folder_keys', [])}")
+                self.logger.info(f"total_folders: {inventory.get('total_folders', 0)}")
+
+                # Step 2: Delete ALL edges first (prevents foreign key issues)
+                self.logger.info("🗑️ Step 2: Deleting all edges...")
+                edges_cleanup_query = """
+                LET record_ids = (FOR k IN @record_keys RETURN CONCAT('records/', k))
+                LET kb_id_full = CONCAT('recordGroups/', @kb_id)
+
+                // Collect ALL edge keys in one pass
+                // Edges TO the KB (records/folders -> record group)
+                LET belongs_to_keys = (
+                    FOR e IN @@belongs_to_kb
+                        FILTER e._to == kb_id_full
+                        RETURN e._key
+                )
+                // Edge FROM KB record group TO KB app (record group -> app)
+                LET belongs_to_kb_app_keys = (
+                    FOR e IN @@belongs_to_kb
+                        FILTER e._from == kb_id_full
+                        RETURN e._key
+                )
+                LET all_belongs_to_keys = APPEND(belongs_to_keys, belongs_to_kb_app_keys)
+
+                LET is_of_type_keys = (
+                    FOR e IN @@is_of_type
+                        FILTER e._from IN record_ids
+                        RETURN e._key
+                )
+
+                LET permission_keys = (
+                    FOR e IN @@permission
+                        FILTER e._to == kb_id_full OR e._to IN record_ids
+                        RETURN e._key
+                )
+
+                LET relation_keys = (
+                    FOR e IN @@record_relations
+                        FILTER e._from IN record_ids OR e._to IN record_ids
+                        RETURN e._key
+                )
+
+                // Delete all edges (using different variable names to avoid AQL error)
+                FOR btk_key IN all_belongs_to_keys REMOVE btk_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
+                FOR iot_key IN is_of_type_keys REMOVE iot_key IN @@is_of_type OPTIONS { ignoreErrors: true }
+                FOR perm_key IN permission_keys REMOVE perm_key IN @@permission OPTIONS { ignoreErrors: true }
+                FOR rel_key IN relation_keys REMOVE rel_key IN @@record_relations OPTIONS { ignoreErrors: true }
+
+                RETURN {
+                    belongs_to_deleted: LENGTH(all_belongs_to_keys),
+                    is_of_type_deleted: LENGTH(is_of_type_keys),
+                    permission_deleted: LENGTH(permission_keys),
+                    relation_deleted: LENGTH(relation_keys)
+                }
+                """
+                edge_results = await self.execute_query(
+                    edges_cleanup_query,
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "record_keys": all_record_keys,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                        "@permission": CollectionNames.PERMISSION.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    },
+                    transaction=transaction,
+                )
+                edge_deletion_result = edge_results[0] if edge_results else {}
+
+                self.logger.info(f"✅ All edges deleted for KB {kb_id}: "
+                               f"belongs_to={edge_deletion_result.get('belongs_to_deleted', 0)}, "
+                               f"is_of_type={edge_deletion_result.get('is_of_type_deleted', 0)}, "
+                               f"permission={edge_deletion_result.get('permission_deleted', 0)}, "
+                               f"relations={edge_deletion_result.get('relation_deleted', 0)}")
+
+                # Step 3: Delete all FILES documents (folders + files) using helper method
+                file_keys = inventory.get("file_keys", [])
+                if file_keys:
+                    self.logger.info(f"🗑️ Step 3: Deleting {len(file_keys)} FILES documents (folders + files)...")
+                    await self.delete_nodes(file_keys, CollectionNames.FILES.value, transaction=transaction)
+                    self.logger.info(f"✅ Deleted {len(file_keys)} FILES documents")
+
+                # Step 4: Delete all RECORDS documents (folders + files) using helper method
+                if all_record_keys:
+                    self.logger.info(f"🗑️ Step 4: Deleting {len(all_record_keys)} RECORDS documents (folders + files)...")
+                    await self.delete_nodes(all_record_keys, CollectionNames.RECORDS.value, transaction=transaction)
+                    self.logger.info(f"✅ Deleted {len(all_record_keys)} RECORDS documents")
+
+                # Step 5: Delete the KB document itself
+                self.logger.info(f"🗑️ Step 5: Deleting KB document {kb_id}...")
+                await self.execute_query(
+                    "REMOVE @kb_id IN @@recordGroups_collection OPTIONS { ignoreErrors: true } RETURN OLD",
+                    bind_vars={
+                        "kb_id": kb_id,
+                        "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value
+                    },
+                    transaction=transaction,
+                )
+
+                # Step 6: Commit transaction
+                if should_commit:
+                    self.logger.info("💾 Committing complete deletion transaction...")
+                    await self.commit_transaction(transaction)
+                    self.logger.info("✅ Transaction committed successfully!")
+
+                # Step 7: Prepare event data for all deleted records (router will publish)
+                event_payloads = []
+                try:
+                    for record_data in records_with_details:
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data["file_record"]
+                        )
+                        if delete_payload:
+                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
+
+                self.logger.info(f"🎉 KB {kb_id} and ALL contents deleted successfully.")
+                return {
+                    "success": True,
+                    "eventData": event_data
+                }
+
+            except Exception as db_error:
+                self.logger.error(f"❌ Database error during KB deletion: {str(db_error)}")
+                if should_commit and transaction:
+                    await self.rollback_transaction(transaction)
+                    self.logger.info("🔄 Transaction aborted due to error")
+                raise db_error
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete KB {kb_id} completely: {str(e)}")
+            return {"success": False}
+
+    # ==================== Event Publishing Methods ====================
+
+
+    async def _create_deleted_record_event_payload(
+        self,
+        record: Dict,
+        file_record: Optional[Dict] = None
+    ) -> Dict:
+        """Create deleted record event payload matching Node.js format"""
+        try:
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record.get("_key"),
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "summaryDocumentId": record.get("summaryDocumentId"),
+                "virtualRecordId": record.get("virtualRecordId"),
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
+            return {}
+
+    async def _create_new_record_event_payload(self, record_doc: Dict, file_doc: Dict, storage_url: str) -> Optional[Dict]:
+        """
+        Creates NewRecordEvent payload for Kafka.
+        """
+        try:
+            record_id = record_doc["_key"]
+            self.logger.info(f"🚀 Preparing NewRecordEvent for record_id: {record_id}")
+
+            signed_url_route = (
+                f"{storage_url}/api/v1/document/internal/{record_doc['externalRecordId']}/download"
+            )
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # Construct the payload matching the Node.js NewRecordEvent interface
+            payload = {
+                "orgId": record_doc.get("orgId"),
+                "recordId": record_id,
+                "recordName": record_doc.get("recordName"),
+                "recordType": record_doc.get("recordType"),
+                "version": record_doc.get("version", 1),
+                "signedUrlRoute": signed_url_route,
+                "origin": record_doc.get("origin"),
+                "extension": file_doc.get("extension", ""),
+                "mimeType": file_doc.get("mimeType", ""),
+                "createdAtTimestamp": str(record_doc.get("createdAtTimestamp", timestamp)),
+                "updatedAtTimestamp": str(record_doc.get("updatedAtTimestamp", timestamp)),
+                "sourceCreatedAtTimestamp": str(record_doc.get("sourceCreatedAtTimestamp", record_doc.get("createdAtTimestamp", timestamp))),
+            }
+
+            return payload
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create new record event payload: {str(e)}")
+            return None
+
+    async def _create_update_record_event_payload(
+        self,
+        record: Dict,
+        file_record: Optional[Dict] = None,
+        content_changed: bool = True
+    ) -> Optional[Dict]:
+        """Create update record event payload matching Node.js format"""
+        try:
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+
+            signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record.get("_key"),
+                "version": record.get("version", 1),
+                "extension": extension,
+                "mimeType": mime_type,
+                "signedUrlRoute": signed_url_route,
+                "updatedAtTimestamp": str(record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms())),
+                "sourceLastModifiedTimestamp": str(record.get("sourceLastModifiedTimestamp", record.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()))),
+                "contentChanged": content_changed,
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create update record event payload: {str(e)}")
+            return None
+
+    async def _create_reindex_event_payload(self, record: Dict, file_record: Optional[Dict], user_id: Optional[str] = None, request: Optional["Request"] = None, record_id: Optional[str] = None) -> Dict:
+        """Create reindex event payload"""
+        try:
+            # Handle both translated (_key -> id) and untranslated document formats
+            record_key = record.get('_key') or record.get('id') or record_id or ''
+            # Get extension and mimeType from file record
+            extension = ""
+            mime_type = ""
+            if file_record:
+                extension = file_record.get("extension", "")
+                mime_type = file_record.get("mimeType", "")
+
+            # Fallback: check if mimeType is in the record itself (for WebpageRecord, CommentRecord, etc.)
+            if not mime_type:
+                mime_type = record.get("mimeType", "")
+
+            endpoints = await self.config_service.get_config(
+                config_node_constants.ENDPOINTS.value
+            )
+            signed_url_route = ""
+            file_content = ""
+            if record.get("origin") == OriginTypes.UPLOAD.value:
+                storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+                signed_url_route = f"{storage_url}/api/v1/document/internal/{record['externalRecordId']}/download"
+            else:
+                connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
+                signed_url_route = f"{connector_url}/api/v1/{record.get('orgId')}/{user_id}/{record.get('connectorName', '').lower()}/record/{record_key}/signedUrl"
+
+                if record.get("recordType") == "MAIL":
+                    mime_type = "text/gmail_content"
+                    try:
+                        return {
+                            "orgId": record.get("orgId"),
+                            "recordId": record_key,
+                            "recordName": record.get("recordName", ""),
+                            "recordType": record.get("recordType", ""),
+                            "version": record.get("version", 1),
+                            "origin": record.get("origin", ""),
+                            "extension": extension,
+                            "mimeType": mime_type,
+                            "body": file_content,
+                            "connectorId": record.get("connectorId", ""),
+                            "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                            "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
+                            "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+                        }
+                    except Exception as decode_error:
+                        self.logger.warning(f"Failed to decode file content as UTF-8: {str(decode_error)}")
+
+            return {
+                "orgId": record.get("orgId"),
+                "recordId": record_key,
+                "recordName": record.get("recordName", ""),
+                "recordType": record.get("recordType", ""),
+                "version": record.get("version", 1),
+                "signedUrlRoute": signed_url_route,
+                "origin": record.get("origin", ""),
+                "extension": extension,
+                "mimeType": mime_type,
+                "body": file_content,
+                "connectorId": record.get("connectorId", ""),
+                "createdAtTimestamp": str(record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())),
+                "updatedAtTimestamp": str(get_epoch_timestamp_in_ms()),
+                "sourceCreatedAtTimestamp": str(record.get("sourceCreatedAtTimestamp", record.get("createdAtTimestamp", get_epoch_timestamp_in_ms())))
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create reindex event payload: {str(e)}")
+            raise
+
+    async def _validate_folder_creation(self, kb_id: str, user_id: str) -> Dict:
+        """Shared validation logic for folder creation."""
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {"valid": False, "success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            user_key = user.get("_key")
+            user_role = await self.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                return {
+                    "valid": False,
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient permissions. Role: {user_role}",
+                }
+            return {"valid": True, "user": user, "user_key": user_key, "user_role": user_role}
+        except Exception as e:
+            return {"valid": False, "success": False, "code": 500, "reason": str(e)}
+
+    async def find_folder_by_name_in_parent(
+        self,
+        kb_id: str,
+        folder_name: str,
+        parent_folder_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Find a folder by name within a specific parent (KB root or folder)."""
+        try:
+            name_variants = self._normalized_name_variants_lower(folder_name)
+            parent_from = f"records/{parent_folder_id}" if parent_folder_id else f"recordGroups/{kb_id}"
+            if parent_folder_id is None:
+                query = """
+                FOR edge IN @@belongs_to
+                    FILTER edge._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER edge.entityType == @entity_type
+                    LET folder_record = DOCUMENT(edge._from)
+                    FILTER folder_record != null
+                    FILTER folder_record.isDeleted != true
+                    LET isChild = LENGTH(
+                        FOR relEdge IN @@record_relations
+                            FILTER relEdge._to == folder_record._id
+                            FILTER relEdge.relationshipType == "PARENT_CHILD"
+                            RETURN 1
+                    ) > 0
+                    FILTER isChild == false
+                    LET folder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == folder_record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER folder_file != null
+                    LET folder_name_l = LOWER(folder_record.recordName)
+                    FILTER folder_name_l IN @name_variants
+                    RETURN {
+                        _key: folder_record._key,
+                        name: folder_record.recordName,
+                        recordGroupId: folder_record.connectorId,
+                        orgId: folder_record.orgId
+                    }
+                """
+                results = await self.execute_query(
+                    query,
+                    bind_vars={
+                        "name_variants": name_variants,
+                        "kb_id": kb_id,
+                        "@belongs_to": CollectionNames.BELONGS_TO.value,
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                        "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                    },
+                    transaction=transaction,
+                )
+            else:
+                query = """
+                FOR edge IN @@record_relations
+                    FILTER edge._from == @parent_from
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    LET folder_record = DOCUMENT(edge._to)
+                    FILTER folder_record != null
+                    LET folder_file = FIRST(
+                        FOR isEdge IN @@is_of_type
+                            FILTER isEdge._from == folder_record._id
+                            LET f = DOCUMENT(isEdge._to)
+                            FILTER f != null AND f.isFile == false
+                            RETURN f
+                    )
+                    FILTER folder_file != null
+                    LET folder_name_l = LOWER(folder_record.recordName)
+                    FILTER folder_name_l IN @name_variants
+                    RETURN {
+                        _key: folder_record._key,
+                        name: folder_record.recordName,
+                        recordGroupId: folder_record.connectorId,
+                        orgId: folder_record.orgId
+                    }
+                """
+                results = await self.execute_query(
+                    query,
+                    bind_vars={
+                        "parent_from": parent_from,
+                        "name_variants": name_variants,
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    },
+                    transaction=transaction,
+                )
+            return results[0] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to find folder by name: {str(e)}")
+            return None
+
+    async def get_and_validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Get folder by ID and validate it belongs to the specified KB."""
+        try:
+            query = """
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+            FILTER folder_file != null
+            LET relationship = FIRST(
+                FOR edge IN @@belongs_to_collection
+                    FILTER edge._from == @folder_from
+                    FILTER edge._to == @kb_to
+                    FILTER edge.entityType == @entity_type
+                    RETURN 1
+            )
+            FILTER relationship != null
+            RETURN MERGE(
+                folder_record,
+                {
+                    name: folder_file.name,
+                    isFile: folder_file.isFile,
+                    extension: folder_file.extension,
+                    recordGroupId: folder_record.connectorId
+                }
+            )
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "folder_id": folder_id,
+                    "folder_from": f"records/{folder_id}",
+                    "kb_to": f"recordGroups/{kb_id}",
+                    "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                    "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                transaction=transaction,
+            )
+            return results[0] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get and validate folder in KB: {str(e)}")
+            return None
+
+    async def create_folder(
+        self,
+        kb_id: str,
+        folder_name: str,
+        org_id: str,
+        parent_folder_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Create folder with proper RECORDS document and edges."""
+        try:
+            folder_id = str(uuid.uuid4())
+            timestamp = get_epoch_timestamp_in_ms()
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.RECORDS.value,
+                        CollectionNames.FILES.value,
+                        CollectionNames.IS_OF_TYPE.value,
+                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.INHERIT_PERMISSIONS.value,
+                    ],
+                )
+            try:
+                if parent_folder_id:
+                    parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id, transaction=txn_id)
+                    if not parent_folder:
+                        raise ValueError(f"Parent folder {parent_folder_id} not found in KB {kb_id}")
+                existing_folder = await self.find_folder_by_name_in_parent(
+                    kb_id=kb_id,
+                    folder_name=folder_name,
+                    parent_folder_id=parent_folder_id,
+                    transaction=txn_id,
+                )
+                if existing_folder:
+                    return {
+                        "folderId": existing_folder["_key"],
+                        "name": existing_folder["name"],
+                        "webUrl": existing_folder.get("webUrl", ""),
+                        "parent_folder_id": parent_folder_id,
+                        "exists": True,
+                        "success": True,
+                    }
+                external_parent_id = parent_folder_id if parent_folder_id else None
+                kb_connector_id = f"knowledgeBase_{org_id}"
+                record_data = {
+                    "_key": folder_id,
+                    "orgId": org_id,
+                    "recordName": folder_name,
+                    "externalRecordId": f"kb_folder_{folder_id}",
+                    "connectorId": kb_connector_id,
+                    "externalGroupId": kb_id,
+                    "externalParentId": external_parent_id,
+                    "externalRootGroupId": kb_id,
+                    "recordType": RecordType.FILE.value,
+                    "version": 0,
+                    "origin": OriginTypes.UPLOAD.value,
+                    "connectorName": Connectors.KNOWLEDGE_BASE.value,
+                    "mimeType": "application/vnd.folder",
+                    "webUrl": f"/kb/{kb_id}/folder/{folder_id}",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                    "lastSyncTimestamp": timestamp,
+                    "sourceCreatedAtTimestamp": timestamp,
+                    "sourceLastModifiedTimestamp": timestamp,
+                    "isDeleted": False,
+                    "isArchived": False,
+                    "isVLMOcrProcessed": False,
+                    "indexingStatus": "COMPLETED",
+                    "extractionStatus": "COMPLETED",
+                    "isLatestVersion": True,
+                    "isDirty": False,
+                }
+                folder_data = {
+                    "_key": folder_id,
+                    "orgId": org_id,
+                    "name": folder_name,
+                    "isFile": False,
+                    "extension": None,
+                }
+                await self.batch_upsert_nodes([record_data], CollectionNames.RECORDS.value, transaction=txn_id)
+                await self.batch_upsert_nodes([folder_data], CollectionNames.FILES.value, transaction=txn_id)
+                is_of_type_edge = {
+                    "from_id": folder_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": folder_id,
+                    "to_collection": CollectionNames.FILES.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                await self.batch_create_edges([is_of_type_edge], CollectionNames.IS_OF_TYPE.value, transaction=txn_id)
+                kb_relationship_edge = {
+                    "from_id": folder_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "entityType": Connectors.KNOWLEDGE_BASE.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                await self.batch_create_edges([kb_relationship_edge], CollectionNames.BELONGS_TO.value, transaction=txn_id)
+
+                # Create inheritPermission edge (RECORDS -> KB)
+                # KB folders inherit permissions from KB by default
+                inherit_permission_edge = {
+                    "from_id": folder_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                }
+                await self.batch_create_edges([inherit_permission_edge], CollectionNames.INHERIT_PERMISSIONS.value, transaction=txn_id)
+
+                if parent_folder_id:
+                    parent_child_edge = {
+                        "from_id": parent_folder_id,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": folder_id,
+                        "to_collection": CollectionNames.RECORDS.value,
+                        "relationshipType": "PARENT_CHILD",
+                        "createdAtTimestamp": timestamp,
+                        "updatedAtTimestamp": timestamp,
+                    }
+                    await self.batch_create_edges([parent_child_edge], CollectionNames.RECORD_RELATIONS.value, transaction=txn_id)
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+                return {
+                    "id": folder_id,
+                    "name": folder_name,
+                    "webUrl": record_data["webUrl"],
+                    "exists": False,
+                    "success": True,
+                }
+            except Exception as inner_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise inner_error
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create folder '{folder_name}': {str(e)}")
+            raise
+
+    async def get_folder_contents(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Get folder contents (container, folders, records)."""
+        result = await self.get_folder_children(
+            kb_id=kb_id,
+            folder_id=folder_id,
+            skip=0,
+            limit=10000,
+            level=1,
+            transaction=transaction,
+        )
+        return result if result.get("success") else None
+
+    async def validate_folder_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Validate that a folder exists and belongs to the KB."""
+        try:
+            query = """
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+            LET folder_valid = folder_record != null AND folder_file != null
+            LET relationship = folder_valid ? FIRST(
+                FOR edge IN @@belongs_to_collection
+                    FILTER edge._from == @folder_from
+                    FILTER edge._to == @kb_to
+                    FILTER edge.entityType == @entity_type
+                    RETURN 1
+            ) : null
+            RETURN folder_valid AND relationship != null
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "folder_id": folder_id,
+                    "folder_from": f"records/{folder_id}",
+                    "kb_to": f"recordGroups/{kb_id}",
+                    "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                    "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                transaction=transaction,
+            )
+            return bool(results and results[0])
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate folder in KB: {str(e)}")
+            return False
+
+    async def validate_folder_exists_in_kb(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Validate folder exists in specific KB.
+        Uses edge traversal to check BELONGS_TO relationship.
+        """
+        try:
+            query = """
+            LET folder_record = DOCUMENT(@@records_collection, @folder_id)
+            FILTER folder_record != null
+            LET folder_file = FIRST(
+                FOR isEdge IN @@is_of_type
+                    FILTER isEdge._from == folder_record._id
+                    LET f = DOCUMENT(isEdge._to)
+                    FILTER f != null AND f.isFile == false
+                    RETURN f
+            )
+            LET folder_valid = folder_record != null AND folder_file != null
+            LET relationship = folder_valid ? FIRST(
+                FOR edge IN @@belongs_to_collection
+                    FILTER edge._from == @folder_from
+                    FILTER edge._to == @kb_to
+                    FILTER edge.entityType == @entity_type
+                    RETURN 1
+            ) : null
+            RETURN folder_valid AND relationship != null
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "folder_id": folder_id,
+                    "folder_from": f"records/{folder_id}",
+                    "kb_to": f"recordGroups/{kb_id}",
+                    "entity_type": Connectors.KNOWLEDGE_BASE.value,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                    "@belongs_to_collection": CollectionNames.BELONGS_TO.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                },
+                transaction=transaction,
+            )
+            return bool(results and results[0])
+        except Exception as e:
+            self.logger.error(f"❌ Failed to validate folder exists in KB: {str(e)}")
+            return False
+
+    async def update_folder(
+        self,
+        folder_id: str,
+        updates: Dict,
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Update folder."""
+        try:
+            query = """
+            FOR folder IN @@folder_collection
+                FILTER folder._key == @folder_id
+                UPDATE folder WITH @updates IN @@folder_collection
+                RETURN NEW
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "folder_id": folder_id,
+                    "updates": updates,
+                    "@folder_collection": CollectionNames.FILES.value,
+                },
+                transaction=transaction,
+            )
+            result = results[0] if results else None
+            if result:
+                updates_for_record = {
+                    "_key": folder_id,
+                    "recordName": updates.get("name"),
+                    "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                }
+                await self.batch_upsert_nodes([updates_for_record], CollectionNames.RECORDS.value, transaction=transaction)
+            return bool(result)
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update folder: {str(e)}")
+            raise
+
+    async def delete_folder(
+        self,
+        kb_id: str,
+        folder_id: str,
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """Delete a folder with ALL nested content."""
+        try:
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.FILES.value,
+                        CollectionNames.RECORDS.value,
+                        CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.BELONGS_TO.value,
+                        CollectionNames.IS_OF_TYPE.value,
+                    ],
+                )
+            try:
+                inventory_query = """
+                LET target_folder_record = DOCUMENT("records", @folder_id)
+                FILTER target_folder_record != null
+                LET target_folder_file = FIRST(
+                    FOR isEdge IN @@is_of_type
+                        FILTER isEdge._from == target_folder_record._id
+                        LET f = DOCUMENT(isEdge._to)
+                        FILTER f != null AND f.isFile == false
+                        RETURN f
+                )
+                FILTER target_folder_file != null
+                LET all_subfolders = (
+                    FOR v, e, p IN 1..20 OUTBOUND target_folder_record._id @@record_relations
+                        FILTER e.relationshipType == "PARENT_CHILD"
+                        LET subfolder_file = FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == v._id
+                                LET f = DOCUMENT(isEdge._to)
+                                FILTER f != null AND f.isFile == false
+                                RETURN 1
+                        )
+                        FILTER subfolder_file != null
+                        RETURN v._key
+                )
+                LET all_folders = APPEND([target_folder_record._key], all_subfolders)
+                LET all_folder_records_with_details = (
+                    FOR v, e, p IN 1..20 OUTBOUND target_folder_record._id @@record_relations
+                        FILTER e.relationshipType == "PARENT_CHILD"
+                        LET vertex = v
+                        FILTER vertex != null
+                        LET vertex_file = FIRST(
+                            FOR isEdge IN @@is_of_type
+                                FILTER isEdge._from == vertex._id
+                                LET f = DOCUMENT(isEdge._to)
+                                FILTER f != null
+                                RETURN f
+                        )
+                        FILTER vertex_file != null AND vertex_file.isFile == true
+                        RETURN { record: vertex, file_record: vertex_file }
+                )
+                LET all_file_records = (
+                    FOR record_data IN all_folder_records_with_details
+                        FILTER record_data.file_record != null
+                        RETURN record_data.file_record._key
+                )
+                RETURN {
+                    folder_exists: target_folder_record != null AND target_folder_file != null,
+                    target_folder: target_folder_record._key,
+                    all_folders: all_folders,
+                    subfolders: all_subfolders,
+                    records_with_details: all_folder_records_with_details,
+                    file_records: all_file_records,
+                    total_folders: LENGTH(all_folders),
+                    total_subfolders: LENGTH(all_subfolders),
+                    total_records: LENGTH(all_folder_records_with_details),
+                    total_file_records: LENGTH(all_file_records)
+                }
+                """
+                inv_results = await self.execute_query(
+                    inventory_query,
+                    bind_vars={
+                        "folder_id": folder_id,
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    },
+                    transaction=txn_id,
+                )
+                inventory = inv_results[0] if inv_results else {}
+                if not inventory.get("folder_exists"):
+                    if transaction is None and txn_id:
+                        await self.rollback_transaction(txn_id)
+                    return {"success": False, "eventData": None}
+                records_with_details = inventory.get("records_with_details", [])
+                all_record_keys = [rd["record"]["_key"] for rd in records_with_details]
+                all_folders = inventory.get("all_folders", [])
+                file_records = inventory.get("file_records", [])
+
+                if all_record_keys or all_folders:
+                    rel_delete = """
+                    LET record_edges = (FOR record_key IN @all_records FOR rec_edge IN @@record_relations FILTER rec_edge._from == CONCAT('records/', record_key) OR rec_edge._to == CONCAT('records/', record_key) RETURN rec_edge._key)
+                    LET folder_edges = (FOR folder_key IN @all_folders FOR folder_edge IN @@record_relations FILTER folder_edge._from == CONCAT('records/', folder_key) OR folder_edge._to == CONCAT('records/', folder_key) RETURN folder_edge._key)
+                    LET all_relation_edges = APPEND(record_edges, folder_edges)
+                    FOR edge_key IN all_relation_edges REMOVE edge_key IN @@record_relations OPTIONS { ignoreErrors: true }
+                    """
+                    await self.execute_query(rel_delete, bind_vars={"all_records": all_record_keys, "all_folders": all_folders, "@record_relations": CollectionNames.RECORD_RELATIONS.value}, transaction=txn_id)
+                    iot_delete = """
+                    LET record_type_edges = (FOR record_key IN @all_records FOR type_edge IN @@is_of_type FILTER type_edge._from == CONCAT('records/', record_key) RETURN type_edge._key)
+                    LET folder_type_edges = (FOR folder_key IN @all_folders FOR type_edge IN @@is_of_type FILTER type_edge._from == CONCAT('records/', folder_key) RETURN type_edge._key)
+                    LET all_type_edges = APPEND(record_type_edges, folder_type_edges)
+                    FOR edge_key IN all_type_edges REMOVE edge_key IN @@is_of_type OPTIONS { ignoreErrors: true }
+                    """
+                    await self.execute_query(iot_delete, bind_vars={"all_records": all_record_keys, "all_folders": all_folders, "@is_of_type": CollectionNames.IS_OF_TYPE.value}, transaction=txn_id)
+                    btk_delete = """
+                    LET record_kb_edges = (FOR record_key IN @all_records FOR record_kb_edge IN @@belongs_to_kb FILTER record_kb_edge._from == CONCAT('records/', record_key) RETURN record_kb_edge._key)
+                    LET folder_kb_edges = (FOR folder_key IN @all_folders FOR folder_kb_edge IN @@belongs_to_kb FILTER folder_kb_edge._from == CONCAT('records/', folder_key) RETURN folder_kb_edge._key)
+                    LET all_kb_edges = APPEND(record_kb_edges, folder_kb_edges)
+                    FOR edge_key IN all_kb_edges REMOVE edge_key IN @@belongs_to_kb OPTIONS { ignoreErrors: true }
+                    """
+                    await self.execute_query(btk_delete, bind_vars={"all_records": all_record_keys, "all_folders": all_folders, "@belongs_to_kb": CollectionNames.BELONGS_TO.value}, transaction=txn_id)
+                if file_records:
+                    await self.execute_query("FOR file_key IN @file_keys REMOVE file_key IN @@files_collection OPTIONS { ignoreErrors: true }", bind_vars={"file_keys": file_records, "@files_collection": CollectionNames.FILES.value}, transaction=txn_id)
+                if all_record_keys:
+                    await self.execute_query("FOR record_key IN @record_keys REMOVE record_key IN @@records_collection OPTIONS { ignoreErrors: true }", bind_vars={"record_keys": all_record_keys, "@records_collection": CollectionNames.RECORDS.value}, transaction=txn_id)
+                if all_folders:
+                    ff_query = """
+                    FOR folder_key IN @folder_keys
+                        LET folder_record = DOCUMENT("records", folder_key)
+                        FILTER folder_record != null
+                        LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN f._key)
+                        FILTER folder_file != null
+                        RETURN folder_file
+                    """
+                    ff_res = await self.execute_query(ff_query, bind_vars={"folder_keys": all_folders, "@is_of_type": CollectionNames.IS_OF_TYPE.value}, transaction=txn_id)
+                    folder_file_keys = list(ff_res) if ff_res else []
+                    if folder_file_keys:
+                        await self.execute_query("FOR file_key IN @file_keys REMOVE file_key IN @@files_collection OPTIONS { ignoreErrors: true }", bind_vars={"file_keys": folder_file_keys, "@files_collection": CollectionNames.FILES.value}, transaction=txn_id)
+                    reversed_folders = list(reversed(all_folders))
+                    await self.execute_query("FOR folder_key IN @folder_keys REMOVE folder_key IN @@records_collection OPTIONS { ignoreErrors: true }", bind_vars={"folder_keys": reversed_folders, "@records_collection": CollectionNames.RECORDS.value}, transaction=txn_id)
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+                self.logger.info(f"✅ Folder {folder_id} and nested content deleted.")
+
+                # Step: Prepare event data for all deleted file records (router will publish)
+                event_payloads = []
+                try:
+                    for record_data in records_with_details:  # Already contains only file records
+                        delete_payload = await self._create_deleted_record_event_payload(
+                            record_data["record"], record_data["file_record"]
+                        )
+                        if delete_payload:
+                            delete_payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                            delete_payload["origin"] = OriginTypes.UPLOAD.value
+                            event_payloads.append(delete_payload)
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
+
+                event_data = {
+                    "eventType": "deleteRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
+
+                return {
+                    "success": True,
+                    "eventData": event_data
+                }
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete folder: {str(e)}")
+            return {"success": False, "eventData": None}
+
+    async def update_record(
+        self,
+        record_id: str,
+        user_id: str,
+        updates: Dict,
+        file_metadata: Optional[Dict] = None,
+        transaction: Optional[str] = None,
+    ) -> Optional[Dict]:
+        """Update a record by ID with automatic KB and permission detection."""
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            user.get("_key")
+            timestamp = get_epoch_timestamp_in_ms()
+            processed_updates = {**updates, "updatedAtTimestamp": timestamp}
+            if file_metadata:
+                processed_updates.setdefault("sourceLastModifiedTimestamp", file_metadata.get("lastModified", timestamp))
+            update_query = """
+            FOR record IN @@records_collection
+                FILTER record._key == @record_id
+                UPDATE record WITH @updates IN @@records_collection
+                RETURN NEW
+            """
+            results = await self.execute_query(
+                update_query,
+                bind_vars={
+                    "record_id": record_id,
+                    "updates": processed_updates,
+                    "@records_collection": CollectionNames.RECORDS.value,
+                },
+                transaction=transaction,
+            )
+            updated_record = results[0] if results else None
+            if not updated_record:
+                return {"success": False, "code": 500, "reason": f"Failed to update record {record_id}"}
+
+            # Create event payload for router to publish (after successful update)
+            event_data = None
+            try:
+                # Get file record for event payload
+                file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+
+                # Determine if content changed (if file metadata provided, content likely changed)
+                content_changed = file_metadata is not None
+
+                update_payload = await self._create_update_record_event_payload(
+                    updated_record, file_record, content_changed=content_changed
+                )
+                if update_payload:
+                    event_data = {
+                        "eventType": "updateRecord",
+                        "topic": "record-events",
+                        "payload": update_payload
+                    }
+            except Exception as event_error:
+                self.logger.error(f"❌ Failed to create update event payload: {str(event_error)}")
+                # Don't fail the main operation for event payload creation errors
+
+            return {
+                "success": True,
+                "updatedRecord": updated_record,
+                "recordId": record_id,
+                "timestamp": timestamp,
+                "eventData": event_data
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update record: {str(e)}")
+            return {"success": False, "code": 500, "reason": str(e)}
+
+    async def delete_records(
+        self,
+        record_ids: List[str],
+        kb_id: str,
+        folder_id: Optional[str] = None,
+        transaction: Optional[str] = None,
+    ) -> Dict:
+        """Delete multiple records."""
+        try:
+            if not record_ids:
+                return {
+                    "success": True,
+                    "deleted_records": [],
+                    "failed_records": [],
+                    "total_requested": 0,
+                    "successfully_deleted": 0,
+                    "failed_count": 0,
+                }
+            txn_id = transaction
+            if transaction is None:
+                txn_id = await self.begin_transaction(
+                    read=[],
+                    write=[
+                        CollectionNames.RECORDS.value,
+                        CollectionNames.FILES.value,
+                        CollectionNames.RECORD_RELATIONS.value,
+                        CollectionNames.IS_OF_TYPE.value,
+                        CollectionNames.BELONGS_TO.value,
+                    ],
+                )
+            try:
+                validation_query = """
+                LET records_with_details = (
+                    FOR rid IN @record_ids
+                        LET record = DOCUMENT("records", rid)
+                        LET record_exists = record != null
+                        LET record_not_deleted = record_exists ? record.isDeleted != true : false
+                        LET kb_relationship = record_exists ? FIRST(FOR edge IN @@belongs_to_kb FILTER edge._from == CONCAT('records/', rid) FILTER edge._to == CONCAT('recordGroups/', @kb_id) RETURN edge) : null
+                        LET folder_relationship = @folder_id ? (record_exists ? FIRST(FOR edge_rel IN @@record_relations FILTER edge_rel._to == CONCAT('records/', rid) FILTER edge_rel._from == CONCAT('records/', @folder_id) FILTER edge_rel.relationshipType == "PARENT_CHILD" RETURN edge_rel) : null) : true
+                        LET file_record = record_exists ? FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == CONCAT('records/', rid) LET fileRec = DOCUMENT(isEdge._to) FILTER fileRec != null RETURN fileRec) : null
+                        LET is_valid = record_exists AND record_not_deleted AND kb_relationship != null AND folder_relationship != null
+                        RETURN { record_id: rid, record: record, file_record: file_record, is_valid: is_valid }
+                )
+                LET valid_records = records_with_details[* FILTER CURRENT.is_valid]
+                LET invalid_records = records_with_details[* FILTER !CURRENT.is_valid]
+                RETURN { valid_records: valid_records, invalid_records: invalid_records }
+                """
+                val_results = await self.execute_query(
+                    validation_query,
+                    bind_vars={
+                        "record_ids": record_ids,
+                        "kb_id": kb_id,
+                        "folder_id": folder_id,
+                        "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                        "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                        "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                    },
+                    transaction=txn_id,
+                )
+                val = val_results[0] if val_results else {}
+                valid_records = val.get("valid_records", [])
+                invalid_records = val.get("invalid_records", [])
+                failed_records = [{"record_id": r["record_id"], "reason": "Validation failed"} for r in invalid_records]
+                if not valid_records:
+                    if transaction is None and txn_id:
+                        await self.commit_transaction(txn_id)
+                    return {
+                        "success": True,
+                        "deleted_records": [],
+                        "failed_records": failed_records,
+                        "total_requested": len(record_ids),
+                        "successfully_deleted": 0,
+                        "failed_count": len(failed_records),
+                    }
+                valid_record_ids = [r["record_id"] for r in valid_records]
+                file_record_ids = [r["file_record"]["_key"] for r in valid_records if r.get("file_record")]
+
+                edges_cleanup = """
+                FOR record_id IN @record_ids
+                    FOR rec_rel_edge IN @@record_relations
+                        FILTER rec_rel_edge._from == CONCAT('records/', record_id) OR rec_rel_edge._to == CONCAT('records/', record_id)
+                        REMOVE rec_rel_edge IN @@record_relations
+                    FOR iot_edge IN @@is_of_type
+                        FILTER iot_edge._from == CONCAT('records/', record_id)
+                        REMOVE iot_edge IN @@is_of_type
+                    FOR btk_edge IN @@belongs_to_kb
+                        FILTER btk_edge._from == CONCAT('records/', record_id)
+                        REMOVE btk_edge IN @@belongs_to_kb
+                """
+                await self.execute_query(edges_cleanup, bind_vars={"record_ids": valid_record_ids, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value, "@belongs_to_kb": CollectionNames.BELONGS_TO.value}, transaction=txn_id)
+                if file_record_ids:
+                    await self.execute_query("FOR file_key IN @file_keys REMOVE file_key IN @@files_collection OPTIONS { ignoreErrors: true }", bind_vars={"file_keys": file_record_ids, "@files_collection": CollectionNames.FILES.value}, transaction=txn_id)
+                await self.execute_query("FOR record_key IN @record_keys REMOVE record_key IN @@records_collection OPTIONS { ignoreErrors: true }", bind_vars={"record_keys": valid_record_ids, "@records_collection": CollectionNames.RECORDS.value}, transaction=txn_id)
+                deleted_records = [{"record_id": r["record_id"], "name": r.get("record", {}).get("recordName", "Unknown")} for r in valid_records]
+                if transaction is None and txn_id:
+                    await self.commit_transaction(txn_id)
+                return {
+                    "success": True,
+                    "deleted_records": deleted_records,
+                    "failed_records": failed_records,
+                    "total_requested": len(record_ids),
+                    "successfully_deleted": len(deleted_records),
+                    "failed_count": len(failed_records),
+                    "folder_id": folder_id,
+                    "kb_id": kb_id,
+                }
+            except Exception as db_error:
+                if transaction is None and txn_id:
+                    await self.rollback_transaction(txn_id)
+                raise db_error
+        except Exception as e:
+            self.logger.error(f"❌ Failed bulk record deletion: {str(e)}")
+            return {"success": False, "reason": str(e)}
+
+    async def create_kb_permissions(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        role: str,
+    ) -> Dict:
+        """Create KB permissions for users and teams."""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            main_query = """
+            LET requester_info = FIRST(
+                FOR user IN @@users_collection
+                FILTER user.userId == @requester_id
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', user._key)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == "USER"
+                    FILTER perm.role == "OWNER"
+                RETURN { user_key: user._key, is_owner: true }
+            )
+            LET kb_exists = LENGTH(FOR kb IN @@recordGroups_collection FILTER kb._key == @kb_id LIMIT 1 RETURN 1) > 0
+            LET user_operations = (
+                FOR user_id IN @user_ids
+                    LET user = FIRST(FOR u IN @@users_collection FILTER u._key == user_id RETURN u)
+                    LET current_perm = user ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('users/', user._key) FILTER perm._to == CONCAT('recordGroups/', @kb_id) FILTER perm.type == "USER" RETURN perm) : null
+                    FILTER user != null
+                    LET operation = current_perm == null ? "insert" : (current_perm.role != @role ? "update" : "skip")
+                    RETURN { user_id: user_id, user_key: user._key, userId: user.userId, name: user.fullName, operation: operation, current_role: current_perm ? current_perm.role : null, perm_key: current_perm ? current_perm._key : null }
+            )
+            LET team_operations = (
+                FOR team_id IN @team_ids
+                    LET team = FIRST(FOR t IN @@teams_collection FILTER t._key == team_id RETURN t)
+                    LET current_perm = team ? FIRST(FOR perm IN @@permissions_collection FILTER perm._from == CONCAT('teams/', team._key) FILTER perm._to == CONCAT('recordGroups/', @kb_id) FILTER perm.type == "TEAM" RETURN perm) : null
+                    FILTER team != null
+                    LET operation = current_perm == null ? "insert" : "skip"
+                    RETURN { team_id: team_id, team_key: team._key, name: team.name, operation: operation, perm_key: current_perm ? current_perm._key : null }
+            )
+            RETURN {
+                is_valid: requester_info != null AND kb_exists,
+                requester_found: requester_info != null,
+                kb_exists: kb_exists,
+                user_operations: user_operations,
+                team_operations: team_operations,
+                users_to_insert: user_operations[* FILTER CURRENT.operation == "insert"],
+                teams_to_insert: team_operations[* FILTER CURRENT.operation == "insert"],
+            }
+            """
+            results = await self.execute_query(
+                main_query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "requester_id": requester_id,
+                    "user_ids": user_ids,
+                    "team_ids": team_ids,
+                    "role": role,
+                    "@users_collection": CollectionNames.USERS.value,
+                    "@teams_collection": CollectionNames.TEAMS.value,
+                    "@permissions_collection": CollectionNames.PERMISSION.value,
+                    "@recordGroups_collection": CollectionNames.RECORD_GROUPS.value,
+                },
+            )
+            result = results[0] if results else {}
+            if not result.get("is_valid"):
+                if not result.get("requester_found"):
+                    return {"success": False, "reason": "Requester not found or not owner", "code": 403}
+                if not result.get("kb_exists"):
+                    return {"success": False, "reason": "Knowledge base not found", "code": 404}
+            users_to_insert = result.get("users_to_insert", [])
+            teams_to_insert = result.get("teams_to_insert", [])
+            insert_docs = []
+            for u in users_to_insert:
+                insert_docs.append({
+                    "from_id": u["user_key"],
+                    "from_collection": CollectionNames.USERS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "externalPermissionId": "",
+                    "type": "USER",
+                    "role": role,
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                    "lastUpdatedTimestampAtSource": timestamp,
+                })
+            for t in teams_to_insert:
+                insert_docs.append({
+                    "from_id": t["team_key"],
+                    "from_collection": CollectionNames.TEAMS.value,
+                    "to_id": kb_id,
+                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "externalPermissionId": "",
+                    "type": "TEAM",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                    "lastUpdatedTimestampAtSource": timestamp,
+                })
+            if insert_docs:
+                await self.batch_create_edges(insert_docs, CollectionNames.PERMISSION.value)
+            granted_count = len(users_to_insert) + len(teams_to_insert)
+            return {
+                "success": True,
+                "grantedCount": granted_count,
+                "grantedUsers": [u["user_id"] for u in users_to_insert],
+                "grantedTeams": [t["team_id"] for t in teams_to_insert],
+                "role": role,
+                "kbId": kb_id,
+                "details": {},
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to create KB permissions: {str(e)}")
+            return {"success": False, "reason": str(e), "code": 500}
+
+    async def count_kb_owners(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> int:
+        """Count the number of owners for a knowledge base."""
+        try:
+            query = """
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER perm.role == 'OWNER'
+                COLLECT WITH COUNT INTO owner_count
+                RETURN owner_count
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={
+                    "kb_id": kb_id,
+                    "@permissions_collection": CollectionNames.PERMISSION.value,
+                },
+                transaction=transaction,
+            )
+            count = results[0] if results else 0
+            return count
+        except Exception as e:
+            self.logger.error(f"❌ Failed to count KB owners: {str(e)}")
+            return 0
+
+    async def remove_kb_permission(
+        self,
+        kb_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        transaction: Optional[str] = None,
+    ) -> bool:
+        """Remove permissions for multiple users and teams from a KB."""
+        try:
+            conditions = []
+            bind_vars: Dict[str, Any] = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSION.value,
+            }
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{uid}" for uid in user_ids]
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{tid}" for tid in team_ids]
+            if not conditions:
+                return False
+            query = f"""
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER ({' OR '.join(conditions)})
+                REMOVE perm IN @@permissions_collection
+                RETURN OLD._key
+            """
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            if results:
+                self.logger.info(f"✅ Removed {len(results)} permissions from KB {kb_id}")
+                return True
+            self.logger.warning(f"⚠️ No permissions found to remove from KB {kb_id}")
+            return False
+        except Exception as e:
+            self.logger.error(f"❌ Failed to remove KB permissions: {str(e)}")
+            return False
+
+    async def get_kb_permissions(
+        self,
+        kb_id: str,
+        user_ids: Optional[List[str]] = None,
+        team_ids: Optional[List[str]] = None,
+        transaction: Optional[str] = None,
+    ) -> Dict[str, Dict[str, str]]:
+        """Get current roles for multiple users and teams on a KB."""
+        try:
+            conditions = []
+            bind_vars: Dict[str, Any] = {
+                "kb_id": kb_id,
+                "@permissions_collection": CollectionNames.PERMISSION.value,
+            }
+            if user_ids:
+                conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{uid}" for uid in user_ids]
+            if team_ids:
+                conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+                bind_vars["team_froms"] = [f"teams/{tid}" for tid in team_ids]
+            if not conditions:
+                return {"users": {}, "teams": {}}
+            query = f"""
+            FOR perm IN @@permissions_collection
+                FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                FILTER ({' OR '.join(conditions)})
+                RETURN {{
+                    id: SPLIT(perm._from, '/')[1],
+                    type: perm.type,
+                    role: perm.role
+                }}
+            """
+            results = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+            result = {"users": {}, "teams": {}}
+            for perm in results or []:
+                if perm.get("type") == "USER":
+                    result["users"][perm["id"]] = perm.get("role", "")
+                elif perm.get("type") == "TEAM":
+                    result["teams"][perm["id"]] = None
+            return result
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get KB permissions: {str(e)}")
+            raise
+
+    async def update_kb_permission(
+        self,
+        kb_id: str,
+        requester_id: str,
+        user_ids: List[str],
+        team_ids: List[str],
+        new_role: str,
+    ) -> Optional[Dict]:
+        """Optimistically update permissions for users and teams on a knowledge base"""
+        try:
+            self.logger.info(f"🚀 Optimistic update: {len(user_ids or [])} users and {len(team_ids or [])} teams on KB {kb_id} to {new_role}")
+
+            # Quick validation of inputs
+            if not user_ids and not team_ids:
+                return {"success": False, "reason": "No users or teams provided", "code": "400"}
+
+            # Validate new role
+            valid_roles = ["OWNER", "ORGANIZER", "FILEORGANIZER", "WRITER", "COMMENTER", "READER"]
+            if new_role not in valid_roles:
+                return {
+                    "success": False,
+                    "reason": f"Invalid role. Must be one of: {', '.join(valid_roles)}",
+                    "code": "400"
+                }
+
+            # Single atomic operation: check requester permission + get current permissions + update
+            bind_vars = {
+                "kb_id": kb_id,
+                "requester_id": requester_id,
+                "new_role": new_role,
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "@permissions_collection": CollectionNames.PERMISSION.value,
+            }
+
+            # Build conditions for targets
+            target_conditions = []
+            if user_ids:
+                target_conditions.append("(perm._from IN @user_froms AND perm.type == 'USER')")
+                bind_vars["user_froms"] = [f"users/{user_id}" for user_id in user_ids]
+
+            # Teams don't have roles - they just have access or not
+            # So we skip team updates in this method
+            # if team_ids:
+            #     target_conditions.append("(perm._from IN @team_froms AND perm.type == 'TEAM')")
+            #     bind_vars["team_froms"] = [f"teams/{team_id}" for team_id in team_ids]
+
+            # Atomic query that does everything in one go
+            atomic_query = f"""
+            LET requester_perm = FIRST(
+                FOR perm IN @@permissions_collection
+                    FILTER perm._from == CONCAT('users/', @requester_id)
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER perm.type == 'USER'
+                    RETURN perm.role
+            )
+
+            LET current_perms = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                    FILTER ({' OR '.join(target_conditions)})
+                    RETURN {{
+                        _key: perm._key,
+                        id: SPLIT(perm._from, '/')[1],
+                        type: perm.type,
+                        current_role: perm.role,
+                        _from: perm._from
+                    }}
+            )
+
+            LET validation_result = (
+                requester_perm != "OWNER" ? {{error: "Only KB owners can update permissions", code: "403"}} :
+                null
+            )
+
+            LET updated_perms = (
+                validation_result == null ? (
+                    FOR perm IN @@permissions_collection
+                        FILTER perm._to == CONCAT('recordGroups/', @kb_id)
+                        FILTER ({' OR '.join(target_conditions)})
+                        UPDATE perm WITH {{
+                            role: @new_role,
+                            updatedAtTimestamp: @timestamp,
+                            lastUpdatedTimestampAtSource: @timestamp
+                        }} IN @@permissions_collection
+                        RETURN {{
+                            _key: NEW._key,
+                            id: SPLIT(NEW._from, '/')[1],
+                            type: NEW.type,
+                            old_role: OLD.role,
+                            new_role: NEW.role
+                        }}
+                ) : []
+            )
+            RETURN {{
+                validation_error: validation_result,
+                current_permissions: current_perms,
+                updated_permissions: updated_perms,
+                requester_role: requester_perm
+            }}
+            """
+
+            results = await self.http_client.execute_aql(atomic_query, bind_vars=bind_vars)
+            result = results[0] if results else None
+
+            if not result:
+                return {"success": False, "reason": "Query execution failed", "code": "500"}
+
+            # Log the raw result for debugging
+            self.logger.info(f"🔍 Update query result: {result}")
+
+            # Check for validation errors
+            if result["validation_error"]:
+                error = result["validation_error"]
+                return {"success": False, "reason": error["error"], "code": error["code"]}
+
+            updated_permissions = result["updated_permissions"]
+
+            # Count updates by type (only users can be updated, teams don't have roles)
+            updated_users = sum(1 for perm in updated_permissions if perm["type"] == "USER")
+            updated_teams = 0  # Teams don't have roles to update
+
+            # Build detailed response
+            updates_by_type = {"users": {}, "teams": {}}
+            for perm in updated_permissions:
+                if perm["type"] == "USER":
+                    updates_by_type["users"][perm["id"]] = {
+                        "old_role": perm["old_role"],
+                        "new_role": perm["new_role"]
+                    }
+                # Teams don't have roles, so we don't update them
+
+            self.logger.info(f"✅ Optimistically updated {len(updated_permissions)} permissions for KB {kb_id}")
+
+            return {
+                "success": True,
+                "kb_id": kb_id,
+                "new_role": new_role,
+                "updated_permissions": len(updated_permissions),
+                "updated_users": updated_users,
+                "updated_teams": updated_teams,
+                "updates_detail": updates_by_type,
+                "requester_role": result["requester_role"]
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to update KB permission optimistically: {str(e)}")
+            return {
+                "success": False,
+                "reason": str(e),
+                "code": "500"
+            }
+
+    async def list_kb_permissions(
+        self,
+        kb_id: str,
+        transaction: Optional[str] = None,
+    ) -> List[Dict]:
+        """List all permissions for a KB with entity details."""
+        try:
+            query = """
+            LET perms_with_ids = (
+                FOR perm IN @@permissions_collection
+                    FILTER perm._to == @kb_to
+                    RETURN { perm: perm, entity_id: perm._from }
+            )
+            LET user_ids = UNIQUE(perms_with_ids[* FILTER STARTS_WITH(CURRENT.entity_id, "users/")].entity_id)
+            LET users = (
+                FOR user_id IN user_ids
+                    LET user = DOCUMENT(user_id)
+                    FILTER user != null
+                    RETURN { _id: user._id, _key: user._key, fullName: user.fullName, name: user.name, userName: user.userName, userId: user.userId, email: user.email }
+            )
+            LET team_ids = UNIQUE(perms_with_ids[* FILTER STARTS_WITH(CURRENT.entity_id, "teams/")].entity_id)
+            LET teams = (
+                FOR team_id IN team_ids
+                    LET team = DOCUMENT(team_id)
+                    FILTER team != null
+                    RETURN { _id: team._id, _key: team._key, name: team.name }
+            )
+            FOR perm_data IN perms_with_ids
+                LET perm = perm_data.perm
+                LET entity = STARTS_WITH(perm_data.entity_id, "users/")
+                    ? FIRST(FOR u IN users FILTER u._id == perm_data.entity_id RETURN u)
+                    : FIRST(FOR t IN teams FILTER t._id == perm_data.entity_id RETURN t)
+                FILTER entity != null
+                RETURN {
+                    id: entity._key,
+                    name: entity.fullName || entity.name || entity.userName,
+                    userId: entity.userId,
+                    email: entity.email,
+                    role: perm.type == "TEAM" ? null : perm.role,
+                    type: perm.type,
+                    createdAtTimestamp: perm.createdAtTimestamp,
+                    updatedAtTimestamp: perm.updatedAtTimestamp
+                }
+            """
+            results = await self.execute_query(
+                query,
+                bind_vars={"kb_to": f"recordGroups/{kb_id}", "@permissions_collection": CollectionNames.PERMISSION.value},
+                transaction=transaction,
+            )
+            return results or []
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            return []
+
+    async def list_all_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        permissions: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """List all records the user can access. Returns (records, total_count, available_filters)."""
+        try:
+            include_kb = source in ("all", "local")
+            include_connector = source in ("all", "connector")
+            base_roles = {"OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"}
+            final_kb_roles = list(base_roles.intersection(set(permissions or []))) if permissions else list(base_roles)
+            if permissions and not final_kb_roles:
+                include_kb = False
+            user_from = f"users/{user_id}"
+            filter_conditions = []
+            filter_bind: Dict[str, Any] = {}
+            if search:
+                filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
+                filter_bind["search"] = f"%{(search or '').lower()}%"
+            if record_types:
+                filter_conditions.append("record.recordType IN @record_types")
+                filter_bind["record_types"] = record_types
+            if origins:
+                filter_conditions.append("record.origin IN @origins")
+                filter_bind["origins"] = origins
+            if connectors:
+                filter_conditions.append("record.connectorName IN @connectors")
+                filter_bind["connectors"] = connectors
+            if indexing_status:
+                filter_conditions.append("record.indexingStatus IN @indexing_status")
+                filter_bind["indexing_status"] = indexing_status
+            if date_from:
+                filter_conditions.append("record.createdAtTimestamp >= @date_from")
+                filter_bind["date_from"] = date_from
+            if date_to:
+                filter_conditions.append("record.createdAtTimestamp <= @date_to")
+                filter_bind["date_to"] = date_to
+            record_filter = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
+            perm_filter = " AND permissionEdge.role IN @permissions" if permissions else ""
+            sort_field = sort_by if sort_by in ("recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType") else "recordName"
+            main_query = f"""
+            LET user_from = @user_from
+            LET org_id = @org_id
+            LET directKbAccess = (
+                FOR kbEdge IN @@permission
+                    FILTER kbEdge._from == user_from
+                    FILTER kbEdge.type == "USER"
+                    FILTER kbEdge.role IN @kb_permissions
+                    LET kb = DOCUMENT(kbEdge._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    RETURN {{ kb_id: kb._key, kb_doc: kb, role: kbEdge.role }}
+            )
+            LET teamKbAccess = (
+                FOR teamKbPerm IN @@permission
+                    FILTER teamKbPerm.type == "TEAM"
+                    FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/")
+                    LET kb = DOCUMENT(teamKbPerm._to)
+                    FILTER kb != null AND kb.orgId == org_id
+                    LET team_id = SPLIT(teamKbPerm._from, '/')[1]
+                    LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN userTeamPerm.role)
+                    FILTER user_team_perm != null
+                    RETURN {{ kb_id: kb._key, kb_doc: kb, role: user_team_perm }}
+            )
+            LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_id == t.kb_id RETURN 1) == 0 RETURN t))
+            LET kbRecords = {'(FOR access IN directKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" ' + ('FILTER record.isFile != false ' if include_kb else '') + record_filter + ' RETURN { record: record, permission: { role: access.role, type: "USER" }, kb_id: kb._key, kb_name: kb.groupName })' if include_kb else '[]'}
+            LET connectorRecords = {'(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" ' + perm_filter + ' LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" ' + record_filter + ' RETURN { record: record, permission: { role: permissionEdge.role, type: permissionEdge.type } })' if include_connector else '[]'}
+            LET allRecords = APPEND(kbRecords, connectorRecords)
+            FOR item IN allRecords
+                LET record = item.record
+                SORT record.{sort_field} {sort_order.upper()}
+                LIMIT @skip, @limit
+                LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
+            """
+            bind = {
+                "user_from": user_from,
+                "org_id": org_id,
+                "skip": skip,
+                "limit": limit,
+                "kb_permissions": final_kb_roles,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@belongs_to_kb": CollectionNames.BELONGS_TO.value,
+                "@is_of_type": CollectionNames.IS_OF_TYPE.value,
+                **filter_bind,
+            }
+            if permissions:
+                bind["permissions"] = permissions
+            records = await self.execute_query(main_query, bind_vars=bind)
+            count_query = """
+            LET user_from = @user_from
+            LET org_id = @org_id
+            LET directKbAccess = (FOR kbEdge IN @@permission FILTER kbEdge._from == user_from FILTER kbEdge.type == "USER" FILTER kbEdge.role IN @kb_permissions LET kb = DOCUMENT(kbEdge._to) FILTER kb != null AND kb.orgId == org_id RETURN { kb_doc: kb })
+            LET teamKbAccess = (FOR teamKbPerm IN @@permission FILTER teamKbPerm.type == "TEAM" FILTER STARTS_WITH(teamKbPerm._to, "recordGroups/") LET kb = DOCUMENT(teamKbPerm._to) FILTER kb != null AND kb.orgId == org_id LET team_id = SPLIT(teamKbPerm._from, '/')[1] LET user_team_perm = FIRST(FOR userTeamPerm IN @@permission FILTER userTeamPerm._from == user_from FILTER userTeamPerm._to == CONCAT('teams/', team_id) FILTER userTeamPerm.type == "USER" RETURN 1) FILTER user_team_perm != null RETURN { kb_doc: kb })
+            LET allKbAccess = APPEND(directKbAccess, (FOR t IN teamKbAccess FILTER LENGTH(FOR d IN directKbAccess FILTER d.kb_doc._key == t.kb_doc._key RETURN 1) == 0 RETURN t))
+            LET kbCount = LENGTH(FOR access IN allKbAccess LET kb = access.kb_doc FOR belongsEdge IN @@belongs_to_kb FILTER belongsEdge._to == kb._id LET record = DOCUMENT(belongsEdge._from) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "UPLOAD" RETURN 1)
+            LET connectorCount = LENGTH(FOR permissionEdge IN @@permission FILTER permissionEdge._from == user_from FILTER permissionEdge.type == "USER" LET record = DOCUMENT(permissionEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == org_id FILTER record.origin == "CONNECTOR" RETURN 1)
+            RETURN kbCount + connectorCount
+            """
+            count_results = await self.execute_query(count_query, bind_vars={**bind, "kb_permissions": final_kb_roles, "@permission": CollectionNames.PERMISSION.value, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, **filter_bind})
+            total = count_results[0] if count_results else 0
+            available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+            return records or [], total, available
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list all records: {str(e)}")
+            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+
+    async def get_records(
+        self,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        permissions: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        source: str,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """
+        List all records the user can access.
+        Resolves external user_id to user key and delegates to list_all_records.
+        Returns (records, total_count, available_filters).
+        """
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+            return await self.list_all_records(
+                user_key,
+                org_id,
+                skip,
+                limit,
+                search,
+                record_types,
+                origins,
+                connectors,
+                indexing_status,
+                permissions,
+                date_from,
+                date_to,
+                sort_by,
+                sort_order,
+                source,
+            )
+        except Exception as e:
+            self.logger.error("❌ Failed to get records: %s", str(e))
+            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": []}
+
+    async def list_kb_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        skip: int,
+        limit: int,
+        search: Optional[str],
+        record_types: Optional[List[str]],
+        origins: Optional[List[str]],
+        connectors: Optional[List[str]],
+        indexing_status: Optional[List[str]],
+        date_from: Optional[int],
+        date_to: Optional[int],
+        sort_by: str,
+        sort_order: str,
+        folder_id: Optional[str] = None,
+    ) -> Tuple[List[Dict], int, Dict]:
+        """List records in a KB. Returns (records, total_count, available_filters)."""
+        try:
+            user_perm = await self.get_user_kb_permission(kb_id, user_id)
+            if not user_perm:
+                return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
+            filter_conditions = []
+            filter_bind: Dict[str, Any] = {"kb_id": kb_id, "org_id": org_id, "user_permission": user_perm, "skip": skip, "limit": limit, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@record_relations": CollectionNames.RECORD_RELATIONS.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value}
+            if search:
+                filter_conditions.append("(LIKE(LOWER(record.recordName), @search) OR LIKE(LOWER(record.externalRecordId), @search))")
+                filter_bind["search"] = f"%{(search or '').lower()}%"
+            if record_types:
+                filter_conditions.append("record.recordType IN @record_types")
+                filter_bind["record_types"] = record_types
+            if origins:
+                filter_conditions.append("record.origin IN @origins")
+                filter_bind["origins"] = origins
+            if connectors:
+                filter_conditions.append("record.connectorName IN @connectors")
+                filter_bind["connectors"] = connectors
+            if indexing_status:
+                filter_conditions.append("record.indexingStatus IN @indexing_status")
+                filter_bind["indexing_status"] = indexing_status
+            if date_from:
+                filter_conditions.append("record.createdAtTimestamp >= @date_from")
+                filter_bind["date_from"] = date_from
+            if date_to:
+                filter_conditions.append("record.createdAtTimestamp <= @date_to")
+                filter_bind["date_to"] = date_to
+            record_filter = " AND " + " AND ".join(filter_conditions) if filter_conditions else ""
+            folder_filter = " AND folder_record._key == @folder_id" if folder_id else ""
+            if folder_id:
+                filter_bind["folder_id"] = folder_id
+            main_query = f"""
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET kbFolders = (
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET folder_record = DOCUMENT(belongsEdge._from)
+                    FILTER folder_record != null
+                    LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN f)
+                    FILTER folder_file != null
+                    {folder_filter}
+                    RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_file.name }}
+            )
+            LET folder_ids = kbFolders[*].folder._id
+            LET all_records_data = (
+                FOR relEdge IN @@record_relations
+                    FILTER relEdge._from IN folder_ids
+                    FILTER relEdge.relationshipType == "PARENT_CHILD"
+                    LET record = DOCUMENT(relEdge._to)
+                    FILTER record != null
+                    FILTER record.isDeleted != true
+                    FILTER record.orgId == @org_id
+                    FILTER record.isFile != false
+                    {record_filter}
+                    LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
+                    RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: user_permission, type: "USER" }}, kb_id: @kb_id }}
+            )
+            LET record_ids = all_records_data[*].record._id
+            LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
+            FOR item IN all_records_data
+                LET record = item.record
+                LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
+                SORT record.{sort_by or "recordName"} {(sort_order or "asc").upper()}
+                LIMIT @skip, @limit
+                RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: {{ id: item.folder_id, name: item.folder_name }} }}
+            """
+            records = await self.execute_query(main_query, bind_vars=filter_bind)
+            count_query = f"""
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET folder_ids = (
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET folder_record = DOCUMENT(belongsEdge._from)
+                    FILTER folder_record != null
+                    LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN 1)
+                    FILTER folder_file != null
+                    {folder_filter}
+                    RETURN belongsEdge._from
+            )
+            LET record_count = (FOR relEdge IN @@record_relations FILTER relEdge._from IN folder_ids FILTER relEdge.relationshipType == "PARENT_CHILD" LET record = DOCUMENT(relEdge._to) FILTER record != null FILTER record.isDeleted != true FILTER record.orgId == @org_id {record_filter} COLLECT WITH COUNT INTO c RETURN c)
+            RETURN FIRST(record_count) || 0
+            """
+            count_results = await self.execute_query(count_query, bind_vars=filter_bind)
+            total = count_results[0] if count_results else 0
+            folders_query = """
+            LET kb = DOCUMENT("recordGroups", @kb_id)
+            FILTER kb != null
+            LET folder_list = (
+                FOR belongsEdge IN @@belongs_to_kb
+                    FILTER belongsEdge._to == kb._id
+                    LET folder_record = DOCUMENT(belongsEdge._from)
+                    FILTER folder_record != null
+                    LET folder_file = FIRST(FOR isEdge IN @@is_of_type FILTER isEdge._from == folder_record._id LET f = DOCUMENT(isEdge._to) FILTER f != null AND f.isFile == false RETURN f)
+                    FILTER folder_file != null
+                    RETURN { id: folder_record._key, name: folder_file.name }
+            )
+            RETURN folder_list
+            """
+            folders_result = await self.execute_query(folders_query, bind_vars={"kb_id": kb_id, "@belongs_to_kb": CollectionNames.BELONGS_TO.value, "@is_of_type": CollectionNames.IS_OF_TYPE.value})
+            folder_list = folders_result[0] if folders_result and isinstance(folders_result[0], list) else []
+            available = {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [user_perm] if user_perm else [], "folders": folder_list}
+            return records or [], total, available
+        except Exception as e:
+            self.logger.error(f"❌ Failed to list KB records: {str(e)}")
+            return [], 0, {"recordTypes": [], "origins": [], "connectors": [], "indexingStatus": [], "permissions": [], "folders": []}
+
+    def _validation_error(self, code: int, reason: str) -> Dict:
+        """Helper to create validation error response."""
+        return {"valid": False, "success": False, "code": code, "reason": reason}
+
+    async def _validate_upload_context(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        parent_folder_id: Optional[str] = None,
+    ) -> Dict:
+        """Unified validation for all upload scenarios."""
+        try:
+            user = await self.get_user_by_user_id(user_id=user_id)
+            if not user:
+                return self._validation_error(404, f"User not found: {user_id}")
+            user_key = user.get("_key") or user.get("id")
+            if not user_key:
+                return self._validation_error(404, "User key not found")
+            user_role = await self.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                return self._validation_error(403, f"Insufficient permissions. Role: {user_role}")
+            parent_folder = None
+            parent_path = "/"
+            if parent_folder_id:
+                parent_folder = await self.get_and_validate_folder_in_kb(kb_id, parent_folder_id)
+                if not parent_folder:
+                    return self._validation_error(404, f"Folder {parent_folder_id} not found in KB {kb_id}")
+                parent_path = parent_folder.get("path", "/")
+            return {
+                "valid": True,
+                "user": user,
+                "user_key": user_key,
+                "user_role": user_role,
+                "parent_folder": parent_folder,
+                "parent_path": parent_path,
+                "upload_target": "folder" if parent_folder_id else "kb_root",
+            }
+        except Exception as e:
+            return self._validation_error(500, f"Validation failed: {str(e)}")
+
+    def _analyze_upload_structure(self, files: List[Dict], validation_result: Dict) -> Dict:
+        """Analyze folder hierarchy from file paths for upload."""
+        folder_hierarchy: Dict[str, Dict[str, Any]] = {}
+        file_destinations: Dict[int, Dict[str, Any]] = {}
+        for index, file_data in enumerate(files):
+            file_path = file_data.get("filePath", "")
+            if "/" in file_path:
+                path_parts = file_path.split("/")
+                folder_parts = path_parts[:-1]
+                current_path = ""
+                for i, folder_name in enumerate(folder_parts):
+                    parent_path = current_path if current_path else None
+                    current_path = f"{current_path}/{folder_name}" if current_path else folder_name
+                    if current_path not in folder_hierarchy:
+                        folder_hierarchy[current_path] = {
+                            "name": folder_name,
+                            "parent_path": parent_path,
+                            "level": i + 1,
+                        }
+                file_destinations[index] = {
+                    "type": "folder",
+                    "folder_name": folder_parts[-1],
+                    "folder_hierarchy_path": current_path,
+                }
+            else:
+                file_destinations[index] = {
+                    "type": "root",
+                    "folder_name": None,
+                    "folder_hierarchy_path": None,
+                }
+        sorted_folder_paths = sorted(
+            folder_hierarchy.keys(),
+            key=lambda x: folder_hierarchy[x]["level"],
+        )
+        parent_folder_id = None
+        if validation_result.get("upload_target") == "folder" and validation_result.get("parent_folder"):
+            parent_folder_id = validation_result["parent_folder"].get("_key") or validation_result["parent_folder"].get("id")
+        return {
+            "folder_hierarchy": folder_hierarchy,
+            "sorted_folder_paths": sorted_folder_paths,
+            "file_destinations": file_destinations,
+            "upload_target": validation_result.get("upload_target", "kb_root"),
+            "parent_folder_id": parent_folder_id,
+            "summary": {
+                "total_folders": len(folder_hierarchy),
+                "root_files": sum(1 for d in file_destinations.values() if d["type"] == "root"),
+                "folder_files": sum(1 for d in file_destinations.values() if d["type"] == "folder"),
+            },
+        }
+
+    async def _ensure_folders_exist(
+        self,
+        kb_id: str,
+        org_id: str,
+        folder_analysis: Dict,
+        validation_result: Dict,
+        txn_id: str,
+    ) -> Dict[str, str]:
+        """Ensure all needed folders exist; return hierarchy_path -> folder_id map."""
+        folder_map: Dict[str, str] = {}
+        upload_parent_folder_id = None
+        if validation_result.get("upload_target") == "folder" and validation_result.get("parent_folder"):
+            upload_parent_folder_id = validation_result["parent_folder"].get("_key") or validation_result["parent_folder"].get("id")
+        for hierarchy_path in folder_analysis["sorted_folder_paths"]:
+            folder_info = folder_analysis["folder_hierarchy"][hierarchy_path]
+            folder_name = folder_info["name"]
+            parent_hierarchy_path = folder_info["parent_path"]
+            parent_folder_id = None
+            if parent_hierarchy_path:
+                parent_folder_id = folder_map.get(parent_hierarchy_path)
+                if parent_folder_id is None:
+                    raise ValueError(f"Parent folder creation failed for path: {parent_hierarchy_path}")
+            elif upload_parent_folder_id:
+                parent_folder_id = upload_parent_folder_id
+            existing_folder = await self.find_folder_by_name_in_parent(
+                kb_id=kb_id,
+                folder_name=folder_name,
+                parent_folder_id=parent_folder_id,
+                transaction=txn_id,
+            )
+            if existing_folder:
+                folder_map[hierarchy_path] = existing_folder.get("_key") or existing_folder.get("id", "")
+            else:
+                folder = await self.create_folder(
+                    kb_id=kb_id,
+                    folder_name=folder_name,
+                    org_id=org_id,
+                    parent_folder_id=parent_folder_id,
+                    transaction=txn_id,
+                )
+                folder_id = folder and (folder.get("id") or folder.get("folderId"))
+                if folder_id:
+                    folder_map[hierarchy_path] = folder_id
+                else:
+                    raise ValueError(f"Failed to create folder: {folder_name}")
+        return folder_map
+
+    def _populate_file_destinations(self, folder_analysis: Dict, folder_map: Dict[str, str]) -> None:
+        """Update file destinations with resolved folder IDs."""
+        for destination in folder_analysis["file_destinations"].values():
+            if destination["type"] == "folder":
+                hierarchy_path = destination.get("folder_hierarchy_path")
+                if hierarchy_path and hierarchy_path in folder_map:
+                    destination["folder_id"] = folder_map[hierarchy_path]
+
+    def _generate_upload_message(self, result: Dict, upload_type: str) -> str:
+        """Generate success message for upload."""
+        total_created = result.get("total_created", 0)
+        folders_created = result.get("folders_created", 0)
+        failed_count = len(result.get("failed_files", []))
+        message = f"Successfully uploaded {total_created} file{'s' if total_created != 1 else ''} to {upload_type}"
+        if folders_created > 0:
+            message += f" with {folders_created} new subfolder{'s' if folders_created != 1 else ''} created"
+        if failed_count > 0:
+            message += f". {failed_count} file{'s' if failed_count != 1 else ''} failed to upload"
+        return message + "."
+
+    async def _create_files_batch(
+        self,
+        kb_id: str,
+        files: List[Dict],
+        parent_folder_id: Optional[str],
+        transaction: Optional[str],
+        timestamp: int,
+    ) -> List[Dict]:
+        """Create a batch of file records and edges; skip name conflicts."""
+        if not files:
+            return []
+        valid_files: List[Dict] = []
+        for file_data in files:
+            file_record = file_data.get("fileRecord") or {}
+            record = file_data.get("record") or {}
+            file_name = self._normalize_name(file_record.get("name") or record.get("recordName")) or ""
+            mime_type = file_record.get("mimeType")
+            conflict_result = await self._check_name_conflict_in_parent(
+                kb_id=kb_id,
+                parent_folder_id=parent_folder_id,
+                item_name=file_name,
+                mime_type=mime_type,
+                transaction=transaction,
+            )
+            if conflict_result.get("has_conflict"):
+                conflicts = conflict_result.get("conflicts", [])
+                conflict_names = [c.get("name", "") for c in conflicts]
+                self.logger.warning(
+                    "⚠️ Skipping file due to name conflict: '%s' conflicts with %s",
+                    file_name,
+                    conflict_names,
+                )
+                continue
+            file_record["name"] = file_name
+            if record and "recordName" not in record:
+                record["recordName"] = file_name
+            valid_files.append(file_data)
+        if not valid_files:
+            return []
+
+        # Enrich records with KB-specific fields
+        records = []
+        file_records = [f["fileRecord"] for f in valid_files]
+
+        for file_data in valid_files:
+            record = file_data["record"].copy()  # Create a copy to avoid modifying original
+
+            # Determine externalParentId: null for immediate children of KB, parent_folder_id for nested
+            external_parent_id = parent_folder_id if parent_folder_id else None
+
+            # Add missing fields (using setdefault to only add if not already present)
+            record.setdefault("externalGroupId", kb_id)
+            record.setdefault("externalParentId", external_parent_id)
+            record.setdefault("externalRootGroupId", kb_id)
+            record.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
+            record.setdefault("lastSyncTimestamp", timestamp)
+            record.setdefault("isVLMOcrProcessed", False)
+            record.setdefault("extractionStatus", "NOT_STARTED")  # Files need extraction, unlike folders
+            record.setdefault("isLatestVersion", True)
+            record.setdefault("isDirty", False)
+
+            records.append(record)
+
+        await self.batch_upsert_nodes(records, CollectionNames.RECORDS.value, transaction=transaction)
+        await self.batch_upsert_nodes(file_records, CollectionNames.FILES.value, transaction=transaction)
+        edges_to_create: List[Dict] = []
+        for file_data in valid_files:
+            record_id = (file_data.get("record") or {}).get("_key")
+            file_id = (file_data.get("fileRecord") or {}).get("_key")
+            if not record_id or not file_id:
+                continue
+            if parent_folder_id:
+                edges_to_create.append({
+                    "from_id": parent_folder_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "relationshipType": "PARENT_CHILD",
+                    "createdAtTimestamp": timestamp,
+                    "updatedAtTimestamp": timestamp,
+                })
+            edges_to_create.append({
+                "from_id": record_id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": file_id,
+                "to_collection": CollectionNames.FILES.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+            edges_to_create.append({
+                "from_id": record_id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": kb_id,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "entityType": Connectors.KNOWLEDGE_BASE.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+            # Record -> KB inheritPermission edge
+            # KB records inherit permissions from KB by default
+            edges_to_create.append({
+                "from_id": record_id,
+                "from_collection": CollectionNames.RECORDS.value,
+                "to_id": kb_id,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                "createdAtTimestamp": timestamp,
+                "updatedAtTimestamp": timestamp,
+            })
+
+        parent_child = [e for e in edges_to_create if e.get("relationshipType") == "PARENT_CHILD"]
+        is_of_type = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.FILES.value]
+        belongs_to = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and e.get("entityType")]
+        inherit_permission = [e for e in edges_to_create if e.get("to_collection") == CollectionNames.RECORD_GROUPS.value and not e.get("entityType")]
+        if parent_child:
+            await self.batch_create_edges(parent_child, CollectionNames.RECORD_RELATIONS.value, transaction=transaction)
+        if is_of_type:
+            await self.batch_create_edges(is_of_type, CollectionNames.IS_OF_TYPE.value, transaction=transaction)
+        if belongs_to:
+            await self.batch_create_edges(belongs_to, CollectionNames.BELONGS_TO.value, transaction=transaction)
+        if inherit_permission:
+            await self.batch_create_edges(inherit_permission, CollectionNames.INHERIT_PERMISSIONS.value, transaction=transaction)
+        return valid_files
+
+    async def _create_files_in_kb_root(
+        self,
+        kb_id: str,
+        files: List[Dict],
+        transaction: Optional[str],
+        timestamp: int,
+    ) -> List[Dict]:
+        """Create files directly in KB root."""
+        return await self._create_files_batch(
+            kb_id=kb_id,
+            files=files,
+            parent_folder_id=None,
+            transaction=transaction,
+            timestamp=timestamp,
+        )
+
+    async def _create_files_in_folder(
+        self,
+        kb_id: str,
+        folder_id: str,
+        files: List[Dict],
+        transaction: Optional[str],
+        timestamp: int,
+    ) -> List[Dict]:
+        """Create files in a specific folder."""
+        return await self._create_files_batch(
+            kb_id=kb_id,
+            files=files,
+            parent_folder_id=folder_id,
+            transaction=transaction,
+            timestamp=timestamp,
+        )
+
+    async def _create_records(
+        self,
+        kb_id: str,
+        files: List[Dict],
+        folder_analysis: Dict,
+        transaction: Optional[str],
+        timestamp: int,
+    ) -> Dict:
+        """Create all file records and relationships from upload."""
+        total_created = 0
+        failed_files: List[str] = []
+        created_files_data: List[Dict] = []
+        root_files: List[Tuple[Dict, Optional[str]]] = []
+        folder_files: Dict[str, List[Dict]] = {}
+        parent_folder_id = folder_analysis.get("parent_folder_id")
+        for index, file_data in enumerate(files):
+            destination = folder_analysis["file_destinations"].get(index, {})
+            if destination.get("type") == "root":
+                root_files.append((file_data, parent_folder_id))
+            else:
+                folder_id = destination.get("folder_id")
+                if folder_id:
+                    folder_files.setdefault(folder_id, []).append(file_data)
+                else:
+                    failed_files.append(file_data.get("filePath", ""))
+        kb_root_files = [f for f, fid in root_files if fid is None]
+        parent_folder_files_map: Dict[str, List[Dict]] = {}
+        for file_data, fid in root_files:
+            if fid is not None:
+                parent_folder_files_map.setdefault(fid, []).append(file_data)
+        if kb_root_files:
+            try:
+                successful = await self._create_files_in_kb_root(
+                    kb_id=kb_id,
+                    files=kb_root_files,
+                    transaction=transaction,
+                    timestamp=timestamp,
+                )
+                created_files_data.extend(successful)
+                total_created += len(successful)
+            except Exception as e:
+                self.logger.error("❌ Failed to create root files: %s", str(e))
+                failed_files.extend(f[0].get("filePath", "") for f in root_files if f[1] is None)
+        for fid, file_list in parent_folder_files_map.items():
+            try:
+                successful = await self._create_files_in_folder(
+                    kb_id=kb_id,
+                    folder_id=fid,
+                    files=file_list,
+                    transaction=transaction,
+                    timestamp=timestamp,
+                )
+                created_files_data.extend(successful)
+                total_created += len(successful)
+            except Exception as e:
+                self.logger.error("❌ Failed to create parent folder files: %s", str(e))
+                failed_files.extend(f.get("filePath", "") for f in file_list)
+        for folder_id, file_list in folder_files.items():
+            try:
+                successful = await self._create_files_in_folder(
+                    kb_id=kb_id,
+                    folder_id=folder_id,
+                    files=file_list,
+                    transaction=transaction,
+                    timestamp=timestamp,
+                )
+                created_files_data.extend(successful)
+                total_created += len(successful)
+            except Exception as e:
+                self.logger.error("❌ Failed to create subfolder files: %s", str(e))
+                failed_files.extend(f.get("filePath", "") for f in file_list)
+        return {
+            "total_created": total_created,
+            "failed_files": failed_files,
+            "created_files_data": created_files_data,
+        }
+
+    async def _execute_upload_transaction(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+        folder_analysis: Dict,
+        validation_result: Dict,
+    ) -> Dict:
+        """Run upload in a single transaction: folders, then records."""
+        try:
+            txn_id = await self.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.FILES.value,
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                    CollectionNames.IS_OF_TYPE.value,
+                    CollectionNames.BELONGS_TO.value,
+                    CollectionNames.INHERIT_PERMISSIONS.value,
+                ],
+            )
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                folder_map = await self._ensure_folders_exist(
+                    kb_id=kb_id,
+                    org_id=org_id,
+                    folder_analysis=folder_analysis,
+                    validation_result=validation_result,
+                    txn_id=txn_id,
+                )
+                self._populate_file_destinations(folder_analysis, folder_map)
+                creation_result = await self._create_records(
+                    kb_id=kb_id,
+                    files=files,
+                    folder_analysis=folder_analysis,
+                    transaction=txn_id,
+                    timestamp=timestamp,
+                )
+                if creation_result["total_created"] > 0 or len(folder_map) > 0:
+                    await self.commit_transaction(txn_id)
+                    return {
+                        "success": True,
+                        "total_created": creation_result["total_created"],
+                        "folders_created": len(folder_map),
+                        "created_folders": [{"id": fid} for fid in folder_map.values()],
+                        "failed_files": creation_result["failed_files"],
+                        "created_files_data": creation_result["created_files_data"],
+                    }
+                await self.rollback_transaction(txn_id)
+                return {
+                    "success": True,
+                    "total_created": 0,
+                    "folders_created": 0,
+                    "created_folders": [],
+                    "failed_files": creation_result["failed_files"],
+                    "created_files_data": [],
+                }
+            except Exception as e:
+                try:
+                    await self.rollback_transaction(txn_id)
+                except Exception as abort_err:
+                    self.logger.error("❌ Failed to rollback transaction: %s", str(abort_err))
+                self.logger.error("❌ Upload transaction failed: %s", str(e))
+                return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+        except Exception as e:
+            return {"success": False, "reason": f"Transaction failed: {str(e)}", "code": 500}
+
+    async def upload_records(
+        self,
+        kb_id: str,
+        user_id: str,
+        org_id: str,
+        files: List[Dict],
+        parent_folder_id: Optional[str] = None,
+    ) -> Dict:
+        """Upload records to KB root or a folder. Full flow: validate, analyze structure, run transaction."""
+        try:
+            upload_type = "folder" if parent_folder_id else "KB root"
+            self.logger.info("🚀 Starting unified upload to %s in KB %s", upload_type, kb_id)
+            self.logger.info("📊 Processing %s files", len(files))
+            validation_result = await self._validate_upload_context(
+                kb_id=kb_id,
+                user_id=user_id,
+                org_id=org_id,
+                parent_folder_id=parent_folder_id,
+            )
+            if not validation_result.get("valid"):
+                return validation_result
+            folder_analysis = self._analyze_upload_structure(files, validation_result)
+            self.logger.info("📁 Structure analysis: %s", folder_analysis.get("summary", {}))
+            result = await self._execute_upload_transaction(
+                kb_id=kb_id,
+                user_id=user_id,
+                org_id=org_id,
+                files=files,
+                folder_analysis=folder_analysis,
+                validation_result=validation_result,
+            )
+            if result.get("success"):
+                # Prepare event data for all created records (router will publish)
+                created_files_data = result.get("created_files_data", [])
+                event_payloads = []
+
+                if created_files_data:
+                    try:
+                        # Get storage endpoint
+                        endpoints = await self.config_service.get_config(
+                            config_node_constants.ENDPOINTS.value
+                        )
+                        storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+
+                        for file_data in created_files_data:
+                            record_doc = file_data.get("record")
+                            file_doc = file_data.get("fileRecord")
+                            if record_doc and file_doc:
+                                create_payload = await self._create_new_record_event_payload(
+                                    record_doc, file_doc, storage_url
+                                )
+                                if create_payload:
+                                    event_payloads.append(create_payload)
+                    except Exception as e:
+                        self.logger.error(f"❌ Failed to prepare upload event payloads: {str(e)}")
+
+                event_data = {
+                    "eventType": "newRecord",
+                    "topic": "record-events",
+                    "payloads": event_payloads
+                } if event_payloads else None
+
+                return {
+                    "success": True,
+                    "message": self._generate_upload_message(result, upload_type),
+                    "totalCreated": result["total_created"],
+                    "foldersCreated": result["folders_created"],
+                    "createdFolders": result["created_folders"],
+                    "failedFiles": result["failed_files"],
+                    "kbId": kb_id,
+                    "parentFolderId": parent_folder_id,
+                    "eventData": event_data
+                }
+            return result
+        except Exception as e:
+            self.logger.error("❌ Upload records failed: %s", str(e))
+            return {"success": False, "reason": str(e), "code": 500}
+
     async def _get_attachment_ids(
         self,
         record_id: str,
@@ -5040,7 +11592,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         attachments_query = f"""
         FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
             FILTER edge._from == @record_from
-                AND edge.relationshipType == 'ATTACHMENT'
+            AND edge.relationshipType == 'ATTACHMENT'
             RETURN PARSE_IDENTIFIER(edge._to).key
         """
 
@@ -5399,6 +11951,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Dict:
         """Execute Gmail record deletion."""
         try:
+            # Get mail and file records for event publishing before deletion
+            mail_record = await self.get_document(record_id, CollectionNames.MAILS.value)
+            file_record = await self.get_document(record_id, CollectionNames.FILES.value) if record.get("recordType") == "FILE" else None
+
             # Get attachments (child records with ATTACHMENT relation)
             attachments_query = f"""
             FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
@@ -5425,17 +11981,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
             await self._delete_outlook_edges(record_id, transaction)
 
             # Delete mail record
-            await self._delete_mail_record(record_id, transaction)
+            if mail_record:
+                await self._delete_mail_record(record_id, transaction)
+
+            # Delete file record if it's an attachment
+            if file_record:
+                await self._delete_file_record(record_id, transaction)
 
             # Delete main record
             await self._delete_main_record(record_id, transaction)
 
             self.logger.info(f"✅ Deleted Gmail record {record_id} with {len(attachment_ids)} attachments")
 
+            # Create event payload for router to publish
+            try:
+                data_record = mail_record or file_record
+                payload = await self._create_deleted_record_event_payload(record, data_record)
+                if payload:
+                    payload["connectorName"] = Connectors.GOOGLE_MAIL.value
+                    payload["origin"] = OriginTypes.CONNECTOR.value
+                    if mail_record:
+                        payload["threadId"] = mail_record.get("threadId", "")
+                        payload["messageId"] = mail_record.get("messageId", "")
+                    elif file_record:
+                        payload["isAttachment"] = True
+                        payload["attachmentId"] = file_record.get("attachmentId", "")
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
+
             return {
                 "success": True,
                 "record_id": record_id,
-                "attachments_deleted": len(attachment_ids)
+                "connector": Connectors.GOOGLE_MAIL.value,
+                "user_role": user_role,
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -5454,6 +12041,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Dict:
         """Execute Drive record deletion."""
         try:
+            # Get file record for event publishing before deletion
+            file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+
             # Delete Drive-specific edges
             await self._delete_drive_specific_edges(record_id, transaction)
 
@@ -5468,11 +12058,33 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Deleted Drive record {record_id}")
 
+            # Create event payload for router to publish
+            try:
+                payload = await self._create_deleted_record_event_payload(record, file_record)
+                if payload:
+                    payload["connectorName"] = Connectors.GOOGLE_DRIVE.value
+                    payload["origin"] = OriginTypes.CONNECTOR.value
+                    if file_record:
+                        payload["driveId"] = file_record.get("driveId", "")
+                        payload["parentId"] = file_record.get("parentId", "")
+                        payload["webViewLink"] = file_record.get("webViewLink", "")
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
+
             return {
                 "success": True,
                 "record_id": record_id,
                 "connector": Connectors.GOOGLE_DRIVE.value,
-                "user_role": user_role
+                "user_role": user_role,
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -5491,6 +12103,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     ) -> Dict:
         """Execute KB record deletion."""
         try:
+            # Get file record for event publishing before deletion
+            file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+
             # Delete KB-specific edges
             await self._delete_kb_specific_edges(record_id, transaction)
 
@@ -5502,11 +12117,29 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             self.logger.info(f"✅ Deleted KB record {record_id}")
 
+            # Create event payload for router to publish
+            try:
+                payload = await self._create_deleted_record_event_payload(record, file_record)
+                if payload:
+                    payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
+                    payload["origin"] = OriginTypes.UPLOAD.value
+                    event_data = {
+                        "eventType": "deleteRecord",
+                        "topic": "record-events",
+                        "payload": payload
+                    }
+                else:
+                    event_data = None
+            except Exception as e:
+                self.logger.error(f"❌ Failed to create deletion event payload: {str(e)}")
+                event_data = None
+
             return {
                 "success": True,
                 "record_id": record_id,
                 "connector": Connectors.KNOWLEDGE_BASE.value,
-                "kb_context": kb_context
+                "kb_context": kb_context,
+                "eventData": event_data
             }
 
         except Exception as e:
@@ -6234,12 +12867,43 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN record
         )
 
+        LET nested_records_via_parent = (
+            FOR entry_record IN user_direct_records
+                FOR child_record, edge IN 1..20 OUTBOUND entry_record._id recordRelations
+                    FILTER edge.relationshipType == "PARENT_CHILD"
+                    FILTER child_record != null
+                    FILTER child_record.isDeleted != true
+                    FILTER child_record.orgId == @org_id
+
+                    // If child has any READ restrictions, user must have direct permission on it
+                    // If child has NO restrictions, it inherits from parent (user already has access)
+                    LET has_read_restriction = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._to == child_record._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+
+                    LET user_has_direct_permission = LENGTH(
+                        FOR perm IN permission
+                            FILTER perm._from == user_from
+                            FILTER perm._to == child_record._id
+                            LIMIT 1
+                            RETURN 1
+                    ) > 0
+
+                    FILTER has_read_restriction == false OR user_has_direct_permission == true
+
+                    RETURN child_record
+        )
+
         // Combine all record sources and deduplicate
         LET accessible_records = UNION_DISTINCT(
             rg_inherited_records,
             user_direct_records,
             user_group_records,
-            user_org_records
+            user_org_records,
+            nested_records_via_parent
         )
 
         // ========== CHILDREN TRAVERSAL & INTERSECTION (for recordGroup/kb/record/folder parents) ==========
@@ -6261,7 +12925,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN {{
                     id: rg._key,
                     name: rg.groupName,
-                    nodeType: "recordGroup",
+                    nodeType: (rg.groupType == "KB" || rg.connectorName == "KB") ? "kb" : "recordGroup",
                     parentId: rg.parentId,
                     origin: rg.connectorName == "KB" ? "KB" : "CONNECTOR",
                     connector: rg.connectorName,
@@ -7126,6 +13790,654 @@ class ArangoHTTPProvider(IGraphDBProvider):
             # self.logger.error(f"Failed to get filter options: {e}")
             return {"kbs": [], "apps": []}
 
+    async def check_record_access_with_details(
+        self,
+        user_id: str,
+        org_id: str,
+        record_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Check record access and return record details if accessible.
+
+        Args:
+            user_id (str): User ID (userId field value)
+            org_id (str): Organization ID
+            record_id (str): Record ID to check access for
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[Dict]: Record details with permissions if accessible, None otherwise
+        """
+        try:
+            self.logger.info(f"🚀 Checking record access for user {user_id}, record {record_id}")
+
+            # Get user document to verify user exists
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return None
+
+            # Get user's accessible apps and extract connector IDs (_key)
+            # Note: _get_user_app_ids accepts external userId and converts to user_key internally
+            user_apps_ids = await self._get_user_app_ids(user_id)
+
+            # Build app record filter for connector records
+            app_record_filter = 'FILTER record.origin != "CONNECTOR" OR record.connectorId IN @user_apps_ids'
+
+            # First check access and get permission paths
+            access_query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+            LET recordDoc = DOCUMENT(CONCAT(@records, '/', @recordId))
+            LET kb = FIRST(
+                FOR k IN 1..1 OUTBOUND recordDoc._id @@belongs_to
+                RETURN k
+            )
+            LET directAccessPermissionEdge = (
+                FOR record, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
+                RETURN {{
+                    type: 'DIRECT',
+                    source: userDoc,
+                    role: edge.role
+                }}
+            )
+            LET groupAccessPermissionEdge = (
+                FOR group, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+                FOR record, permEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
+                RETURN {{
+                    type: 'GROUP',
+                    source: group,
+                    role: permEdge.role
+                }}
+            )
+            LET recordGroupAccess = (
+                // Hop 1: User -> Group
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                // Hop 2: Group -> RecordGroup
+                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                FILTER groupToRecordGroupEdge.type == 'GROUP' or groupToRecordGroupEdge.type == 'ROLE'
+
+                // Hop 3: RecordGroup -> Record
+                FOR record, recordGroupToRecordEdge IN 1..1 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
+
+                RETURN {{
+                    type: 'RECORD_GROUP',
+                    source: recordGroup,
+                    role: groupToRecordGroupEdge.role
+                }}
+            )
+            LET inheritedRecordGroupAccess = (
+                // Hop 1: User -> Group (permission)
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                // Hop 2: Group -> Parent RecordGroup (permission)
+                FOR parentRecordGroup, groupToRgEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    FILTER groupToRgEdge.type == 'GROUP' or groupToRgEdge.type == 'ROLE'
+
+                // Hop 3: Parent RecordGroup -> Child RecordGroup (inherit_permissions)
+                FOR childRecordGroup, rgToRgEdge IN 1..1 INBOUND parentRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+
+                // Hop 4: Child RecordGroup -> Record (inherit_permissions)
+                FOR record, childRgToRecordEdge IN 1..1 INBOUND childRecordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                    FILTER record._key == @recordId
+                    {app_record_filter}
+
+                    RETURN {{
+                        type: 'NESTED_RECORD_GROUP',
+                        source: childRecordGroup,
+                        role: groupToRgEdge.role
+                    }}
+            )
+            LET directUserToRecordGroupAccess = (
+                // Direct user -> record_group permission (with nested record groups support)
+                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                    // Record group -> nested record groups (0 to 5 levels) -> record
+                    FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                        // Only process if final vertex is the target record
+                        FILTER record._key == @recordId
+                        FILTER IS_SAME_COLLECTION("records", record)
+                        {app_record_filter}
+
+                        LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+
+                        RETURN {{
+                            type: 'DIRECT_USER_RECORD_GROUP',
+                            source: recordGroup,
+                            role: userToRgEdge.role,
+                            depth: LENGTH(path.edges)
+                        }}
+            )
+            LET orgAccessPermissionEdge = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR record, permEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                FILTER record._key == @recordId
+                {app_record_filter}
+                RETURN {{
+                    type: 'ORGANIZATION',
+                    source: org,
+                    role: permEdge.role
+                }}
+            )
+            LET orgRecordGroupAccess = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                    FILTER belongsEdge.entityType == 'ORGANIZATION'
+
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER orgToRgEdge.type == 'ORG'
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER record._key == @recordId
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            {app_record_filter}
+
+                            LET finalEdge = LENGTH(path.edges) > 0 ? path.edges[LENGTH(path.edges) - 1] : edge
+
+                            RETURN {{
+                                type: 'ORG_RECORD_GROUP',
+                                source: recordGroup,
+                                role: orgToRgEdge.role,
+                                depth: LENGTH(path.edges)
+                            }}
+            )
+            LET kbDirectAccess = kb ? (
+                FOR permEdge IN @@permission
+                    FILTER permEdge._from == userDoc._id AND permEdge._to == kb._id
+                    FILTER permEdge.type == "USER"
+                    LIMIT 1
+                    LET parentFolder = FIRST(
+                        FOR parent, relEdge IN 1..1 INBOUND recordDoc._id @@record_relations
+                            FILTER relEdge.relationshipType == 'PARENT_CHILD'
+                            FILTER PARSE_IDENTIFIER(parent._id).collection == @files
+                            RETURN parent
+                    )
+                    RETURN {{
+                        type: 'KNOWLEDGE_BASE',
+                        source: kb,
+                        role: permEdge.role,
+                        folder: parentFolder
+                    }}
+            ) : []
+            LET kbTeamAccess = kb ? (
+                // Check team-based KB access: User -> Team -> KB
+                LET role_priority = {{
+                    "OWNER": 4,
+                    "WRITER": 3,
+                    "READER": 2,
+                    "COMMENTER": 1
+                }}
+                LET team_roles = (
+                    FOR kb_team_perm IN @@permission
+                        FILTER kb_team_perm._to == kb._id
+                        FILTER kb_team_perm.type == "TEAM"
+                        LET team_id = PARSE_IDENTIFIER(kb_team_perm._from).key
+                        // Check if user is a member of this team
+                        FOR user_team_perm IN @@permission
+                            FILTER user_team_perm._from == userDoc._id
+                            FILTER user_team_perm._to == CONCAT('teams/', team_id)
+                            FILTER user_team_perm.type == "USER"
+                            RETURN {{
+                                role: user_team_perm.role,
+                                priority: role_priority[user_team_perm.role]
+                            }}
+                )
+                LET highest_role = LENGTH(team_roles) > 0 ? FIRST(
+                    FOR r IN team_roles
+                        SORT r.priority DESC
+                        LIMIT 1
+                        RETURN r.role
+                ) : null
+                FILTER highest_role != null
+                LET parentFolder = FIRST(
+                    FOR parent, relEdge IN 1..1 INBOUND recordDoc._id @@record_relations
+                        FILTER relEdge.relationshipType == 'PARENT_CHILD'
+                        FILTER PARSE_IDENTIFIER(parent._id).collection == @files
+                        RETURN parent
+                )
+                RETURN {{
+                    type: 'KNOWLEDGE_BASE_TEAM',
+                    source: kb,
+                    role: highest_role,
+                    folder: parentFolder
+                }}
+            ) : []
+            LET kbAccess = UNION_DISTINCT(kbDirectAccess, kbTeamAccess)
+            LET anyoneAccess = (
+                FOR records IN @@anyone
+                FILTER records.organization == @orgId
+                    AND records.file_key == @recordId
+                RETURN {{
+                    type: 'ANYONE',
+                    source: null,
+                    role: records.role
+                }}
+            )
+            LET allAccess = UNION_DISTINCT(
+                directAccessPermissionEdge,
+                recordGroupAccess,
+                groupAccessPermissionEdge,
+                inheritedRecordGroupAccess,
+                directUserToRecordGroupAccess,
+                orgAccessPermissionEdge,
+                orgRecordGroupAccess,
+                kbAccess,
+                anyoneAccess
+            )
+            RETURN LENGTH(allAccess) > 0 ? allAccess : null
+            """
+
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "recordId": record_id,
+                "user_apps_ids": user_apps_ids,
+                "@users": CollectionNames.USERS.value,
+                "records": CollectionNames.RECORDS.value,
+                "files": CollectionNames.FILES.value,
+                "@anyone": CollectionNames.ANYONE.value,
+                "@belongs_to": CollectionNames.BELONGS_TO.value,
+                "@permission": CollectionNames.PERMISSION.value,
+                "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+            }
+
+            results = await self.http_client.execute_aql(
+                access_query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+            access_result = next(iter(results), None) if results else None
+
+            if not access_result:
+                return None
+
+            # If we have access, get the complete record details
+            record = await self.get_document(record_id, CollectionNames.RECORDS.value, transaction)
+            if not record:
+                return None
+
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                return None
+
+            # Get file or mail details based on record type
+            additional_data = None
+            if record.get("recordType") == RecordTypes.FILE.value:
+                additional_data = await self.get_document(
+                    record_id, CollectionNames.FILES.value, transaction
+                )
+            elif record.get("recordType") == RecordTypes.MAIL.value:
+                additional_data = await self.get_document(
+                    record_id, CollectionNames.MAILS.value, transaction
+                )
+                if additional_data and user.get("email"):
+                    message_id = record.get("externalRecordId")
+                    additional_data["webUrl"] = (
+                        f"https://mail.google.com/mail?authuser={user['email']}#all/{message_id}"
+                    )
+            elif record.get("recordType") == RecordTypes.TICKET.value:
+                additional_data = await self.get_document(
+                    record_id, CollectionNames.TICKETS.value, transaction
+                )
+
+            # Get metadata
+            metadata_query = f"""
+            LET record = DOCUMENT(CONCAT('{CollectionNames.RECORDS.value}/', @recordId))
+
+            LET departments = (
+                FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                RETURN {{
+                    id: dept._key,
+                    name: dept.departmentName
+                }}
+            )
+
+            LET categories = (
+                FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(cat._id).collection == '{CollectionNames.CATEGORIES.value}'
+                RETURN {{
+                    id: cat._key,
+                    name: cat.name
+                }}
+            )
+
+            LET subcategories1 = (
+                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES1.value}'
+                RETURN {{
+                    id: subcat._key,
+                    name: subcat.name
+                }}
+            )
+
+            LET subcategories2 = (
+                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES2.value}'
+                RETURN {{
+                    id: subcat._key,
+                    name: subcat.name
+                }}
+            )
+
+            LET subcategories3 = (
+                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES3.value}'
+                RETURN {{
+                    id: subcat._key,
+                    name: subcat.name
+                }}
+            )
+
+            LET topics = (
+                FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                RETURN {{
+                    id: topic._key,
+                    name: topic.name
+                }}
+            )
+
+            LET languages = (
+                FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                RETURN {{
+                    id: lang._key,
+                    name: lang.name
+                }}
+            )
+
+            RETURN {{
+                departments: departments,
+                categories: categories,
+                subcategories1: subcategories1,
+                subcategories2: subcategories2,
+                subcategories3: subcategories3,
+                topics: topics,
+                languages: languages
+            }}
+            """
+            metadata_results = await self.http_client.execute_aql(
+                metadata_query,
+                bind_vars={"recordId": record_id},
+                txn_id=transaction
+            )
+            metadata_result = next(iter(metadata_results), None) if metadata_results else None
+
+            # Get knowledge base info if record is in a KB
+            kb_info = None
+            folder_info = None
+            for access in access_result:
+                if access.get("type") in ["KNOWLEDGE_BASE", "KNOWLEDGE_BASE_TEAM"]:
+                    kb = access.get("source")
+                    if kb:
+                        kb_info = {
+                            "id": kb.get("_key") or kb.get("id"),
+                            "name": kb.get("groupName"),
+                            "orgId": kb.get("orgId"),
+                        }
+                    if access.get("folder"):
+                        folder = access.get("folder")
+                        folder_info = {
+                            "id": folder.get("_key") or folder.get("id"),
+                            "name": folder.get("name")
+                        }
+                    break
+
+            # Format permissions from access paths
+            # Select the highest permission from all access paths (matching neo4j)
+            role_priority = {
+                "OWNER": 6,
+                "ORGANIZER": 5,
+                "FILEORGANIZER": 4,
+                "WRITER": 3,
+                "COMMENTER": 2,
+                "READER": 1,
+            }
+
+            best_access = max(
+                access_result,
+                key=lambda a: role_priority.get(a.get("role", ""), 0)
+            )
+
+            permissions = [{
+                "id": record.get("id") or record.get("_key"),
+                "name": record.get("recordName"),
+                "type": record.get("recordType"),
+                "relationship": best_access.get("role"),
+                "accessType": best_access.get("type"),
+            }]
+
+            return {
+                "record": {
+                    **record,
+                    "fileRecord": (
+                        additional_data
+                        if record.get("recordType") == RecordTypes.FILE.value
+                        else None
+                    ),
+                    "mailRecord": (
+                        additional_data
+                        if record.get("recordType") == RecordTypes.MAIL.value
+                        else None
+                    ),
+                    "ticketRecord": (
+                        additional_data
+                        if record.get("recordType") == RecordTypes.TICKET.value
+                        else None
+                    ),
+                },
+                "knowledgeBase": kb_info,
+                "folder": folder_info,
+                "metadata": metadata_result,
+                "permissions": permissions,
+            }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to check record access: {str(e)}")
+            raise
+
+    async def get_account_type(
+        self,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Get account type for an organization.
+
+        Args:
+            org_id (str): Organization ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[str]: Account type (e.g., "INDIVIDUAL", "ENTERPRISE") or None
+        """
+        try:
+            self.logger.info(f"🚀 Getting account type for organization {org_id}")
+
+            query = f"""
+            FOR org IN {CollectionNames.ORGS.value}
+                FILTER org._key == @org_id
+                RETURN org.accountType
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"org_id": org_id},
+                txn_id=transaction
+            )
+
+            if results:
+                account_type = results[0]
+                self.logger.info(f"✅ Found account type: {account_type}")
+                return account_type
+            else:
+                self.logger.warning(f"⚠️ Organization not found: {org_id}")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get account type: {str(e)}")
+            return None
+
+    async def get_connector_stats(
+        self,
+        org_id: str,
+        connector_id: str,
+        transaction: Optional[str] = None
+    ) -> Dict:
+        """
+        Get connector statistics for a specific connector.
+
+        Args:
+            org_id (str): Organization ID
+            connector_id (str): Connector ID
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Dict: Statistics data with success status
+        """
+        try:
+            self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
+
+            query = f"""
+            LET org_id = @org_id
+            LET connector = FIRST(
+                FOR doc IN {CollectionNames.APPS.value}
+                    FILTER doc._key == @connector_id
+                    RETURN doc
+            )
+
+            LET records = (
+                FOR doc IN {CollectionNames.RECORDS.value}
+                    FILTER doc.orgId == org_id
+                    FILTER doc.origin == "CONNECTOR"
+                    FILTER doc.connectorId == @connector_id
+                    FILTER doc.recordType != @drive_record_type
+                    FILTER doc.isDeleted != true
+
+                    LET targetDoc = FIRST(
+                        FOR v IN 1..1 OUTBOUND doc._id {CollectionNames.IS_OF_TYPE.value}
+                            LIMIT 1
+                            RETURN v
+                    )
+
+                    FILTER targetDoc == null OR NOT IS_SAME_COLLECTION("files", targetDoc._id) OR targetDoc.isFile == true
+                    RETURN doc
+            )
+
+            LET total_stats = {{
+                total: LENGTH(records),
+                indexingStatus: {{
+                    NOT_STARTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                    IN_PROGRESS: LENGTH(records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                    COMPLETED: LENGTH(records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                    FAILED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                    FILE_TYPE_NOT_SUPPORTED: LENGTH(records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                    AUTO_INDEX_OFF: LENGTH(records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                    ENABLE_MULTIMODAL_MODELS: LENGTH(records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                    EMPTY: LENGTH(records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                    QUEUED: LENGTH(records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                    PAUSED: LENGTH(records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                }}
+            }}
+
+            LET by_record_type = (
+                FOR record_type IN UNIQUE(records[*].recordType)
+                    FILTER record_type != null
+                    LET type_records = records[* FILTER CURRENT.recordType == record_type]
+                    RETURN {{
+                        recordType: record_type,
+                        total: LENGTH(type_records),
+                        indexingStatus: {{
+                            NOT_STARTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "NOT_STARTED"]),
+                            IN_PROGRESS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "IN_PROGRESS"]),
+                            COMPLETED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "COMPLETED"]),
+                            FAILED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FAILED"]),
+                            FILE_TYPE_NOT_SUPPORTED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "FILE_TYPE_NOT_SUPPORTED"]),
+                            AUTO_INDEX_OFF: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "AUTO_INDEX_OFF"]),
+                            ENABLE_MULTIMODAL_MODELS: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "ENABLE_MULTIMODAL_MODELS"]),
+                            EMPTY: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "EMPTY"]),
+                            QUEUED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "QUEUED"]),
+                            PAUSED: LENGTH(type_records[* FILTER CURRENT.indexingStatus == "PAUSED"]),
+                        }}
+                    }}
+            )
+
+            RETURN {{
+                orgId: org_id,
+                connectorId: @connector_id,
+                origin: "CONNECTOR",
+                stats: total_stats,
+                byRecordType: by_record_type
+            }}
+            """
+
+            from app.config.constants.arangodb import RecordTypes
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={
+                    "org_id": org_id,
+                    "connector_id": connector_id,
+                    "drive_record_type": RecordTypes.DRIVE.value
+                },
+                txn_id=transaction
+            )
+
+            if results and results[0]:
+                self.logger.info(f"✅ Retrieved stats for connector {connector_id}")
+                return {
+                    "success": True,
+                    "data": results[0]
+                }
+            else:
+                self.logger.warning(f"⚠️ No data found for connector: {connector_id}")
+                return {
+                    "success": False,
+                    "message": "No data found for the specified connector",
+                    "data": {
+                        "org_id": org_id,
+                        "connector_id": connector_id,
+                        "origin": "CONNECTOR",
+                        "stats": {
+                            "total": 0,
+                            "indexingStatus": {
+                                "NOT_STARTED": 0,
+                                "IN_PROGRESS": 0,
+                                "COMPLETED": 0,
+                                "FAILED": 0,
+                                "FILE_TYPE_NOT_SUPPORTED": 0,
+                                "AUTO_INDEX_OFF": 0,
+                                "ENABLE_MULTIMODAL_MODELS": 0,
+                                "EMPTY": 0,
+                                "QUEUED": 0,
+                                "PAUSED": 0,
+                            }
+                        },
+                        "byRecordType": []
+                    }
+                }
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get connector stats: {str(e)}")
+            return {
+                "success": False,
+                "message": str(e),
+                "data": None
+            }
+
     def _get_app_children_subquery(self, app_id: str, org_id: str, user_key: str) -> Tuple[str, Dict[str, Any]]:
         """Generate AQL sub-query to fetch RecordGroups for an App.
 
@@ -7680,7 +14992,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 AND record.isDeleted != true
                 AND record.orgId == @org_id
 
-                // Use permission role helper for records (unified for KB and Connector)
+                // Check if child has READ restrictions (any permission edges pointing to this record)
+                // This determines whether the child has explicit page-level permissions
+                LET has_read_restriction = LENGTH(
+                    FOR perm IN permission
+                        FILTER perm._to == record._id
+                        FILTER perm.role == "READER" OR perm.role == "OWNER" OR perm.role == "WRITER" OR perm.role == "EDITOR"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+
+                // Use permission role helper for records (checks all 10 paths including direct)
                 {record_permission_role_aql}
 
                 // Normalize permission_role: handle both array and string cases
@@ -7688,7 +15010,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     ? (LENGTH(permission_role) > 0 ? permission_role[0] : null)
                     : permission_role
 
-                FILTER normalized_role != null AND normalized_role != ""
+                LET effective_role = has_read_restriction
+                    ? normalized_role
+                    : (normalized_role != null AND normalized_role != "" ? normalized_role : "READER")
+
+                FILTER effective_role != null AND effective_role != ""
 
                 // Get file info for folder detection
                 LET file_info = FIRST(
@@ -7731,7 +15057,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     webUrl: record.webUrl,
                     hasChildren: has_children,
                     previewRenderable: record.previewRenderable != null ? record.previewRenderable : true,
-                    userRole: normalized_role
+                    userRole: effective_role
                 }}
         )
         """
@@ -8708,3 +16034,1614 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check if record is folder: {e}")
             return False
 
+    # ==================== Duplicate Detection & Relationship Management ====================
+
+    async def find_duplicate_records(
+        self,
+        record_key: str,
+        md5_checksum: str,
+        record_type: Optional[str] = None,
+        size_in_bytes: Optional[int] = None,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Find duplicate records based on MD5 checksum.
+        This method queries the RECORDS collection and works for all record types.
+
+        Args:
+            record_key (str): The key of the current record to exclude from results
+            md5_checksum (str): MD5 checksum of the record content
+            record_type (Optional[str]): Optional record type to filter by
+            size_in_bytes (Optional[int]): Optional file size in bytes to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[Dict]: List of duplicate records that match the criteria
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding duplicate records with MD5: {md5_checksum}"
+            )
+
+            # Build query with optional filters
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_key
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_key": record_key,
+            }
+
+            if record_type:
+                query += """
+                AND record.recordType == @record_type
+                """
+                bind_vars["record_type"] = record_type
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            duplicate_records = [r for r in results if r is not None] if results else []
+
+            if duplicate_records:
+                self.logger.info(f"✅ Found {len(duplicate_records)} duplicate record(s)")
+            else:
+                self.logger.info("✅ No duplicate records found")
+
+            return duplicate_records
+
+        except Exception as e:
+            self.logger.error(f"❌ Error finding duplicate records: {str(e)}")
+            return []
+
+    async def find_next_queued_duplicate(
+        self,
+        record_id: str,
+        transaction: Optional[str] = None,
+    ) -> Optional[dict]:
+        """
+        Find the next QUEUED duplicate record with the same md5 hash.
+        Works with all record types by querying the RECORDS collection directly.
+
+        Args:
+            record_id (str): The record ID to use as reference for finding duplicates
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            Optional[dict]: The next queued record if found, None otherwise
+        """
+        try:
+            self.logger.info(
+                f"🔍 Finding next QUEUED duplicate record for record {record_id}"
+            )
+
+            # First get the record info for the reference record
+            record_query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record._key == @record_id
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                record_query,
+                bind_vars={"record_id": record_id},
+                txn_id=transaction
+            )
+
+            ref_record = None
+            if results:
+                try:
+                    ref_record = results[0]
+                except (IndexError, StopIteration):
+                    pass
+
+            if not ref_record:
+                self.logger.info(f"No record found for {record_id}, skipping queued duplicate search")
+                return None
+
+            md5_checksum = ref_record.get("md5Checksum")
+            size_in_bytes = ref_record.get("sizeInBytes")
+
+            if not md5_checksum:
+                self.logger.warning(f"Record {record_id} missing md5Checksum")
+                return None
+
+            # Find the first queued duplicate record directly from RECORDS collection
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.md5Checksum == @md5_checksum
+                AND record._key != @record_id
+                AND record.indexingStatus == @queued_status
+            """
+
+            bind_vars = {
+                "md5_checksum": md5_checksum,
+                "record_id": record_id,
+                "queued_status": "QUEUED"
+            }
+
+            if size_in_bytes is not None:
+                query += """
+                AND record.sizeInBytes == @size_in_bytes
+                """
+                bind_vars["size_in_bytes"] = size_in_bytes
+
+            query += """
+                LIMIT 1
+                RETURN record
+            """
+
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars=bind_vars,
+                txn_id=transaction
+            )
+
+            queued_record = None
+            if results:
+                try:
+                    queued_record = results[0]
+                except (IndexError, StopIteration):
+                    pass
+
+            if queued_record:
+                self.logger.info(
+                    f"✅ Found QUEUED duplicate record: {queued_record.get('_key')}"
+                )
+                return dict(queued_record)
+
+            self.logger.info("✅ No QUEUED duplicate record found")
+            return None
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to find next queued duplicate: {str(e)}"
+            )
+            return None
+
+    async def copy_document_relationships(
+        self,
+        source_key: str,
+        target_key: str,
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Copy all relationships (edges) from source document to target document.
+        This includes departments, categories, subcategories, languages, and topics.
+
+        Args:
+            source_key: Key/ID of the source document
+            target_key: Key/ID of the target document
+            transaction: Optional transaction ID
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            self.logger.info(f"🚀 Copying relationships from {source_key} to {target_key}")
+
+            # Define collections to copy relationships from
+            edge_collections = [
+                CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                CollectionNames.BELONGS_TO_CATEGORY.value,
+                CollectionNames.BELONGS_TO_LANGUAGE.value,
+                CollectionNames.BELONGS_TO_TOPIC.value
+            ]
+
+            source_doc = f"{CollectionNames.RECORDS.value}/{source_key}"
+            target_doc = f"{CollectionNames.RECORDS.value}/{target_key}"
+
+            for collection in edge_collections:
+                # Find all edges from source document
+                query = f"""
+                FOR edge IN {collection}
+                    FILTER edge._from == @source_doc
+                    RETURN {{
+                        from: edge._from,
+                        to: edge._to,
+                        timestamp: edge.createdAtTimestamp
+                    }}
+                """
+
+                bind_vars = {"source_doc": source_doc}
+                edges = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
+
+                if edges:
+                    # Create new edges for target document
+                    for edge in edges:
+                        new_edge = {
+                            "_from": target_doc,
+                            "_to": edge["to"],
+                            "createdAtTimestamp": edge.get("timestamp", get_epoch_timestamp_in_ms())
+                        }
+                        await self.http_client.create_document(
+                            collection,
+                            new_edge,
+                            txn_id=transaction
+                        )
+
+                    self.logger.info(
+                        f"✅ Copied {len(edges)} edges from {collection}"
+                    )
+
+            self.logger.info(f"✅ Successfully copied all relationships from {source_key} to {target_key}")
+            return True
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to copy document relationships: {str(e)}"
+            )
+            return False
+
+    async def get_accessible_records(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: Optional[Dict[str, List[str]]] = None,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Get all records accessible to a user based on their permissions and apply filters.
+
+        Args:
+            user_id (str): The userId field value in users collection
+            org_id (str): The org_id to filter anyone collection
+            filters (Optional[Dict[str, List[str]]]): Optional filters for departments, categories, languages, topics etc.
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: List of accessible records
+        """
+        self.logger.info(
+            f"Getting accessible records for user {user_id} in org {org_id} with filters {filters}"
+        )
+
+        try:
+            user = await self.get_user_by_user_id(user_id)
+            if not user:
+                self.logger.warning(f"User not found for userId: {user_id}")
+                return []
+
+            # Get user's accessible app connector ids (function expects external userId, not user_key)
+            user_apps_ids = await self._get_user_app_ids(user_id)
+
+            # Extract filters
+            filters = filters or {}
+            kb_ids = filters.get("kb") if filters else None
+            connector_ids = filters.get("apps") if filters else None
+
+            # Determine filter case
+            has_kb_filter = kb_ids is not None and len(kb_ids) > 0
+            has_app_filter = connector_ids is not None and len(connector_ids) > 0
+
+            self.logger.info(
+                f"🔍 Filter analysis - KB filter: {has_kb_filter} (IDs: {kb_ids}), "
+                f"App filter: {has_app_filter} (Connector IDs: {connector_ids})"
+            )
+
+            # App filter condition - only filter connector records by user's accessible apps
+            app_filter_condition = '''
+                FILTER (
+                    record.origin == "UPLOAD" OR
+                    (record.origin == "CONNECTOR" AND record.connectorId IN @user_apps_ids)
+                )
+            '''
+
+            # Build base query with common parts
+            query = f"""
+            LET userDoc = FIRST(
+                FOR user IN @@users
+                FILTER user.userId == @userId
+                RETURN user
+            )
+
+
+            // User -> Direct Records (via permission edges)
+            LET directRecords = (
+                FOR record IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Group -> Records (via belongs_to edges)
+            LET groupRecords = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Group -> Records (via permission edges)
+            LET groupRecordsPermissionEdge = (
+                FOR group, edge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Organization -> Records (direct)
+            LET orgRecords = (
+                FOR org, edge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+                FOR record IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                    {app_filter_condition}
+                    RETURN DISTINCT record
+            )
+
+            // User -> Organization -> RecordGroup -> Records (direct and inherited)
+            LET orgRecordGroupRecords = (
+                FOR org, belongsEdge IN 1..1 ANY userDoc._id {CollectionNames.BELONGS_TO.value}
+
+                    FOR recordGroup, orgToRgEdge IN 1..1 ANY org._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                        FOR record, edge, path IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                            FILTER IS_SAME_COLLECTION("records", record)
+                            {app_filter_condition}
+                            RETURN DISTINCT record
+            )
+
+            // User -> Group/Role -> RecordGroup -> Record
+            LET recordGroupRecords = (
+
+                FOR group, userToGroupEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("groups", group) OR IS_SAME_COLLECTION("roles", group)
+
+                FOR recordGroup, groupToRecordGroupEdge IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
+
+                // Support nested RecordGroups (0..5 levels)
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
+                RETURN DISTINCT record
+            )
+
+            // User -> Group/Role -> RecordGroup -> Records (inherited)
+            LET inheritedRecordGroupRecords = (
+                FOR recordGroup, userToRgEdge IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                FILTER IS_SAME_COLLECTION("recordGroups", recordGroup)
+
+                FOR record, edge, path IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
+                FILTER IS_SAME_COLLECTION("records", record)
+                {app_filter_condition}
+                RETURN DISTINCT record
+            )
+
+            LET directAndGroupRecords = UNION_DISTINCT(
+                directRecords,
+                groupRecords,
+                orgRecords,
+                groupRecordsPermissionEdge,
+                recordGroupRecords,
+                inheritedRecordGroupRecords,
+                orgRecordGroupRecords
+            )
+
+            LET anyoneRecords = (
+                FOR records IN @@anyone
+                    FILTER records.organization == @orgId
+                    FOR record IN @@records
+                        FILTER record != null AND record._key == records.file_key
+                        {app_filter_condition}
+                        RETURN record
+            )
+            """
+
+            unions = []
+
+            # Case 1: Both KB and App filters applied
+            if has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 1: Both KB and App filters applied")
+
+                # Get KB records with filter
+                query += f"""
+                // Direct user-KB permissions
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+                """
+                unions.append("kbRecords")
+
+                # Get app-filtered records from direct, group, org, and anyone
+                query += """
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER record.connectorId IN @connector_ids
+                        RETURN DISTINCT record
+                )
+                """
+                unions.append("appFilteredRecords")
+
+            # Case 2: Only KB filter applied
+            elif has_kb_filter and not has_app_filter:
+                self.logger.info("🔍 Case 2: Only KB filter applied")
+
+                # Get only filtered KB records
+                query += f"""
+                // Direct user-KB permissions with filter
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                // Team-based KB permissions with filter: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                        FILTER kb._key IN @kb_ids
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+                """
+                unions.append("kbRecords")
+
+            # Case 3: Only App filter applied
+            elif not has_kb_filter and has_app_filter:
+                self.logger.info("🔍 Case 3: Only App filter applied")
+
+                # Get app-filtered records from direct, group, org, and anyone
+                query += """
+                LET baseAccessible = UNION_DISTINCT(directAndGroupRecords, anyoneRecords)
+                LET appFilteredRecords = (
+                    FOR record IN baseAccessible
+                        FILTER record.connectorId IN @connector_ids
+                        RETURN DISTINCT record
+                )
+                """
+                unions.append("appFilteredRecords")
+
+            # Case 4: No KB or App filters - return all accessible records
+            else:
+                self.logger.info("🔍 Case 4: No KB or App filters - returning all accessible records")
+
+                # Get all KB records
+                query += f"""
+                // Direct user-KB permissions
+                LET directKbRecords = (
+                    FOR kb IN 1..1 ANY userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                // Team-based KB permissions: User -> Team -> KB -> Records
+                LET teamKbRecords = (
+                    FOR team, userTeamEdge IN 1..1 OUTBOUND userDoc._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("teams", team)
+                        FILTER userTeamEdge.type == "USER"
+                    FOR kb, teamKbEdge IN 1..1 OUTBOUND team._id {CollectionNames.PERMISSION.value}
+                        FILTER IS_SAME_COLLECTION("recordGroups", kb)
+                        FILTER teamKbEdge.type == "TEAM"
+                    FOR records IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
+                    RETURN DISTINCT records
+                )
+
+                LET kbRecords = UNION_DISTINCT(directKbRecords, teamKbRecords)
+
+                """
+                unions.append("kbRecords")
+                unions.append("directAndGroupRecords")
+                unions.append("anyoneRecords")
+
+            # Combine all unions
+            if len(unions) == 1:
+                query += f"""
+                LET allAccessibleRecords = {unions[0]}
+                """
+            else:
+                query += f"""
+                LET allAccessibleRecords = UNION_DISTINCT({", ".join(unions)})
+                """
+
+            # Add additional filter conditions (departments, categories, etc.)
+            filter_conditions = []
+            if filters:
+                if filters.get("departments"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR dept IN OUTBOUND record._id {CollectionNames.BELONGS_TO_DEPARTMENT.value}
+                        FILTER dept.departmentName IN @departmentNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("categories"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER cat.name IN @categoryNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories1"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat1Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories2"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat2Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("subcategories3"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                        FILTER subcat.name IN @subcat3Names
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("languages"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                        FILTER lang.name IN @languageNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+                if filters.get("topics"):
+                    filter_conditions.append(
+                        f"""
+                    LENGTH(
+                        FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                        FILTER topic.name IN @topicNames
+                        LIMIT 1
+                        RETURN 1
+                    ) > 0
+                    """
+                    )
+
+            # Apply additional filters if any
+            if filter_conditions:
+                query += (
+                    """
+                FOR record IN allAccessibleRecords
+                    FILTER """
+                    + " AND ".join(filter_conditions)
+                    + """
+                    RETURN DISTINCT record
+                """
+                )
+            else:
+                query += """
+                RETURN allAccessibleRecords
+                """
+
+            # Prepare bind variables
+            bind_vars = {
+                "userId": user_id,
+                "orgId": org_id,
+                "user_apps_ids": user_apps_ids,
+                "@users": CollectionNames.USERS.value,
+                "@records": CollectionNames.RECORDS.value,
+                "@anyone": CollectionNames.ANYONE.value,
+            }
+
+            # Add conditional bind variables
+            if has_kb_filter:
+                bind_vars["kb_ids"] = kb_ids
+
+            if has_app_filter:
+                bind_vars["connector_ids"] = connector_ids
+
+            # Add filter bind variables
+            if filters:
+                if filters.get("departments"):
+                    bind_vars["departmentNames"] = filters["departments"]
+                if filters.get("categories"):
+                    bind_vars["categoryNames"] = filters["categories"]
+                if filters.get("subcategories1"):
+                    bind_vars["subcat1Names"] = filters["subcategories1"]
+                if filters.get("subcategories2"):
+                    bind_vars["subcat2Names"] = filters["subcategories2"]
+                if filters.get("subcategories3"):
+                    bind_vars["subcat3Names"] = filters["subcategories3"]
+                if filters.get("languages"):
+                    bind_vars["languageNames"] = filters["languages"]
+                if filters.get("topics"):
+                    bind_vars["topicNames"] = filters["topics"]
+
+            # Execute query
+            self.logger.debug(f"🔍 Executing query with bind_vars keys: {list(bind_vars.keys())}")
+            result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
+
+            # Log results
+            record_count = 0
+            if result:
+                if isinstance(result[0], list):
+                    record_count = len(result[0])
+                    result = result[0]
+                else:
+                    record_count = len(result)
+
+            self.logger.info(f"✅ Query completed - found {record_count} accessible records")
+
+            if has_kb_filter:
+                self.logger.info(f"✅ KB filtering applied for {len(kb_ids)} KBs")
+            if has_app_filter:
+                self.logger.info(
+                    f"✅ App filtering applied for {len(connector_ids)} connector IDs"
+                )
+            if not has_kb_filter and not has_app_filter:
+                self.logger.info("✅ No KB/App filters - returned all accessible records")
+
+            return result if result else []
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to get accessible records: {str(e)}")
+            raise
+
+    async def get_records_by_virtual_record_id(
+        self,
+        virtual_record_id: str,
+        accessible_record_ids: Optional[List[str]] = None,
+        transaction: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get all record keys that have the given virtualRecordId.
+        Optionally filter by a list of record IDs.
+
+        Args:
+            virtual_record_id (str): Virtual record ID to look up
+            accessible_record_ids (Optional[List[str]]): Optional list of record IDs to filter by
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: List of record keys that match the criteria
+        """
+        try:
+            self.logger.info(
+                "🔍 Finding records with virtualRecordId: %s", virtual_record_id
+            )
+
+            # Base query
+            query = f"""
+            FOR record IN {CollectionNames.RECORDS.value}
+                FILTER record.virtualRecordId == @virtual_record_id
+            """
+
+            # Add optional filter for record IDs
+            if accessible_record_ids:
+                query += """
+                AND record._key IN @accessible_record_ids
+                """
+
+            query += """
+                RETURN record._key
+            """
+
+            bind_vars = {"virtual_record_id": virtual_record_id}
+            if accessible_record_ids:
+                bind_vars["accessible_record_ids"] = accessible_record_ids
+
+            results = await self.http_client.execute_aql(query, bind_vars, transaction)
+
+            # Extract record keys from results
+            record_keys = [result for result in results if result]
+
+            self.logger.info(
+                "✅ Found %d records with virtualRecordId %s",
+                len(record_keys),
+                virtual_record_id
+            )
+            return record_keys
+
+        except Exception as e:
+            self.logger.error(
+                "❌ Error finding records with virtualRecordId %s: %s",
+                virtual_record_id,
+                str(e)
+            )
+            return []
+
+    # ==================== Team Operations ====================
+
+    async def get_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 10,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get teams for an organization with pagination, search, members, and permissions.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = "FILTER LOWER(team.name) LIKE @search"
+
+            # Query to get teams with current user's permission and team members
+            teams_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            {search_filter}
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            SORT team.createdAtTimestamp DESC
+            LIMIT @offset, @limit
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            # Count total teams for pagination
+            count_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            # Get total count
+            count_params = {"orgId": org_id}
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get teams with pagination
+            teams_params = {
+                "orgId": org_id,
+                "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                teams_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(teams_query, bind_vars=teams_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
+            return [], 0
+
+    async def get_team_with_users(
+        self,
+        team_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get a single team with its members and permissions.
+        """
+        try:
+            team_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team._key == @teamId
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            result_list = await self.execute_query(
+                team_query,
+                bind_vars={
+                    "teamId": team_id,
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                },
+                transaction=transaction
+            )
+            return result_list[0] if result_list else None
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_with_users: {str(e)}", exc_info=True)
+            return None
+
+    async def get_user_teams(
+        self,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get all teams that a user is a member of.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
+
+            # Query to get all teams user is a member of with pagination
+            user_teams_query = f"""
+            FOR permission IN @@permission_collection
+            FILTER permission._from == @userId
+            LET team = DOCUMENT(permission._to)
+            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            {search_filter}
+            SORT team.createdAtTimestamp DESC
+            LIMIT @offset, @limit
+            LET team_members = (
+                FOR member_permission IN @@permission_collection
+                FILTER member_permission._to == team._id
+                LET member_user = DOCUMENT(member_permission._from)
+                FILTER member_user != null
+                RETURN {{
+                    "id": member_user._key,
+                    "userId": member_user.userId,
+                    "userName": member_user.fullName,
+                    "userEmail": member_user.email,
+                    "role": member_permission.role,
+                    "joinedAt": member_permission.createdAtTimestamp,
+                    "isOwner": member_permission.role == "OWNER"
+                }}
+            )
+            LET member_count = LENGTH(team_members)
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": permission,
+                "members": team_members,
+                "memberCount": member_count,
+                "canEdit": permission.role IN ["OWNER"],
+                "canDelete": permission.role == "OWNER",
+                "canManageMembers": permission.role IN ["OWNER"]
+            }}
+            """
+
+            # Count query for pagination
+            count_query = f"""
+            FOR permission IN @@permission_collection
+            FILTER permission._from == @userId
+            LET team = DOCUMENT(permission._to)
+            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            # Get total count
+            count_params = {
+                "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                "@permission_collection": CollectionNames.PERMISSION.value,
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/"
+            }
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get teams with pagination
+            teams_params = {
+                "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                "@permission_collection": CollectionNames.PERMISSION.value,
+                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                teams_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(user_teams_query, bind_vars=teams_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
+            return [], 0
+
+    async def get_user_created_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get all teams created by a user.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = "FILTER (LOWER(team.name) LIKE @search OR LOWER(team.description) LIKE @search)"
+
+            # Optimized query: Batch fetch team members instead of per-team DOCUMENT() calls
+            created_teams_query = f"""
+            // Get teams first
+            LET teams = (
+                FOR team IN {CollectionNames.TEAMS.value}
+                    FILTER team.orgId == @orgId
+                    FILTER team.createdBy == @userKey
+                    {search_filter}
+                    SORT team.createdAtTimestamp DESC
+                    LIMIT @offset, @limit
+                    RETURN team
+            )
+
+            // Batch fetch all team IDs
+            LET team_ids = teams[*]._id
+
+            // Batch fetch all permissions for these teams
+            LET all_permissions = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to IN team_ids
+                    RETURN permission
+            )
+
+            // Batch fetch all user IDs from permissions
+            LET user_ids = UNIQUE(all_permissions[* FILTER STARTS_WITH(CURRENT._from, "users/")]._from)
+
+            // Batch fetch all users
+            LET all_users = (
+                FOR user_id IN user_ids
+                    LET user = DOCUMENT(user_id)
+                    FILTER user != null
+                    RETURN {{
+                        _id: user._id,
+                        _key: user._key,
+                        userId: user.userId,
+                        fullName: user.fullName,
+                        email: user.email
+                    }}
+            )
+
+            // Build result with members grouped by team
+            FOR team IN teams
+                LET current_user_permission = FIRST(
+                    FOR perm IN all_permissions
+                        FILTER perm._from == @currentUserId AND perm._to == team._id
+                        RETURN perm
+                )
+                LET team_members = (
+                    FOR permission IN all_permissions
+                        FILTER permission._to == team._id
+                        LET user = FIRST(FOR u IN all_users FILTER u._id == permission._from RETURN u)
+                        FILTER user != null
+                        RETURN {{
+                            "id": user._key,
+                            "userId": user.userId,
+                            "userName": user.fullName,
+                            "userEmail": user.email,
+                            "role": permission.role,
+                            "joinedAt": permission.createdAtTimestamp,
+                            "isOwner": permission.role == "OWNER"
+                        }}
+                )
+                RETURN {{
+                    "id": team._key,
+                    "name": team.name,
+                    "description": team.description,
+                    "createdBy": team.createdBy,
+                    "orgId": team.orgId,
+                    "createdAtTimestamp": team.createdAtTimestamp,
+                    "updatedAtTimestamp": team.updatedAtTimestamp,
+                    "currentUserPermission": current_user_permission,
+                    "members": team_members,
+                    "memberCount": LENGTH(team_members),
+                    "canEdit": true,
+                    "canDelete": true,
+                    "canManageMembers": true
+                }}
+            """
+
+            # Count total teams for pagination
+            count_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            FILTER team.createdBy == @userKey
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            count_params = {
+                "orgId": org_id,
+                "userKey": user_key
+            }
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get teams with pagination
+            teams_params = {
+                "orgId": org_id,
+                "userKey": user_key,
+                "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                teams_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(created_teams_query, bind_vars=teams_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
+            return [], 0
+
+    async def get_team_users(
+        self,
+        team_id: str,
+        org_id: str,
+        user_key: str,
+        transaction: Optional[str] = None
+    ) -> Optional[Dict]:
+        """
+        Get all users in a specific team.
+        """
+        try:
+            team_users_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team._key == @teamId AND team.orgId == @orgId
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": permission.role == "OWNER"
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            RETURN {{
+                "id": team._key,
+                "name": team.name,
+                "description": team.description,
+                "createdBy": team.createdBy,
+                "orgId": team.orgId,
+                "createdAtTimestamp": team.createdAtTimestamp,
+                "updatedAtTimestamp": team.updatedAtTimestamp,
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            result_list = await self.execute_query(
+                team_users_query,
+                bind_vars={
+                    "teamId": team_id,
+                    "orgId": org_id,
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                },
+                transaction=transaction
+            )
+            return result_list[0] if result_list else None
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
+            return None
+
+    async def search_teams(
+        self,
+        org_id: str,
+        user_key: str,
+        query: str,
+        limit: int = 10,
+        offset: int = 0,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Search teams by name or description.
+        """
+        try:
+            search_query = f"""
+            FOR team IN {CollectionNames.TEAMS.value}
+            FILTER team.orgId == @orgId
+            FILTER LOWER(team.name) LIKE @query OR LOWER(team.description) LIKE @query
+            LET current_user_permission = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._from == @currentUserId AND permission._to == team._id
+                RETURN permission
+            )
+            LET team_members = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                FILTER permission._to == team._id
+                LET user = DOCUMENT(permission._from)
+                RETURN {{
+                    "id": user._key,
+                    "userId": user.userId,
+                    "userName": user.fullName,
+                    "userEmail": user.email,
+                    "role": permission.role,
+                    "joinedAt": permission.createdAtTimestamp,
+                    "isOwner": user._key == team.createdBy
+                }}
+            )
+            LET user_count = LENGTH(team_members)
+            LIMIT @offset, @limit
+            RETURN {{
+                "team": {{
+                    "id": team._key,
+                    "name": team.name,
+                    "description": team.description,
+                    "createdBy": team.createdBy,
+                    "orgId": team.orgId,
+                    "createdAtTimestamp": team.createdAtTimestamp,
+                    "updatedAtTimestamp": team.updatedAtTimestamp
+                }},
+                "currentUserPermission": LENGTH(current_user_permission) > 0 ? current_user_permission[0] : null,
+                "members": team_members,
+                "memberCount": user_count,
+                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
+                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER",
+                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+            }}
+            """
+
+            result = await self.execute_query(
+                search_query,
+                bind_vars={
+                    "orgId": org_id,
+                    "query": f"%{query.lower()}%",
+                    "limit": limit,
+                    "offset": offset,
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                },
+                transaction=transaction
+            )
+            return result if result else []
+
+        except Exception as e:
+            self.logger.error(f"Error in search_teams: {str(e)}", exc_info=True)
+            return []
+
+    async def delete_team_member_edges(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Delete edges to remove team members.
+        """
+        try:
+            delete_query = f"""
+            FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            FILTER SPLIT(permission._from, '/')[1] IN @userIds
+            REMOVE permission IN {CollectionNames.PERMISSION.value}
+            RETURN OLD
+            """
+
+            deleted_list = await self.execute_query(
+                delete_query,
+                bind_vars={
+                    "userIds": user_ids,
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+                },
+                transaction=transaction
+            )
+            return deleted_list if deleted_list else []
+
+        except Exception as e:
+            self.logger.error(f"Error in delete_team_member_edges: {str(e)}", exc_info=True)
+            return []
+
+    async def batch_update_team_member_roles(
+        self,
+        team_id: str,
+        user_roles: List[Dict[str, str]],
+        timestamp: int,
+        transaction: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Batch update user roles in a team.
+        """
+        try:
+            batch_update_query = f"""
+            FOR user_role IN @user_roles
+                LET user_id = user_role.userId
+                LET new_role = user_role.role
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @team_id
+                    FILTER SPLIT(permission._from, '/')[1] == user_id
+                    UPDATE permission WITH {{
+                        role: new_role,
+                        updatedAtTimestamp: @timestamp
+                    }} IN {CollectionNames.PERMISSION.value}
+                    RETURN {{
+                        _key: NEW._key,
+                        _from: NEW._from,
+                        role: NEW.role,
+                        updatedAt: NEW.updatedAtTimestamp
+                    }}
+            """
+
+            updated_permissions = await self.execute_query(
+                batch_update_query,
+                bind_vars={
+                    "team_id": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "user_roles": user_roles,
+                    "timestamp": timestamp
+                },
+                transaction=transaction
+            )
+            return updated_permissions if updated_permissions else []
+
+        except Exception as e:
+            self.logger.error(f"Error in batch_update_team_member_roles: {str(e)}", exc_info=True)
+            return []
+
+    async def delete_all_team_permissions(
+        self,
+        team_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Delete all permissions for a team.
+        """
+        try:
+            delete_query = f"""
+            FOR permission IN {CollectionNames.PERMISSION.value}
+            FILTER permission._to == @teamId
+            REMOVE permission IN {CollectionNames.PERMISSION.value}
+            RETURN OLD
+            """
+
+            await self.execute_query(
+                delete_query,
+                bind_vars={"teamId": f"{CollectionNames.TEAMS.value}/{team_id}"},
+                transaction=transaction
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error in delete_all_team_permissions: {str(e)}", exc_info=True)
+            raise
+
+    async def get_team_owner_removal_info(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get information about owners being removed and total owner count for a team.
+        """
+        try:
+            query = f"""
+            LET owners_being_removed = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER SPLIT(permission._from, '/')[1] IN @userIds
+                    FILTER permission.role == 'OWNER'
+                    RETURN SPLIT(permission._from, '/')[1]
+            )
+            LET total_owner_count = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER permission.role == 'OWNER'
+                    COLLECT WITH COUNT INTO count
+                    RETURN count
+            )
+            RETURN {{
+                ownersBeingRemoved: owners_being_removed,
+                totalOwnerCount: LENGTH(total_owner_count) > 0 ? total_owner_count[0] : 0
+            }}
+            """
+
+            result = await self.execute_query(
+                query,
+                bind_vars={
+                    "userIds": user_ids,
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}"
+                },
+                transaction=transaction
+            )
+
+            if result:
+                return {
+                    "owners_being_removed": result[0].get("ownersBeingRemoved", []),
+                    "total_owner_count": result[0].get("totalOwnerCount", 0)
+                }
+
+            return {"owners_being_removed": [], "total_owner_count": 0}
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_owner_removal_info: {str(e)}", exc_info=True)
+            raise
+
+    async def get_team_permissions_and_owner_count(
+        self,
+        team_id: str,
+        user_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get team info, current permissions for specific users, and total owner count.
+        """
+        try:
+            query = f"""
+            LET team = DOCUMENT(@teamId)
+            LET current_perms = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER SPLIT(permission._from, '/')[1] IN @userIds
+                    RETURN {{
+                        userId: SPLIT(permission._from, '/')[1],
+                        role: permission.role
+                    }}
+            )
+            LET owner_count = (
+                FOR permission IN {CollectionNames.PERMISSION.value}
+                    FILTER permission._to == @teamId
+                    FILTER permission.role == 'OWNER'
+                    COLLECT WITH COUNT INTO count
+                    RETURN count
+            )
+            RETURN {{
+                team: team,
+                permissions: current_perms,
+                ownerCount: LENGTH(owner_count) > 0 ? owner_count[0] : 0
+            }}
+            """
+
+            result = await self.execute_query(
+                query,
+                bind_vars={
+                    "teamId": f"{CollectionNames.TEAMS.value}/{team_id}",
+                    "userIds": user_ids
+                },
+                transaction=transaction
+            )
+
+            if result:
+                data = result[0]
+                permissions_dict = {perm["userId"]: perm["role"] for perm in data.get("permissions", [])}
+                return {
+                    "team": data.get("team"),
+                    "permissions": permissions_dict,
+                    "owner_count": data.get("ownerCount", 0)
+                }
+
+            return {"team": None, "permissions": {}, "owner_count": 0}
+
+        except Exception as e:
+            self.logger.error(f"Error in get_team_permissions_and_owner_count: {str(e)}", exc_info=True)
+            raise
+
+    # ==================== User Operations ====================
+
+    async def get_organization_users(
+        self,
+        org_id: str,
+        search: Optional[str] = None,
+        page: int = 1,
+        limit: int = 100,
+        transaction: Optional[str] = None
+    ) -> Tuple[List[Dict], int]:
+        """
+        Get users in an organization with pagination and search.
+        """
+        try:
+            offset = (page - 1) * limit
+
+            # Build search filter (case-insensitive)
+            search_filter = ""
+            if search:
+                search_filter = """
+                FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)
+                """
+
+            # Query to get users with their team memberships
+            users_query = f"""
+            FOR edge IN belongsTo
+            FILTER edge._to == CONCAT('organizations/', @orgId)
+            AND edge.entityType == 'ORGANIZATION'
+            LET user = DOCUMENT(edge._from)
+            FILTER user!=null
+            FILTER user.isActive == true
+            {search_filter}
+            SORT user.fullName ASC
+            LIMIT @offset, @limit
+            RETURN {{
+                "id": user._key,
+                "userId": user.userId,
+                "name": user.fullName,
+                "email": user.email,
+                "isActive": user.isActive,
+                "createdAtTimestamp": user.createdAtTimestamp,
+                "updatedAtTimestamp": user.updatedAtTimestamp
+            }}
+            """
+
+            # Count total users for pagination
+            count_query = f"""
+            FOR edge IN belongsTo
+            FILTER edge._to == CONCAT('organizations/', @orgId)
+            AND edge.entityType == 'ORGANIZATION'
+            LET user = DOCUMENT(edge._from)
+            FILTER user!=null
+            FILTER user.isActive == true
+            {search_filter}
+            COLLECT WITH COUNT INTO total_count
+            RETURN total_count
+            """
+
+            # Get total count
+            count_params = {"orgId": org_id}
+            if search:
+                count_params["search"] = f"%{search.lower()}%"
+
+            count_list = await self.execute_query(count_query, bind_vars=count_params, transaction=transaction)
+            total_count = count_list[0] if count_list else 0
+
+            # Get users with pagination
+            users_params = {
+                "orgId": org_id,
+                "offset": offset,
+                "limit": limit
+            }
+            if search:
+                users_params["search"] = f"%{search.lower()}%"
+
+            result_list = await self.execute_query(users_query, bind_vars=users_params, transaction=transaction)
+            return result_list if result_list else [], total_count
+
+        except Exception as e:
+            self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
+            return [], 0

@@ -38,12 +38,15 @@ async def initialize_container(container: QueryAppContainer) -> bool:
         logger.info("Checking Connector service health before startup")
         await Health.health_check_connector_service(container)
 
-        # Ensure ArangoDB service is initialized (connection is handled in the resource factory)
-        logger.info("Ensuring ArangoDB service is initialized")
-        arango_service = await container.arango_service()
-        if not arango_service:
-            raise Exception("Failed to initialize ArangoDB service")
-        logger.info("✅ ArangoDB service initialized")
+        # Ensure Graph Database Provider is initialized (connection is handled in the resource factory)
+        logger.info("Ensuring Graph Database Provider is initialized")
+        graph_provider = await container.graph_provider()
+        if not graph_provider:
+            raise Exception("Failed to initialize Graph Database Provider")
+
+        # Store the resolved graph_provider in the container to avoid coroutine reuse
+        container._graph_provider = graph_provider
+        logger.info("✅ Graph Database Provider initialized and connected")
 
         return True
 
@@ -129,6 +132,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
+    # Get the already-resolved graph_provider from container (set during initialization)
+    # This avoids coroutine reuse error
+    graph_provider = getattr(app_container, '_graph_provider', None)
+    if not graph_provider:
+        # Fallback: if not set during initialization, resolve it now
+        graph_provider = await app_container.graph_provider()
+    app.state.graph_provider = graph_provider
+
     # Start all Kafka consumers centrally
     try:
         consumers = await start_kafka_consumers(app_container)
@@ -138,10 +149,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Failed to start Kafka consumers: {str(e)}")
         raise
 
-    arango_service = await app_container.arango_service()
-
     # Get all organizations
-    orgs = await arango_service.get_all_orgs()
+    orgs = await graph_provider.get_all_orgs()
     if not orgs:
         logger.info("No organizations found in the system")
     else:
@@ -149,42 +158,48 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         retrieval_service = await container.retrieval_service()
         await retrieval_service.get_embedding_model_instance()
 
-    arango_config_dict = await container.config_service().get_config(
-        config_node_constants.ARANGODB.value
-    )
-    arango_config = ArangoConfig(**arango_config_dict)
+    # Tools DB and registry - only for ArangoDB
+    import os
+    data_store_type = os.getenv("DATA_STORE", "arangodb").lower()
 
-    # Create ToolsDBManager
-    logger.info("Creating ToolsDBManager...")
-    tools_db = await ToolsDBManager.create(logger, arango_config)
+    if data_store_type == "arangodb":
+        arango_config_dict = await container.config_service().get_config(
+            config_node_constants.ARANGODB.value
+        )
+        arango_config = ArangoConfig(**arango_config_dict)
 
-    # Connect to ArangoDB
-    logger.info("Connecting to ArangoDB...")
-    await tools_db.graph_service.connect()
+        # Create ToolsDBManager
+        logger.info("Creating ToolsDBManager...")
+        tools_db = await ToolsDBManager.create(logger, arango_config)
 
-    # initialize collections
-    await tools_db.graph_service.create_collection("tools")
-    await tools_db.graph_service.create_collection("tools_ctags")
+        # Connect to ArangoDB
+        logger.info("Connecting to ArangoDB...")
+        await tools_db.graph_service.connect()
 
-    # Use the warmup class to import all tools automatically
-    logger.info("Using tools warmup to register all available tools...")
-    from app.agents.tools.discovery import discover_tools
+        # initialize collections
+        await tools_db.graph_service.create_collection("tools")
+        await tools_db.graph_service.create_collection("tools_ctags")
 
-    discovery_results = discover_tools(logger)
-    logger.info(f"Discovery completed: {discovery_results['total_tools']} tools registered")
+        # Use the warmup class to import all tools automatically
+        logger.info("Using tools warmup to register all available tools...")
+        from app.agents.tools.discovery import discover_tools
 
-    # Create a sample tool registry (this would normally come from your actual registry)
-    logger.info("Setting up sample tool registry...")
-    tool_registry = _global_tools_registry
+        discovery_results = discover_tools(logger)
+        logger.info(f"Discovery completed: {discovery_results['total_tools']} tools registered")
 
+        # Create a sample tool registry (this would normally come from your actual registry)
+        logger.info("Setting up sample tool registry...")
+        tool_registry = _global_tools_registry
 
-    # Sync tools from registry to ArangoDB
-    logger.info("Syncing tools from registry to ArangoDB...")
-    await tools_db.sync_tools_from_registry(tool_registry)
+        # Sync tools from registry to ArangoDB
+        logger.info("Syncing tools from registry to ArangoDB...")
+        await tools_db.sync_tools_from_registry(tool_registry)
 
-    # List all tools in the registry
-    registry_tools = tool_registry.list_tools()
-    logger.info(f"Tools in registry: {registry_tools}")
+        # List all tools in the registry
+        registry_tools = tool_registry.list_tools()
+        logger.info(f"Tools in registry: {registry_tools}")
+    else:
+        logger.info(f"⏭️ Skipping ToolsDB initialization (DATA_STORE={data_store_type})")
 
     yield
     # Shutdown

@@ -7,6 +7,7 @@ replacing the synchronous python-arango SDK to avoid blocking the event loop.
 ArangoDB REST API Documentation: https://www.arangodb.com/docs/stable/http/
 """
 
+import asyncio
 from logging import Logger
 from typing import Any, Dict, List, Optional, Union
 
@@ -16,10 +17,15 @@ from app.config.constants.http_status_code import HttpStatusCode
 
 # ArangoDB Error Code Constants
 ARANGO_ERROR_DOCUMENT_NOT_FOUND = 1202
+ARANGO_ERROR_SCHEMA_DUPLICATE = 1207
 
 
 class ArangoHTTPClient:
-    """Fully async HTTP client for ArangoDB REST API"""
+    """Fully async HTTP client for ArangoDB REST API
+
+    Uses session-per-event-loop pattern to handle Windows async compatibility.
+    Sessions are reused within the same event loop but recreated if the loop changes.
+    """
 
     def __init__(
         self,
@@ -44,21 +50,54 @@ class ArangoHTTPClient:
         self.username = username
         self.password = password
         self.auth = aiohttp.BasicAuth(username, password)
-        self.session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[aiohttp.ClientSession] = None
+        self._session_loop: Optional[asyncio.AbstractEventLoop] = None
         self.logger = logger
+
+    async def _get_session(self) -> aiohttp.ClientSession:
+        """
+        Get or create a session for the current event loop.
+
+        This handles Windows async compatibility by detecting event loop changes
+        and creating new sessions when needed. Sessions are reused within the
+        same event loop for efficiency.
+
+        Returns:
+            aiohttp.ClientSession: Session for the current event loop
+        """
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+
+        # Check if we need a new session (no session, or loop changed)
+        if self._session is None or self._session_loop != current_loop:
+            # Close old session if exists
+            if self._session is not None:
+                try:
+                    await self._session.close()
+                except Exception:
+                    pass  # Ignore errors closing old session
+
+            # Create new session for current loop
+            self._session = aiohttp.ClientSession(auth=self.auth)
+            self._session_loop = current_loop
+            self.logger.debug("🔄 Created new HTTP session for current event loop")
+
+        return self._session
 
     async def connect(self) -> bool:
         """
-        Create HTTP session and test connection.
+        Test connection to ArangoDB.
 
         Returns:
             bool: True if connection successful
         """
         try:
-            self.session = aiohttp.ClientSession(auth=self.auth)
+            session = await self._get_session()
 
             # Test connection
-            async with self.session.get(f"{self.base_url}/_api/version") as resp:
+            async with session.get(f"{self.base_url}/_api/version") as resp:
                 if resp.status == HttpStatusCode.OK.value:
                     version_info = await resp.json()
                     self.logger.info(f"✅ Connected to ArangoDB {version_info.get('version')}")
@@ -73,9 +112,13 @@ class ArangoHTTPClient:
 
     async def disconnect(self) -> None:
         """Close HTTP session"""
-        if self.session:
-            await self.session.close()
-            self.session = None
+        if self._session:
+            try:
+                await self._session.close()
+            except Exception:
+                pass
+            self._session = None
+            self._session_loop = None
             self.logger.info("✅ Disconnected from ArangoDB")
 
     # ==================== Error Checking Helpers ====================
@@ -120,8 +163,9 @@ class ArangoHTTPClient:
     async def database_exists(self, db_name: str) -> bool:
         """Check if database exists"""
         url = f"{self.base_url}/_api/database"
+        session = await self._get_session()
 
-        async with self.session.get(url) as resp:
+        async with session.get(url) as resp:
             if resp.status == HttpStatusCode.OK.value:
                 result = await resp.json()
                 return db_name in result.get("result", [])
@@ -142,7 +186,8 @@ class ArangoHTTPClient:
             ]
         }
 
-        async with self.session.post(url, json=payload) as resp:
+        session = await self._get_session()
+        async with session.post(url, json=payload) as resp:
             if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
                 self.logger.info(f"✅ Database '{db_name}' created")
                 return True
@@ -178,7 +223,8 @@ class ArangoHTTPClient:
         }
 
         try:
-            async with self.session.post(url, json=payload) as resp:
+            session = await self._get_session()
+            async with session.post(url, json=payload) as resp:
                 if resp.status != HttpStatusCode.CREATED.value:
                     error = await resp.text()
                     raise Exception(f"Failed to begin transaction: {error}")
@@ -202,7 +248,8 @@ class ArangoHTTPClient:
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
         try:
-            async with self.session.put(url) as resp:
+            session = await self._get_session()
+            async with session.put(url) as resp:
                 if resp.status not in [200, 204]:
                     error = await resp.text()
                     raise Exception(f"Failed to commit transaction: {error}")
@@ -223,7 +270,8 @@ class ArangoHTTPClient:
         url = f"{self.base_url}/_db/{self.database}/_api/transaction/{txn_id}"
 
         try:
-            async with self.session.delete(url) as resp:
+            session = await self._get_session()
+            async with session.delete(url) as resp:
                 if resp.status not in [200, 204]:
                     error = await resp.text()
                     raise Exception(f"Failed to abort transaction: {error}")
@@ -253,13 +301,13 @@ class ArangoHTTPClient:
         Returns:
             Optional[Dict]: Document data or None if not found
         """
-
         url = f"{self.base_url}/_db/{self.database}/_api/document/{collection}/{key}"
 
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.get(url, headers=headers) as resp:
+            session = await self._get_session()
+            async with session.get(url, headers=headers) as resp:
                 if resp.status == HttpStatusCode.NOT_FOUND.value:
                     return None
                 elif resp.status == HttpStatusCode.OK.value:
@@ -298,7 +346,8 @@ class ArangoHTTPClient:
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.post(url, json=document, headers=headers) as resp:
+            session = await self._get_session()
+            async with session.post(url, json=document, headers=headers) as resp:
                 if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self._check_response_for_errors(result, "Create document")
@@ -342,7 +391,8 @@ class ArangoHTTPClient:
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.patch(url, json=updates, headers=headers) as resp:
+            session = await self._get_session()
+            async with session.patch(url, json=updates, headers=headers) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self._check_response_for_errors(result, "Update document")
@@ -381,7 +431,8 @@ class ArangoHTTPClient:
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.delete(url, headers=headers) as resp:
+            session = await self._get_session()
+            async with session.delete(url, headers=headers) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value, HttpStatusCode.NO_CONTENT.value]:
                     # Try to parse response for error checking
                     try:
@@ -436,7 +487,8 @@ class ArangoHTTPClient:
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.post(url, json=payload, headers=headers) as resp:
+            session = await self._get_session()
+            async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status not in [200, 201]:
                     error = await resp.text()
                     raise Exception(f"Query failed (status={resp.status}): {error}")
@@ -450,7 +502,7 @@ class ArangoHTTPClient:
                     cursor_id = result.get("id")
                     cursor_url = f"{self.base_url}/_db/{self.database}/_api/cursor/{cursor_id}"
 
-                    async with self.session.put(cursor_url, headers=headers) as cursor_resp:
+                    async with session.put(cursor_url, headers=headers) as cursor_resp:
                         if cursor_resp.status not in [200, 201]:
                             error = await cursor_resp.text()
                             raise Exception(f"Cursor fetch failed (status={cursor_resp.status}): {error}")
@@ -510,7 +562,8 @@ class ArangoHTTPClient:
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.post(
+            session = await self._get_session()
+            async with session.post(
                 url,
                 json=documents,
                 params=params,
@@ -590,7 +643,8 @@ class ArangoHTTPClient:
         document_ids = [f"{collection}/{key}" for key in keys]
 
         try:
-            async with self.session.delete(
+            session = await self._get_session()
+            async with session.delete(
                 url,
                 headers=headers,
                 json=document_ids  # Send array of document IDs in request body
@@ -668,7 +722,8 @@ class ArangoHTTPClient:
         headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
         try:
-            async with self.session.post(url, json=edge_doc, headers=headers) as resp:
+            session = await self._get_session()
+            async with session.post(url, json=edge_doc, headers=headers) as resp:
                 if resp.status in [HttpStatusCode.CREATED.value, HttpStatusCode.ACCEPTED.value]:
                     result = await resp.json()
                     self._check_response_for_errors(result, "Create edge")
@@ -718,7 +773,8 @@ class ArangoHTTPClient:
                 url = f"{self.base_url}/_db/{self.database}/_api/document/{edge_collection}/{edge_keys[0]}"
                 headers = {"x-arango-trx-id": txn_id} if txn_id else {}
 
-                async with self.session.delete(url, headers=headers) as resp:
+                session = await self._get_session()
+                async with session.delete(url, headers=headers) as resp:
                     return resp.status in [HttpStatusCode.OK.value, HttpStatusCode.ACCEPTED.value, HttpStatusCode.NO_CONTENT.value]
 
             return False
@@ -734,7 +790,8 @@ class ArangoHTTPClient:
         url = f"{self.base_url}/_db/{self.database}/_api/collection/{collection_name}"
 
         try:
-            async with self.session.get(url) as resp:
+            session = await self._get_session()
+            async with session.get(url) as resp:
                 return resp.status == HttpStatusCode.OK.value
         except Exception:
             return False
@@ -765,7 +822,8 @@ class ArangoHTTPClient:
         }
 
         try:
-            async with self.session.post(url, json=payload) as resp:
+            session = await self._get_session()
+            async with session.post(url, json=payload) as resp:
                 if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
                     self.logger.info(f"✅ Collection '{name}' created")
                     return True
@@ -781,7 +839,131 @@ class ArangoHTTPClient:
             self.logger.error(f"❌ Error creating collection: {str(e)}")
             return False
 
+    async def update_collection_schema(
+        self,
+        name: str,
+        schema: Optional[Dict[str, Any]] = None
+    ) -> bool:
+        """
+        Update the schema validation for an existing collection.
+
+        Args:
+            name: Collection name
+            schema: JSON schema for validation (optional)
+
+        Returns:
+            bool: True if successful
+        """
+        if not schema:
+            return True  # Nothing to update
+
+        url = f"{self.base_url}/_db/{self.database}/_api/collection/{name}/properties"
+
+        payload = {
+            "schema": schema
+        }
+
+        try:
+            session = await self._get_session()
+            async with session.put(url, json=payload) as resp:
+                if resp.status == HttpStatusCode.OK.value:
+                    self.logger.info(f"✅ Schema updated for collection '{name}'")
+                    return True
+                else:
+                    error_data = await resp.json()
+                    error_msg = error_data.get("errorMessage", await resp.text())
+
+                    # Check if schema is already configured (error code ARANGO_ERROR_SCHEMA_DUPLICATE or duplicate message)
+                    error_num = error_data.get("errorNum", 0)
+                    if error_num == ARANGO_ERROR_SCHEMA_DUPLICATE or "duplicate" in error_msg.lower():
+                        self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
+                        return True
+
+                    self.logger.warning(f"Failed to update schema for '{name}': {error_msg}")
+                    return False
+
+        except Exception as e:
+            error_msg = str(e)
+            if str(ARANGO_ERROR_SCHEMA_DUPLICATE) in error_msg or "duplicate" in error_msg.lower():
+                self.logger.info(f"✅ Schema for '{name}' already configured, skipping")
+                return True
+            self.logger.error(f"❌ Error updating collection schema: {error_msg}")
+            return False
+
     # ==================== Graph Operations ====================
+
+    async def has_collection(self, name: str) -> bool:
+        """
+        Check if a collection exists.
+
+        Args:
+            name: Collection name
+
+        Returns:
+            bool: True if collection exists, False otherwise
+        """
+        return await self.collection_exists(name)
+
+    async def has_graph(self, graph_name: str) -> bool:
+        """
+        Check if a graph exists.
+
+        Args:
+            graph_name: Graph name
+
+        Returns:
+            bool: True if graph exists, False otherwise
+        """
+        return (await self.get_graph(graph_name)) is not None
+
+    async def create_graph(
+        self,
+        graph_name: str,
+        edge_definitions: List[Dict[str, Any]],
+    ) -> bool:
+        """
+        Create a named graph with the given edge definitions.
+
+        Args:
+            graph_name: Graph name
+            edge_definitions: List of edge definitions. Each dict must have:
+                - "collection": edge collection name
+                - "from": list of vertex collection names
+                - "to": list of vertex collection names
+
+        Returns:
+            bool: True if successful
+        """
+        url = f"{self.base_url}/_db/{self.database}/_api/gharial"
+
+        # Map to ArangoDB REST format: collection, from, to
+        # Support both schema keys (edge_collection, from_vertex_collections, to_vertex_collections) and REST keys
+        payload_definitions = [
+            {
+                "collection": ed.get("edge_collection", ed.get("collection", "")),
+                "from": ed.get("from_vertex_collections", ed.get("from", [])),
+                "to": ed.get("to_vertex_collections", ed.get("to", [])),
+            }
+            for ed in edge_definitions
+        ]
+
+        payload = {"name": graph_name, "edgeDefinitions": payload_definitions}
+
+        try:
+            async with self.session.post(url, json=payload) as resp:
+                if resp.status in [HttpStatusCode.OK.value, HttpStatusCode.CREATED.value]:
+                    self.logger.info(f"✅ Graph '{graph_name}' created")
+                    return True
+                elif resp.status == HttpStatusCode.CONFLICT.value:
+                    self.logger.debug(f"Graph '{graph_name}' already exists")
+                    return True
+                else:
+                    error = await resp.text()
+                    self.logger.error(f"❌ Failed to create graph: {error}")
+                    return False
+        except Exception as e:
+            self.logger.error(f"❌ Error creating graph: {str(e)}")
+            return False
 
     async def get_graph(self, graph_name: str) -> Optional[Dict]:
         """
@@ -796,7 +978,8 @@ class ArangoHTTPClient:
         url = f"{self.base_url}/_db/{self.database}/_api/gharial/{graph_name}"
 
         try:
-            async with self.session.get(url) as resp:
+            session = await self._get_session()
+            async with session.get(url) as resp:
                 if resp.status == HttpStatusCode.OK.value:
                     return await resp.json()
                 elif resp.status == HttpStatusCode.NOT_FOUND.value:

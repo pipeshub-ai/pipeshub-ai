@@ -1764,8 +1764,15 @@ class ZammadConnector(BaseConnector):
                     web_url=kb_web_url
                 )
 
-                # KB has no permissions - categories have their own permissions, no inheritance
-                kb_permissions: List[Permission] = []
+                # KB needs ORG-level permission so all org users can see it in Knowledge Hub
+                # Categories have their own role-based permissions, no inheritance from KB
+                kb_permissions: List[Permission] = [
+                    Permission(
+                        entity_type=EntityType.ORG,
+                        type=PermissionType.READ,
+                        external_id=None
+                    )
+                ]
 
                 kb_record_groups.append((kb_record_group, kb_permissions))
                 kb_map[kb_id] = kb_record_group

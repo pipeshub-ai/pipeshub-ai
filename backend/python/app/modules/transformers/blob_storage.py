@@ -14,16 +14,16 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class BlobStorage(Transformer):
-    def __init__(self,logger,config_service, arango_service: BaseArangoService = None) -> None:
+    def __init__(self,logger,config_service, graph_provider: IGraphDBProvider = None) -> None:
         self.logger = logger
         self.config_service = config_service
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
 
     def _compress_record(self, record: dict) -> str:
         """
@@ -346,8 +346,8 @@ class BlobStorage(Transformer):
         record_dict = self._clean_empty_values(record_dict)
         document_id, file_size_bytes = await self.save_record_to_storage(org_id, record_id, virtual_record_id, record_dict)
 
-        # Store the mapping if we have both IDs and arango_service is available
-        if document_id and self.arango_service:
+        # Store the mapping if we have both IDs and graph_provider is available
+        if document_id and self.graph_provider:
             await self.store_virtual_record_mapping(virtual_record_id, document_id, file_size_bytes)
 
         ctx.record = record
@@ -658,26 +658,38 @@ class BlobStorage(Transformer):
         Returns:
             tuple[str | None, int | None]: (document_id, file_size_bytes) if found, else (None, None).
         """
-        if not self.arango_service:
-            self.logger.error("❌ ArangoService not initialized, cannot get document ID by virtual record ID.")
-            raise Exception("ArangoService not initialized, cannot get document ID by virtual record ID.")
+        if not self.graph_provider:
+            self.logger.error("❌ GraphProvider not initialized, cannot get document ID by virtual record ID.")
+            raise Exception("GraphProvider not initialized, cannot get document ID by virtual record ID.")
 
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
-            query = 'FOR doc IN @@collection FILTER doc.virtualRecordId == @virtualRecordId OR doc._key == @virtualRecordId RETURN {documentId: doc.documentId, fileSizeBytes: doc.fileSizeBytes}'
-            bind_vars = {
-                '@collection': collection_name,
-                'virtualRecordId': virtual_record_id
-            }
-            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
 
-            # Check if cursor has any results before calling next()
-            results = list(cursor)
-            if results:
-                result = results[0]
-                document_id = result.get('documentId')
-                file_size_bytes = result.get('fileSizeBytes')
-                return document_id, file_size_bytes
+            # Try to find by virtualRecordId field first
+            nodes = await self.graph_provider.get_nodes_by_filters(
+                collection_name,
+                {"virtualRecordId": virtual_record_id}
+            )
+            # If not found, try to find by _key/id
+            if not nodes:
+                # Try getting document by key/id
+                doc = await self.graph_provider.get_document(
+                    virtual_record_id,
+                    collection_name
+                )
+                if doc:
+                    nodes = [doc]
+
+            if nodes:
+                # Return documentId and fileSizeBytes from the first matching node
+                document_id = nodes[0].get("documentId")
+                file_size_bytes = nodes[0].get("fileSizeBytes")
+
+                if document_id:
+                    return document_id, file_size_bytes
+                else:
+                    self.logger.warning("Found mapping document but no documentId field for virtual record ID: %s", virtual_record_id)
+                    return None, None
             else:
                 self.logger.info("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None, None
@@ -870,7 +882,7 @@ class BlobStorage(Transformer):
 
     async def store_virtual_record_mapping(self, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
         """
-        Stores the mapping between virtual_record_id and document_id in ArangoDB.
+        Stores the mapping between virtual_record_id and document_id in graph database.
         Args:
             virtual_record_id: The virtual record ID
             document_id: The document ID
@@ -886,7 +898,7 @@ class BlobStorage(Transformer):
             mapping_key = virtual_record_id
 
             mapping_document = {
-                "_key": mapping_key,
+                "id": mapping_key,
                 "documentId": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
@@ -895,7 +907,7 @@ class BlobStorage(Transformer):
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
 
-            success = await self.arango_service.batch_upsert_nodes(
+            success = await self.graph_provider.batch_upsert_nodes(
                 [mapping_document],
                 collection_name
             )

@@ -1,8 +1,6 @@
 import asyncio
 
 # Only for development/debugging
-import signal
-import sys
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -26,13 +24,12 @@ from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+# def handle_sigterm(signum, frame) -> None:
+#     print(f"Received signal {signum}, {frame} shutting down gracefully")
+#     sys.exit(0)
 
-def handle_sigterm(signum, frame) -> None:
-    print(f"Received signal {signum}, {frame} shutting down gracefully")
-    sys.exit(0)
-
-signal.signal(signal.SIGTERM, handle_sigterm)
-signal.signal(signal.SIGINT, handle_sigterm)
+# signal.signal(signal.SIGTERM, handle_sigterm)
+# signal.signal(signal.SIGINT, handle_sigterm)
 
 container = IndexingAppContainer.init("indexing_service")
 container_lock = asyncio.Lock()
@@ -50,7 +47,7 @@ async def get_initialized_container() -> IndexingAppContainer:
                 get_initialized_container.initialized = True
     return container
 
-async def recover_in_progress_records(app_container: IndexingAppContainer) -> None:
+async def recover_in_progress_records(app_container: IndexingAppContainer, graph_provider) -> None:
     """
     Recover only IN_PROGRESS records (re-run indexing for those left mid-way).
     QUEUED records are set to AUTO_INDEX_OFF so they are not auto-processed on startup.
@@ -65,17 +62,14 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
     results = {"success": 0, "partial": 0, "incomplete": 0, "skipped": 0, "error": 0}
 
     try:
-        # Get the arango service and event processor
-        arango_service = await app_container.arango_service()
-
-        # Query for records that are in IN_PROGRESS status (recover only these)
-        in_progress_records = await arango_service.get_documents_by_status(
+        # Query for records that are in IN_PROGRESS status
+        in_progress_records = await graph_provider.get_nodes_by_filters(
             CollectionNames.RECORDS.value,
-            ProgressStatus.IN_PROGRESS.value
+            {"indexingStatus": ProgressStatus.IN_PROGRESS.value}
         )
-        queued_records = await arango_service.get_documents_by_status(
+        queued_records = await graph_provider.get_nodes_by_filters(
             CollectionNames.RECORDS.value,
-            ProgressStatus.QUEUED.value
+            {"indexingStatus": ProgressStatus.QUEUED.value}
         )
 
         # Set queued records to AUTO_INDEX_OFF so they are not auto-processed
@@ -86,7 +80,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                     {"_key": record.get("_key"), "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value}
                     for record in queued_records
                 ]
-                await arango_service.batch_upsert_nodes(
+                await graph_provider.batch_upsert_nodes(
                     update_docs,
                     CollectionNames.RECORDS.value,
                 )
@@ -120,7 +114,7 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                     connector_id = record.get("connectorId")
                     origin = record.get("origin")
                     if connector_id and origin == OriginTypes.CONNECTOR.value:
-                        connector_instance = await arango_service.get_document(
+                        connector_instance = await graph_provider.get_document(
                             connector_id, CollectionNames.APPS.value
                         )
                         if not connector_instance:
@@ -136,12 +130,12 @@ async def recover_in_progress_records(app_container: IndexingAppContainer) -> No
                                 f"connector instance {connector_id} is inactive."
                             )
                             # Update status to CONNECTOR_DISABLED
-                            await arango_service.update_node(
+                            await graph_provider.update_node(
                                 record_id,
                                 {
                                     "indexingStatus": ProgressStatus.CONNECTOR_DISABLED.value,
                                 },
-                                CollectionNames.RECORDS.value,
+                                CollectionNames.RECORDS.value
                             )
                             results["skipped"] += 1
                             return
@@ -293,9 +287,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.info("🚀 Starting application")
 
+    graph_provider = getattr(app_container, '_graph_provider', None)
+    if not graph_provider:
+        # Fallback: if not set during initialization, resolve it now
+        graph_provider = await app_container.graph_provider()
+    app.state.graph_provider = graph_provider
+
     # Recover in-progress records before starting Kafka consumers
     try:
-        await recover_in_progress_records(app_container)
+        await recover_in_progress_records(app_container, graph_provider)
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
         # Continue even if recovery fails

@@ -6,17 +6,14 @@ import mimetypes
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 from urllib.parse import parse_qs, urlencode, urlparse
 
-import google.oauth2.credentials
 import jwt
 from dependency_injector.wiring import Provide, inject
 from fastapi import (
     APIRouter,
-    BackgroundTasks,
     Depends,
     File,
     HTTPException,
@@ -25,7 +22,6 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import Response, StreamingResponse
-from google.oauth2 import service_account
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 from jose import JWTError
@@ -40,7 +36,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.api.middleware import WebhookAuthVerifier
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -48,29 +43,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.connectors.services.kafka_service import KafkaService
-from app.connectors.sources.google.admin.admin_webhook_handler import (
-    AdminWebhookHandler,
-)
-from app.connectors.sources.google.common.google_token_handler import (
-    CredentialKeys,
-)
-from app.connectors.sources.google.common.scopes import (
-    GOOGLE_CONNECTOR_ENTERPRISE_SCOPES,
-)
-from app.connectors.sources.google.gmail.gmail_webhook_handler import (
-    AbstractGmailWebhookHandler,
-)
-from app.connectors.sources.google.google_drive.drive_webhook_handler import (
-    AbstractDriveWebhookHandler,
-)
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import Record
-from app.modules.parsers.google_files.google_docs_parser import GoogleDocsParser
-from app.modules.parsers.google_files.google_sheets_parser import GoogleSheetsParser
-from app.modules.parsers.google_files.google_slides_parser import GoogleSlidesParser
 from app.services.featureflag.config.config import CONFIG
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
@@ -252,24 +229,14 @@ async def get_validated_connector_instance(
     return instance
 
 
-async def get_arango_service(request: Request) -> BaseArangoService:
-    container: ConnectorAppContainer = request.app.container
-    arango_service = await container.arango_service()
-    return arango_service
+async def get_graph_provider(request: Request) -> IGraphDBProvider:
+    """Return graph DB provider from app state (set at startup)."""
+    return request.app.state.graph_provider
 
 async def get_kafka_service(request: Request) -> KafkaService:
     container: ConnectorAppContainer = request.app.container
     kafka_service = container.kafka_service()
     return kafka_service
-
-async def get_drive_webhook_handler(request: Request) -> Optional[AbstractDriveWebhookHandler]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        drive_webhook_handler = container.drive_webhook_handler()
-        return drive_webhook_handler
-    except Exception as e:
-        logger.warning(f"Failed to get drive webhook handler: {str(e)}")
-        return None
 
 def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
     """Parses a comma-separated string into a list of strings, filtering out empty items."""
@@ -362,129 +329,6 @@ def _trim_connector_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return trimmed_config
 
-@router.post("/drive/webhook")
-@inject
-async def handle_drive_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
-    """Handle incoming webhook notifications from Google Drive"""
-    try:
-
-        verifier = WebhookAuthVerifier(logger)
-        if not await verifier.verify_request(request):
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Unauthorized webhook request")
-
-        drive_webhook_handler = await get_drive_webhook_handler(request)
-
-        if drive_webhook_handler is None:
-            logger.warning(
-                "Drive webhook handler not yet initialized - skipping webhook processing"
-            )
-            return {
-                "status": "skipped",
-                "message": "Webhook handler not yet initialized",
-            }
-
-        # Log incoming request details
-        headers = dict(request.headers)
-        logger.info("📥 Incoming webhook request")
-
-        # Get important headers
-        resource_state = (
-            headers.get("X-Goog-Resource-State")
-            or headers.get("x-goog-resource-state")
-            or headers.get("X-GOOG-RESOURCE-STATE")
-        )
-
-        logger.info("Resource state: %s", resource_state)
-
-        # Process notification in background
-        if resource_state != "sync":
-            background_tasks.add_task(
-                drive_webhook_handler.process_notification, headers
-            )
-            return {"status": "accepted"}
-        else:
-            logger.info("Received sync verification request")
-            return {"status": "sync_verified"}
-
-    except Exception as e:
-        logger.error("Error processing webhook: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)) from e
-
-
-async def get_gmail_webhook_handler(request: Request) -> Optional[AbstractGmailWebhookHandler]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        gmail_webhook_handler = container.gmail_webhook_handler()
-        return gmail_webhook_handler
-    except Exception as e:
-        logger.warning(f"Failed to get gmail webhook handler: {str(e)}")
-        return None
-
-
-@router.get("/gmail/webhook")
-@router.post("/gmail/webhook")
-@inject
-async def handle_gmail_webhook(request: Request, background_tasks: BackgroundTasks) -> dict:
-    """Handles incoming Pub/Sub messages"""
-    try:
-        gmail_webhook_handler = await get_gmail_webhook_handler(request)
-
-        if gmail_webhook_handler is None:
-            logger.warning(
-                "Gmail webhook handler not yet initialized - skipping webhook processing"
-            )
-            return {
-                "status": "skipped",
-                "message": "Webhook handler not yet initialized",
-            }
-
-        body = await request.json()
-        logger.info("Received webhook request: %s", body)
-
-        # Get the message from the body
-        message = body.get("message")
-        if not message:
-            logger.warning("No message found in webhook body")
-            return {"status": "error", "message": "No message found"}
-
-        # Decode the message data
-        data = message.get("data", "")
-        if data:
-            try:
-                decoded_data = base64.b64decode(data).decode("utf-8")
-                notification = json.loads(decoded_data)
-
-                # Process the notification
-                background_tasks.add_task(
-                    gmail_webhook_handler.process_notification,
-                    request.headers,
-                    notification,
-                )
-
-                return {"status": "ok"}
-            except Exception as e:
-                logger.error("Error processing message data: %s", str(e))
-                raise HTTPException(
-                    status_code=HttpStatusCode.BAD_REQUEST.value,
-                    detail=f"Invalid message data format: {str(e)}",
-                )
-        else:
-            logger.warning("No data found in message")
-            return {"status": "error", "message": "No data found"}
-
-    except json.JSONDecodeError as e:
-        logger.error("Invalid JSON in webhook body: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.BAD_REQUEST.value,
-            detail=f"Invalid JSON format: {str(e)}",
-        )
-    except Exception as e:
-        logger.error("Error processing webhook: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)
-        )
-
-
 @router.get("/api/v1/{org_id}/{user_id}/{connector}/record/{record_id}/signedUrl")
 @inject
 async def get_signed_url(
@@ -511,43 +355,13 @@ async def get_signed_url(
         logger.error(f"Error getting signed URL: {repr(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e))
 
-
-async def get_google_docs_parser(request: Request) -> Optional[GoogleDocsParser]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        google_docs_parser = container.google_docs_parser()
-        return google_docs_parser
-    except Exception as e:
-        logger.warning(f"Failed to get google docs parser: {str(e)}")
-        return None
-
-
-async def get_google_sheets_parser(request: Request) -> Optional[GoogleSheetsParser]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        google_sheets_parser = container.google_sheets_parser()
-        return google_sheets_parser
-    except Exception as e:
-        logger.warning(f"Failed to get google sheets parser: {str(e)}")
-        return None
-
-
-async def get_google_slides_parser(request: Request) -> Optional[GoogleSlidesParser]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        google_slides_parser = container.google_slides_parser()
-        return google_slides_parser
-    except Exception as e:
-        logger.warning(f"Failed to get google slides parser: {str(e)}")
-        return None
-
 @router.delete("/api/v1/delete/record/{record_id}")
 @inject
 async def handle_record_deletion(
-    record_id: str, arango_service=Depends(Provide[ConnectorAppContainer.arango_service])
+    record_id: str, graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Optional[dict]:
     try:
-        response = await arango_service.delete_records_and_relations(
+        response = await graph_provider.delete_records_and_relations(
             record_id, hard_delete=True
         )
         if not response:
@@ -573,7 +387,7 @@ async def handle_record_deletion(
 async def stream_record_internal(
     request: Request,
     record_id: str,
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     """
@@ -598,8 +412,8 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_record_by_id(
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = graph_provider.get_record_by_id(
             record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
@@ -664,7 +478,7 @@ async def download_file(
     connector: str,
     token: str,
     signed_url_handler=Depends(Provide[ConnectorAppContainer.signed_url_handler]),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Optional[dict | StreamingResponse]:
     try:
         logger.info(f"Downloading file {record_id} with connector {connector}")
@@ -684,12 +498,12 @@ async def download_file(
             )
 
         # Get org details to determine account type
-        org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+        org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Get record details
-        record = await arango_service.get_record_by_id(
+        record = await graph_provider.get_record_by_id(
             record_id
         )
         if not record:
@@ -697,7 +511,7 @@ async def download_file(
 
         connector_id = record.connector_id
         # Get connector instance to check scope
-        connector_instance = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+        connector_instance = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
         connector_type = connector_instance.get("type", None)
         if connector_type is None:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Connector not found")
@@ -739,7 +553,7 @@ async def stream_record(
     request: Request,
     record_id: str,
     convertTo: str = Query(None, description="Convert file to this format"),
-    arango_service: BaseArangoService = Depends(Provide[ConnectorAppContainer.arango_service]),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> Optional[dict | StreamingResponse]:
     """
@@ -775,12 +589,11 @@ async def stream_record(
             logger.error("Unexpected error during token validation: %s", str(e))
             raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
 
-        org_task = arango_service.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = arango_service.get_record_by_id(
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record_task = graph_provider.get_record_by_id(
             record_id
         )
         org, record = await asyncio.gather(org_task, record_task)
-
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
         if not record:
@@ -790,13 +603,13 @@ async def stream_record(
         if record and record.org_id and record.org_id != org_id:
             logger.warning(f"OrgId mismatch: JWT has {org_id}, but record has {record.org_id}. Using record's org_id.")
             org_id = record.org_id
-            org = await arango_service.get_document(org_id, CollectionNames.ORGS.value)
+            org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
             if not org:
                 raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         # Permission check: Verify user has access to this record
         # This handles both KB-level and direct record permissions
-        access_check = await arango_service.check_record_access_with_details(user_id, org_id, record_id)
+        access_check = await graph_provider.check_record_access_with_details(user_id, org_id, record_id)
         if not access_check:
             logger.warning(f"User {user_id} does not have access to record {record_id}")
             raise HTTPException(
@@ -963,75 +776,6 @@ async def get_record_stream(request: Request, file: UploadFile = File(...)) -> S
 
     raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid conversion request")
 
-
-async def get_admin_webhook_handler(request: Request) -> Optional[AdminWebhookHandler]:
-    try:
-        container: ConnectorAppContainer = request.app.container
-        admin_webhook_handler = container.admin_webhook_handler()
-        return admin_webhook_handler
-    except Exception as e:
-        logger.warning(f"Failed to get admin webhook handler: {str(e)}")
-        return None
-
-
-@router.post("/admin/webhook")
-@inject
-async def handle_admin_webhook(request: Request, background_tasks: BackgroundTasks) -> Optional[Dict[str, Any]]:
-    """Handle incoming webhook notifications from Google Workspace Admin"""
-    try:
-        verifier = WebhookAuthVerifier(logger)
-        if not await verifier.verify_request(request):
-            raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="Unauthorized webhook request")
-
-        admin_webhook_handler = await get_admin_webhook_handler(request)
-
-        if admin_webhook_handler is None:
-            logger.warning(
-                "Admin webhook handler not yet initialized - skipping webhook processing"
-            )
-            return {
-                "status": "skipped",
-                "message": "Webhook handler not yet initialized",
-            }
-
-        # Try to get the request body, handle empty body case
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            # This might be a verification request
-            logger.info(
-                "Received request with empty/invalid JSON body - might be verification request"
-            )
-            return {"status": "accepted", "message": "Verification request received"}
-
-        logger.info("📥 Incoming admin webhook request: %s", body)
-
-        # Get the event type from the events array
-        events = body.get("events", [])
-        if not events:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value, detail="No events found in webhook body"
-            )
-
-        event_type = events[0].get("name")  # We'll process the first event
-        if not event_type:
-            raise HTTPException(
-                status_code=HttpStatusCode.BAD_REQUEST.value, detail="Missing event name in webhook body"
-            )
-
-        # Process notification in background
-        background_tasks.add_task(
-            admin_webhook_handler.process_notification, event_type, body
-        )
-        return {"status": "accepted"}
-
-    except Exception as e:
-        logger.error("Error processing webhook: %s", str(e))
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=str(e)
-        )
-
-
 async def convert_to_pdf(file_path: str, temp_dir: str) -> str:
     """
     Convert a file to PDF using LibreOffice.
@@ -1197,165 +941,11 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-
-async def get_service_account_credentials(org_id: str, user_id: str, logger, arango_service, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
-    """Helper function to get service account credentials"""
-    try:
-        service_creds_lock = container.service_creds_lock()
-
-        async with service_creds_lock:
-            if not hasattr(container, 'service_creds_cache'):
-                container.service_creds_cache = {}
-                logger.info("Created service credentials cache")
-
-            # Get user email
-            user = await arango_service.get_user_by_user_id(user_id)
-            if not user:
-                raise Exception(f"User not found: {user_id}")
-
-            cache_key = f"{org_id}_{user_id}_{connector_id}"
-            logger.info(f"Service account cache key: {cache_key}")
-
-            if cache_key in container.service_creds_cache:
-                logger.info(f"Service account cache hit: {cache_key}")
-                credentials = container.service_creds_cache[cache_key]
-                cached_email = credentials._subject
-
-                if cached_email == user["email"]:
-                    logger.info(f"Cached credentials are valid for {cache_key}")
-                    return container.service_creds_cache[cache_key]
-                else:
-                    # Remove expired credentials from cache
-                    logger.info(f"Removing expired credentials from cache: {cache_key}")
-                    container.service_creds_cache.pop(cache_key, None)
-
-            # Cache miss - create new credentials
-            logger.info(f"Service account cache miss: {cache_key}. Creating new credentials.")
-
-            # Create new credentials
-            SCOPES = GOOGLE_CONNECTOR_ENTERPRISE_SCOPES
-            credentials_json = await google_token_handler.get_enterprise_token(connector_id=connector_id)
-            credentials = service_account.Credentials.from_service_account_info(
-                credentials_json, scopes=SCOPES
-            )
-            credentials = credentials.with_subject(user["email"])
-
-            # Cache the credentials
-            container.service_creds_cache[cache_key] = credentials
-            logger.info(f"Cached new service credentials for {cache_key}")
-
-            return credentials
-
-    except Exception as e:
-        logger.error(f"Error getting service account credentials: {str(e)}")
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing service account credentials"
-        )
-
-async def get_user_credentials(org_id: str, user_id: str, logger, google_token_handler, container,connector: str, connector_id: str) -> google.oauth2.credentials.Credentials:
-    """Helper function to get cached user credentials"""
-    try:
-        cache_key = f"{org_id}_{user_id}_{connector_id}"
-        user_creds_lock = container.user_creds_lock()
-
-        async with user_creds_lock:
-            if not hasattr(container, 'user_creds_cache'):
-                container.user_creds_cache = {}
-                logger.info("Created user credentials cache")
-
-            logger.info(f"User credentials cache key: {cache_key}")
-
-            if cache_key in container.user_creds_cache:
-                creds = container.user_creds_cache[cache_key]
-                logger.info(f"Expiry time: {creds.expiry}")
-                expiry = creds.expiry
-
-                try:
-                    now = datetime.now(timezone.utc).replace(tzinfo=None)
-                    # Add 5 minute buffer before expiry to ensure we refresh early
-                    buffer_time = timedelta(minutes=5)
-
-                    if expiry and (expiry - buffer_time) > now:
-                        logger.info(f"User credentials cache hit: {cache_key}")
-                        return creds
-                    else:
-                        logger.info(f"User credentials expired or expiring soon for {cache_key}")
-                        # Remove expired credentials from cache
-                        container.user_creds_cache.pop(cache_key, None)
-                except Exception as e:
-                    logger.error(f"Failed to check credentials for {cache_key}: {str(e)}")
-                    container.user_creds_cache.pop(cache_key, None)
-            # Cache miss or expired - create new credentials
-            logger.info(f"User credentials cache miss: {cache_key}. Creating new credentials.")
-
-            # Create new credentials
-            SCOPES = await google_token_handler.get_account_scopes(connector_id=connector_id)
-            # Refresh token
-            await google_token_handler.refresh_token(connector_id=connector_id)
-            creds_data = await google_token_handler.get_individual_token(connector_id=connector_id)
-
-            if not creds_data.get("access_token"):
-                raise HTTPException(
-                    status_code=HttpStatusCode.UNAUTHORIZED.value,
-                    detail="Invalid credentials. Access token not found",
-                )
-
-            required_keys = {
-                CredentialKeys.ACCESS_TOKEN.value: "Access token not found",
-                CredentialKeys.REFRESH_TOKEN.value: "Refresh token not found",
-                CredentialKeys.CLIENT_ID.value: "Client ID not found",
-                CredentialKeys.CLIENT_SECRET.value: "Client secret not found",
-            }
-
-            for key, error_detail in required_keys.items():
-                if not creds_data.get(key):
-                    logger.error(f"Missing {key} in credentials")
-                    raise HTTPException(
-                        status_code=HttpStatusCode.UNAUTHORIZED.value,
-                        detail=f"Invalid credentials. {error_detail}",
-                    )
-
-            access_token = creds_data.get(CredentialKeys.ACCESS_TOKEN.value)
-            refresh_token = creds_data.get(CredentialKeys.REFRESH_TOKEN.value)
-            client_id = creds_data.get(CredentialKeys.CLIENT_ID.value)
-            client_secret = creds_data.get(CredentialKeys.CLIENT_SECRET.value)
-
-            new_creds = google.oauth2.credentials.Credentials(
-                token=access_token,
-                refresh_token=refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=client_id,
-                client_secret=client_secret,
-                scopes=SCOPES,
-            )
-
-            # Update token expiry time - make it timezone-naive for Google client compatibility
-            token_expiry = datetime.fromtimestamp(
-                creds_data.get("access_token_expiry_time", 0) / 1000, timezone.utc
-            ).replace(tzinfo=None)  # Convert to naive UTC for Google client compatibility
-            new_creds.expiry = token_expiry
-
-            # Cache the credentials
-            container.user_creds_cache[cache_key] = new_creds
-            logger.info(f"Cached new user credentials for {cache_key} with expiry: {new_creds.expiry}")
-
-            return new_creds
-
-    except Exception as e:
-        logger.error(f"Error getting user credentials: {str(e)}")
-        # Remove from cache if there's an error
-        if hasattr(container, 'user_creds_cache'):
-            container.user_creds_cache.pop(cache_key, None)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error accessing user credentials"
-        )
-
-
 @router.get("/api/v1/records")
 @inject
 async def get_records(
     request:Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     page: int = Query(1, ge=1, description="Page number (1-based)"),
     limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
     search: Optional[str] = None,
@@ -1381,7 +971,7 @@ async def get_records(
         org_id = request.state.user.get("orgId")
 
         logger.info(f"Looking up user by user_id: {user_id}")
-        user = await arango_service.get_user_by_user_id(user_id=user_id)
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
 
         if not user:
             logger.warning(f"⚠️ User not found for user_id: {user_id}")
@@ -1405,7 +995,7 @@ async def get_records(
         parsed_indexing_status = _parse_comma_separated_str(indexing_status)
         parsed_permissions = _parse_comma_separated_str(permissions)
 
-        records, total_count, available_filters = await arango_service.get_records(
+        records, total_count, available_filters = await graph_provider.get_records(
             user_id=user_key,
             org_id=org_id,
             skip=skip,
@@ -1464,7 +1054,7 @@ async def get_records(
 async def get_record_by_id(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Optional[Dict]:
     """
     Check if the current user has access to a specific record
@@ -1475,7 +1065,7 @@ async def get_record_by_id(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        has_access = await arango_service.check_record_access_with_details(
+        has_access = await graph_provider.check_record_access_with_details(
             user_id=user_id,
             org_id=org_id,
             record_id=record_id,
@@ -1496,7 +1086,8 @@ async def get_record_by_id(
 async def delete_record(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
     Delete a specific record with permission validation
@@ -1507,12 +1098,27 @@ async def delete_record(
         user_id = request.state.user.get("userId")
         logger.info(f"🗑️ Attempting to delete record {record_id}")
 
-        result = await arango_service.delete_record(
+        result = await graph_provider.delete_record(
             record_id=record_id,
             user_id=user_id
         )
 
         if result["success"]:
+            # Publish deletion event
+            event_data = result.get("eventData")
+            if event_data and event_data.get("payload"):
+                try:
+                    timestamp = get_epoch_timestamp_in_ms()
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": event_data["payload"]
+                    }
+                    await kafka_service.publish_event(event_data["topic"], event)
+                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+
             logger.info(f"✅ Successfully deleted record {record_id}")
             return {
                 "success": True,
@@ -1542,7 +1148,8 @@ async def delete_record(
 async def reindex_single_record(
     record_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
     Reindex a single record with permission validation.
@@ -1558,18 +1165,17 @@ async def reindex_single_record(
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
 
-        # Parse optional depth from request body
-        depth = 0  # Default: only this record
+        # Parse optional depth from request body (0 = only this record; 100/full from all-records tree)
+        depth = 0
         try:
             request_body = await request.json()
             depth = request_body.get("depth", 0)
-        except json.JSONDecodeError:
-            # No body or invalid JSON - use default depth
-            pass
+        except (json.JSONDecodeError, TypeError):
+            depth = 0
 
         logger.info(f"🔄 Attempting to reindex record {record_id} with depth {depth}")
 
-        result = await arango_service.reindex_single_record(
+        result = await graph_provider.reindex_single_record(
             record_id=record_id,
             user_id=user_id,
             org_id=org_id,
@@ -1578,6 +1184,21 @@ async def reindex_single_record(
         )
 
         if result["success"]:
+            # Publish event in router
+            event_data = result.get("eventData")
+            if event_data:
+                try:
+                    timestamp = get_epoch_timestamp_in_ms()
+                    event = {
+                        "eventType": event_data["eventType"],
+                        "timestamp": timestamp,
+                        "payload": event_data["payload"]
+                    }
+                    await kafka_service.publish_event(event_data["topic"], event)
+                    logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to publish event: {str(e)}")
+
             logger.info(f"✅ Successfully initiated reindex for record {record_id} with depth {depth}")
             return {
                 "success": True,
@@ -1585,7 +1206,7 @@ async def reindex_single_record(
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
-                "eventPublished": result.get("eventPublished"),
+                "eventPublished": event_data is not None,
                 "userRole": result.get("userRole"),
                 "depth": depth
             }
@@ -1610,10 +1231,10 @@ async def get_connector_stats_endpoint(
     request: Request,
     org_id: str,
     connector_id: str,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 )-> Dict[str, Any]:
     try:
-        result = await arango_service.get_connector_stats(org_id, connector_id)
+        result = await graph_provider.get_connector_stats(org_id, connector_id)
         logger = request.app.container.logger()
         if result["success"]:
              return {"success": True, "data": result["data"]}
@@ -1630,7 +1251,7 @@ async def get_connector_stats_endpoint(
 async def reindex_record_group(
     record_group_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
     kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Dict:
     """
@@ -1654,7 +1275,7 @@ async def reindex_record_group(
         logger.info(f"🔄 Attempting to reindex record group {record_group_id} with depth {depth}")
 
         # Get record group data and validate permissions (does not publish events)
-        result = await arango_service.reindex_record_group_records(
+        result = await graph_provider.reindex_record_group_records(
             record_group_id=record_group_id,
             depth=depth,
             user_id=user_id,
@@ -1671,6 +1292,7 @@ async def reindex_record_group(
         # Publish reindex event (router is responsible for event publishing)
         connector_id = result.get("connectorId")
         connector_name = result.get("connectorName")
+        user_key = result.get("userKey")
         depth = result.get("depth", depth)
 
         try:
@@ -1681,7 +1303,8 @@ async def reindex_record_group(
                 "orgId": org_id,
                 "recordGroupId": record_group_id,
                 "depth": depth,
-                "connectorId": connector_id
+                "connectorId": connector_id,
+                "userKey": user_key
             }
 
             # Publish event directly using KafkaService
@@ -1861,18 +1484,18 @@ def _get_config_path_for_instance(connector_id: str) -> str:
     return f"/services/connectors/{connector_id}/config"
 
 
-async def _get_settings_base_path(arango_service: BaseArangoService) -> str:
+async def _get_settings_base_path(graph_provider: IGraphDBProvider) -> str:
     """
     Determine frontend settings base path based on organization account type.
 
     Args:
-        arango_service: ArangoDB service instance
+        graph_provider: Graph DB provider instance
 
     Returns:
         Settings base path URL
     """
     try:
-        organizations = await arango_service.get_all_documents(
+        organizations = await graph_provider.get_all_documents(
             CollectionNames.ORGS.value
         )
 
@@ -1920,7 +1543,7 @@ async def get_connector_registry(
     connector_registry = request.app.state.connector_registry
     container = request.app.container
     logger = container.logger()
-    arango_service = await get_arango_service(request)
+    graph_provider = request.app.state.graph_provider
 
     try:
         # Validate scope
@@ -1936,7 +1559,7 @@ async def get_connector_registry(
         try:
             user = getattr(request.state, 'user', None)
             if user and user.get("orgId"):
-                account_type = await arango_service.get_account_type(user.get("orgId"))
+                account_type = await graph_provider.get_account_type(user.get("orgId"))
         except Exception as e:
             # If we can't get account type, log but don't fail (fail-open)
             logger.debug(f"Could not get account type: {e}")
@@ -2458,7 +2081,7 @@ async def _prepare_connector_config(
 @router.post("/api/v1/connectors/")
 async def create_connector_instance(
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Create a new connector instance.
@@ -2470,7 +2093,7 @@ async def create_connector_instance(
 
     Args:
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with created instance details including connector_id
@@ -2536,7 +2159,7 @@ async def create_connector_instance(
         # ============================================================
         account_type = None
         try:
-            account_type = await arango_service.get_account_type(org_id)
+            account_type = await graph_provider.get_account_type(org_id)
         except Exception as e:
             logger.debug(f"Could not get account type: {e}")
 
@@ -2943,7 +2566,7 @@ async def get_connector_instance_config(
 async def update_connector_instance_auth_config(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Dict[str, Any]:
     """
     Update authentication configuration for a connector instance.
@@ -3202,7 +2825,7 @@ async def update_connector_instance_auth_config(
             new_config["auth"].update(oauth_updates)
 
         if not new_config["auth"].get("connectorScope"):
-            connector_doc = await arango_service.get_document(connector_id, CollectionNames.APPS.value)
+            connector_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
             new_config["auth"]["connectorScope"] = connector_doc.get("scope", "")
 
         # Save configuration
@@ -3652,15 +3275,11 @@ async def update_connector_instance_config(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=f"Failed to update connector configuration: {str(e)}"
         )
-
-
-
-
 @router.put("/api/v1/connectors/{connector_id}/name")
 async def update_connector_instance_name(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Update the display name for a connector instance.
@@ -4149,7 +3768,7 @@ async def get_oauth_authorization_url(
     connector_id: str,
     request: Request,
     base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Get OAuth authorization URL for a connector instance.
@@ -4158,7 +3777,7 @@ async def get_oauth_authorization_url(
         connector_id: Unique instance key
         request: FastAPI request object
         base_url: Optional base URL for redirect
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with authorization URL and encoded state
@@ -4325,7 +3944,7 @@ async def handle_oauth_callback(
     state: Optional[str] = Query(None),
     error: Optional[str] = Query(None),
     base_url: Optional[str] = Query(None),
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Handle OAuth callback and exchange code for tokens.
@@ -4339,7 +3958,7 @@ async def handle_oauth_callback(
         state: Encoded state containing connector_id
         error: OAuth error if any
         base_url: Optional base URL for redirects
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with redirect URL and status
@@ -4349,7 +3968,7 @@ async def handle_oauth_callback(
     config_service = container.config_service()
     connector_registry = request.app.state.connector_registry
 
-    settings_base_path = await _get_settings_base_path(arango_service)
+    settings_base_path = await _get_settings_base_path(graph_provider)
     connector_id = None  # For error handling
 
     try:
@@ -4541,7 +4160,7 @@ async def handle_oauth_callback(
                 from app.connectors.core.base.token_service.token_refresh_service import (
                     TokenRefreshService,
                 )
-                temp_service = TokenRefreshService(config_service, arango_service)
+                temp_service = TokenRefreshService(config_service, graph_provider)
                 await temp_service.schedule_token_refresh(connector_id, connector_type, token)
                 logger.info("✅ Scheduled token refresh using temporary service")
         except Exception as sched_err:
@@ -4871,7 +4490,7 @@ async def _get_fallback_filter_options(
 async def get_connector_instance_filters(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Get filter options for a connector instance.
@@ -4879,7 +4498,7 @@ async def get_connector_instance_filters(
     Args:
         connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with available filter options
@@ -4982,7 +4601,7 @@ async def get_filter_field_options(
     limit: int = Query(20, ge=1, le=100, description="Items per page"),
     search: Optional[str] = Query(None, description="Search text to filter options"),
     cursor: Optional[str] = Query(None, description="Cursor for cursor-based pagination (API-specific)"),
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Get dynamic options for a specific filter field with pagination support.
@@ -4997,7 +4616,7 @@ async def get_filter_field_options(
         page: Page number for pagination (default: 1)
         limit: Number of items per page (default: 20, max: 100)
         search: Optional search text to filter options
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with options and pagination info:
@@ -5077,7 +4696,7 @@ async def get_filter_field_options(
                 connector_id=connector_id,
                 connector_type=connector_type,
                 connector_registry=connector_registry,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
                 user_id=user_context["user_id"],
                 org_id=user_context["org_id"],
                 is_admin=user_context["is_admin"],
@@ -5151,7 +4770,7 @@ def _find_filter_field_config(
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Save filter selections for a connector instance.
@@ -5159,7 +4778,7 @@ async def save_connector_instance_filters(
     Args:
         connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with success status
@@ -5238,7 +4857,7 @@ async def _ensure_connector_initialized(
     connector_id: str,
     connector_type: str,
     connector_registry,
-    arango_service: BaseArangoService,
+    graph_provider: IGraphDBProvider,
     user_id: str,
     org_id: str,
     is_admin: bool,
@@ -5252,7 +4871,7 @@ async def _ensure_connector_initialized(
         connector_id: Connector instance ID
         connector_type: Connector type (e.g., "ONEDRIVE", "SHAREPOINT ONLINE")
         connector_registry: Connector registry instance
-        arango_service: ArangoDB service
+        graph_provider: Graph DB provider
         user_id: User ID
         org_id: Organization ID
         is_admin: Whether user is admin
@@ -5278,8 +4897,9 @@ async def _ensure_connector_initialized(
     logger.info(f"Initializing connector {connector_id} before use")
     try:
         config_service = container.config_service()
-        # Use the container's data store (GraphDataStore with graph_provider)
-        data_store_provider = await container.data_store()
+        # Create data_store manually using already-resolved graph_provider to avoid coroutine reuse
+        from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+        data_store_provider = GraphDataStore(logger, graph_provider)
 
         connector_type = connector_type.replace(" ", "").lower()
 
@@ -5383,7 +5003,7 @@ async def _ensure_connector_initialized(
 async def toggle_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
 ) -> Dict[str, Any]:
     """
     Toggle connector instance active status and trigger sync events.
@@ -5391,7 +5011,7 @@ async def toggle_connector_instance(
     Args:
         connector_id: Unique instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with success status
@@ -5424,7 +5044,7 @@ async def toggle_connector_instance(
 
 
         # Get organization
-        org = await arango_service.get_document(
+        org = await graph_provider.get_document(
             user_info["orgId"],
             CollectionNames.ORGS.value
         )
@@ -5538,7 +5158,7 @@ async def toggle_connector_instance(
                 connector_id=connector_id,
                 connector_type=connector_type,
                 connector_registry=connector_registry,
-                arango_service=arango_service,
+                graph_provider=graph_provider,
                 user_id=user_id,
                 org_id=org_id,
                 is_admin=is_admin,
@@ -5629,7 +5249,7 @@ async def toggle_connector_instance(
 async def delete_connector_instance(
     connector_id: str,
     request: Request,
-    arango_service: BaseArangoService = Depends(get_arango_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Dict[str, Any]:
     """
     Delete a connector instance and all its related data.
@@ -5649,7 +5269,7 @@ async def delete_connector_instance(
     Args:
         connector_id: Unique connector instance key
         request: FastAPI request object
-        arango_service: Injected ArangoDB service
+        graph_provider: Injected graph DB provider
 
     Returns:
         Dictionary with deletion statistics
@@ -5727,17 +5347,18 @@ async def delete_connector_instance(
             # Continue with deletion - data cleanup is more important than event publishing
             # Manual cleanup of sync services may be needed if this event fails
 
-        # 5. Delete from ArangoDB (returns records for Qdrant cleanup)
-        deletion_result = await arango_service.delete_connector_instance(
+        # 5. Delete from graph database (returns records for Qdrant cleanup)
+        deletion_result = await graph_provider.delete_connector_instance(
             connector_id=connector_id,
             org_id=org_id
         )
 
         if not deletion_result.get("success"):
-            logger.error(f"Failed to delete connector data: {deletion_result.get('error')}")
+            error_msg = deletion_result.get("error", "Unknown error occurred during deletion")
+            logger.error(f"Failed to delete connector data: {error_msg}")
             raise HTTPException(
                 status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=deletion_result.get("error", "Failed to delete connector data")
+                detail=f"Failed to delete connector data: {error_msg}"
             )
 
         # 6. Publish BULK_DELETE_RECORDS event to Kafka for Qdrant cleanup

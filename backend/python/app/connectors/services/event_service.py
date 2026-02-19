@@ -9,8 +9,8 @@ from dependency_injector import providers
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.services.base_arango_service import BaseArangoService
 from app.containers.connector import ConnectorAppContainer
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class EventService:
@@ -20,10 +20,10 @@ class EventService:
         self,
         logger: logging.Logger,
         app_container: ConnectorAppContainer,
-        arango_service: BaseArangoService,
+        graph_provider: IGraphDBProvider,
     ) -> None:
         self.logger = logger
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.app_container = app_container
 
     def _get_connector(self, connector_id: str) -> Optional[BaseConnector]:
@@ -79,7 +79,11 @@ class EventService:
 
             self.logger.info(f"Initializing {connector_name} init sync service for org_id: {org_id} and connector_id: {connector_id}")
             config_service = self.app_container.config_service()
-            data_store_provider = await self.app_container.data_store()
+            # Create data_store manually using already-resolved graph_provider (arango_service) to avoid coroutine reuse
+            from app.connectors.core.base.data_store.graph_data_store import (
+                GraphDataStore,
+            )
+            data_store_provider = GraphDataStore(self.logger, self.graph_provider)
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
                 name=connector_name,
@@ -121,16 +125,37 @@ class EventService:
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
+            full_sync = payload.get("fullSync", False)
             if not org_id:
                 raise ValueError("orgId is required")
 
-            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}")
+            self.logger.info(f"Starting {connector_name} sync service for org_id: {org_id}, full_sync: {full_sync}")
 
             connector = self._get_connector(connector_id)
             if not connector:
                 self.logger.error(f"{connector_name.capitalize()} {connector_id} connector not initialized")
                 return False
 
+            # If fullSync flag is set, delete all sync points for this connector
+            if full_sync:
+                self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
+                try:
+                    from app.config.constants.arangodb import CollectionNames
+                    deleted_count, success = await self.graph_provider._delete_nodes_by_connector_id(
+                        transaction=None,
+                        connector_id=connector_id,
+                        collection=CollectionNames.SYNC_POINTS.value
+                    )
+                    if success:
+                        self.logger.info(f"✅ Successfully deleted {deleted_count} sync points for connector {connector_id}")
+                    else:
+                        self.logger.warning(f"⚠️ Failed to delete sync points for connector {connector_id}, continuing with sync")
+                except Exception as sync_point_error:
+                    self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {str(sync_point_error)}")
+                    # Continue with sync even if sync point deletion fails
+                    self.logger.warning("Continuing with sync despite sync point deletion failure")
+
+            # Run the sync
             asyncio.create_task(connector.run_sync())
             self.logger.info(f"Started sync for {connector_name} {connector_id} connector")
             return True
@@ -155,6 +180,7 @@ class EventService:
             depth = payload.get("depth", 0)
             status_filters = payload.get("statusFilters", ["FAILED"])
             connector_id = payload.get("connectorId")
+            user_key = payload.get("userKey")
 
             if not org_id:
                 raise ValueError("orgId is required")
@@ -193,28 +219,29 @@ class EventService:
                 # Fetch batch of typed Record instances based on mode
                 if record_id is not None:
                     # Mode 1: Reindex a folder and its children
-                    records = await self.arango_service.get_records_by_parent_record(
+                    records = await self.graph_provider.get_records_by_parent_record(
                         parent_record_id=record_id,
                         connector_id=connector_id,
                         org_id=org_id,
                         depth=depth,
-                        include_parent=True,
+                        user_key=user_key,
                         limit=batch_size,
                         offset=offset
                     )
                 elif record_group_id is not None:
                     # Mode 2: Reindex records in a record group
-                    records = await self.arango_service.get_records_by_record_group(
+                    records = await self.graph_provider.get_records_by_record_group(
                         record_group_id=record_group_id,
                         connector_id=connector_id,
                         org_id=org_id,
                         depth=depth,
+                        user_key=user_key,
                         limit=batch_size,
                         offset=offset
                     )
                 else:
                     # Mode 3: Reindex by status
-                    records = await self.arango_service.get_records_by_status(
+                    records = await self.graph_provider.get_records_by_status(
                         org_id=org_id,
                         connector_id=connector_id,
                         status_filters=status_filters,

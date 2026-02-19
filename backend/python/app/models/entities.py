@@ -197,6 +197,7 @@ class Record(BaseModel):
     preview_renderable: Optional[bool] = True
     is_shared: Optional[bool] = False
     is_shared_with_me: Optional[bool] = False
+    shared_with_me_record_group_id: Optional[str] = None
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
 
@@ -365,14 +366,14 @@ class FileRecord(Record):
             parent_node_id=arango_base_record.get("parentNodeId", None),
             is_file=arango_base_file_record.get("isFile", True),
             size_in_bytes=size if (size := arango_base_record.get("sizeInBytes")) is not None else arango_base_file_record.get("sizeInBytes", None),
-            extension=arango_base_file_record["extension"],
+            extension=arango_base_file_record.get("extension"),
             path=arango_base_file_record.get("path"),
-            etag=arango_base_file_record["etag"],
-            ctag=arango_base_file_record["ctag"],
-            quick_xor_hash=arango_base_file_record["quickXorHash"],
-            crc32_hash=arango_base_file_record["crc32Hash"],
-            sha1_hash=arango_base_file_record["sha1Hash"],
-            sha256_hash=arango_base_file_record["sha256Hash"],
+            etag=arango_base_file_record.get("etag"),
+            ctag=arango_base_file_record.get("ctag"),
+            quick_xor_hash=arango_base_file_record.get("quickXorHash"),
+            crc32_hash=arango_base_file_record.get("crc32Hash"),
+            sha1_hash=arango_base_file_record.get("sha1Hash"),
+            sha256_hash=arango_base_file_record.get("sha256Hash"),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -1062,18 +1063,18 @@ class RecordGroup(BaseModel):
         return RecordGroup(
             id=arango_base_record_group.get("id", arango_base_record_group.get("_key")),
             org_id=arango_base_record_group.get("orgId", ""),
-            name=arango_base_record_group["groupName"],
+            name=arango_base_record_group.get("groupName", None),
             short_name=arango_base_record_group.get("shortName", None),
             description=arango_base_record_group.get("description", None),
-            external_group_id=arango_base_record_group["externalGroupId"],
+            external_group_id=arango_base_record_group.get("externalGroupId", None),
             parent_external_group_id=arango_base_record_group.get("parentExternalGroupId", None),
-            connector_name=arango_base_record_group["connectorName"],
+            connector_name=arango_base_record_group.get("connectorName", Connectors.KNOWLEDGE_BASE),
             connector_id=arango_base_record_group.get("connectorId"),
-            group_type=arango_base_record_group["groupType"],
             is_internal=arango_base_record_group.get("isInternal", False),
+            group_type=arango_base_record_group.get("groupType", RecordGroupType.KB),
             web_url=arango_base_record_group.get("webUrl", None),
-            created_at=arango_base_record_group["createdAtTimestamp"],
-            updated_at=arango_base_record_group["updatedAtTimestamp"],
+            created_at=arango_base_record_group.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
+            updated_at=arango_base_record_group.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp", None),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp", None),
         )

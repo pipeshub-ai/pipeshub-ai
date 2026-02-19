@@ -30,13 +30,14 @@ class IndexingAppContainer(BaseAppContainer):
     kafka_service = providers.Singleton(
         KafkaService, logger=logger, config_service=config_service
     )
-    arango_service = providers.Resource(
-        container_utils.create_arango_service,
+
+    # Graph Database Provider via Factory (HTTP mode - fully async)
+    graph_provider = providers.Resource(
+        container_utils.create_graph_provider,
         logger=logger,
-        arango_client=arango_client,
         config_service=config_service,
-        kafka_service=kafka_service,
     )
+
     vector_db_service = providers.Resource(
         container_utils.get_vector_db_service,
         config_service=config_service,
@@ -45,14 +46,14 @@ class IndexingAppContainer(BaseAppContainer):
         container_utils.create_indexing_pipeline,
         logger=logger,
         config_service=config_service,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         vector_db_service=vector_db_service,
     )
 
     document_extractor = providers.Resource(
         container_utils.create_document_extractor,
         logger=logger,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         config_service=config_service,
     )
 
@@ -60,19 +61,19 @@ class IndexingAppContainer(BaseAppContainer):
         container_utils.create_blob_storage,
         logger=logger,
         config_service=config_service,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
     )
 
     arango = providers.Resource(
         container_utils.create_arango,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         logger=logger,
     )
 
     vector_store = providers.Resource(
         container_utils.create_vector_store,
         logger=logger,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         config_service=config_service,
         vector_db_service=vector_db_service,
         collection_name=VECTOR_DB_COLLECTION_NAME,
@@ -84,19 +85,19 @@ class IndexingAppContainer(BaseAppContainer):
         arango=arango,
         blob_storage=blob_storage,
         vector_store=vector_store,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
     )
 
     # Parsers
     parsers = providers.Resource(container_utils.create_parsers, logger=logger)
 
-    # Processor - depends on indexing_pipeline, and arango_service
+    # Processor - depends on indexing_pipeline and graph_provider
     processor = providers.Resource(
         container_utils.create_processor,
         logger=logger,
         config_service=config_service,
         indexing_pipeline=indexing_pipeline,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         parsers=parsers,
         document_extractor=document_extractor,
         sink_orchestrator=sink_orchestrator,
@@ -106,7 +107,7 @@ class IndexingAppContainer(BaseAppContainer):
         container_utils.create_event_processor,
         logger=logger,
         processor=processor,
-        arango_service=arango_service,
+        graph_provider=graph_provider,
         config_service=config_service,
     )
 
@@ -127,12 +128,15 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         logger.info("Checking Connector service health before startup")
         await Health.health_check_connector_service(container)
 
-        # Ensure ArangoDB service is initialized (connection is handled in the resource factory)
-        logger.info("Ensuring ArangoDB service is initialized")
-        arango_service = await container.arango_service()
-        if not arango_service:
-            raise Exception("Failed to initialize ArangoDB service")
-        logger.info("✅ ArangoDB service initialized")
+        # Ensure Graph Database Provider is initialized (connection is handled in the resource factory)
+        logger.info("Ensuring Graph Database Provider is initialized")
+        graph_provider = await container.graph_provider()
+        if not graph_provider:
+            raise Exception("Failed to initialize Graph Database Provider")
+
+        # Store the resolved graph_provider in the container to avoid coroutine reuse
+        container._graph_provider = graph_provider
+        logger.info("✅ Graph Database Provider initialized and connected")
 
         await Health.system_health_check(container)
         return True

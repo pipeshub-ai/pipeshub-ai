@@ -720,8 +720,20 @@ class WebConnector(BaseConnector):
 
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex records - not implemented for Web connector yet."""
-        self.logger.warning("Reindex not implemented for Web connector")
-        pass
+
+        try:
+            if not record_results:
+                self.logger.info("No records to reindex")
+                return
+
+            self.logger.info(f"Starting reindex for {len(record_results)} Web records")
+
+            await self.data_entities_processor.reindex_existing_records(record_results)
+            self.logger.info(f"Published reindex events for {len(record_results)} records")
+
+        except Exception as e:
+            self.logger.error(f"Error during Web reindex: {e}", exc_info=True)
+            raise
 
     async def get_filter_options(
         self,

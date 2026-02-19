@@ -177,7 +177,6 @@ class S3Client(IClient):
         Args:
             logger: Logger instance
             config_service: Configuration service instance
-            arango_service: ArangoDB service instance (optional)
             org_id: Organization ID (optional)
             user_id: User ID (optional)
         Returns:

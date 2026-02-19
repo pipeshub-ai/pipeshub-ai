@@ -1,9 +1,10 @@
 # router.py fixes - Add return type annotations
 from typing import Any, Dict, List, Optional, Union
 
-from dependency_injector.wiring import Provide, inject
+from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from app.connectors.services.kafka_service import KafkaService
 from app.connectors.sources.localKB.api.models import (
     CreateFolderResponse,
     CreateKnowledgeBaseResponse,
@@ -25,6 +26,26 @@ from app.connectors.sources.localKB.api.models import (
 )
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
 from app.containers.connector import ConnectorAppContainer
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+
+async def get_kb_service(request: Request) -> KnowledgeBaseService:
+    """
+    Resolve KnowledgeBaseService with graph_provider and kafka_service.
+    KB service is created per-request since it depends on async graph_provider.
+    """
+    container: ConnectorAppContainer = request.app.container
+    logger = container.logger()
+    graph_provider = request.app.state.graph_provider
+    kafka_service = container.kafka_service()
+    return KnowledgeBaseService(logger=logger, graph_provider=graph_provider, kafka_service=kafka_service)
+
+
+async def get_kafka_service(request: Request) -> KafkaService:
+    """Get KafkaService from container."""
+    container: ConnectorAppContainer = request.app.container
+    return container.kafka_service()
+
 
 # Constants for HTTP status codes
 HTTP_MIN_STATUS = 100
@@ -50,7 +71,7 @@ def _parse_comma_separated_str(value: Optional[str]) -> Optional[List[str]]:
 @inject
 async def create_knowledge_base(
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> CreateKnowledgeBaseResponse:
     try:
         try:
@@ -60,12 +81,21 @@ async def create_knowledge_base(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid request body"
             )
+
+        # Validate required field - accept both "name" and "kbName" for compatibility
+        name = body.get("name") or body.get("kbName")
+        if not name or not isinstance(name, str) or not name.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Knowledge base name is required (use 'name' or 'kbName' field)"
+            )
+
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
         result = await kb_service.create_knowledge_base(
             user_id=user_id,
             org_id=org_id,
-            name=body.get("name"),
+            name=name.strip(),
         )
 
         if not result or result.get("success") is False:
@@ -103,7 +133,7 @@ async def list_user_knowledge_bases(
     permissions: Optional[str] = Query(None, description="Filter by permission roles"),
     sort_by: str = Query("name", description="Sort field"),
     sort_order: str = Query("asc", description="Sort order (asc/desc)"),
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[ListKnowledgeBaseResponse, Dict[str, Any]]:
     try:
         # Parse comma-separated string into list
@@ -150,7 +180,7 @@ async def list_user_knowledge_bases(
 async def get_knowledge_base(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[KnowledgeBaseResponse, Dict[str, Any]]:
     try :
         user_id = request.state.user.get("userId")
@@ -186,7 +216,7 @@ async def get_knowledge_base(
 async def update_knowledge_base(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     try:
         user_id = request.state.user.get("userId")
@@ -228,9 +258,12 @@ async def update_knowledge_base(
 async def delete_knowledge_base(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> SuccessResponse:
     try:
+        container = request.app.container
+        logger = container.logger()
         user_id = request.state.user.get("userId")
         result = await kb_service.delete_knowledge_base(kb_id=kb_id, user_id=user_id)
         if not result or result.get("success") is False:
@@ -240,6 +273,28 @@ async def delete_knowledge_base(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        # Publish batch deletion events
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish deletion events: {str(e)}")
+
         return SuccessResponse(message="Knowledge base deleted successfully")
 
     except HTTPException as he:
@@ -260,7 +315,7 @@ async def delete_knowledge_base(
 async def create_records_in_kb(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateRecordsResponse, Dict[str, Any]]:
     try:
         user_id = request.state.user.get("userId")
@@ -309,7 +364,8 @@ async def create_records_in_kb(
 async def upload_records_to_kb(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Union[UploadRecordsinKBResponse, Dict[str, Any]]:
     """
     ⭐ UNIFIED: Upload records to KB root using consolidated service
@@ -364,6 +420,29 @@ async def upload_records_to_kb(
                 detail=error_reason
             )
 
+        # Publish batch events
+        container = request.app.container
+        logger = container.logger()
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish upload events: {str(e)}")
+
         # Return unified response
         return result
 
@@ -390,7 +469,8 @@ async def upload_records_to_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Union[UploadRecordsinFolderResponse, Dict[str, Any]]:
     """
     ⭐ UNIFIED: Upload records to specific folder using consolidated service
@@ -445,6 +525,29 @@ async def upload_records_to_folder(
                 detail=error_reason
             )
 
+        # Publish batch events
+        container = request.app.container
+        logger = container.logger()
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish event for record: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish upload events: {str(e)}")
+
         # Return unified response
         return result
 
@@ -465,7 +568,7 @@ async def upload_records_to_folder(
 async def create_folder_in_kb_root(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateFolderResponse, Dict[str, Any]]:
     """Create folder in KB root"""
     try:
@@ -478,9 +581,16 @@ async def create_folder_in_kb_root(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        # Accept both "name" and "folderName" for compatibility
+        folder_name = body.get("name") or body.get("folderName")
+        if not folder_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Folder name is required (use 'name' or 'folderName' field)"
+            )
         result = await kb_service.create_folder_in_kb(
             kb_id=kb_id,
-            name=body.get("name"),
+            name=folder_name,
             user_id=user_id,
             org_id=org_id
         )
@@ -510,7 +620,7 @@ async def create_nested_folder(
     kb_id: str,
     parent_folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateFolderResponse, Dict[str, Any]]:
     """Create folder inside another folder"""
     try:
@@ -523,10 +633,17 @@ async def create_nested_folder(
             )
         user_id = request.state.user.get("userId")
         org_id = request.state.user.get("orgId")
+        # Accept both "name" and "folderName" for compatibility
+        folder_name = body.get("name") or body.get("folderName")
+        if not folder_name:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Folder name is required (use 'name' or 'folderName' field)"
+            )
         result = await kb_service.create_nested_folder(
             kb_id=kb_id,
             parent_folder_id=parent_folder_id,
-            name=body.get("name"),
+            name=folder_name,
             user_id=user_id,
             org_id=org_id
         )
@@ -556,7 +673,7 @@ async def get_folder_contents(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[FolderContentsResponse, Dict[str, Any]]:
     try:
         user_id = request.state.user.get("userId")
@@ -590,7 +707,7 @@ async def update_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     try:
         try:
@@ -630,9 +747,12 @@ async def delete_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> SuccessResponse:
     try:
+        container = request.app.container
+        logger = container.logger()
         user_id = request.state.user.get("userId")
         result = await kb_service.delete_folder(kb_id=kb_id, folder_id=folder_id, user_id=user_id)
         if not result or result.get("success") is False:
@@ -642,6 +762,29 @@ async def delete_folder(
                 status_code=error_code if HTTP_MIN_STATUS <= error_code < HTTP_MAX_STATUS else HTTP_INTERNAL_SERVER_ERROR,
                 detail=error_reason
             )
+
+        # Publish batch deletion events
+        event_data = result.get("eventData")
+        logger.info(f"🗑️ Event data: {event_data}")
+        if event_data and event_data.get("payloads"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                successful_events = 0
+                for payload in event_data["payloads"]:
+                    try:
+                        event = {
+                            "eventType": event_data["eventType"],
+                            "timestamp": timestamp,
+                            "payload": payload
+                        }
+                        await kafka_service.publish_event(event_data["topic"], event)
+                        successful_events += 1
+                    except Exception as e:
+                        logger.error(f"❌ Failed to publish deletion event: {str(e)}")
+                logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} deletion events for folder {folder_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish folder deletion events: {str(e)}")
+
         return SuccessResponse(message="Folder deleted successfully")
 
     except HTTPException as he:
@@ -672,7 +815,7 @@ async def list_kb_records(
     date_to: Optional[int] = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
@@ -710,7 +853,7 @@ async def get_kb_children(
     indexing_status: Optional[List[str]] = None,
     sort_by: str = "name",
     sort_order: str = "asc",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
     """
     Get KB root contents (folders and records) with pagination and filters
@@ -769,7 +912,7 @@ async def get_folder_children(
     indexing_status: Optional[List[str]] = None,
     sort_by: str = "name",
     sort_order: str = "asc",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
     """
     Get folder contents (subfolders and records) with pagination and filters
@@ -819,7 +962,7 @@ async def get_folder_children(
 async def create_kb_permissions(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreatePermissionsResponse, Dict[str, Any]]:
     try:
         try:
@@ -877,7 +1020,7 @@ async def create_kb_permissions(
 async def update_kb_permission(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[UpdatePermissionResponse, Dict[str, Any]]:
     try:
         try:
@@ -942,7 +1085,7 @@ async def update_kb_permission(
 async def remove_kb_permission(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[RemovePermissionResponse, Dict[str, Any]]:
     """
     Remove permissions for users and teams from a knowledge base
@@ -989,7 +1132,7 @@ async def remove_kb_permission(
 async def list_kb_permissions(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[ListPermissionsResponse, Dict[str, Any]]:
     try:
         user_id = request.state.user.get("userId")
@@ -1023,7 +1166,7 @@ async def create_records_in_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[CreateRecordsResponse, Dict[str, Any]]:
     try:
         try:
@@ -1072,9 +1215,12 @@ async def create_records_in_folder(
 async def update_record(
     record_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
+    kafka_service: KafkaService = Depends(get_kafka_service),
 ) -> Union[UpdateRecordResponse, Dict[str, Any]]:
     try:
+        container = request.app.container
+        logger = container.logger()
         try:
             body = await request.json()
         except Exception:
@@ -1097,7 +1243,100 @@ async def update_record(
                 detail=error_reason
             )
 
-        return result
+        # Publish update event
+        event_data = result.get("eventData")
+        if event_data and event_data.get("payload"):
+            try:
+                timestamp = get_epoch_timestamp_in_ms()
+                event = {
+                    "eventType": event_data["eventType"],
+                    "timestamp": timestamp,
+                    "payload": event_data["payload"]
+                }
+                await kafka_service.publish_event(event_data["topic"], event)
+                logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to publish update event: {str(e)}")
+
+        # Enrich response with required fields for UpdateRecordResponse
+        graph_provider = request.app.state.graph_provider
+        try:
+            # Get KB context for the record
+            kb_context = await graph_provider._get_kb_context_for_record(record_id)
+            if not kb_context:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Knowledge base not found for record"
+                )
+
+            kb_id = kb_context.get("kb_id")
+            if not kb_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Knowledge base ID not found for record"
+                )
+
+            # Get user permission
+            user_key = user_id
+            user = await graph_provider.get_user_by_user_id(user_id)
+            if user:
+                user_key = user.get("_key") or user.get("id") or user_id
+
+            user_permission = await graph_provider.get_user_kb_permission(kb_id, user_key)
+            if not user_permission:
+                user_permission = "NONE"
+
+            # Get KB information
+            kb_info = await graph_provider.get_knowledge_base(kb_id, user_key)
+            if not kb_info:
+                # Fallback to basic KB info from context
+                kb_info = {
+                    "id": kb_id,
+                    "name": kb_context.get("kb_name", ""),
+                    "createdAtTimestamp": None,
+                    "updatedAtTimestamp": None,
+                    "createdBy": None,
+                    "userRole": user_permission,
+                    "folders": []
+                }
+
+            # Determine location (folder or kb_root)
+            folder_mime_types = ["application/vnd.google-apps.folder", "application/x-directory"]
+            parent_info = await graph_provider.get_knowledge_hub_parent_node(
+                record_id,
+                folder_mime_types=folder_mime_types
+            )
+
+            location = "kb_root"
+            if parent_info and parent_info.get("nodeType") == "folder":
+                location = "folder"
+
+            # Determine if file was updated
+            file_updated = body.get("fileMetadata") is not None
+
+            # Build enriched response with only required fields
+            enriched_result = {
+                **result,
+                "fileUpdated": file_updated,
+                "location": location,
+                "kb": kb_info,
+                "userPermission": user_permission,
+            }
+
+            return enriched_result
+
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Failed to enrich update record response: {str(e)}")
+            # Return with required fields even if enrichment fails
+            return {
+                **result,
+                "fileUpdated": body.get("fileMetadata") is not None,
+                "location": "kb_root",
+                "kb": {},
+                "userPermission": "NONE",
+            }
 
     except HTTPException as he:
         raise he
@@ -1120,7 +1359,7 @@ async def update_record(
 async def delete_records_in_kb(
     kb_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[DeleteRecordResponse, Dict[str, Any]]:
     try:
         try:
@@ -1169,7 +1408,7 @@ async def delete_record_in_folder(
     kb_id: str,
     folder_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Union[DeleteRecordResponse, Dict[str, Any]]:
     try:
         try:
@@ -1226,7 +1465,7 @@ async def list_all_records(
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
     source: str = "all",
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> Dict[str, Any]:
 
     # Parse comma-separated strings into lists
@@ -1277,7 +1516,7 @@ async def move_record(
     kb_id: str,
     record_id: str,
     request: Request,
-    kb_service: KnowledgeBaseService = Depends(Provide[ConnectorAppContainer.kb_service]),
+    kb_service: KnowledgeBaseService = Depends(get_kb_service),
 ) -> SuccessResponse:
     """
     Move a record (file or folder) to a different location within the same KB.

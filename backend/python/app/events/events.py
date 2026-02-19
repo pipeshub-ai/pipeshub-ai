@@ -13,15 +13,16 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EventProcessor:
-    def __init__(self, logger, processor, arango_service, config_service: ConfigurationService = None) -> None:
+    def __init__(self, logger, processor, graph_provider: IGraphDBProvider, config_service: ConfigurationService = None) -> None:
         self.logger = logger
         self.logger.info("🚀 Initializing EventProcessor")
         self.processor = processor
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.config_service = config_service
 
 
@@ -41,7 +42,7 @@ class EventProcessor:
             )
 
             docs = [doc]
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 docs, CollectionNames.RECORDS.value
             )
 
@@ -85,16 +86,16 @@ class EventProcessor:
             md5_checksum = hashlib.md5(content).hexdigest()
             doc.update({"md5Checksum": md5_checksum})
             self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
 
         if not md5_checksum:
             return False
 
-        duplicate_records = await self.arango_service.find_duplicate_records(
-            doc.get('_key'),
-            md5_checksum,
-            record_type,
-            size_in_bytes
+        duplicate_records = await self.graph_provider.find_duplicate_records(
+            record_key=doc.get('_key'),
+            md5_checksum=md5_checksum,
+            record_type=record_type,
+            size_in_bytes=size_in_bytes
         )
 
         duplicate_records = [r for r in duplicate_records if r is not None]
@@ -122,12 +123,11 @@ class EventProcessor:
                 "extractionStatus": processed_duplicate.get("extractionStatus"),
                 "lastExtractionTimestamp": get_epoch_timestamp_in_ms(),
             })
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
-
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             # Copy all relationships from the processed duplicate to this document
-            await self.arango_service.copy_document_relationships(
+            await self.graph_provider.copy_document_relationships(
                 processed_duplicate.get("_key"),
-                doc.get("_key")
+                doc.get("_key") or doc.get("id")
             )
             return True  # Duplicate handled
 
@@ -144,7 +144,7 @@ class EventProcessor:
             doc.update({
                 "indexingStatus": ProgressStatus.QUEUED.value,
             })
-            await self.arango_service.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
+            await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)
             return True  # Marked as queued
 
         self.logger.info(f"🚀 No duplicate found, proceeding with processing for {doc.get('_key')}")
@@ -183,7 +183,7 @@ class EventProcessor:
                 self.logger.error("❌ No record ID provided in event data")
                 return
 
-            record = await self.arango_service.get_document(
+            record = await self.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
 

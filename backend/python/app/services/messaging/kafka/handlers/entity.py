@@ -9,21 +9,19 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.services.base_arango_service import (
-    BaseArangoService as ArangoService,
-)
 from app.containers.connector import (
     ConnectorAppContainer,
 )
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
 class EntityEventService(BaseEventService):
     def __init__(self, logger,
-                arango_service: ArangoService,
+                graph_provider: IGraphDBProvider,
                 app_container: ConnectorAppContainer) -> None:
         self.logger = logger
-        self.arango_service = arango_service
+        self.graph_provider = graph_provider
         self.app_container = app_container
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -95,32 +93,35 @@ class EntityEventService(BaseEventService):
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
+            # Convert _key to id for provider
+            org_data["id"] = org_data.pop("_key")
+
             # Batch upsert org
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [org_data], CollectionNames.ORGS.value
             )
 
-            # Write a query to get departments with orgId == None
-            query = f"""
-                FOR d IN {CollectionNames.DEPARTMENTS.value}
-                FILTER d.orgId == null
-                RETURN d
-            """
-            cursor = self.arango_service.db.aql.execute(query) # type: ignore
-            departments = list(cursor) # type: ignore
+            # Get departments with orgId == None using provider
+            departments = await self.graph_provider.get_nodes_by_filters(
+                collection=CollectionNames.DEPARTMENTS.value,
+                filters={"orgId": None}
+            )
 
             # Create relationships between org and departments
             org_department_relations = []
             for department in departments:
+                dept_id = department.get("id") or department.get("_key")
                 relation_data = {
-                    "_from": f"{CollectionNames.ORGS.value}/{payload['orgId']}",
-                    "_to": f"{CollectionNames.DEPARTMENTS.value}/{department['_key']}",
+                    "from_id": payload["orgId"],
+                    "from_collection": CollectionNames.ORGS.value,
+                    "to_id": dept_id,
+                    "to_collection": CollectionNames.DEPARTMENTS.value,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
                 org_department_relations.append(relation_data)
 
             if org_department_relations:
-                await self.arango_service.batch_create_edges(
+                await self.graph_provider.batch_create_edges(
                     org_department_relations,
                     CollectionNames.ORG_DEPARTMENT_RELATION.value,
                 )
@@ -151,8 +152,11 @@ class EntityEventService(BaseEventService):
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
+            # Convert _key to id for provider
+            org_data["id"] = org_data.pop("_key")
+
             # Batch upsert org
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [org_data], CollectionNames.ORGS.value
             )
             self.logger.info(
@@ -174,8 +178,11 @@ class EntityEventService(BaseEventService):
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
 
+            # Convert _key to id for provider
+            org_data["id"] = org_data.pop("_key")
+
             # Batch upsert org with isActive = False
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [org_data], CollectionNames.ORGS.value
             )
             self.logger.info(
@@ -193,16 +200,17 @@ class EntityEventService(BaseEventService):
         try:
             self.logger.info(f"📥 Processing user added event: {payload}")
             # Check if user already exists by email
-            existing_user = await self.arango_service.get_user_by_email(
+            existing_user = await self.graph_provider.get_user_by_email(
                 payload["email"]
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
 
             if existing_user:
+                # existing_user is a User object, get id from it
                 user_key = existing_user.id
                 user_data = {
-                    "_key": user_key,
+                    "id": user_key,
                     "userId": payload["userId"],
                     "orgId": payload["orgId"],
                     "isActive": True,
@@ -211,7 +219,7 @@ class EntityEventService(BaseEventService):
             else:
                 user_key = str(uuid4())
                 user_data = {
-                    "_key": user_key,
+                    "id": user_key,
                     "userId": payload["userId"],
                     "orgId": payload["orgId"],
                     "email": payload["email"],
@@ -228,7 +236,7 @@ class EntityEventService(BaseEventService):
 
             # Get org details to check account type
             org_id = payload["orgId"]
-            org = await self.arango_service.get_document(
+            org = await self.graph_provider.get_document(
                 org_id, CollectionNames.ORGS.value
             )
             if not org:
@@ -236,18 +244,20 @@ class EntityEventService(BaseEventService):
                 return False
 
             # Batch upsert user
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
 
             # Create edge between org and user if it doesn't exist
             edge_data = {
-                "_to": f"{CollectionNames.ORGS.value}/{payload['orgId']}",
-                "_from": f"{CollectionNames.USERS.value}/{user_data['_key']}",
+                "from_id": user_data["id"],
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": payload["orgId"],
+                "to_collection": CollectionNames.ORGS.value,
                 "entityType": "ORGANIZATION",
                 "createdAtTimestamp": current_timestamp,
             }
-            await self.arango_service.batch_create_edges(
+            await self.graph_provider.batch_create_edges(
                 [edge_data],
                 CollectionNames.BELONGS_TO.value,
             )
@@ -261,7 +271,7 @@ class EntityEventService(BaseEventService):
             # Only proceed with app connections if syncAction is 'immediate'
             if payload["syncAction"] == "immediate":
                 # Get all apps associated with the org
-                org_apps = await self.arango_service.get_org_apps(payload["orgId"])
+                org_apps = await self.graph_provider.get_org_apps(payload["orgId"])
 
                 for app in org_apps:
                     if app["name"].lower() in ["calendar"]:
@@ -290,16 +300,18 @@ class EntityEventService(BaseEventService):
         """Handle user update event"""
         try:
             self.logger.info(f"📥 Processing user updated event: {payload}")
-            # Find existing user by email
-            existing_user = await self.arango_service.get_user_by_user_id(
+            # Find existing user by userId
+            existing_user = await self.graph_provider.get_user_by_user_id(
                 payload["userId"],
             )
 
             if not existing_user:
                 self.logger.error(f"User not found with userId: {payload['userId']}")
                 return False
+
+            user_id = existing_user.get("id") or existing_user.get("_key")
             user_data = {
-                "_key": existing_user["_key"],
+                "id": user_id,
                 "userId": payload["userId"],
                 "orgId": payload["orgId"],
                 "email": payload["email"],
@@ -331,7 +343,7 @@ class EntityEventService(BaseEventService):
             )
 
             # Batch upsert user
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
             self.logger.info(f"✅ Successfully updated user: {payload['email']}")
@@ -345,16 +357,16 @@ class EntityEventService(BaseEventService):
         """Handle user deletion event"""
         try:
             self.logger.info(f"📥 Processing user deleted event: {payload}")
-            # Find existing user by userId
-            existing_user = await self.arango_service.get_entity_id_by_email(
+            # Find existing user by email
+            existing_user_id = await self.graph_provider.get_entity_id_by_email(
                 payload["email"]
             )
-            if not existing_user:
+            if not existing_user_id:
                 self.logger.error(f"User not found with mail: {payload['email']}")
                 return False
 
             user_data = {
-                "_key": existing_user,
+                "id": existing_user_id,
                 "orgId": payload["orgId"],
                 "email": payload["email"],
                 "isActive": False,
@@ -362,7 +374,7 @@ class EntityEventService(BaseEventService):
             }
 
             # Batch upsert user with isActive = False
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
@@ -383,7 +395,7 @@ class EntityEventService(BaseEventService):
             connector_id = payload.get("connectorId", "")
             scope = payload.get("scope", ConnectorScopes.PERSONAL.value)
             # Get org details to check account type
-            org = await self.arango_service.get_document(
+            org = await self.graph_provider.get_document(
                 org_id, CollectionNames.ORGS.value
             )
             if not org:
@@ -427,25 +439,25 @@ class EntityEventService(BaseEventService):
             # Set apps as inactive
             app_updates = []
             for app_name in apps:
-                app_doc = await self.arango_service.get_document(
+                app_doc = await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value
                 )
                 if not app_doc:
                     self.logger.error(f"App not found: {app_name}")
                     return False
                 app_data = {
-                    "_key": connector_id,  # Construct the app _key
-                    "name": app_doc["name"],
-                    "type": app_doc["type"],
-                    "appGroup": app_doc["appGroup"],
+                    "id": connector_id,
+                    "name": app_doc.get("name", app_doc.get("_key", connector_id)),
+                    "type": app_doc.get("type"),
+                    "appGroup": app_doc.get("appGroup"),
                     "isActive": False,
-                    "createdAtTimestamp": app_doc["createdAtTimestamp"],
+                    "createdAtTimestamp": app_doc.get("createdAtTimestamp"),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
                 app_updates.append(app_data)
 
             # Update apps in database
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 app_updates, CollectionNames.APPS.value
             )
 
@@ -470,19 +482,17 @@ class EntityEventService(BaseEventService):
                 return {}
 
             # Check if a knowledge base already exists for this user in this organization
-            query = f"""
-            FOR kb IN {CollectionNames.RECORD_GROUPS.value}
-                FILTER kb.createdBy == @userId AND kb.orgId == @orgId AND kb.groupType == @kb_type AND kb.connectorName == @kb_connector AND (kb.isDeleted == false OR kb.isDeleted == null)
-                RETURN kb
-            """
-            bind_vars = {
-                "userId": userId,
-                "orgId": orgId,
-                "kb_type": Connectors.KNOWLEDGE_BASE.value,
-                "kb_connector": Connectors.KNOWLEDGE_BASE.value,
-            }
-            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars) # type: ignore
-            existing_kbs = [doc for doc in cursor] # type: ignore
+            existing_kbs = await self.graph_provider.get_nodes_by_filters(
+                collection=CollectionNames.RECORD_GROUPS.value,
+                filters={
+                    "createdBy": userId,
+                    "orgId": orgId,
+                    "groupType": Connectors.KNOWLEDGE_BASE.value,
+                    "connectorName": Connectors.KNOWLEDGE_BASE.value,
+                }
+            )
+            # Filter out deleted knowledge bases
+            existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
 
             if existing_kbs:
                 self.logger.info(f"Found existing knowledge base for user {userId} in organization {orgId}")
@@ -497,7 +507,7 @@ class EntityEventService(BaseEventService):
             kb_key = str(uuid4())
 
             kb_data = {
-                "_key": kb_key,
+                "id": kb_key,
                 "createdBy": userId,
                 "orgId": orgId,
                 "groupName": name,
@@ -508,8 +518,10 @@ class EntityEventService(BaseEventService):
                 "updatedAtTimestamp": current_timestamp,
             }
             permission_edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_key,
+                "to_collection": CollectionNames.RECORD_GROUPS.value,
                 "externalPermissionId": "",
                 "type": "USER",
                 "role": "OWNER",
@@ -520,8 +532,10 @@ class EntityEventService(BaseEventService):
 
             # Create belongs_to edge from record group to app
             belongs_to_edge = {
-                "_from": f"{CollectionNames.RECORD_GROUPS.value}/{kb_key}",
-                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                "from_id": kb_key,
+                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                "to_id": kb_app_id,
+                "to_collection": CollectionNames.APPS.value,
                 "entityType": Connectors.KNOWLEDGE_BASE.value,
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
@@ -529,9 +543,9 @@ class EntityEventService(BaseEventService):
 
             # Insert all in transaction
             # TODO: Use transaction instead of batch upsert
-            await self.arango_service.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
-            await self.arango_service.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-            await self.arango_service.batch_create_edges([belongs_to_edge], CollectionNames.BELONGS_TO.value)
+            await self.graph_provider.batch_upsert_nodes([kb_data], CollectionNames.RECORD_GROUPS.value)
+            await self.graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
+            await self.graph_provider.batch_create_edges([belongs_to_edge], CollectionNames.BELONGS_TO.value)
 
             self.logger.info(f"Created new knowledge base for user {userId} in organization {orgId} with app connection")
             return {
@@ -577,16 +591,17 @@ class EntityEventService(BaseEventService):
             app_group = metadata.get('appGroup', 'Local Storage')
 
             # Check if KB connector instance already exists for this org
-            org_apps = await self.arango_service.get_org_apps(org_id)
+            org_apps = await self.graph_provider.get_org_apps(org_id)
             existing_kb_app = next(
                 (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
                 None
             )
 
             if existing_kb_app:
+                kb_key = existing_kb_app.get('_key') or existing_kb_app.get('id')
                 self.logger.info(
                     f"Knowledge Base connector instance already exists for org {org_id} "
-                    f"(id: {existing_kb_app.get('_key')}), skipping creation"
+                    f"(id: {kb_key}), skipping creation"
                 )
                 return existing_kb_app
 
@@ -603,7 +618,7 @@ class EntityEventService(BaseEventService):
             current_timestamp = get_epoch_timestamp_in_ms()
 
             instance_document = {
-                '_key': instance_key,
+                'id': instance_key,
                 'name': connector_name,
                 'type': Connectors.KNOWLEDGE_BASE.value,
                 'appGroup': app_group,
@@ -620,19 +635,21 @@ class EntityEventService(BaseEventService):
             }
 
             # Create instance in database
-            await self.arango_service.batch_upsert_nodes(
+            await self.graph_provider.batch_upsert_nodes(
                 [instance_document],
                 CollectionNames.APPS.value
             )
 
             # Create relationship edge between organization and instance
             edge_document = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_id}",
-                "_to": f"{CollectionNames.APPS.value}/{instance_key}",
+                "from_id": org_id,
+                "from_collection": CollectionNames.ORGS.value,
+                "to_id": instance_key,
+                "to_collection": CollectionNames.APPS.value,
                 "createdAtTimestamp": current_timestamp,
             }
 
-            await self.arango_service.batch_create_edges(
+            await self.graph_provider.batch_create_edges(
                 [edge_document],
                 CollectionNames.ORG_APP_RELATION.value,
             )
@@ -680,14 +697,15 @@ class EntityEventService(BaseEventService):
         """
         try:
             # Check if KB connector instance already exists for this org
-            org_apps = await self.arango_service.get_org_apps(org_id)
+            org_apps = await self.graph_provider.get_org_apps(org_id)
             existing_kb_app = next(
                 (app for app in org_apps if app.get('type') == Connectors.KNOWLEDGE_BASE.value),
                 None
             )
 
             if existing_kb_app:
-                self.logger.debug(f"Found existing KB app for org {org_id}: {existing_kb_app.get('_key')}")
+                kb_key = existing_kb_app.get('_key') or existing_kb_app.get('id')
+                self.logger.debug(f"Found existing KB app for org {org_id}: {kb_key}")
                 return existing_kb_app
 
             # Create KB app if it doesn't exist
@@ -717,24 +735,21 @@ class EntityEventService(BaseEventService):
                 self.logger.warning(f"KB app not found for org {org_id}, skipping user-app relation creation")
                 return False
 
-            kb_app_id = kb_app.get('_key')
+            kb_app_id = kb_app.get('_key') or kb_app.get('id')
 
-            # Check if user-app relation already exists
-            query = f"""
-            FOR edge IN {CollectionNames.USER_APP_RELATION.value}
-                FILTER edge._from == CONCAT(@user_collection, '/', @user_key)
-                    AND edge._to == CONCAT(@app_collection, '/', @kb_app_id)
-                LIMIT 1
-                RETURN 1
-            """
-            bind_vars = {
-                "user_key": user_key,
-                "kb_app_id": kb_app_id,
-                "user_collection": CollectionNames.USERS.value,
-                "app_collection": CollectionNames.APPS.value,
-            }
-            cursor = self.arango_service.db.aql.execute(query, bind_vars=bind_vars)
-            if list(cursor):
+            # Check if user-app relation already exists using graph_provider
+            existing_edges = await self.graph_provider.get_edges_from_node(
+                node_id=user_key,
+                edge_collection=CollectionNames.USER_APP_RELATION.value
+            )
+
+            # Check if any edge points to the KB app
+            edge_exists = any(
+                edge.get('to_id') == kb_app_id or edge.get('_to') == f"{CollectionNames.APPS.value}/{kb_app_id}"
+                for edge in existing_edges
+            )
+
+            if edge_exists:
                 # Edge already exists
                 self.logger.debug(f"User-app relation already exists for user {user_key} and KB app {kb_app_id}")
                 return True
@@ -742,15 +757,17 @@ class EntityEventService(BaseEventService):
             # Create user-app relation edge
             current_timestamp = get_epoch_timestamp_in_ms()
             user_app_edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.APPS.value}/{kb_app_id}",
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": kb_app_id,
+                "to_collection": CollectionNames.APPS.value,
                 "syncState": "NOT_STARTED",  # Required by schema - KB doesn't sync
                 "lastSyncUpdate": current_timestamp,  # Required by schema
                 "createdAtTimestamp": current_timestamp,
                 "updatedAtTimestamp": current_timestamp,
             }
 
-            await self.arango_service.batch_create_edges(
+            await self.graph_provider.batch_create_edges(
                 [user_app_edge],
                 CollectionNames.USER_APP_RELATION.value
             )
