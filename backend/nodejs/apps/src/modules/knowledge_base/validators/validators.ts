@@ -43,6 +43,7 @@ export const reindexFailedRecordSchema = z.object({
   body: z.object({
     app: z.string().min(1),
     connectorId: z.string().min(1),
+    statusFilters: z.array(z.string()).optional(),
   }),
 });
 
