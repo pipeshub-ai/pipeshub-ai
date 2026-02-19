@@ -212,7 +212,6 @@ export class UserAccountController {
 
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
-
       if (result.statusCode !== 200) {
         // User not found - check if JIT provisioning is available for this email domain
         const domain = this.getDomainFromEmail(email);

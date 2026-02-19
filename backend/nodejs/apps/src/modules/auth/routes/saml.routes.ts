@@ -92,7 +92,6 @@ export function createSamlRouter(container: Container) {
 
       try {
         /* ---------------- RelayState ---------------- */
-        console.log("SAML callback received with user:", req.user);
         if (!req.user) {
           throw new NotFoundError("User not available in SAML response");
         }
@@ -156,7 +155,6 @@ export function createSamlRouter(container: Container) {
         const emailKey =
           samlController.getSamlEmailKeyByOrgId(orgId);
 
-        console.log("Email key for orgId", orgId, "is", emailKey);
 
         samlUser.email = samlUser[emailKey];
 
@@ -166,11 +164,10 @@ export function createSamlRouter(container: Container) {
           "mail",
           "userPrincipalName",
           "nameID",
+          "primaryEmail",
+          "contactEmail",
           "preferred_username",
-          'primaryEmail',
-          'contactEmail',
-          'preferred_username',
-          'mailPrimaryAddress',
+          "mailPrimaryAddress",
         ];
 
         if (!isValidEmail(samlUser.email)) {
@@ -277,7 +274,7 @@ export function createSamlRouter(container: Container) {
 
         if (!user.hasLoggedIn && user._id) {
           await iamService.updateUser(
-            user?._id,
+            user._id,
             { hasLoggedIn: true },
             accessToken
           );
@@ -303,169 +300,6 @@ export function createSamlRouter(container: Container) {
       }
     }
   );
-
-
-  // router.post(
-  //   '/signIn/callback',
-  //   passport.authenticate('saml', { failureRedirect: '/' }),
-  //   async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
-  //     try {
-  //       const relayStateBase64 = req.body.RelayState || req.query.RelayState;
-  //       const relayStateDecoded = relayStateBase64
-  //         ? JSON.parse(Buffer.from(relayStateBase64, 'base64').toString('utf8'))
-  //         : {};
-
-  //       const orgId = relayStateDecoded.orgId;
-  //       const sessionToken = relayStateDecoded.sessionToken;
-
-  //       if (!sessionToken) {
-  //         throw new UnauthorizedError('Invalid Session token');
-  //       }
-  //       const method = 'samlSso';
-  //       const session = await sessionService.getSession(sessionToken);
-  //       if (!session) {
-  //         throw new UnauthorizedError('Invalid Session');
-  //       }
-  //       req.sessionInfo = session;
-
-  //       const currentStepConfig =
-  //         req.sessionInfo.authConfig[req.sessionInfo.currentStep];
-  //       logger.info(currentStepConfig, 'currentStepConfig');
-
-  //       if (
-  //         !currentStepConfig.allowedMethods.find((m: any) => m.type === method)
-  //       ) {
-  //         throw new BadRequestError(
-  //           'Invalid authentication method for this step',
-  //         );
-  //       }
-
-  //       // Todo: check if User Account exists and validate if user is not blocked
-  //       if (!req.user) {
-  //         throw new NotFoundError('User not available');
-  //       }
-  //       console.log("SAML", session);
-
-  //       if (req.user) {
-  //         const key = samlController.getSamlEmailKeyByOrgId(orgId);
-  //         req.user.email = req.user[key];
-  //         if (!isValidEmail(req.user.email)) {
-  //           const possibleEmailKeys = [
-  //             'email',
-  //             'mail',
-  //             'userPrincipalName',
-  //             'nameID',
-  //             'EmailAddress',
-  //             'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress',
-  //             'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/upn',
-  //             'urn:oid:0.9.2342.19200300.100.1.3',
-  //             'primaryEmail',
-  //             'contactEmail',
-  //             'preferred_username',
-  //             'mailPrimaryAddress',
-  //           ];
-
-  //           // Check other keys if the email is missing or invalid
-  //           for (const k of possibleEmailKeys) {
-  //             if (!req.user.email || !isValidEmail(req.user.email)) {
-  //               if (req.user[k] && isValidEmail(req.user[k])) {
-  //                 req.user.email = req.user[k];
-  //                 break; // Stop once a valid email is found
-  //               }
-  //             }
-  //           }
-  //         }
-
-  //         if (!req.user.email) {
-  //           throw new InternalServerError(
-  //             'Valid Email ID not found in SAML response',
-  //           );
-  //         }
-  //         logger.info(req.user.email);
-
-  //         logger.info('SAML callback email', req.user.email);
-  //       }
-  //       // Validate orgId is available
-  //       if (!orgId) {
-  //         throw new BadRequestError('Organization ID not found in session');
-  //       }
-
-  //       const authToken = iamJwtGenerator(
-  //         req.user.email,
-  //         config.scopedJwtSecret,
-  //       );
-
-  //       // Try to find existing user, if not found, auto-provision via JIT
-  //       let user;
-  //       try {
-  //         const userFindResult = await iamService.getUserByEmail(
-  //           req.user.email,
-  //           authToken,
-  //         );
-  //         if (!userFindResult) {
-  //           throw new NotFoundError('User not found');
-  //         }
-  //         user = userFindResult.data;
-  //       } catch (error: any) {
-  //         console.error('Error fetching user by email:', error);
-  //         if (error instanceof NotFoundError) {
-  //           // JIT Provisioning: Auto-create user from SAML assertion
-  //           const userDetails = jitProvisioningService.extractSamlUserDetails(
-  //             req.user,
-  //             req.user.email,
-  //           );
-  //           user = await jitProvisioningService.provisionUser(
-  //             req.user.email,
-  //             userDetails,
-  //             orgId,
-  //             'saml',
-  //           );
-  //         } else {
-  //           // For errors other than NotFound, re-throw to be handled by the generic error handler
-  //           throw error;
-  //         }
-  //       }
-  //       const userId = user._id;
-
-  //       await sessionService.completeAuthentication(req.sessionInfo);
-  //       const accessToken = await generateAuthToken(user, config.jwtSecret);
-  //       const refreshToken = refreshTokenJwtGenerator(
-  //         userId,
-  //         orgId,
-  //         config.scopedJwtSecret,
-  //       );
-  //       if (!user.hasLoggedIn) {
-  //         const userInfo = {
-  //           ...user,
-  //           hasLoggedIn: true,
-  //         };
-  //         iamService.updateUser(user._id, userInfo, accessToken);
-  //         logger.info('user updated');
-  //       }
-  //       res.cookie('accessToken', accessToken, {
-  //         // httpOnly: true,
-  //         secure: true, // use true in production with HTTPS
-  //         sameSite: 'none', // adjust as needed
-  //         maxAge: 3600000, // 1 hour in milliseconds
-  //       });
-  //       res.cookie('refreshToken', refreshToken, {
-  //         // httpOnly: true,
-  //         secure: true, // Set to true in production (HTTPS)
-  //         sameSite: 'none', // Adjust as needed
-  //         maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in milliseconds
-  //       });
-  //       logger.info('completely authenticated');
-  //       res
-  //         .status(200)
-  //         .redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
-  //     } catch (error) {
-  //       console.error('Error in SAML callback:', error);
-  //       next(error);
-  //     }
-
-  //     // Todo: check if User Account exists and validate if user is not blocked
-  //   },
-  // );
 
   router.post(
     '/updateAppConfig',
