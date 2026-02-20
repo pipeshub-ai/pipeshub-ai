@@ -245,7 +245,7 @@ class AzureBlobStorageAdapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
       const blobUrl =
-        version === undefined || version === 0
+        version === undefined
           ? document.azureBlob?.url
           : document.versionHistory?.[version]?.azureBlob?.url;
 

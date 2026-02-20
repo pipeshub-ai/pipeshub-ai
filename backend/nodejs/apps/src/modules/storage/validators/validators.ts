@@ -99,6 +99,11 @@ export const GetBufferSchema = z.object({
 export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
   body: z.object({
     note: z.string(),
+    version: z
+      .union([z.string(), z.number()])
+      .optional()
+      .transform((val) => (val === undefined ? undefined : Number(val)))
+      .pipe(z.number().min(0).optional()),
   }),
 });
 

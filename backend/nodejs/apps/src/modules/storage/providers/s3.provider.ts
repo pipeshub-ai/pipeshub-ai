@@ -192,7 +192,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
   ): Promise<StorageServiceResponse<Buffer>> {
     try {
       const s3Url =
-        version === undefined || version === 0
+        version === undefined
           ? document.s3?.url
           : document.versionHistory?.[version]?.s3?.url;
 

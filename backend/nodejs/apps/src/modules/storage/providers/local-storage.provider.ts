@@ -212,7 +212,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
     try {
       // Try localPath first, then fall back to url (for backwards compatibility)
       let fileUrl =
-        version === undefined || version === 0
+        version === undefined
           ? (document.local?.localPath || document.local?.url)
           : (document.versionHistory?.[version]?.local?.localPath ||
              document.versionHistory?.[version]?.local?.url);
