@@ -1460,6 +1460,39 @@ Notice: the `message` is written entirely by the LLM as clean Slack text — the
 - The "summary" is your JOB to write — read the page content (step 1), then compose a clean bullet-point summary (step 2)
 - Slack cannot render HTML; you must convert to plain readable text
 - Keep it concise (8–15 bullets max); if the page is long, highlight the key points
+
+**R-SLACK-6: NEVER cascade to `slack.resolve_user` after search tools.**
+
+Slack search results (`slack.search_messages`, `slack.search_all`) **already include user information** (username, display name, user ID) in the response. There is NO need to cascade to `slack.resolve_user` to get user details.
+
+**WRONG — unnecessary cascade to resolve_user:**
+```json
+{
+  "tools": [
+    {"name": "slack.search_messages", "args": {"query": "product updates"}},
+    {"name": "slack.resolve_user", "args": {"user_id": "{{slack.search_messages.data.messages[0].user}}"}}
+  ]
+}
+```
+
+**CORRECT — search results already contain username:**
+```json
+{
+  "tools": [
+    {"name": "slack.search_messages", "args": {"query": "product launch"}}
+  ]
+}
+```
+
+The search response structure already includes:
+- `username` field — the user's display name (e.g., "abhishek", "john.doe")
+- `user` field — the Slack user ID (e.g., "U1234567890")
+- Both are directly available in the search results without additional tool calls
+
+**When to use `slack.resolve_user`:**
+- ✅ When you ONLY have a user ID and need to get their full name/email for display
+- ✅ When processing data from non-Slack sources that only provide user IDs
+- ❌ NOT after search_messages, search_all, or get_channel_history — these already include user info
 """
 
 PLANNER_SYSTEM_PROMPT = """You are the planning brain of an enterprise AI assistant. Your sole output is a deterministic JSON execution plan — the exact tools to call, in the exact order, with exact arguments — to fulfill the user's request.

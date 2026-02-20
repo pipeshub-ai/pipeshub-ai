@@ -184,8 +184,7 @@ class GetUsersListInput(BaseModel):
     limit: Optional[int] = Field(default=None, description="Maximum number of users to return")
 
 class GetUserConversationsInput(BaseModel):
-    """Schema for getting conversations for a specific user"""
-    user: str = Field(description="Slack user identifier. IMPORTANT: Use the user's EMAIL ADDRESS (e.g., 'user@example.com') or Slack user ID (starts with 'U', e.g., 'U123ABC45'). DO NOT use internal database user IDs (24-character hex strings). If you have the user's email from context, use that instead.")
+    """Schema for getting conversations for the authenticated user"""
     types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types (public_channel, private_channel, mpim, im)")
     exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived conversations")
     limit: Optional[int] = Field(default=None, description="Maximum number of conversations to return")
@@ -202,8 +201,7 @@ class GetUserGroupInfoInput(BaseModel):
 
 
 class GetUserChannelsInput(BaseModel):
-    """Schema for getting user channels"""
-    user: str = Field(description="Slack user identifier. IMPORTANT: Use the user's EMAIL ADDRESS (e.g., 'user@example.com') or Slack user ID (starts with 'U', e.g., 'U123ABC45'). DO NOT use internal database user IDs (24-character hex strings like '692d40c1585831c0f395f48a') - these are NOT Slack user IDs. If you have the user's email from context, use that instead.")
+    """Schema for getting channels for the authenticated user"""
     exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived channels")
     types: Optional[str] = Field(default=None, description="Comma-separated list of channel types (public_channel, private_channel)")
 
@@ -297,6 +295,7 @@ class GetThreadRepliesInput(BaseModel):
                     "users:read",              # View user info, list users
                     "users:read.email",         # Look up users by email (REQUIRED for email-based user resolution)
                     "users.profile:read",       # Read user profiles
+                    "users.profile:write",      # Write user profiles (REQUIRED for set_user_status)
 
                     # File scopes
                     "files:write",             # Upload files
@@ -491,6 +490,28 @@ class Slack:
 
         return result
 
+    def _get_authenticated_user_id(self) -> Optional[str]:
+        """Get the authenticated user ID from the token.
+
+        Returns:
+            Slack user ID for the authenticated user, or None if it cannot be retrieved
+        """
+        try:
+            response = run_async(self.client.auth_test())
+            auth_response = self._handle_slack_response(response)
+            
+            if auth_response.success and auth_response.data:
+                user_id = auth_response.data.get('user_id')
+                if user_id:
+                    logger.debug(f"Retrieved authenticated user ID: {user_id}")
+                    return user_id
+            
+            logger.error("Could not retrieve authenticated user ID from auth.test")
+            return None
+        except Exception as e:
+            logger.error(f"Error getting authenticated user ID: {e}")
+            return None
+
     def _resolve_channel(self, channel: str) -> str:
         """Resolve a channel name (e.g., '#testing' or 'testing') to a channel ID (e.g., 'C1234567890').
 
@@ -521,25 +542,57 @@ class Slack:
             # Typically 10-11 characters, but can vary. Minimum reasonable length is 9.
             slack_id_pattern = re.compile(r'^[CGD][A-Z0-9]{8,}$', re.IGNORECASE)
             if slack_id_pattern.match(name):
+                logger.debug(f"Channel '{channel}' is already a valid Slack ID")
                 return channel
 
-            # Try to find channel by name
-            clist = run_async(self.client.conversations_list())
-            cl_resp = self._handle_slack_response(clist)
-
-            if cl_resp.success and cl_resp.data and isinstance(cl_resp.data, dict):
-                channels = cl_resp.data.get('channels') or []
-                for c in channels:
-                    if isinstance(c, dict) and c.get('name') == name:
-                        channel_id = c.get('id')
-                        if channel_id:
-                            return channel_id
-                        break
+            # Try to find channel by name - include all types and handle pagination
+            logger.debug(f"Resolving channel name '{name}' to ID...")
+            all_channels = []
+            cursor = None
+            
+            # Fetch all pages of channels the user has access to
+            while True:
+                kwargs = {
+                    "types": "public_channel,private_channel",  # Include both public and private
+                    "exclude_archived": False,  # Include archived channels too
+                    "limit": 200  # Max per page
+                }
+                if cursor:
+                    kwargs["cursor"] = cursor
+                
+                clist = run_async(self.client.conversations_list(**kwargs))
+                cl_resp = self._handle_slack_response(clist)
+                
+                if not cl_resp.success or not cl_resp.data:
+                    logger.warning(f"Failed to fetch channel list: {cl_resp.error}")
+                    break
+                
+                channels = cl_resp.data.get('channels', [])
+                all_channels.extend(channels)
+                
+                # Check for next page
+                cursor = cl_resp.data.get('response_metadata', {}).get('next_cursor')
+                if not cursor:
+                    break
+            
+            logger.debug(f"Fetched {len(all_channels)} total channels")
+            
+            # Search for matching channel by name
+            for c in all_channels:
+                if isinstance(c, dict) and c.get('name') == name:
+                    channel_id = c.get('id')
+                    if channel_id:
+                        logger.info(f"✅ Resolved channel '{name}' → {channel_id}")
+                        return channel_id
+                    break
+            
+            logger.warning(f"Could not resolve channel name '{name}' - channel not found or not accessible")
         except Exception as e:
             # Log but don't fail - return original channel value
-            logger.debug(f"Error resolving channel '{channel}': {e}")
+            logger.warning(f"Error resolving channel '{channel}': {e}")
 
         # Return original value if resolution fails
+        logger.debug(f"Returning original channel value: '{channel}'")
         return channel
 
     @tool(
@@ -1857,31 +1910,30 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_user_conversations",
-        description="Get conversations for a specific user",
+        description="Get conversations for the authenticated user (the user whose token is being used)",
         args_schema=GetUserConversationsInput,
         when_to_use=[
-            "User wants to see conversations for a user",
-            "User mentions 'Slack' + wants user's conversations",
-            "User asks for channels/DMs for a user"
+            "User wants to see their own conversations",
+            "User mentions 'Slack' + wants their conversations",
+            "User asks 'what channels am I in?', 'show my conversations'"
         ],
         when_not_to_use=[
-            "User wants user info (use get_user_info)",
+            "User wants info about another user (use get_user_info)",
             "User wants to send message (use send_message)",
             "No Slack mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "What channels is user@company.com in?",
-            "Show conversations for @username",
-            "Get user's Slack conversations"
+            "What channels am I in?",
+            "Show my Slack conversations",
+            "List my channels and DMs"
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_conversations(self, user: str, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
-        """Get conversations for a specific user"""
+    def get_user_conversations(self, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
+        """Get conversations for the authenticated user"""
         """
         Args:
-            user: Slack user identifier (email or Slack user ID)
             types: Comma-separated list of conversation types
             exclude_archived: Exclude archived conversations
             limit: Maximum number of conversations to return
@@ -1889,7 +1941,12 @@ class Slack:
             A tuple with a boolean indicating success/failure and a JSON string with the conversations
         """
         try:
-            kwargs = {"user": user}
+            # Get authenticated user ID from token
+            user_id = self._get_authenticated_user_id()
+            if not user_id:
+                return (False, SlackResponse(success=False, error="Could not determine authenticated user ID from token").to_json())
+
+            kwargs = {"user": user_id}
             if types:
                 kwargs["types"] = types
             if exclude_archived is not None:
@@ -2000,38 +2057,42 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_user_channels",
-        description="Get channels that a specific user is a member of",
+        description="Get channels that the authenticated user (whose token is being used) is a member of",
         args_schema=GetUserChannelsInput,
         when_to_use=[
-            "User wants to see channels a user is in",
-            "User mentions 'Slack' + wants user's channels",
-            "User asks what channels someone is in"
+            "User wants to see their own channels",
+            "User mentions 'Slack' + wants their channels",
+            "User asks 'what channels am I in?', 'show my channels'"
         ],
         when_not_to_use=[
-            "User wants all channels (use fetch_channels)",
-            "User wants user info (use get_user_info)",
+            "User wants all channels in workspace (use fetch_channels)",
+            "User wants info about another user (use get_user_info)",
             "No Slack mention"
         ],
         primary_intent=ToolIntent.SEARCH,
         typical_queries=[
-            "What channels is user@company.com in?",
-            "Show channels for @username",
-            "Get user's Slack channels"
+            "What channels am I in?",
+            "Show my Slack channels",
+            "List channels I'm a member of"
         ],
         category=ToolCategory.COMMUNICATION
     )
-    def get_user_channels(self, user: str, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
-        """Get channels that a specific user is a member of"""
+    def get_user_channels(self, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
+        """Get channels that the authenticated user is a member of"""
         """
         Args:
-            user: User ID, email, or display name to get channels for
             exclude_archived: Exclude archived channels
             types: Comma-separated list of channel types
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the channels
         """
         try:
-            kwargs = {"user": user}
+            # Get authenticated user ID from token
+            user_id = self._get_authenticated_user_id()
+            if not user_id:
+                return (False, SlackResponse(success=False, error="Could not determine authenticated user ID from token").to_json())
+
+            kwargs = {"user": user_id}
             if exclude_archived is not None:
                 kwargs["exclude_archived"] = exclude_archived
             if types:
