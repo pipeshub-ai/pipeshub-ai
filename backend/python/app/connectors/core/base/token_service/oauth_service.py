@@ -61,24 +61,77 @@ class OAuthConfig:
         Returns:
             Normalized token dictionary compatible with OAuthToken.from_dict()
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # Check for Slack-style "ok" field - if ok is False, raise error immediately
+        # Slack OAuth v2 uses "ok": false for errors
+        if isinstance(response, dict) and response.get("ok") is False:
+            error_msg = response.get("error", "unknown_error")
+            error_detail = response.get("error_description", "")
+            full_error = f"{error_msg}" + (f": {error_detail}" if error_detail else "")
+            logger.error(f"Slack OAuth returned error: ok=False, error={full_error}, full_response={response}")
+            # Raise error immediately - don't try to normalize an error response
+            raise ValueError(f"Slack OAuth error: {full_error}")
+        
         if not self.token_response_path:
             return response
 
         # Extract from nested path (e.g., response["authed_user"])
         nested_data = response.get(self.token_response_path)
+        
+        # Handle case where nested_data is None or empty dict (Slack-specific edge case)
+        if nested_data is None or (isinstance(nested_data, dict) and not nested_data):
+            logger.warning(
+                f"token_response_path '{self.token_response_path}' is None or empty in response. "
+                f"Response keys: {list(response.keys()) if isinstance(response, dict) else 'not_a_dict'}. "
+                f"Checking for error response or fallback token."
+            )
+            # For Slack specifically, if authed_user is None/empty, check if it's an error response
+            if self.token_response_path == "authed_user" and isinstance(response, dict):
+                # Check if this is a Slack error response
+                if response.get("ok") is False:
+                    error_msg = response.get("error", "unknown_error")
+                    raise ValueError(f"Slack OAuth error: {error_msg}")
+                # If authed_user is None/empty but ok is true, this might be a bot-only token
+                # In that case, check if access_token exists at top level
+                if "access_token" in response:
+                    logger.info("authed_user is None/empty but top-level access_token exists (bot token), using it")
+                    return response
+                # If no access_token anywhere, this is likely an error
+                logger.error(f"Slack OAuth response missing authed_user and top-level access_token. Response: {response}")
+                raise ValueError("Slack OAuth response missing required access_token in both authed_user and top-level")
+        
         if not isinstance(nested_data, dict):
             # Fallback to top-level if path doesn't exist (backward compatible)
+            logger.warning(
+                f"token_response_path '{self.token_response_path}' is not a dict in response. "
+                f"Response keys: {list(response.keys()) if isinstance(response, dict) else 'not_a_dict'}. "
+                f"Falling back to top-level response."
+            )
             return response
 
         # Start with nested data (this is where the token should be)
         normalized = nested_data.copy()
+        
+        # Log what we found in the nested path for debugging
+        logger.info(
+            f"Extracted nested data from '{self.token_response_path}'. "
+            f"Nested keys: {list(normalized.keys())}, has_access_token: {'access_token' in normalized}"
+        )
 
         # Ensure access_token exists - check nested first, then top-level as fallback
         if "access_token" not in normalized:
             # Try top-level as fallback
             if "access_token" in response:
+                logger.info(f"access_token not in nested path, using top-level access_token")
                 normalized["access_token"] = response["access_token"]
             else:
+                # Log detailed error for debugging
+                logger.error(
+                    f"access_token not found in nested path '{self.token_response_path}' or top-level. "
+                    f"Nested keys: {list(nested_data.keys())}, Top-level keys: {list(response.keys())}"
+                )
                 # If still not found, return original response to avoid breaking
                 return response
 
@@ -268,13 +321,48 @@ class OAuthProvider:
             data["code_verifier"] = code_verifier
 
         token_data = await self._make_token_request(data)
+        
+        # Log token response for debugging (especially for Slack)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.info(
+            f"OAuth token response received. token_response_path={self.config.token_response_path}, "
+            f"response_keys={list(token_data.keys()) if isinstance(token_data, dict) else 'not_a_dict'}"
+        )
+        
+        # For Slack, log the authed_user structure if present
+        if self.config.token_response_path == "authed_user" and isinstance(token_data, dict):
+            authed_user = token_data.get("authed_user")
+            if authed_user:
+                logger.info(
+                    f"Slack authed_user found. Keys: {list(authed_user.keys())}, "
+                    f"has_access_token: {'access_token' in authed_user}"
+                )
+            else:
+                logger.warning(f"Slack authed_user is missing or None in response")
+        
         # Normalize only if configured (backward compatible)
         normalized_data = self.config.normalize_token_response(token_data)
+        
+        # Log normalized result
+        logger.info(
+            f"After normalization. normalized_keys={list(normalized_data.keys()) if isinstance(normalized_data, dict) else 'not_a_dict'}, "
+            f"has_access_token: {'access_token' in normalized_data if isinstance(normalized_data, dict) else False}"
+        )
 
         # Ensure access_token exists after normalization
         if "access_token" not in normalized_data:
+            # Log the full response for debugging
+            logger.error(
+                f"OAuth token response missing 'access_token' field. "
+                f"token_response_path={self.config.token_response_path}, "
+                f"normalized_keys={list(normalized_data.keys()) if isinstance(normalized_data, dict) else 'not_a_dict'}, "
+                f"raw_response_keys={list(token_data.keys()) if isinstance(token_data, dict) else 'not_a_dict'}"
+            )
             raise ValueError(
-                "OAuth token response missing required 'access_token' field. "
+                f"OAuth token response missing required 'access_token' field. "
+                f"token_response_path={self.config.token_response_path}, "
+                f"response structure: {list(token_data.keys()) if isinstance(token_data, dict) else type(token_data)}"
             )
 
         token = OAuthToken.from_dict(normalized_data)

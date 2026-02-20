@@ -974,8 +974,22 @@ async def handle_oauth_callback(
             config["auth"], toolset_type, registry, base_url, request
         )
 
+        # Log OAuth flow config for debugging (especially tokenResponsePath)
+        logger.info(
+            f"OAuth flow config for {toolset_type}: "
+            f"has_tokenResponsePath={bool(oauth_flow_config.get('tokenResponsePath'))}, "
+            f"tokenResponsePath={oauth_flow_config.get('tokenResponsePath')}"
+        )
+
         # Exchange code for token
         oauth_config = get_oauth_config(oauth_flow_config)
+        
+        # Log OAuth config for debugging
+        logger.info(
+            f"OAuth config for {toolset_type}: "
+            f"has_token_response_path={bool(oauth_config.token_response_path)}, "
+            f"token_response_path={oauth_config.token_response_path}"
+        )
         oauth_provider = OAuthProvider(
             config=oauth_config,
             configuration_service=config_service,
