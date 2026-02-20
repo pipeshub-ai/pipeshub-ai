@@ -1,7 +1,6 @@
 import type { PayloadAction } from '@reduxjs/toolkit';
 
 import { createSlice } from '@reduxjs/toolkit';
-import { stat } from 'fs';
 
 // Interface for the state
 interface CountsState {
@@ -60,7 +59,7 @@ const countsSlice = createSlice({
     updateInvitesCount: (state, action: PayloadAction<number>) => {
       state.invitesCount += action.payload;
     },
-    setInviteCount:(state,action: PayloadAction<number>) =>{
+    setInviteCount: (state, action: PayloadAction<number>) => {
       state.invitesCount = action.payload;
     },
     decrementGroupCount: (state) => {

@@ -92,60 +92,6 @@ const SmtpConfig: React.FC = () => {
     }
   };
 
-  // Handle save changes
-//   const handleSaveChanges = async () => {
-//     setIsLoading(true);
-//     setError(null);
-
-//     try {
-//       // Validate that only one method is enabled
-//       const enabledMethods = authMethods.filter((method) => method.enabled);
-
-//       // Validation: Single authentication method
-//       if (!validateSingleMethodSelection(enabledMethods)) {
-//         setError('Only one authentication method can be enabled at a time');
-//         showErrorSnackbar('Only one authentication method can be enabled at a time');
-//         setIsLoading(false);
-//         return;
-//       }
-
-//       // Validation: OTP requires SMTP configuration
-//       if (!validateOtpConfiguration(enabledMethods, smtpConfigured)) {
-//         setError('OTP authentication requires SMTP configuration. Please configure SMTP first.');
-//         showErrorSnackbar(
-//           'OTP authentication requires SMTP configuration. Please configure SMTP first.'
-//         );
-//         setIsLoading(false);
-//         return;
-//       }
-
-//       // Create an API-compatible payload
-//       const payload = {
-//         authMethod: [
-//           {
-//             order: 1,
-//             allowedMethods: enabledMethods.map(({ type }) => ({ type })),
-//           },
-//         ],
-//       };
-
-//       // API call to update auth methods
-//       await axios.post('/api/v1/orgAuthConfig/updateAuthMethod', payload);
-
-//       // Show success message
-//       showSuccessSnackbar('Authentication settings updated successfully');
-//       setIsEditing(false);
-
-//       // Refresh data
-//       fetchAuthMethods();
-//     } catch (err) {
-//       setError('Failed to save changes. Please try again.');
-//       // showErrorSnackbar('Failed to save changes. Please try again.');
-//     } finally {
-//       setIsLoading(false);
-//     }
-//   };
-
   // Helper functions for snackbars
   const showSuccessSnackbar = (message: string) => {
     setSnackbar({
@@ -155,13 +101,6 @@ const SmtpConfig: React.FC = () => {
     });
   };
 
-//   const showErrorSnackbar = (message: string) => {
-//     setSnackbar({
-//       open: true,
-//       message,
-//       severity: 'error',
-//     });
-//   };
 
   const handleCloseSnackbar = () => {
     setSnackbar((prev) => ({ ...prev, open: false }));

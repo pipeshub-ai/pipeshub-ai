@@ -48,7 +48,7 @@ export class UserController {
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer')
     private eventService: EntitiesEventProducer,
-  ) {}
+  ) { }
 
   async getAllUsers(
     req: AuthenticatedUserRequest,
@@ -213,7 +213,6 @@ export class UserController {
       return res.status(200).json(blockedUsers);
     }
     catch (error) {
-      console.error("getBlockedUsers error:", error);
       return res.status(500).json({
         message: "Failed to fetch blocked users",
       });
@@ -230,11 +229,15 @@ export class UserController {
       const orgId = req.user?.orgId;
 
       if (!userId) {
-        res.status(400).json({ message: "User id is required" });
+        throw new BadRequestError(
+          'userId must be provided',
+        );
       }
 
       if (!orgId) {
-        res.status(401).json({ message: "Unauthorized" });
+        throw new BadRequestError(
+          'orgId must be provided',
+        );
       }
 
       const credential = await UserCredentials.findOneAndUpdate(
@@ -249,9 +252,10 @@ export class UserController {
       );
 
       if (!credential) {
-        res
-          .status(404)
-          .json({ message: "User not found or not blocked" });
+        throw new BadRequestError(
+          'User not found or not blocked',
+        );
+
       }
 
       res.status(200).json({

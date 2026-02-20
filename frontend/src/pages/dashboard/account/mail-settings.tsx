@@ -5,7 +5,6 @@ import { Box } from '@mui/material';
 import { CONFIG } from 'src/config-global';
 
 import Sidebar from 'src/sections/accountdetails/Sidebar';
-import AuthenticationSettings from 'src/sections/accountdetails/account-settings/auth/authentication-settings';
 import SmtpConfig from 'src/sections/accountdetails/account-settings/auth/components/smtp-config';
 
 // ----------------------------------------------------------------------

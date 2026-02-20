@@ -44,11 +44,9 @@ interface AuthMethod {
 
 // Component props interface
 interface AuthMethodsListProps {
-  // authMethods: AuthMethod[];
-  // handleToggleMethod: (type: string) => void;
+
   handleConfigureMethod: (type: string) => void;
-  // isEditing: boolean;
-  // isLoading: boolean;
+
   smtpConfigured: boolean;
   configUpdated?: number; // Timestamp to trigger refresh when config is updated
 }
