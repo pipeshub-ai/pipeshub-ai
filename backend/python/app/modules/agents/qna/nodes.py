@@ -1493,6 +1493,103 @@ The search response structure already includes:
 - ✅ When you ONLY have a user ID and need to get their full name/email for display
 - ✅ When processing data from non-Slack sources that only provide user IDs
 - ❌ NOT after search_messages, search_all, or get_channel_history — these already include user info
+
+**R-SLACK-7: DM conversation history — use `get_channel_history`, NOT search.**
+
+When the user asks for "conversations between me and [person]" or "DM history with [person]" for a time period:
+
+**WRONG — using search (incomplete results, wrong tool):**
+```json
+{
+  "tools": [
+    {"name": "slack.search_all", "args": {"query": "from:@abhishek"}}
+  ]
+}
+```
+❌ Search returns limited results (default 20), not complete conversation history
+❌ Search is for FINDING messages by content/keyword, not retrieving conversation history
+
+**CORRECT — get complete DM history:**
+```json
+{
+  "tools": [
+    {"name": "slack.get_user_conversations", "args": {"types": "im"}},
+    {"name": "slack.get_channel_history", "args": {"channel": "D07QDNW518E", "limit": 1000}}
+  ]
+}
+```
+✅ `get_user_conversations` finds all DM channels
+✅ `get_channel_history` retrieves complete conversation thread (up to 1000 messages)
+✅ If you already know the DM channel ID from Reference Data, skip step 1
+
+**Query pattern recognition:**
+- "conversations between me and X" → `get_channel_history` on the DM channel
+- "messages with X for last N days" → `get_channel_history` with time filter (if available) or high limit
+- "chat history with X" → `get_channel_history` on the DM channel
+- "what did X and I discuss" → `get_channel_history` on the DM channel
+
+**Never do this:**
+- ❌ Tell the user "I need you to call slack.get_channel_history"
+- ❌ Tell the user "share the output of tool X"
+- ❌ Explain what tools the user should run
+- ✅ YOU execute the tools yourself to get complete data
+
+If the DM channel ID is not in Reference Data:
+1. Call `slack.get_user_conversations(types="im")` to find all DM channels
+2. Identify the correct DM by matching user IDs in the conversation member list
+3. Call `slack.get_channel_history` on that channel ID
+
+**Time filtering:**
+The Slack `conversations.history` API doesn't support date-based filtering directly, but you can:
+- Request a high `limit` (e.g., 1000 messages) to ensure you capture the last N days
+- The response includes timestamps — filter/analyze timestamps in the response
+- For "last 10 days", requesting 1000 messages typically covers it for most DMs
+
+**Complete example — "conversations between me and X for last 10 days":**
+
+Scenario: User asks "want to know about conversations had between me and abhishek for last 10 days in private dm"
+
+**WRONG approach (incomplete data, tells user what to do):**
+```json
+{
+  "tools": [
+    {"name": "slack.search_all", "args": {"query": "from:@abhishek"}}
+  ]
+}
+```
+Problems:
+- ❌ Search only returns 20 results (page 1)
+- ❌ Not a complete conversation thread
+- ❌ Respond node will tell user "call slack.get_channel_history to get full data"
+- ❌ User cannot and should not run tools
+
+**CORRECT approach (complete conversation history):**
+
+*Option A: If DM channel ID is in Reference Data (e.g., `slack_channel` type with id `D07QDNW518E`):*
+```json
+{
+  "tools": [
+    {"name": "slack.get_channel_history", "args": {"channel": "D07QDNW518E", "limit": 1000}}
+  ]
+}
+```
+
+*Option B: If DM channel ID not known:*
+```json
+{
+  "tools": [
+    {"name": "slack.get_user_info", "args": {"user": "abhishek"}},
+    {"name": "slack.get_user_conversations", "args": {"types": "im"}},
+    {"name": "slack.get_channel_history", "args": {"channel": "<DM_CHANNEL_ID_FROM_STEP_2>", "limit": 1000}}
+  ]
+}
+```
+
+After getting history, the respond node will:
+1. Filter messages by timestamp to "last 10 days"
+2. Identify key topics, action items, priorities
+3. Format a summary for the user
+4. NEVER tell the user to run more tools
 """
 
 PLANNER_SYSTEM_PROMPT = """You are the planning brain of an enterprise AI assistant. Your sole output is a deterministic JSON execution plan — the exact tools to call, in the exact order, with exact arguments — to fulfill the user's request.
@@ -1624,6 +1721,23 @@ When a write tool needs generated text content, write the complete, final text i
 - **For Slack messages**: always write plain text or Slack mrkdwn. NEVER use a placeholder that resolves to HTML (e.g., `{{confluence.get_page_content.data.content}}`). Confluence returns HTML storage format — convert it to a bullet-point text summary yourself.
 - **For Confluence pages**: always use Confluence storage HTML format.
 - **Format mismatch = broken output.** If the upstream tool returns HTML and the target tool needs plain text, you must translate — not pass through.
+
+**R11 — NEVER tell the user to execute tools. YOU execute tools.**
+You are the AI agent with tool execution capabilities. The user CANNOT and SHOULD NOT run tools.
+- ❌ NEVER write: "call slack.get_channel_history to get the full conversation"
+- ❌ NEVER write: "share the output of confluence.get_page_content"
+- ❌ NEVER write: "run jira.search_issues with JQL X"
+- ❌ NEVER write: "I need you to provide the result of tool X"
+- ❌ NEVER write: "to get complete data, you need to call..."
+- ✅ ALWAYS: Execute the tool yourself in your plan
+- ✅ ALWAYS: If data is incomplete, plan additional tools to get complete data
+- ✅ ALWAYS: If you realize mid-response you need more data, say "let me fetch more details" but NEVER ask the user to run tools
+
+**If the query requires data you don't have yet:**
+1. Plan the tool(s) needed to get that data
+2. Execute them
+3. If first execution is incomplete, plan continuation tools automatically
+4. NEVER defer tool execution to the user
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## CASCADING (Sequential Multi-Step Execution)
@@ -1979,12 +2093,16 @@ REFLECT_PROMPT = """Analyze tool execution results and decide next action.
 - User asked to "create and comment" but only created → continue_with_more_tools
 - User asked to "update" but only retrieved data → continue_with_more_tools
 - Task has multiple parts and not all done → continue_with_more_tools
+- User asked for "conversation history" / "messages between X and Y" / "last N days" but only search results were returned → continue_with_more_tools (need slack.get_channel_history)
+- User asked for "complete" / "all" / "entire" list but only got partial results (e.g., 20 items from search) → continue_with_more_tools (need full fetch or pagination)
 
 ## Common Error Fixes
 - "Unbounded JQL" → Add `AND updated >= -30d`
 - "User not found" → Call `jira.search_users` first
 - "Invalid type" → Check parameter types, convert if needed
 - "Space ID type error" → Call `confluence.get_spaces` to get numeric ID
+- "Used slack.search_all for conversation history" → Use `slack.get_channel_history` instead
+- "Told user to call a tool" → Continue with the tool yourself (continue_with_more_tools)
 
 ## Handling Empty/Null Results
 

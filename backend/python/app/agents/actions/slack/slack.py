@@ -191,14 +191,14 @@ class SendMessageWithMentionsInput(BaseModel):
 
 class GetUsersListInput(BaseModel):
     """Schema for getting list of all users in the organization"""
-    include_deleted: Optional[bool] = Field(default=None, description="Include deleted users in the list")
-    limit: Optional[int] = Field(default=None, description="Maximum number of users to return")
+    include_deleted: Optional[bool] = Field(default=None, description="Include deleted users in the list. Defaults to True (includes all users by default).")
+    limit: Optional[int] = Field(default=None, description="Maximum number of users to return. If not specified, returns ALL users with pagination.")
 
 class GetUserConversationsInput(BaseModel):
     """Schema for getting conversations for the authenticated user"""
     types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types.")
     exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived conversations")
-    limit: Optional[int] = Field(default=None, description="Maximum number of conversations to return")
+    limit: Optional[int] = Field(default=None, description="Maximum number of conversations to return. If not specified, returns ALL conversations with automatic pagination.")
 
 class GetUserGroupsInput(BaseModel):
     """Schema for getting list of user groups in the organization"""
@@ -214,7 +214,7 @@ class GetUserGroupInfoInput(BaseModel):
 class GetUserChannelsInput(BaseModel):
     """Schema for getting channels for the authenticated user"""
     exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived channels")
-    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types.")
+    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types. Returns ALL channels with automatic pagination.")
 
 
 class DeleteMessageInput(BaseModel):
@@ -532,7 +532,7 @@ class Slack:
 
         Slack channel IDs have the format:
         - Public channels: Start with 'C' followed by alphanumeric (e.g., 'C1234567890')
-        - Private channels: Start with 'G' followed by alphanumeric (e.g., 'G1234567890')
+        - Private channels/Groups: Start with 'G' followed by alphanumeric (e.g., 'G1234567890')
         - Direct messages: Start with 'D' followed by alphanumeric (e.g., 'D1234567890')
 
         Args:
@@ -549,24 +549,24 @@ class Slack:
             name = channel[1:] if channel.startswith('#') else channel
 
             # Check if it's already a Slack channel ID format
-            # Slack IDs start with C (public), G (private), or D (DM) followed by alphanumeric
+            # Slack IDs start with C (public), G (private/group), or D (DM) followed by alphanumeric
             # Typically 10-11 characters, but can vary. Minimum reasonable length is 9.
             slack_id_pattern = re.compile(r'^[CGD][A-Z0-9]{8,}$', re.IGNORECASE)
             if slack_id_pattern.match(name):
                 logger.debug(f"Channel '{channel}' is already a valid Slack ID")
                 return channel
 
-            # Try to find channel by name - include all types and handle pagination
+            # Try to find channel by name - include ALL conversation types and handle pagination
             logger.debug(f"Resolving channel name '{name}' to ID...")
             all_channels = []
             cursor = None
             
-            # Fetch all pages of channels the user has access to
+            # Fetch all pages of conversations the user has access to
             while True:
                 kwargs = {
-                    "types": "public_channel,private_channel",  # Include both public and private
-                    "exclude_archived": False,  # Include archived channels too
-                    "limit": 200  # Max per page
+                    "types": "public_channel,private_channel,mpim,im",  # ALL types
+                    "exclude_archived": False,  # Include archived too
+                    "limit": 1000  # Max per page
                 }
                 if cursor:
                     kwargs["cursor"] = cursor
@@ -575,18 +575,21 @@ class Slack:
                 cl_resp = self._handle_slack_response(clist)
                 
                 if not cl_resp.success or not cl_resp.data:
-                    logger.warning(f"Failed to fetch channel list: {cl_resp.error}")
+                    logger.warning(f"Failed to fetch conversation list: {cl_resp.error}")
                     break
                 
                 channels = cl_resp.data.get('channels', [])
                 all_channels.extend(channels)
                 
                 # Check for next page
-                cursor = cl_resp.data.get('response_metadata', {}).get('next_cursor')
-                if not cursor:
+                response_metadata = cl_resp.data.get('response_metadata', {})
+                next_cursor = response_metadata.get('next_cursor')
+                if not next_cursor:
                     break
+                cursor = next_cursor
+                logger.debug(f"Fetched {len(channels)} conversations, continuing pagination...")
             
-            logger.debug(f"Fetched {len(all_channels)} total channels")
+            logger.debug(f"Fetched {len(all_channels)} total conversations for resolution")
             
             # Search for matching channel by name
             for c in all_channels:
@@ -597,7 +600,7 @@ class Slack:
                         return channel_id
                     break
             
-            logger.warning(f"Could not resolve channel name '{name}' - channel not found or not accessible")
+            logger.warning(f"Could not resolve channel name '{name}' - not found in {len(all_channels)} accessible conversations")
         except Exception as e:
             # Log but don't fail - return original channel value
             logger.warning(f"Error resolving channel '{channel}': {e}")
@@ -882,7 +885,7 @@ class Slack:
         category=ToolCategory.COMMUNICATION
     )
     def get_user_info(self, user: str) -> Tuple[bool, str]:
-        """Get the info of a user"""
+        """Get the info of a user with transformed response for easy field extraction"""
         try:
             try:
                 user_id = self._resolve_user_identifier(user, allow_ambiguous=False)
@@ -909,6 +912,31 @@ class Slack:
 
             response = run_async(self.client.users_info(user=user_id))
             slack_response = self._handle_slack_response(response)
+            
+            # Transform response to have flat structure for easy placeholder extraction
+            if slack_response.success and slack_response.data:
+                data = slack_response.data if isinstance(slack_response.data, dict) else {}
+                user_obj = data.get('user') or {}
+                profile = user_obj.get('profile') or {}
+                
+                # Create flattened structure with commonly needed fields at top level
+                transformed = {
+                    'id': user_obj.get('id') or user_id,
+                    'name': user_obj.get('name'),
+                    'real_name': user_obj.get('real_name'),
+                    'display_name': profile.get('display_name') or user_obj.get('name') or user_obj.get('real_name'),
+                    'email': profile.get('email'),
+                    'team_id': user_obj.get('team_id'),
+                    'is_bot': user_obj.get('is_bot'),
+                    'is_admin': user_obj.get('is_admin'),
+                    'is_owner': user_obj.get('is_owner'),
+                    'is_primary_owner': user_obj.get('is_primary_owner'),
+                    'tz': user_obj.get('tz'),
+                    'profile': profile,  # Keep full profile for advanced use cases
+                    'raw_user': user_obj  # Keep raw data for completeness
+                }
+                return (True, SlackResponse(success=True, data=transformed).to_json())
+            
             return (slack_response.success, slack_response.to_json())
         except AmbiguousUserError:
             raise
@@ -940,20 +968,49 @@ class Slack:
         category=ToolCategory.COMMUNICATION
     )
     def fetch_channels(self) -> Tuple[bool, str]:
-        """Fetch all conversations (public channels, private channels, DMs, group DMs)"""
+        """Fetch all conversations (public channels, private channels, DMs, group DMs) with pagination"""
         """
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with all conversations
         """
         try:
-            # Fetch ALL conversation types: public, private, MPIMs (group DMs), IMs (DMs)
-            response = run_async(self.client.conversations_list(
-                types="public_channel,private_channel,mpim,im",
-                exclude_archived=False,
-                limit=1000  # Get more results per page
-            ))
-            slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            # Fetch ALL conversation types with pagination
+            all_conversations = []
+            cursor = None
+            
+            while True:
+                kwargs = {
+                    "types": "public_channel,private_channel,mpim,im",
+                    "exclude_archived": False,
+                    "limit": 1000
+                }
+                if cursor:
+                    kwargs["cursor"] = cursor
+                
+                response = run_async(self.client.conversations_list(**kwargs))
+                slack_response = self._handle_slack_response(response)
+                
+                if not slack_response.success or not slack_response.data:
+                    # If first page fails, return error
+                    if not all_conversations:
+                        return (slack_response.success, slack_response.to_json())
+                    # If subsequent page fails, return what we have
+                    break
+                
+                conversations = slack_response.data.get('channels', [])
+                all_conversations.extend(conversations)
+                
+                # Check for next page
+                response_metadata = slack_response.data.get('response_metadata', {})
+                next_cursor = response_metadata.get('next_cursor')
+                if not next_cursor:
+                    break
+                cursor = next_cursor
+                logger.debug(f"Fetched {len(conversations)} conversations, continuing pagination...")
+            
+            logger.info(f"✅ Fetched total {len(all_conversations)} conversations (all types)")
+            return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
+            
         except Exception as e:
             logger.error(f"Error in fetch_channels: {e}")
             slack_response = self._handle_slack_error(e)
@@ -1938,24 +1995,65 @@ class Slack:
         category=ToolCategory.COMMUNICATION
     )
     def get_users_list(self, include_deleted: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
-        """Get list of all users in the organization"""
+        """Get list of all users in the organization with pagination"""
         """
         Args:
-            include_deleted: Include deleted users in the list
-            limit: Maximum number of users to return
+            include_deleted: Include deleted users in the list (defaults to True to get all users)
+            limit: Maximum number of users to return (if None, returns all users with pagination)
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the users list
         """
         try:
-            kwargs = {}
-            if include_deleted is not None:
-                kwargs["include_deleted"] = include_deleted
+            # Default to include all users (including deleted)
+            if include_deleted is None:
+                include_deleted = True
+            
+            # If limit is specified, do a single fetch
             if limit:
-                kwargs["limit"] = limit
-
-            response = run_async(self.client.users_list(**kwargs))
-            slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+                kwargs = {
+                    "include_deleted": include_deleted,
+                    "limit": limit
+                }
+                response = run_async(self.client.users_list(**kwargs))
+                slack_response = self._handle_slack_response(response)
+                return (slack_response.success, slack_response.to_json())
+            
+            # Otherwise, fetch all users with pagination
+            all_users = []
+            cursor = None
+            
+            while True:
+                kwargs = {
+                    "include_deleted": include_deleted,
+                    "limit": 1000
+                }
+                if cursor:
+                    kwargs["cursor"] = cursor
+                
+                response = run_async(self.client.users_list(**kwargs))
+                slack_response = self._handle_slack_response(response)
+                
+                if not slack_response.success or not slack_response.data:
+                    # If first page fails, return error
+                    if not all_users:
+                        return (slack_response.success, slack_response.to_json())
+                    # If subsequent page fails, return what we have
+                    break
+                
+                users = slack_response.data.get('members', [])
+                all_users.extend(users)
+                
+                # Check for next page
+                response_metadata = slack_response.data.get('response_metadata', {})
+                next_cursor = response_metadata.get('next_cursor')
+                if not next_cursor:
+                    break
+                cursor = next_cursor
+                logger.debug(f"Fetched {len(users)} users, continuing pagination...")
+            
+            logger.info(f"✅ Fetched total {len(all_users)} users")
+            return (True, SlackResponse(success=True, data={"members": all_users, "count": len(all_users)}).to_json())
+            
         except Exception as e:
             logger.error(f"Error in get_users_list: {e}")
             slack_response = self._handle_slack_error(e)
@@ -1986,12 +2084,12 @@ class Slack:
         category=ToolCategory.COMMUNICATION
     )
     def get_user_conversations(self, types: Optional[str] = None, exclude_archived: Optional[bool] = None, limit: Optional[int] = None) -> Tuple[bool, str]:
-        """Get conversations for the authenticated user"""
+        """Get conversations for the authenticated user with pagination"""
         """
         Args:
             types: Comma-separated list of conversation types (defaults to all: public_channel,private_channel,mpim,im)
             exclude_archived: Exclude archived conversations
-            limit: Maximum number of conversations to return
+            limit: Maximum number of conversations to return (if None, returns all with pagination)
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the conversations
         """
@@ -2001,20 +2099,62 @@ class Slack:
             if not user_id:
                 return (False, SlackResponse(success=False, error="Could not determine authenticated user ID from token").to_json())
 
-            kwargs = {"user": user_id}
             # Default to ALL conversation types if not specified
-            if types:
-                kwargs["types"] = types
-            else:
-                kwargs["types"] = "public_channel,private_channel,mpim,im"
-            if exclude_archived is not None:
-                kwargs["exclude_archived"] = exclude_archived
+            conversation_types = types if types else "public_channel,private_channel,mpim,im"
+            
+            # If limit is specified, do a single fetch
             if limit:
+                kwargs = {
+                    "user": user_id,
+                    "types": conversation_types
+                }
+                if exclude_archived is not None:
+                    kwargs["exclude_archived"] = exclude_archived
                 kwargs["limit"] = limit
-
-            response = run_async(self.client.users_conversations(**kwargs))
-            slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+                
+                response = run_async(self.client.users_conversations(**kwargs))
+                slack_response = self._handle_slack_response(response)
+                return (slack_response.success, slack_response.to_json())
+            
+            # Otherwise, fetch all conversations with pagination
+            all_conversations = []
+            cursor = None
+            
+            while True:
+                kwargs = {
+                    "user": user_id,
+                    "types": conversation_types,
+                    "limit": 1000
+                }
+                if exclude_archived is not None:
+                    kwargs["exclude_archived"] = exclude_archived
+                if cursor:
+                    kwargs["cursor"] = cursor
+                
+                response = run_async(self.client.users_conversations(**kwargs))
+                slack_response = self._handle_slack_response(response)
+                
+                if not slack_response.success or not slack_response.data:
+                    # If first page fails, return error
+                    if not all_conversations:
+                        return (slack_response.success, slack_response.to_json())
+                    # If subsequent page fails, return what we have
+                    break
+                
+                conversations = slack_response.data.get('channels', [])
+                all_conversations.extend(conversations)
+                
+                # Check for next page
+                response_metadata = slack_response.data.get('response_metadata', {})
+                next_cursor = response_metadata.get('next_cursor')
+                if not next_cursor:
+                    break
+                cursor = next_cursor
+                logger.debug(f"Fetched {len(conversations)} conversations for user, continuing pagination...")
+            
+            logger.info(f"✅ Fetched total {len(all_conversations)} conversations for authenticated user")
+            return (True, SlackResponse(success=True, data={"channels": all_conversations, "count": len(all_conversations)}).to_json())
+            
         except Exception as e:
             logger.error(f"Error in get_user_conversations: {e}")
             slack_response = self._handle_slack_error(e)
@@ -2137,7 +2277,7 @@ class Slack:
         category=ToolCategory.COMMUNICATION
     )
     def get_user_channels(self, exclude_archived: Optional[bool] = None, types: Optional[str] = None) -> Tuple[bool, str]:
-        """Get channels that the authenticated user is a member of"""
+        """Get channels that the authenticated user is a member of with pagination"""
         """
         Args:
             exclude_archived: Exclude archived channels
@@ -2151,18 +2291,48 @@ class Slack:
             if not user_id:
                 return (False, SlackResponse(success=False, error="Could not determine authenticated user ID from token").to_json())
 
-            kwargs = {"user": user_id}
-            if exclude_archived is not None:
-                kwargs["exclude_archived"] = exclude_archived
             # Default to ALL conversation types if not specified
-            if types:
-                kwargs["types"] = types
-            else:
-                kwargs["types"] = "public_channel,private_channel,mpim,im"
-
-            response = run_async(self.client.users_conversations(**kwargs))
-            slack_response = self._handle_slack_response(response)
-            return (slack_response.success, slack_response.to_json())
+            conversation_types = types if types else "public_channel,private_channel,mpim,im"
+            
+            # Fetch all channels with pagination
+            all_channels = []
+            cursor = None
+            
+            while True:
+                kwargs = {
+                    "user": user_id,
+                    "types": conversation_types,
+                    "limit": 1000
+                }
+                if exclude_archived is not None:
+                    kwargs["exclude_archived"] = exclude_archived
+                if cursor:
+                    kwargs["cursor"] = cursor
+                
+                response = run_async(self.client.users_conversations(**kwargs))
+                slack_response = self._handle_slack_response(response)
+                
+                if not slack_response.success or not slack_response.data:
+                    # If first page fails, return error
+                    if not all_channels:
+                        return (slack_response.success, slack_response.to_json())
+                    # If subsequent page fails, return what we have
+                    break
+                
+                channels = slack_response.data.get('channels', [])
+                all_channels.extend(channels)
+                
+                # Check for next page
+                response_metadata = slack_response.data.get('response_metadata', {})
+                next_cursor = response_metadata.get('next_cursor')
+                if not next_cursor:
+                    break
+                cursor = next_cursor
+                logger.debug(f"Fetched {len(channels)} channels for user, continuing pagination...")
+            
+            logger.info(f"✅ Fetched total {len(all_channels)} channels for authenticated user")
+            return (True, SlackResponse(success=True, data={"channels": all_channels, "count": len(all_channels)}).to_json())
+            
         except Exception as e:
             logger.error(f"Error in get_user_channels: {e}")
             slack_response = self._handle_slack_error(e)
