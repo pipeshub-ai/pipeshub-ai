@@ -836,13 +836,19 @@ export class StorageController {
         throw new NotFoundError('Document / Document Path does not exist');
       }
       const adapter = await this.initializeStorageAdapter(req);
-      
-      const documentPath = document.documentPath.replace(
-        /^records\//,
-        `records/${documentId}/`,
-      );
+      const basePath = document.documentPath.endsWith(String(documentId))
+        ? document.documentPath
+        : `${document.documentPath}/${documentId}`;
+      const ext = document.extension?.startsWith('.')
+        ? document.extension
+        : document.extension
+          ? `.${document.extension}`
+          : '';
+      const pathForUpload = document.isVersionedFile
+        ? `${basePath}/current/${document.documentName}${ext}`
+        : `${basePath}/${document.documentName}${ext}`;
       const presignedUrlResponse =
-        await adapter.generatePresignedUrlForDirectUpload(documentPath);
+        await adapter.generatePresignedUrlForDirectUpload(pathForUpload);
 
       if (presignedUrlResponse.statusCode !== 200) {
         this.logger.error(

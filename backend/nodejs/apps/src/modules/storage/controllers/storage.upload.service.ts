@@ -114,15 +114,14 @@ export class UploadDocumentService {
       // Get file extension (ensure it includes the dot, matching regular upload behavior)
       const fileExtension = path.extname(originalname);
       
-      // Construct rootPath matching regular upload structure (lines 205-211)
       let rootPath = '';
       let fullDocumentPath = '';
       if (placeholderDocumentPath) {
-        rootPath = `${orgId}/PipesHub/${placeholderDocumentPath}/${documentId}`;
-        fullDocumentPath = `${orgId}/PipesHub/${placeholderDocumentPath}`;
+        fullDocumentPath = placeholderDocumentPath;
+        rootPath = `${fullDocumentPath}/${documentId}`;
       } else {
-        rootPath = `${orgId}/PipesHub/${documentId}`;
         fullDocumentPath = `${orgId}/PipesHub`;
+        rootPath = `${fullDocumentPath}/${documentId}`;
       }
       
       // Construct final path matching regular upload structure (lines 213-216)
