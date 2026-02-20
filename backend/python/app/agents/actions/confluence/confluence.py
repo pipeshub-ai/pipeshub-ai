@@ -155,31 +155,63 @@ class Confluence:
             })
 
     async def _resolve_space_id(self, space_identifier: str) -> str:
-        """Helper method to resolve space key to space ID if needed.
+        """Helper method to resolve space key to numeric space ID.
+
+        The Confluence v2 API requires numeric (long) space IDs. This method
+        accepts either a numeric ID or a string key and always returns a numeric
+        ID string by looking up the key in the available spaces.
+
+        Personal space keys often carry a leading '~' (e.g. '~abc123'). The
+        planner may strip or keep that prefix, so we try all variants.
 
         Args:
-            space_identifier: Space ID or space key
+            space_identifier: Numeric space ID or string space key (with or without '~')
 
         Returns:
-            Resolved space ID
+            Resolved numeric space ID string, or original value if resolution fails
         """
+        # Already numeric — return as-is
         try:
-            # If it's already numeric, return as is
             int(space_identifier)
             return space_identifier
         except ValueError:
-            # It's a space key, try to resolve it
-            try:
-                response = await self.client.get_spaces()
-                if response.status == HttpStatusCode.SUCCESS.value:
-                    spaces = response.json()
-                    for space in spaces.get('results', []):
-                        if space.get('key') == space_identifier:
-                            return str(space.get('id', space_identifier))
-                return space_identifier
-            except (ValueError, TypeError, KeyError) as e:
-                logger.warning(f"Failed to resolve space key {space_identifier}: {e}")
-                return space_identifier
+            pass
+
+        # Build candidate keys to try (handle leading '~' being present or absent)
+        stripped = space_identifier.lstrip("~")
+        candidates = {
+            space_identifier,           # exact as given
+            "~" + stripped,             # with ~ prefix
+            stripped,                   # without ~ prefix
+        }
+
+        try:
+            response = await self.client.get_spaces()
+            if response.status == HttpStatusCode.SUCCESS.value:
+                spaces_data = response.json()
+                results = spaces_data.get("results", [])
+                for space in results:
+                    if not isinstance(space, dict):
+                        continue
+                    space_key = space.get("key", "")
+                    space_name = space.get("name", "")
+                    # Match by key (any candidate variant) or by name
+                    if space_key in candidates or space_name == space_identifier:
+                        numeric_id = space.get("id")
+                        if numeric_id:
+                            logger.info(
+                                f"Resolved space '{space_identifier}' → id={numeric_id} "
+                                f"(key='{space_key}')"
+                            )
+                            return str(numeric_id)
+        except Exception as e:
+            logger.warning(f"Failed to resolve space identifier '{space_identifier}': {e}")
+
+        # Resolution failed — return original and let the API surface the error
+        logger.warning(
+            f"Could not resolve space identifier '{space_identifier}' to a numeric ID"
+        )
+        return space_identifier
 
     @tool(
         app_name="confluence",
@@ -250,7 +282,7 @@ class Confluence:
             Tuple of (success, json_response)
         """
         try:
-            resolved_space_id = self._resolve_space_id(space_id)
+            resolved_space_id = await self._resolve_space_id(space_id)
 
             body = {
                 "title": page_title,
@@ -356,7 +388,7 @@ class Confluence:
             Tuple of (success, json_response)
         """
         try:
-            resolved_space_id = self._resolve_space_id(space_id)
+            resolved_space_id = await self._resolve_space_id(space_id)
             response = await self.client.get_pages_in_space(id=resolved_space_id)
             return self._handle_response(response, "Pages fetched successfully")
 
