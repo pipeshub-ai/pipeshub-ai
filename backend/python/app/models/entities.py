@@ -182,7 +182,7 @@ class Record(BaseModel):
     md5_hash: Optional[str] = Field(default=None, description="MD5 hash of the record content")
     size_in_bytes: Optional[int] = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
-    inherit_permissions: bool = Field(default=False, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
+    inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     indexing_status: str = Field(default=IndexingStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=IndexingStatus.NOT_STARTED.value, description="Extraction status for the record")
     # Epoch Timestamps
