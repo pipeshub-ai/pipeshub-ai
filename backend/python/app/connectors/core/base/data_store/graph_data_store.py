@@ -301,6 +301,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_path(self, record_id: str) -> Optional[str]:
         """Get full hierarchical path for a record by traversing parent-child edges."""
         return await self.graph_provider.get_record_path(record_id, transaction=self.txn)
+    async def get_app_creator_user(self, connector_id:str) ->Optional[User]:
+        """Get the creator user for a connector/app by connectorId."""
+        return await self.graph_provider.get_app_creator_user(connector_id,transaction=self.txn)
 
     async def batch_upsert_records(self, records: List[Record]) -> None:
         """
