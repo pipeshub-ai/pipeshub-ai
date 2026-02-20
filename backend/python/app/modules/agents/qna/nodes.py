@@ -1397,26 +1397,69 @@ When the user asks to fetch data from Confluence/Jira/etc. AND post it to a Slac
 Pattern: "[fetch data from Service A] and post/share/send it to [Slack channel]"
 
 Step 1 → fetch with the appropriate service tool
-Step 2 → `slack.send_message` with channel + a message that references the fetched data via placeholders
+Step 2 → `slack.send_message` with a **human-readable, clean text message** you write inline
 
-Example — "list my Confluence spaces and post to #starter":
+Key rules:
+- Always fetch FIRST, send SECOND
+- The Slack `message` field must be **plain text or Slack mrkdwn** — never raw JSON, never raw HTML
+- If channel is in Reference Data, use its `id` directly
+- NEVER use retrieval to "look up" Confluence/Jira data — use the real service tool
+
+**R-SLACK-5: NEVER pass raw tool output directly as the Slack `message` body.**
+
+Slack accepts **plain text** or **Slack mrkdwn** (using `*bold*`, `_italic_`, `` `code` ``, `• bullet`).
+
+These formats are INCOMPATIBLE with Slack — do NOT pass them as message body:
+- ❌ Confluence storage HTML (`<h1>`, `<p>`, `<ul>`, `&mdash;`, `&lt;`, HTML entities)
+- ❌ Raw JSON or dict objects
+- ❌ Any tool output containing HTML tags or unescaped special characters
+
+**The LLM must always WRITE the Slack message text itself.** Think of it as: "what would a human type into Slack?" — short, readable, no HTML.
+
+**Placeholders are for IDENTIFIERS only** (IDs, keys, names, tokens from lookup tools):
+- ✅ Use placeholder: `{{confluence.get_spaces.data.results[0].name}}` — this resolves to a plain string like "Engineering"
+- ✅ Use placeholder: `{{confluence.search_pages.data.results[0].id}}` — resolves to a numeric ID
+- ❌ Do NOT use: `{{confluence.get_page_content.data.content}}` — this resolves to raw HTML which Slack cannot render
+
+**Correct cross-service pattern:**
+
+When "fetch Confluence content → summarize → post to Slack":
+1. Use `confluence.search_pages` or `confluence.get_page_content` to fetch the content
+2. **Write a clean text summary yourself** as the `message` value for Slack — do NOT placeholder the content
+3. The summary should use Slack mrkdwn format (bullets with `•`, bold with `*`, code with `` ` ``)
+
+**Example — "list my Confluence spaces and post to #starter"** (structured data → fine to use field placeholders):
 ```json
 {
   "tools": [
     {"name": "confluence.get_spaces", "args": {}},
     {"name": "slack.send_message", "args": {
       "channel": "#starter",
-      "message": "Here are our Confluence spaces:\n• {{confluence.get_spaces.data.results[0].name}} ({{confluence.get_spaces.data.results[0].key}})\n• {{confluence.get_spaces.data.results[1].name}} ({{confluence.get_spaces.data.results[1].key}})\n(See full results for all spaces)"
+      "message": "Here are our Confluence spaces:\n• {{confluence.get_spaces.data.results[0].name}} (key: {{confluence.get_spaces.data.results[0].key}})\n• {{confluence.get_spaces.data.results[1].name}} (key: {{confluence.get_spaces.data.results[1].key}})"
     }}
   ]
 }
 ```
 
-Key rules:
-- Always fetch FIRST, send SECOND
-- Use placeholders to reference fetched data in the message content
-- NEVER use retrieval to "look up" Confluence/Jira data — use the real service tool
-- If channel is in Reference Data, use its `id` directly
+**Example — "summarize Confluence page and post to Slack"** (page content → must write summary yourself):
+```json
+{
+  "tools": [
+    {"name": "confluence.get_page_content", "args": {"page_id": "231440385"}},
+    {"name": "slack.send_message", "args": {
+      "channel": "#starter",
+      "message": "*Page Summary: Space Summary — PipesHub Deployment*\n\n• PipesHub connects enterprise tools (Slack, Jira, Confluence, Google Workspace) with natural-language search and AI agents.\n• Deployment: run from `pipeshub-ai/deployment/docker-compose`; configure env vars in `env.template`.\n• Stop production stack: `docker compose -f docker-compose.prod.yml -p pipeshub-ai down`\n• Supports real-time and scheduled indexing modes.\n\n_Full page: https://your-domain.atlassian.net/wiki/..._"
+    }}
+  ]
+}
+```
+
+Notice: the `message` is written entirely by the LLM as clean Slack text — the page content placeholder is NOT used for the message body.
+
+**When the task says "make a summary and post to Slack":**
+- The "summary" is your JOB to write — read the page content (step 1), then compose a clean bullet-point summary (step 2)
+- Slack cannot render HTML; you must convert to plain readable text
+- Keep it concise (8–15 bullets max); if the page is long, highlight the key points
 """
 
 PLANNER_SYSTEM_PROMPT = """You are the planning brain of an enterprise AI assistant. Your sole output is a deterministic JSON execution plan — the exact tools to call, in the exact order, with exact arguments — to fulfill the user's request.
@@ -1543,8 +1586,11 @@ NEVER ask for clarification on read, search, or information queries. If the quer
 **R9 — Always produce a non-empty plan unless directly answering or clarifying.**
 If `can_answer_directly: false` and `needs_clarification: false`, `tools` must be non-empty. Default to `retrieval.search_internal_knowledge` for any query that could involve organizational knowledge.
 
-**R10 — Generate complete, final content for write actions.**
+**R10 — Generate complete, final content for write actions; never pipe incompatible formats.**
 When a write tool needs generated text content, write the complete, final text inline. Never use placeholder text or meta-instructions as content values. Extract from conversation history or prior tool results when available.
+- **For Slack messages**: always write plain text or Slack mrkdwn. NEVER use a placeholder that resolves to HTML (e.g., `{{confluence.get_page_content.data.content}}`). Confluence returns HTML storage format — convert it to a bullet-point text summary yourself.
+- **For Confluence pages**: always use Confluence storage HTML format.
+- **Format mismatch = broken output.** If the upstream tool returns HTML and the target tool needs plain text, you must translate — not pass through.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## CASCADING (Sequential Multi-Step Execution)
@@ -1597,12 +1643,29 @@ When a write tool needs generated text content, write the complete, final text i
 
 When a write tool (create page, send message, post update, send email) needs text content:
 1. **Extract from conversation history** — find the actual content in prior assistant messages
-2. **Extract from prior tool results** — if an upstream tool fetches data, use or summarize it
+2. **Summarize upstream tool data** — if an upstream tool fetches data, READ and SUMMARIZE it; do NOT pass it through raw
 3. **Generate inline** — write the full, complete, final text in the plan
-4. **Format correctly:**
+4. **Format correctly for the target tool:**
    - Confluence storage format: `<h1>`, `<h2>`, `<h3>`, `<p>`, `<ul><li>`, `<ol><li>`, `<strong>`, `<em>`, `<pre><code>`, `<table><tr><th><td>`
-   - Slack / messaging: plain text or markdown as required by the tool description
+   - Slack `message` field: **plain text or Slack mrkdwn only** — `*bold*`, `_italic_`, `` `code` ``, `• bullets`, newlines with `\n`
 5. **Never** write instruction text, meta-descriptions, or "fill in X" as a content value
+
+### ⚠️ CRITICAL: Format Incompatibility Between Services
+
+**Confluence → Slack (WRONG — raw HTML in Slack message):**
+```json
+{"name": "slack.send_message", "args": {"channel": "#ch", "message": "{{confluence.get_page_content.data.content}}"}}
+```
+This sends `<h1>Page Title</h1><p>Content...</p>` as literal text to Slack — unreadable.
+
+**Confluence → Slack (CORRECT — LLM writes a clean summary):**
+```json
+{"name": "slack.send_message", "args": {"channel": "#ch", "message": "*Page Summary: Title*\n\n• Key point 1\n• Key point 2\n• Key point 3"}}
+```
+
+**Rule: The `message` parameter in any Slack tool must ALWAYS contain text you compose yourself.** Never pipe raw tool output (HTML, JSON, Confluence storage format) directly into a Slack message field via a placeholder. Instead:
+- Read the content (step 1 tool)
+- Write a clean human-readable plain-text or Slack-mrkdwn summary (in your plan, inline as the message value)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## PAGINATION HANDLING
