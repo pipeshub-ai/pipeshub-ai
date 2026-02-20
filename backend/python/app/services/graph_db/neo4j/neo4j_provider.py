@@ -12554,32 +12554,12 @@ class Neo4jProvider(IGraphDBProvider):
             WITH accessible_rgs, rg_inherited_records,
                  user_direct_records, user_group_records, user_org_records
 
-            // ========== NESTED PAGE ACCESS VIA PARENT-CHILD ==========
-            CALL {{
-                WITH u, user_direct_records
-                WITH u, CASE WHEN user_direct_records IS NOT NULL THEN user_direct_records ELSE [] END AS direct_records
-                UNWIND CASE WHEN size(direct_records) > 0 THEN direct_records ELSE [null] END AS entry_record
-                WITH u, entry_record
-                WHERE entry_record IS NOT NULL
-                MATCH (entry_record)-[rels:RECORD_RELATION*1..20]->(child:Record)
-                WHERE ALL(rel IN rels WHERE rel.relationshipType = 'PARENT_CHILD')
-                  AND child.orgId = $org_id
-                  AND (child.isDeleted IS NULL OR child.isDeleted = false)
-                // Check if child has any permission edges (i.e. has explicit READ restrictions)
-                OPTIONAL MATCH ()-[any_perm:PERMISSION]->(child)
-                WITH u, child, count(any_perm) AS total_perms
-                // Include child if unrestricted (inherits from parent) OR user has direct permission
-                WHERE total_perms = 0
-                   OR EXISTS {{ MATCH (u)-[:PERMISSION]->(child) }}
-                RETURN collect(DISTINCT child) AS nested_page_records
-            }}
 
             WITH accessible_rgs,
                  rg_inherited_records +
                  (CASE WHEN user_direct_records IS NOT NULL THEN user_direct_records ELSE [] END) +
                  (CASE WHEN user_group_records IS NOT NULL THEN user_group_records ELSE [] END) +
-                 (CASE WHEN user_org_records IS NOT NULL THEN user_org_records ELSE [] END) +
-                 (CASE WHEN nested_page_records IS NOT NULL THEN nested_page_records ELSE [] END) AS all_records_raw
+                 (CASE WHEN user_org_records IS NOT NULL THEN user_org_records ELSE [] END) AS all_records_raw
 
             WITH accessible_rgs, [r IN all_records_raw WHERE r IS NOT NULL] AS all_records_raw_filtered
             // Deduplicate records (matching Arango's UNION_DISTINCT) - SAFE approach without UNWIND
@@ -13729,30 +13709,19 @@ class Neo4jProvider(IGraphDBProvider):
         // Bring permission_role into scope after CALL subquery
         WITH parent_record, u, parent_id, org_id, record, permission_role
 
-        OPTIONAL MATCH ()-[any_perm:PERMISSION]->(record)
-        WITH parent_record, u, parent_id, org_id, record, permission_role,
-             count(any_perm) > 0 AS has_read_restriction
-
-        WITH parent_record, u, parent_id, org_id, record, permission_role, has_read_restriction,
-             CASE
-               WHEN has_read_restriction THEN permission_role
-               WHEN permission_role IS NOT NULL AND permission_role <> '' THEN permission_role
-               ELSE 'READER'
-             END AS effective_role
-
-        // Only include records where effective permission is resolved
-        WHERE effective_role IS NOT NULL AND effective_role <> ''
+        // Only include records where user has permission
+        WHERE permission_role IS NOT NULL AND permission_role <> ''
 
         // Get file info for folder detection
         OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file_info:File)
-        WITH parent_record, u, parent_id, record, effective_role, file_info,
+        WITH parent_record, u, parent_id, record, permission_role, file_info,
              CASE WHEN file_info IS NOT NULL AND file_info.isFile = false THEN true ELSE false END AS is_folder
 
         // Simple hasChildren check (no permission filtering on grandchildren)
         OPTIONAL MATCH (record)-[rr:RECORD_RELATION]->(child:Record)
         WHERE rr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']
           AND child IS NOT NULL
-        WITH parent_record, u, parent_id, record, effective_role, file_info, is_folder,
+        WITH parent_record, u, parent_id, record, permission_role, file_info, is_folder,
              count(DISTINCT child) > 0 AS has_children
 
         // Build result nodes
@@ -13777,7 +13746,7 @@ class Neo4jProvider(IGraphDBProvider):
             webUrl: record.webUrl,
             hasChildren: has_children,
             previewRenderable: coalesce(record.previewRenderable, true),
-            userRole: effective_role
+            userRole: permission_role
         }}) AS raw_children
 
         RETURN raw_children
