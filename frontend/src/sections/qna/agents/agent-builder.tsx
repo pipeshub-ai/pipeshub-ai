@@ -43,6 +43,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     activeAgentConnectors,
     configuredConnectors,
     connectorRegistry,
+    toolsets,
     loading,
     loadedAgent,
     error,
@@ -112,22 +113,23 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     }
   }, [loadedAgent, editingAgent, loading, setAgentName]);
 
+  // Templates disabled for v1
   // Load templates
-  useEffect(() => {
-    const loadTemplates = async () => {
-      try {
-        setTemplatesLoading(true);
-        const loadedTemplates = await AgentApiService.getTemplates();
-        setTemplates(loadedTemplates);
-      } catch (err) {
-        console.error('Failed to load templates:', err);
-      } finally {
-        setTemplatesLoading(false);
-      }
-    };
+  // useEffect(() => {
+  //   const loadTemplates = async () => {
+  //     try {
+  //       setTemplatesLoading(true);
+  //       const loadedTemplates = await AgentApiService.getTemplates();
+  //       setTemplates(loadedTemplates);
+  //     } catch (err) {
+  //       console.error('Failed to load templates:', err);
+  //     } finally {
+  //       setTemplatesLoading(false);
+  //     }
+  //   };
 
-    loadTemplates();
-  }, []);
+  //   loadTemplates();
+  // }, []);
 
   // Reset nodes when switching between different agents
   useEffect(() => {
@@ -193,7 +195,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           position: { x: 50, y: 250 },
           data: {
             id: 'llm-1',
-            type: `llm-${initalModel?.provider || 'azureOpenAI'}-${initalModel?.modelName || 'default'}`.replace(/[^a-zA-Z0-9]/g, '-').toLowerCase(),
+            type: `llm-${(initalModel?.modelKey || `${initalModel?.provider || 'azureOpenAI'}-${initalModel?.modelName || 'default'}`).replace(/[^a-zA-Z0-9]/g, '-').toLowerCase()}`,
             label:
               initalModel?.modelName
                 .trim() || 'AI Model',
@@ -333,18 +335,67 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         const sourceType = sourceNode.data.type;
         const targetType = targetNode.data.type;
 
-        // Tool-groups can now connect directly to agent's actions handle
-        if (sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
-          if (connection.targetHandle !== 'actions') {
-            setError('Tool groups must be connected to the agent\'s actions handle');
+        // ============================================
+        // VALIDATION: Only allow connections to/from agent-core
+        // ============================================
+        
+        // Knowledge nodes (KB and app) must connect to agent's knowledge handle
+        if ((sourceType.startsWith('kb-') && sourceType !== 'kb-group') || 
+            (sourceType.startsWith('app-') && sourceType !== 'app-group')) {
+          if (targetType !== 'agent-core') {
+            setError('Knowledge nodes must be connected to the agent\'s knowledge handle');
+            return;
+          }
+          if (connection.targetHandle !== 'knowledge') {
+            setError('Knowledge nodes must be connected to the agent\'s knowledge handle');
             return;
           }
         }
 
-        // Individual tools can also connect directly to agent's actions handle
+        // LLM nodes must connect to agent's llms handle
+        if (sourceType.startsWith('llm-')) {
+          if (targetType !== 'agent-core') {
+            setError('LLM nodes must be connected to the agent\'s llms handle');
+            return;
+          }
+          if (connection.targetHandle !== 'llms') {
+            setError('LLM nodes must be connected to the agent\'s llms handle');
+            return;
+          }
+        }
+
+        // Input nodes must connect to agent's input handle
+        if (sourceType === 'user-input') {
+          if (targetType !== 'agent-core') {
+            setError('Input nodes must be connected to the agent\'s input handle');
+            return;
+          }
+          if (connection.targetHandle !== 'input') {
+            setError('Input nodes must be connected to the agent\'s input handle');
+            return;
+          }
+        }
+
+        // Tool-groups can now connect directly to agent's toolsets handle
+        if (sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'toolsets') {
+            setError('Tool groups must be connected to the agent\'s toolsets handle');
+            return;
+          }
+        }
+
+        // Toolset nodes must connect to agent's toolsets handle
+        if (sourceType.startsWith('toolset-') && targetType === 'agent-core') {
+          if (connection.targetHandle !== 'toolsets') {
+            setError('Toolsets must be connected to the agent\'s toolsets handle');
+            return;
+          }
+        }
+
+        // Individual tools can also connect directly to agent's toolsets handle
         if (sourceType.startsWith('tool-') && !sourceType.startsWith('tool-group-') && targetType === 'agent-core') {
-          if (connection.targetHandle !== 'actions') {
-            setError('Tools must be connected to the agent\'s actions handle');
+          if (connection.targetHandle !== 'toolsets') {
+            setError('Tools must be connected to the agent\'s toolsets handle');
             return;
           }
           
@@ -353,6 +404,24 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
             setError('This tool needs to be configured with a connector instance first');
             return;
           }
+        }
+
+        // Agent can only connect to output nodes
+        if (sourceType === 'agent-core') {
+          if (targetType !== 'chat-response') {
+            setError('Agent can only connect to output nodes');
+            return;
+          }
+          if (connection.sourceHandle !== 'response') {
+            setError('Agent must connect from its response handle');
+            return;
+          }
+        }
+
+        // Prevent invalid connections between non-agent nodes
+        if (sourceType !== 'agent-core' && targetType !== 'agent-core' && targetType !== 'chat-response') {
+          setError('Nodes can only connect to the agent or output nodes');
+          return;
         }
 
         // Tool-groups should only connect to agent
@@ -414,6 +483,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     (event: React.MouseEvent, node: any) => {
       event.stopPropagation();
       event.preventDefault();
+
+      // Don't open config dialog for toolset nodes
+      if (node.data.type.startsWith('toolset-') || node.data.category === 'toolset') {
+        return; // Toolset nodes don't need config dialog
+      }
 
       if (node.data.type !== 'agent-core' && !configDialogOpen && !selectedNode) {
         setSelectedNode(node);
@@ -498,6 +572,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       setError(null);
 
       const currentAgent = loadedAgent || editingAgent;
+      // extractAgentConfigFromFlow now returns properly typed ToolsetReference[] and KnowledgeReference[]
       const agentConfig: AgentFormData = extractAgentConfigFromFlow(
         agentName,
         nodes,
@@ -559,6 +634,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         activeAgentConnectors={activeAgentConnectors}
         configuredConnectors={configuredConnectors}
         connectorRegistry={connectorRegistry}
+        toolsets={toolsets}
         isBusiness={isBusiness}
         nodes={nodes}
         edges={edges}
@@ -621,8 +697,8 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         nodes={nodes}
       />
 
-      {/* Template Selector Dialog */}
-      <TemplateSelector
+      {/* Template Selector Dialog - Disabled for v1 */}
+      {/* <TemplateSelector
         open={templateDialogOpen}
         onClose={() => setTemplateDialogOpen(false)}
         onSelect={(template) => {
@@ -640,7 +716,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
           setTemplateDialogOpen(false);
         }}
         templates={templates}
-      />
+      /> */}
     </Box>
   );
 };

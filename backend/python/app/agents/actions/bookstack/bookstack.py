@@ -2,17 +2,88 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from typing import Coroutine, List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.bookstack.bookstack import BookStackClient
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_page",
+        description="Create a new page",
+        parameters=[
+            {"name": "book_id", "type": "integer", "description": "Book ID", "required": True},
+            {"name": "name", "type": "string", "description": "Page name", "required": True},
+            {"name": "content", "type": "string", "description": "Page content", "required": True}
+        ],
+        tags=["pages", "create"]
+    ),
+    ToolDefinition(
+        name="get_page",
+        description="Get page details",
+        parameters=[
+            {"name": "page_id", "type": "integer", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "read"]
+    ),
+    ToolDefinition(
+        name="update_page",
+        description="Update a page",
+        parameters=[
+            {"name": "page_id", "type": "integer", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "update"]
+    ),
+    ToolDefinition(
+        name="delete_page",
+        description="Delete a page",
+        parameters=[
+            {"name": "page_id", "type": "integer", "description": "Page ID", "required": True}
+        ],
+        tags=["pages", "delete"]
+    ),
+    ToolDefinition(
+        name="search_all",
+        description="Search pages, books, and chapters",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["search"]
+    ),
+]
 
+
+# Register BookStack toolset
+@ToolsetBuilder("BookStack")\
+    .in_group("Documentation")\
+    .with_description("BookStack integration for documentation and knowledge management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("BookStack Token ID", "your-token-id", field_name="tokenId"),
+            CommonFields.api_token("BookStack Token Secret", "your-token-secret", field_name="tokenSecret"),
+            CommonFields.api_token("BookStack Base URL", "https://your-instance.bookstack.app", field_name="baseUrl")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/bookstack.svg"))\
+    .build_decorator()
 class BookStack:
     """BookStack tools exposed to agents using BookStackDataSource.
 

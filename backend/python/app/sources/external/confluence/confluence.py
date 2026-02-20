@@ -7598,53 +7598,6 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
-    async def search_users(
-        self,
-        cql: Optional[str] = None,
-        start: Optional[int] = None,
-        limit: Optional[int] = None,
-        headers: Optional[Dict[str, Any]] = None
-    ) -> HTTPResponse:
-        """Search users with CQL query
-
-        HTTP GET /wiki/rest/api/search/user
-
-        Args:
-            cql: CQL query string (e.g., "type=user")
-            start: Starting index for pagination (default: 0)
-            limit: Number of results per page (default: 1000)
-            headers: Additional headers
-
-        Returns:
-            HTTPResponse with user search results
-        """
-        if self._client is None:
-            raise ValueError('HTTP client is not initialized')
-
-        _headers: Dict[str, Any] = dict(headers or {})
-        _query: Dict[str, Any] = {}
-
-        if cql is not None:
-            _query['cql'] = cql
-        if start is not None:
-            _query['start'] = start
-        if limit is not None:
-            _query['limit'] = limit
-
-        # Use REST API base URL (not v2)
-        rest_base_url = self.base_url.replace('/wiki/api/v2', '/wiki/rest/api')
-        url = f"{rest_base_url}/search/user"
-
-        req = HTTPRequest(
-            method='GET',
-            url=url,
-            headers=_as_str_dict(_headers),
-            path={},
-            query=_as_str_dict(_query),
-            body=None,
-        )
-        resp = await self._client.execute(req)
-        return resp
 
     async def get_group_members(
         self,

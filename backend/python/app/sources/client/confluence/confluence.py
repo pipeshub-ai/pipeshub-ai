@@ -314,6 +314,70 @@ class ConfluenceClient(IClient):
             logger.error(f"Failed to build Confluence client from services: {str(e)}")
             raise
 
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        logger: logging.Logger,
+    ) -> "ConfluenceClient":
+        """
+        Build ConfluenceClient using toolset configuration from etcd.
+
+        NEW ARCHITECTURE: This method uses toolset configs directly instead of
+        connector instance configs. Toolset configs are stored per-user at:
+        /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+
+        Returns:
+            ConfluenceClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for Confluence client")
+
+            # Extract auth configuration from toolset config
+            auth_config = toolset_config.get("auth", {}) or {}
+            credentials_config = toolset_config.get("credentials", {}) or {}
+            auth_type = auth_config.get("type", "BEARER_TOKEN")
+
+            # Create appropriate client based on auth type
+            if auth_type == "BEARER_TOKEN":
+                token = auth_config.get("bearerToken", "")
+                if not token:
+                    raise ValueError("Token required for bearer token auth type")
+
+                # Get base URL using the token
+                base_url = await cls.get_confluence_base_url(token)
+                if not base_url:
+                    raise ValueError("Confluence base_url not found in configuration")
+
+                client = ConfluenceRESTClientViaToken(base_url, token)
+
+            elif auth_type == "OAUTH":
+                access_token = credentials_config.get("access_token", "")
+                if not access_token:
+                    raise ValueError("Access token required for OAuth auth type")
+
+                # Get base URL using the token
+                base_url = await cls.get_confluence_base_url(access_token)
+                if not base_url:
+                    raise ValueError("Confluence base_url not found in configuration")
+
+                client = ConfluenceRESTClientViaToken(base_url, access_token)
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            logger.info(f"Built Confluence client from toolset config with auth type: {auth_type}")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Confluence client from toolset config: {str(e)}")
+            raise
+
     @staticmethod
     async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Confluence."""

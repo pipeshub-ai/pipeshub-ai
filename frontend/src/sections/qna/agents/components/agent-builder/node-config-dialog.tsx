@@ -897,7 +897,28 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
                             const newSelected = e.target.checked
                               ? [...currentSelected, kb.id]
                               : currentSelected.filter((id) => id !== kb.id);
-                            setConfig((prev) => ({ ...prev, [key]: newSelected }));
+                            
+                            // Update kbConnectorIds mapping when KBs are selected/deselected
+                            setConfig((prev) => {
+                              const currentKbConnectorIds = prev.kbConnectorIds || {};
+                              const newKbConnectorIds = { ...currentKbConnectorIds };
+                              
+                              if (e.target.checked) {
+                                // Add KB connectorId to mapping when selected
+                                if (kb.connectorId) {
+                                  newKbConnectorIds[kb.id] = kb.connectorId;
+                                }
+                              } else {
+                                // Remove from mapping when deselected
+                                delete newKbConnectorIds[kb.id];
+                              }
+                              
+                              return { 
+                                ...prev, 
+                                [key]: newSelected,
+                                kbConnectorIds: newKbConnectorIds,
+                              };
+                            });
                           }}
                           size="small"
                         />

@@ -46,7 +46,6 @@ class Neo4jClient:
         self.driver: Optional[Any] = None
         self._active_sessions: Dict[str, Any] = {}  # Track active transaction sessions
         self._session_locks: Dict[str, asyncio.Lock] = {}  # Lock per transaction to prevent concurrent access
-        self._event_loop: Optional[asyncio.AbstractEventLoop] = None  # Track event loop
 
         # Log connection details
         self.logger.info(f"🔌 Connecting to Neo4j at {uri}")
@@ -63,9 +62,6 @@ class Neo4jClient:
             bool: True if connection successful
         """
         try:
-            # Store the event loop this driver is bound to
-            self._event_loop = asyncio.get_running_loop()
-
             self.driver = AsyncGraphDatabase.driver(
                 self.uri,
                 auth=(self.username, self.password)
@@ -74,7 +70,7 @@ class Neo4jClient:
             # Test connection
             await self.driver.verify_connectivity()
             server_info = await self.driver.get_server_info()
-            self.logger.info(f"✅ Connected to Neo4j {server_info} (event_loop: {id(self._event_loop)})")
+            self.logger.info(f"✅ Connected to Neo4j {server_info}")
             return True
 
         except ServiceUnavailable as e:
@@ -83,33 +79,6 @@ class Neo4jClient:
         except Exception as e:
             self.logger.error(f"❌ Failed to connect to Neo4j: {str(e)}")
             return False
-
-    async def _ensure_driver(self) -> None:
-        """
-        Ensure driver is valid for the current event loop.
-        If event loop has changed, reconnect the driver.
-        """
-        try:
-            current_loop = asyncio.get_running_loop()
-
-            if self._event_loop is None or self._event_loop != current_loop:
-                self.logger.warning(
-                    f"⚠️ Event loop changed (old: {id(self._event_loop)}, new: {id(current_loop)}). "
-                    "Reconnecting Neo4j driver..."
-                )
-                # Close old driver if exists
-                if self.driver:
-                    try:
-                        await self.driver.close()
-                    except Exception as e:
-                        self.logger.warning(f"Error closing old driver: {e}")
-
-                # Reconnect in new event loop
-                await self.connect()
-
-        except RuntimeError:
-            # No running event loop, driver will be created when needed
-            pass
 
     async def disconnect(self) -> None:
         """Close Neo4j driver and all sessions"""
@@ -143,11 +112,10 @@ class Neo4jClient:
         """
         import uuid
 
-        # Ensure driver is valid for current event loop
-        await self._ensure_driver()
-
         if not self.driver:
-            raise RuntimeError("Neo4j driver not connected")
+            await self.connect()
+            if not self.driver:
+                raise RuntimeError("Neo4j driver not connected")
 
         # Create a new session for this transaction
         session = self.driver.session(database=self.database)
@@ -213,11 +181,10 @@ class Neo4jClient:
         Returns:
             List[Dict]: Query results as list of dictionaries
         """
-        # Ensure driver is valid for current event loop
-        await self._ensure_driver()
-
         if not self.driver:
-            raise RuntimeError("Neo4j driver not connected")
+            await self.connect()
+            if not self.driver:
+                raise RuntimeError("Neo4j driver not connected")
 
         parameters = parameters or {}
 

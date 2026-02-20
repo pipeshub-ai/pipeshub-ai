@@ -19,6 +19,7 @@ class ToolCategory(Enum):
     CODE_MANAGEMENT = "code_management"
     UTILITY = "utility"
     SEARCH = "search"
+    KNOWLEDGE = "knowledge"
 
 
 class ToolMetadata(BaseModel):

@@ -58,9 +58,9 @@ class ChatState(TypedDict):
 
     # Enhanced features
     system_prompt: Optional[str]  # User-defined system prompt
-    apps: Optional[List[str]]  # List of app IDs to search in
-    kb: Optional[List[str]]  # List of KB IDs to search in
-    connector_instances: Optional[List[Dict[str, Any]]]  # List of connector instances with id, type, name
+    apps: Optional[List[str]]  # List of app IDs to search in (extracted from knowledge array)
+    kb: Optional[List[str]]  # List of KB record group IDs to search in (extracted from knowledge array filters)
+    # connector_instances: Deprecated - use toolsets instead
     tools: Optional[List[str]]  # List of tool names to enable for this agent
     output_file_path: Optional[str]  # Optional file path for saving responses
     tool_to_connector_map: Optional[Dict[str, str]]  # Mapping from app_name (tool) to connector instance ID
@@ -69,6 +69,11 @@ class ChatState(TypedDict):
     pending_tool_calls: Optional[bool]  # Whether the agent has pending tool calls
     tool_results: Optional[List[Dict[str, Any]]]  # Results of current tool execution
     tool_records: Optional[List[Dict[str, Any]]]  # Full record data from tools (for citation normalization)
+
+    # Toolset-based tool execution (NEW - replaces old connector-based system)
+    tool_to_toolset_map: Optional[Dict[str, str]]  # Maps "slack.send_message" -> toolset_id
+    toolset_configs: Optional[Dict[str, Dict]]  # Cached toolset auth configs from etcd: toolset_id -> config
+    agent_toolsets: Optional[List[Dict]]  # Full toolset nodes loaded via graph traversal
 
     # Planner-based execution fields
     execution_plan: Optional[Dict[str, Any]]  # Planned execution from planner node
@@ -118,43 +123,164 @@ class ChatState(TypedDict):
 
     # Reflection and retry fields (for intelligent error recovery)
     reflection: Optional[Dict[str, Any]]  # Reflection analysis result from reflect_node
-    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix
+    reflection_decision: Optional[str]  # Decision: respond_success, respond_error, respond_clarify, retry_with_fix, continue_with_more_tools
     retry_count: int  # Current retry count (starts at 0)
     max_retries: int  # Maximum retries allowed (default 1 for speed)
     is_retry: bool  # Whether this is a retry iteration
     execution_errors: Optional[List[Dict[str, Any]]]  # Error details for retry context
 
-def _build_tool_to_connector_map(connector_instances: List[Dict[str, Any]]) -> Dict[str, str]:
-    """
-    Build a mapping from app_name (connector type) to connector instance ID.
+    # Multi-step iteration tracking (separate from error retries)
+    iteration_count: int  # Current iteration count for multi-step tasks (starts at 0)
+    max_iterations: int  # Maximum iterations allowed for multi-step tasks (default 3)
+    is_continue: bool  # Whether this is a continue iteration (multi-step task)
+    tool_validation_retry_count: int  # Retry count for tool validation in planner
 
-    Maps ALL connector types (both 'knowledge' and 'action' categories) to their
-    instance IDs for use by tools.
+def _build_tool_to_toolset_map(toolsets: List[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Build a mapping from tool full name to synthetic toolset ID.
+
+    Maps tool names like "slack.send_message" to their parent toolset ID
+    in synthetic format: {user_id}_{normalized_toolset_type}
+
+    This matches the etcd path structure: /services/toolsets/{user_id}/{normalized_toolset_type}
 
     Args:
-        connector_instances: List of connector instances with id, type, name, category
+        toolsets: List of toolset objects with tools array
 
     Returns:
-        Dictionary mapping app_name (type) to connector instance ID
+        Dictionary mapping tool full name to synthetic toolset ID ({user_id}_{normalized_toolset_type})
     """
-    if not connector_instances:
+    if not toolsets:
         return {}
 
-    tool_to_connector = {}
-    for instance in connector_instances:
-        if isinstance(instance, dict):
-            connector_id = instance.get("id")
-            connector_type = instance.get("type")
+    # Import normalization function
+    from app.agents.constants.toolset_constants import normalize_app_name
 
-            if connector_id and connector_type:
-                # Map connector type (e.g., "SLACK", "JIRA") to connector instance ID
-                # Normalize the type to lowercase for consistent matching
-                normalized_type = connector_type.replace(" ", "").lower()
-                tool_to_connector[normalized_type] = connector_id
-                # Also map the original type (case-sensitive) for flexibility
-                tool_to_connector[connector_type] = connector_id
+    tool_to_toolset = {}
+    for toolset in toolsets:
+        if isinstance(toolset, dict):
+            toolset_name = toolset.get("name", "")
+            user_id = toolset.get("userId", "")
+            tools = toolset.get("tools", [])
+            selected_tools = toolset.get("selectedTools", [])
 
-    return tool_to_connector
+            # Create synthetic toolset ID: {user_id}_{normalized_toolset_type}
+            # Normalize to match etcd path structure
+            if not user_id or not toolset_name:
+                continue
+
+            normalized_toolset_name = normalize_app_name(toolset_name)
+            synthetic_toolset_id = f"{user_id}_{normalized_toolset_name}"
+
+            # Map tools from expanded tools array
+            for tool in tools:
+                if isinstance(tool, dict):
+                    full_name = tool.get("fullName") or f"{toolset_name}.{tool.get('name', '')}"
+                    if full_name:
+                        tool_to_toolset[full_name] = synthetic_toolset_id
+
+            # Map tools from selectedTools if no expanded tools
+            if not tools and selected_tools:
+                for tool_name in selected_tools:
+                    full_name = tool_name if "." in tool_name else f"{toolset_name}.{tool_name}"
+                    tool_to_toolset[full_name] = synthetic_toolset_id
+
+    return tool_to_toolset
+
+
+def _extract_tools_from_toolsets(toolsets: List[Dict[str, Any]]) -> List[str]:
+    """
+    Extract list of tool full names from toolsets.
+
+    Args:
+        toolsets: List of toolset objects with tools array
+
+    Returns:
+        List of tool full names like ["slack.send_message", "jira.create_issue"]
+    """
+    if not toolsets:
+        return []
+
+    tools = []
+    for toolset in toolsets:
+        if isinstance(toolset, dict):
+            toolset_name = toolset.get("name", "")
+            toolset_tools = toolset.get("tools", [])
+            selected_tools = toolset.get("selectedTools", [])
+
+            # Extract from expanded tools array
+            for tool in toolset_tools:
+                if isinstance(tool, dict):
+                    # Try fullName first, then construct from toolName (schema field), then fallback to 'name'
+                    full_name = tool.get("fullName") or f"{toolset_name}.{tool.get('toolName') or tool.get('name', '')}"
+                    if full_name:
+                        tools.append(full_name)
+
+            # Extract from selectedTools if no expanded tools
+            if not toolset_tools and selected_tools:
+                for tool_name in selected_tools:
+                    full_name = tool_name if "." in tool_name else f"{toolset_name}.{tool_name}"
+                    tools.append(full_name)
+
+    return tools
+
+
+def _extract_knowledge_connector_ids(knowledge: List[Dict[str, Any]]) -> List[str]:
+    """
+    Extract connector IDs from knowledge array for retrieval filtering.
+
+    Args:
+        knowledge: List of knowledge objects with connectorId and filters
+
+    Returns:
+        List of connector IDs to use for knowledge retrieval
+    """
+    if not knowledge:
+        return []
+
+    connector_ids = []
+    for k in knowledge:
+        if isinstance(k, dict):
+            connector_id = k.get("connectorId")
+            if connector_id:
+                connector_ids.append(connector_id)
+
+    return connector_ids
+
+
+def _extract_kb_record_groups(knowledge: List[Dict[str, Any]]) -> List[str]:
+    """
+    Extract KB record group IDs from knowledge array filters.
+
+    KBs are stored in knowledge array with filters containing recordGroups.
+    This function extracts all record group IDs that represent KBs.
+
+    Args:
+        knowledge: List of knowledge objects with connectorId and filters
+
+    Returns:
+        List of KB record group IDs to use for retrieval filtering
+    """
+    if not knowledge:
+        return []
+
+    kb_record_groups = []
+    for k in knowledge:
+        if isinstance(k, dict):
+            filters = k.get("filters", {})
+            if isinstance(filters, str):
+                try:
+                    import json
+                    filters = json.loads(filters)
+                except (json.JSONDecodeError, ValueError):
+                    filters = {}
+
+            if isinstance(filters, dict):
+                record_groups = filters.get("recordGroups", [])
+                if record_groups and isinstance(record_groups, list):
+                    kb_record_groups.extend(record_groups)
+
+    return kb_record_groups
 
 
 def cleanup_state_after_retrieval(state: ChatState) -> None:
@@ -201,33 +327,55 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
 def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
                         reranker_service: RerankerService, config_service: ConfigurationService, org_info: Dict[str, Any] = None) -> ChatState:
-    """Build the initial state from the chat query and user info"""
+    """
+    Build the initial state from the chat query and user info.
+
+    Uses the new graph-based toolsets and knowledge format:
+    - toolsets: Array of toolset objects with nested tools
+    - knowledge: Array of knowledge objects with connectorId and filters
+
+    The tools list is extracted from toolsets for the planner.
+    Knowledge connector IDs are used for retrieval filtering.
+    """
 
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
-
-    # Get tools configuration - no restrictions, let LLM decide
-    tools = chat_query.get("tools", None)  # None means all tools available
     output_file_path = chat_query.get("outputFilePath", None)
 
-    # Build filters based on allowed apps and knowledge bases
-    filters = chat_query.get("filters", {})
-    apps = filters.get("apps", None)
-    kb = filters.get("kb", None)
-    connector_instances = filters.get("connectors", None)  # List of dicts with id, type, name
+    # Get toolsets and knowledge from the new graph-based format
+    toolsets = chat_query.get("toolsets", [])  # Array of toolset objects with tools
+    knowledge = chat_query.get("knowledge", [])  # Array of knowledge objects with connectorId, filters
 
-    logger.debug(f"apps: {apps}")
+    # Extract tools list from toolsets for the planner
+    tools = _extract_tools_from_toolsets(toolsets) if toolsets else chat_query.get("tools", None)
+
+    # Build tool-to-toolset mapping for looking up configs during execution
+    tool_to_toolset_map = _build_tool_to_toolset_map(toolsets) if toolsets else {}
+
+    # Get toolset configs from the chat query (pre-loaded from etcd by the endpoint)
+    toolset_configs = chat_query.get("toolsetConfigs", {})
+
+    # Build filters based on knowledge and other criteria
+    filters = chat_query.get("filters", {})
+
+    # Extract apps (connector IDs) from knowledge for retrieval
+    apps = _extract_knowledge_connector_ids(knowledge) if knowledge else filters.get("apps", None)
+    # Extract KB record groups from knowledge array filters (new format)
+    kb = _extract_kb_record_groups(knowledge) if knowledge else filters.get("kb", None)
+
+    logger.debug(f"toolsets: {len(toolsets)} loaded")
+    logger.debug(f"knowledge: {len(knowledge)} sources")
+    logger.debug(f"apps (from knowledge): {apps}")
     logger.debug(f"kb: {kb}")
-    logger.debug(f"connector_instances: {connector_instances}")
-    logger.debug(f"tools: {tools}")
-    logger.debug(f"output_file_path: {output_file_path}")
+    logger.debug(f"tools (from toolsets): {tools}")
+    logger.debug(f"tool_to_toolset_map: {tool_to_toolset_map}")
 
     return {
         "query": chat_query.get("query", ""),
         "limit": chat_query.get("limit", 50),
         "messages": [],  # Will be populated in prepare_prompt_node
         "previous_conversations": chat_query.get("previous_conversations") or chat_query.get("previousConversations") or [],
-        "quick_mode": chat_query.get("quickMode", False),  # Renamed
+        "quick_mode": chat_query.get("quickMode", False),
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
         "chat_mode": chat_query.get("chatMode", "quick"),
@@ -239,7 +387,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "decomposed_queries": [],
         "rewritten_queries": [],
         "expanded_queries": [],
-        "web_search_queries": [], # Initialize web_search_queries
+        "web_search_queries": [],
 
         # Search results (conditional)
         "search_results": [],
@@ -261,14 +409,14 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "reranker_service": reranker_service,
         "config_service": config_service,
 
-        # Enhanced features
+        # Enhanced features - using new graph-based format
         "system_prompt": system_prompt,
-        "apps": apps,
+        "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
-        "connector_instances": connector_instances,
-        "tools": tools,
+        # connector_instances: Deprecated - use toolsets instead
+        "tools": tools,  # Extracted from toolsets
         "output_file_path": output_file_path,
-        "tool_to_connector_map": _build_tool_to_connector_map(connector_instances) if connector_instances else None,
+        "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 
         # Tool calling specific fields - direct execution
         "pending_tool_calls": False,
@@ -288,7 +436,6 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
         # Loop detection and graceful handling
         "force_final_response": False,
-        "max_iterations": 30,  # Maximum tool iteration limit
         "loop_detected": False,
         "loop_reason": None,
 
@@ -299,18 +446,29 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         # Pure registry integration - no executor dependency
         "available_tools": None,
         "tool_configs": None,
-        "registry_tool_instances": {},  # Cache for tool instances
+        "registry_tool_instances": {},
+
+        # Toolset-based tool execution (graph-based)
+        "tool_to_toolset_map": tool_to_toolset_map,
+        "toolset_configs": toolset_configs,
+        "agent_toolsets": toolsets,
 
         # Knowledge retrieval processing fields
-        "virtual_record_id_to_result": {},  # Mapping for citations
-        "blob_store": None,  # Will be initialized during retrieval
-        "is_multimodal_llm": False,  # Will be determined from LLM config
+        "virtual_record_id_to_result": {},
+        "blob_store": None,
+        "is_multimodal_llm": False,
 
         # Reflection and retry fields (for intelligent error recovery)
-        "reflection": None,  # Reflection analysis result
-        "reflection_decision": None,  # Decision from reflect_node
-        "retry_count": 0,  # Current retry count
-        "max_retries": 1,  # Single retry for speed (fast failure)
-        "is_retry": False,  # Whether this is a retry iteration
-        "execution_errors": [],  # Error details for retry context
+        "reflection": None,
+        "reflection_decision": None,
+        "retry_count": 0,
+        "max_retries": 1,
+        "is_retry": False,
+        "execution_errors": [],
+
+        # Multi-step iteration tracking
+        "iteration_count": 0,
+        "max_iterations": 3,
+        "is_continue": False,
+        "tool_validation_retry_count": 0,
     }

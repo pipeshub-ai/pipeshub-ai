@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.entity import router as entity_router
+from app.api.routes.toolsets import router as toolsets_router
 from app.config.constants.arangodb import AccountType
 from app.connectors.api.router import router
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
@@ -40,6 +41,7 @@ async def get_initialized_container() -> ConnectorAppContainer:
             modules=[
                 "app.core.celery_app",
                 "app.connectors.api.router",
+                "app.api.routes.toolsets",
                 "app.connectors.sources.localKB.api.kb_router",
                 "app.connectors.sources.localKB.api.knowledge_hub_router",
                 "app.api.routes.entity",
@@ -55,6 +57,37 @@ async def get_initialized_container() -> ConnectorAppContainer:
         except Exception as e:
             container.logger().warning(f"Startup token refresh service failed to initialize: {e}")
     return container
+
+
+async def refresh_toolset_tokens(app_container: ConnectorAppContainer) -> bool:
+    """
+    Refresh OAuth tokens for all authenticated toolsets.
+    Uses the dedicated toolset token refresh service.
+    This function triggers an initial refresh on startup, but the service
+    also runs periodic refreshes automatically.
+    """
+    logger = app_container.logger()
+    logger.info("🔄 Triggering initial toolset token refresh...")
+
+    try:
+        from app.connectors.core.base.token_service.startup_service import (
+            startup_service,
+        )
+        toolset_refresh_service = startup_service.get_toolset_token_refresh_service()
+
+        if not toolset_refresh_service:
+            logger.warning("⚠️ Toolset token refresh service not initialized, skipping toolset token refresh")
+            return False
+
+        # The toolset refresh service handles all the logic internally
+        # Just trigger the refresh all tokens method
+        await toolset_refresh_service._refresh_all_tokens()
+        logger.info("✅ Initial toolset token refresh completed")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Error refreshing toolset tokens: {e}", exc_info=True)
+        return False
 
 
 async def resume_sync_services(app_container: ConnectorAppContainer, data_store: GraphDataStore = None) -> bool:
@@ -316,7 +349,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Start token refresh service at app startup (database-agnostic)
     try:
-        await startup_service.initialize(app_container.key_value_store(), graph_provider)
+        await startup_service.initialize(app_container.config_service(), graph_provider)
         logger.info("✅ Startup services initialized successfully")
     except Exception as e:
         logger.warning(f"⚠️ Startup token refresh service failed to initialize: {e}")
@@ -325,6 +358,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
+
+    # Initialize toolset registry (in-memory, fast tool lookup)
+    logger.info("🔄 Initializing in-memory toolset registry...")
+    from app.agents.registry.toolset_registry import get_toolset_registry
+    from app.agents.tools.registry import _global_tools_registry
+
+    toolset_registry = get_toolset_registry()
+    toolset_registry.auto_discover_toolsets()
+    app.state.toolset_registry = toolset_registry
+    logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
+
+    # Log tool count from in-memory registry
+    tool_count = len(_global_tools_registry.list_tools())
+    logger.info(f"✅ {tool_count} tools available from in-memory registry")
 
     # Initialize OAuth config registry (completely independent, no connector registry needed)
     # Note: OAuth registry is populated when connectors are registered above
@@ -392,6 +439,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Resume sync services - pass already resolved graph_provider and data_store
     asyncio.create_task(resume_sync_services(app_container, data_store))
+
+    # Refresh toolset tokens (run in background)
+    asyncio.create_task(refresh_toolset_tokens(app_container))
 
     yield
     logger.info("🔄 Shut down application started")
@@ -504,6 +554,7 @@ async def health_check() -> JSONResponse:
 
 # Include routes - more specific routes first
 app.include_router(entity_router)
+app.include_router(toolsets_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(router)

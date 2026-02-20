@@ -11,6 +11,7 @@ import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
+import toolsIcon from '@iconify-icons/mdi/tools';
 
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
@@ -60,33 +61,50 @@ export default function Sidebar() {
   };
 
   // Settings submenu items - common for both account types
-  const settingsOptions = [
+  const allSettingsOptions = [
     {
       name: 'Authentication',
       icon: shieldLockIcon,
       path: `${baseUrl}/settings/authentication`,
+      adminOnly: true,
     },
     {
       name: 'Connectors',
       icon: linkVariantIcon,
       path: `${baseUrl}/settings/connector`,
+      adminOnly: false, // Available to all business users
+    },
+    {
+      name: 'Toolsets',
+      icon: toolsIcon,
+      path: `${baseUrl}/settings/toolsets`,
+      adminOnly: false, // Available to all business users
     },
     {
       name: 'AI Models',
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,
+      adminOnly: true,
     },
     {
       name: 'Platform',
       icon: cogIcon,
       path: `${baseUrl}/settings/platform`,
+      adminOnly: true,
     },
     {
       name: 'Prompts',
       icon: messageTextIcon,
       path: `${baseUrl}/settings/prompts`,
+      adminOnly: true,
     },
   ];
+
+  // Filter settings options based on admin status for business accounts
+  // For individual accounts, show all options
+  const settingsOptions = isBusiness
+    ? allSettingsOptions.filter((option) => !option.adminOnly || isAdmin)
+    : allSettingsOptions;
 
 
   return (
@@ -160,45 +178,48 @@ export default function Sidebar() {
               </ListItemButton>
             </ListItem>
             {isAdmin && (
-              <>
-                <ListItem disablePadding>
-                  <ListItemButton
-                    onClick={() => navigate(`${baseUrl}/users`)}
-                    selected={pathname === `${baseUrl}/users`}
-                    sx={{
-                      py: 1,
-                      borderRadius: '0',
-                      '&.Mui-selected': {
-                        bgcolor: theme.palette.mode === 'dark' 
-                          ? alpha(theme.palette.primary.main, 0.15)
-                          : alpha(theme.palette.primary.main, 0.08),
-                        borderRight: `3px solid ${theme.palette.primary.main}`,
-                        '&:hover': {
-                          bgcolor: theme.palette.mode === 'dark' 
-                            ? alpha(theme.palette.primary.main, 0.2)
-                            : alpha(theme.palette.primary.main, 0.12),
-                        },
-                      },
+              <ListItem disablePadding>
+                <ListItemButton
+                  onClick={() => navigate(`${baseUrl}/users`)}
+                  selected={pathname === `${baseUrl}/users`}
+                  sx={{
+                    py: 1,
+                    borderRadius: '0',
+                    '&.Mui-selected': {
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.primary.main, 0.15)
+                        : alpha(theme.palette.primary.main, 0.08),
+                      borderRight: `3px solid ${theme.palette.primary.main}`,
                       '&:hover': {
                         bgcolor: theme.palette.mode === 'dark' 
-                          ? alpha(theme.palette.action.hover, 0.1)
-                          : alpha(theme.palette.action.hover, 0.05),
+                          ? alpha(theme.palette.primary.main, 0.2)
+                          : alpha(theme.palette.primary.main, 0.12),
                       },
+                    },
+                    '&:hover': {
+                      bgcolor: theme.palette.mode === 'dark' 
+                        ? alpha(theme.palette.action.hover, 0.1)
+                        : alpha(theme.palette.action.hover, 0.05),
+                    },
+                  }}
+                >
+                  <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                    <Iconify icon={accountGroupIcon} width={22} height={22} />
+                  </ListItemIcon>
+                  <ListItemText 
+                    primary="Users & Groups" 
+                    primaryTypographyProps={{ 
+                      fontSize: '0.9375rem',
+                      fontWeight: pathname === `${baseUrl}/users` ? 600 : 400,
                     }}
-                  >
-                    <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
-                      <Iconify icon={accountGroupIcon} width={22} height={22} />
-                    </ListItemIcon>
-                    <ListItemText 
-                      primary="Users & Groups" 
-                      primaryTypographyProps={{ 
-                        fontSize: '0.9375rem',
-                        fontWeight: pathname === `${baseUrl}/users` ? 600 : 400,
-                      }}
-                    />
-                  </ListItemButton>
-                </ListItem>
+                  />
+                </ListItemButton>
+              </ListItem>
+            )}
 
+            {/* Settings - visible to all business users, but options filtered by admin status */}
+            {settingsOptions.length > 0 && (
+              <>
                 <ListItem disablePadding>
                   <ListItemButton
                     onClick={handleToggleSettings}

@@ -943,14 +943,22 @@ class Neo4jProvider(IGraphDBProvider):
 
             relationship_type = edge_collection_to_relationship(collection)
 
-            # Process edges - only generic format is supported
+            # Process edges - support both ArangoDB format (_from, _to) and generic format (from_id, to_id)
             edge_data = []
             for edge in edges:
-                # Generic format: from_id, to_id, from_collection, to_collection
-                from_key = edge.get("from_id")
-                to_key = edge.get("to_id")
-                from_collection = edge.get("from_collection", "")
-                to_collection = edge.get("to_collection", "")
+                # Try ArangoDB format first (_from, _to)
+                if "_from" in edge and "_to" in edge:
+                    from_collection, from_key = self._parse_arango_id(edge["_from"])
+                    to_collection, to_key = self._parse_arango_id(edge["_to"])
+                # Fallback to generic format
+                elif "from_id" in edge and "to_id" in edge:
+                    from_key = edge["from_id"]
+                    to_key = edge["to_id"]
+                    from_collection = edge.get("from_collection", "")
+                    to_collection = edge.get("to_collection", "")
+                else:
+                    self.logger.warning(f"Skipping invalid edge (missing _from/_to or from_id/to_id): {edge}")
+                    continue
 
                 if not from_key or not to_key or not from_collection or not to_collection:
                     self.logger.warning(f"Skipping invalid edge (missing required fields): {edge}")
@@ -961,7 +969,7 @@ class Neo4jProvider(IGraphDBProvider):
 
                 # Extract edge properties (excluding format-specific fields)
                 props = {k: v for k, v in edge.items() if k not in [
-                    "from_id", "to_id", "from_collection", "to_collection"
+                    "_from", "_to", "from_id", "to_id", "from_collection", "to_collection"
                 ]}
 
                 edge_data.append({
@@ -11312,6 +11320,9 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
+            # Create reverse mapping from label to collection
+            label_to_collection = {v: k for k, v in COLLECTION_TO_LABEL.items()}
+
             edges = []
             for result in results:
                 edge_dict = result.get("r", {})  # properties(r) already returns a dict
@@ -11321,17 +11332,9 @@ class Neo4jProvider(IGraphDBProvider):
                 # Determine target collection from labels
                 target_collection = "records"  # Default
                 for label in target_labels:
-                    if label in ["RecordGroup", "App", "User", "Group", "Team", "File"]:
-                        # Map label back to collection
-                        label_to_collection = {
-                            "RecordGroup": "recordGroups",
-                            "App": "apps",
-                            "User": "users",
-                            "Group": "groups",
-                            "Team": "teams",
-                            "File": "files"
-                        }
-                        target_collection = label_to_collection.get(label, "records")
+                    # Use reverse mapping to get collection from label
+                    if label in label_to_collection:
+                        target_collection = label_to_collection[label]
                         break
 
                 # Convert to ArangoDB edge format
@@ -15309,3 +15312,1266 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error in get_organization_users: {str(e)}", exc_info=True)
             return [], 0
+
+    async def delete_all_edges_for_node(
+        self,
+        node_key: str,
+        collection: str,
+        transaction: Optional[str] = None
+    ) -> int:
+        """
+        Delete all edges connected to a node (both incoming and outgoing).
+
+        Args:
+            node_key: The node key (e.g., "groups/12345" or full _id)
+            collection: The edge collection name
+            transaction: Optional transaction ID
+
+        Returns:
+            int: Total number of edges deleted
+        """
+        try:
+            self.logger.info(f"🚀 Deleting all edges for node: {node_key} in collection: {collection}")
+
+            # Parse node_key to get collection and key
+            collection_name, key = self._parse_arango_id(node_key)
+            if not collection_name:
+                self.logger.warning(f"Could not parse collection from node_key: {node_key}")
+                return 0
+
+            node_label = collection_to_label(collection_name)
+            relationship_type = edge_collection_to_relationship(collection)
+
+            # Delete both incoming and outgoing edges
+            # CRITICAL: Filter out null values before unwinding
+            query = f"""
+            MATCH (n:{node_label} {{id: $key}})
+            OPTIONAL MATCH (n)-[r1:{relationship_type}]->()
+            OPTIONAL MATCH ()-[r2:{relationship_type}]->(n)
+            WITH n, [r IN collect(DISTINCT r1) + collect(DISTINCT r2) WHERE r IS NOT NULL] AS all_rels
+            UNWIND all_rels AS rel
+            DELETE rel
+            RETURN count(rel) AS deleted
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"key": key},
+                txn_id=transaction
+            )
+
+            count = results[0]["deleted"] if results else 0
+
+            if count > 0:
+                self.logger.info(f"✅ Successfully deleted {count} edges for node: {node_key}")
+            else:
+                self.logger.warning(f"⚠️ No edges found for node: {node_key} in collection: {collection}")
+
+            return count
+
+        except Exception as e:
+            self.logger.error(f"❌ Delete all edges for node failed: {str(e)}")
+            raise
+
+
+    async def check_toolset_in_use(self, toolset_name: str, user_id: str, transaction: Optional[str] = None) -> List[str]:
+        """
+        Check if a toolset is currently in use by any active agents.
+
+        Args:
+            toolset_name: Normalized toolset name
+            user_id: User ID who owns the toolset
+            transaction: Optional transaction ID
+
+        Returns:
+            List of agent names that are using the toolset. Empty list if not in use.
+        """
+        try:
+            toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
+
+            # Find toolsets matching name and user_id, then check for agents using them
+            query = f"""
+            MATCH (ts:{toolset_label} {{name: $name, userId: $user_id}})
+            MATCH (agent:{agent_label})-[r:{agent_has_toolset_rel}]->(ts)
+            WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            AND (agent.deleted IS NULL OR agent.deleted = false)
+            RETURN DISTINCT agent.name AS agentName
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"name": toolset_name, "user_id": user_id},
+                txn_id=transaction
+            )
+
+            if results:
+                agent_names = list(set(r.get("agentName", "Unknown") for r in results if r))
+                return agent_names
+
+            return []
+
+        except Exception as e:
+            self.logger.error(f"Failed to check toolset usage: {str(e)}")
+            raise
+
+
+    async def get_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+        """
+        Get an agent by ID with user permissions and linked graph data.
+
+        Includes:
+        - Agent document with permissions
+        - Linked toolsets with their tools (via agentHasToolset -> toolsetHasTool)
+        - Linked knowledge with filters (via agentHasKnowledge)
+        """
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+            agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
+            toolset_has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
+            agent_has_knowledge_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_KNOWLEDGE.value)
+            toolset_label = collection_to_label(CollectionNames.AGENT_TOOLSETS.value)
+            tool_label = collection_to_label(CollectionNames.AGENT_TOOLS.value)
+            knowledge_label = collection_to_label(CollectionNames.AGENT_KNOWLEDGE.value)
+
+            # user_id is the user's _key (internal ID), not userId (external ID)
+            # This matches ArangoHTTPProvider behavior where user_id is used directly as user_key
+            user_key = user_id
+
+            # Get user document by id (which is the _key) to extract userId for team queries
+            user_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})
+            RETURN u
+            LIMIT 1
+            """
+            user_result = await self.client.execute_query(
+                user_query,
+                parameters={"user_key": user_key},
+                txn_id=transaction
+            )
+
+            # Get user's teams - need userId (external ID) for team lookup
+            user_team_ids = []
+            if user_result:
+                try:
+                    user_dict = dict(user_result[0]["u"])
+                    user_doc = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
+                    actual_user_id = user_doc.get("userId")
+
+                    if actual_user_id:
+                        # Get user's teams using userId (external ID)
+                        user_teams_query = f"""
+                        MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
+                        WHERE p.type = 'USER'
+                        RETURN t.id AS team_id
+                        """
+                        user_teams_result = await self.client.execute_query(
+                            user_teams_query,
+                            parameters={"user_id": actual_user_id},
+                            txn_id=transaction
+                        )
+                        user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+                except Exception as e:
+                    self.logger.warning(f"Error getting user teams: {str(e)}")
+                    # Continue without teams - individual permission check will still work
+
+            # Check individual user permissions on the agent
+            individual_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+            WHERE p.type = 'USER'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type
+            LIMIT 1
+            """
+
+            individual_result = await self.client.execute_query(
+                individual_query,
+                parameters={"user_key": user_key, "agent_id": agent_id},
+                txn_id=transaction
+            )
+
+            agent_data = None
+            user_role = None
+            access_type = None
+
+            if individual_result:
+                agent_data = dict(individual_result[0]["agent"])
+                user_role = individual_result[0]["role"]
+                access_type = "INDIVIDUAL"
+            elif user_team_ids:
+                # Check team permissions
+                team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+                RETURN agent, p.role AS role, 'TEAM' AS access_type
+                LIMIT 1
+                """
+
+                team_result = await self.client.execute_query(
+                    team_query,
+                    parameters={"team_ids": user_team_ids, "agent_id": agent_id},
+                    txn_id=transaction
+                )
+
+                if team_result:
+                    agent_data = dict(team_result[0]["agent"])
+                    user_role = team_result[0]["role"]
+                    access_type = "TEAM"
+
+            if not agent_data:
+                self.logger.warning(f"No permissions found for user {user_key} on agent {agent_id}")
+                return None
+
+            # Convert to ArangoDB format
+            agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
+            agent["access_type"] = access_type
+            agent["user_role"] = user_role
+            agent["can_edit"] = user_role in ["OWNER", "WRITER", "ORGANIZER"]
+            agent["can_delete"] = user_role == "OWNER"
+            agent["can_share"] = user_role in ["OWNER", "ORGANIZER"]
+            agent["can_view"] = True
+
+            # Get linked toolsets with their tools
+            toolsets_query = f"""
+            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_toolset_rel}]->(ts:{toolset_label})
+            OPTIONAL MATCH (ts)-[tr:{toolset_has_tool_rel}]->(tool:{tool_label})
+            WITH agent, ts, collect(DISTINCT CASE
+                WHEN tool IS NOT NULL THEN {{
+                    _key: tool.id,
+                    name: tool.name,
+                    fullName: tool.fullName,
+                    toolsetName: tool.toolsetName,
+                    description: tool.description
+                }}
+                ELSE null
+            END) AS tools_raw
+            WITH agent, ts, [t IN tools_raw WHERE t IS NOT NULL] AS tools
+            RETURN {{
+                _key: ts.id,
+                name: ts.name,
+                displayName: ts.displayName,
+                type: ts.type,
+                userId: ts.userId,
+                selectedTools: ts.selectedTools,
+                tools: tools
+            }} AS toolset
+            """
+
+            toolsets_result = await self.client.execute_query(
+                toolsets_query,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+
+            agent["toolsets"] = [r["toolset"] for r in toolsets_result] if toolsets_result else []
+
+            # Get linked knowledge with filters
+            knowledge_query = f"""
+            MATCH (agent:{agent_label} {{id: $agent_id}})-[r:{agent_has_knowledge_rel}]->(k:{knowledge_label})
+            RETURN k.id AS _key, k.connectorId AS connectorId, k.filters AS filters
+            """
+
+            knowledge_result = await self.client.execute_query(
+                knowledge_query,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+
+            knowledge_list = []
+            if knowledge_result:
+                import json
+                for k_row in knowledge_result:
+                    knowledge_item = {
+                        "_key": k_row["_key"],
+                        "connectorId": k_row["connectorId"],
+                        "filters": k_row["filters"]
+                    }
+
+                    # Parse filters to determine if this is a KB or app
+                    filters_str = knowledge_item.get("filters", "{}")
+                    if isinstance(filters_str, str):
+                        try:
+                            filters_parsed = json.loads(filters_str)
+                        except json.JSONDecodeError:
+                            filters_parsed = {}
+                    else:
+                        filters_parsed = filters_str
+
+                    knowledge_item["filtersParsed"] = filters_parsed
+
+                    # Check if this is a KB (has recordGroups) or app
+                    record_groups = filters_parsed.get("recordGroups", [])
+                    is_kb = len(record_groups) > 0
+
+                    if is_kb and record_groups:
+                        # For KBs: Get KB name from record group document
+                        try:
+                            first_kb_id = record_groups[0]
+                            kb_doc = await self.get_document(first_kb_id, CollectionNames.RECORD_GROUPS.value, transaction=transaction)
+                            if kb_doc and kb_doc.get("groupType") == Connectors.KNOWLEDGE_BASE.value:
+                                knowledge_item["name"] = kb_doc.get("groupName", "")
+                                knowledge_item["type"] = "KB"
+                                knowledge_item["displayName"] = kb_doc.get("groupName", "")
+                                knowledge_item["connectorId"] = kb_doc.get("connectorId") or knowledge_item["connectorId"]
+                            else:
+                                knowledge_item["name"] = knowledge_item["connectorId"]
+                                knowledge_item["type"] = "UNKNOWN"
+                                knowledge_item["displayName"] = knowledge_item["connectorId"]
+                        except Exception as e:
+                            self.logger.warning(f"Error getting KB document {first_kb_id}: {str(e)}")
+                            knowledge_item["name"] = knowledge_item["connectorId"]
+                            knowledge_item["type"] = "UNKNOWN"
+                            knowledge_item["displayName"] = knowledge_item["connectorId"]
+                    else:
+                        # For apps: Get connector instance name from APPS collection
+                        try:
+                            app_doc = await self.get_document(knowledge_item["connectorId"], CollectionNames.APPS.value, transaction=transaction)
+                            if app_doc:
+                                knowledge_item["name"] = app_doc.get("name", "")
+                                knowledge_item["type"] = app_doc.get("type", "APP")
+                                knowledge_item["displayName"] = app_doc.get("name", "")
+                            else:
+                                knowledge_item["name"] = knowledge_item["connectorId"]
+                                knowledge_item["type"] = "UNKNOWN"
+                                knowledge_item["displayName"] = knowledge_item["connectorId"]
+                        except Exception as e:
+                            self.logger.warning(f"Error getting app document {knowledge_item['connectorId']}: {str(e)}")
+                            knowledge_item["name"] = knowledge_item["connectorId"]
+                            knowledge_item["type"] = "UNKNOWN"
+                            knowledge_item["displayName"] = knowledge_item["connectorId"]
+
+                    knowledge_list.append(knowledge_item)
+
+            agent["knowledge"] = knowledge_list
+
+            return agent
+
+        except Exception as e:
+            self.logger.error(f"Failed to get agent: {str(e)}")
+            return None
+
+    async def get_all_agents(self, user_id: str, transaction: Optional[str] = None) -> List[Dict]:
+        """Get all agents accessible to a user via individual or team access - flattened response"""
+        try:
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
+
+            # Get user's teams
+            user_teams_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(t:{team_label})
+            WHERE p.type = 'USER'
+            RETURN t.id AS team_id
+            """
+
+            user_teams_result = await self.client.execute_query(
+                user_teams_query,
+                parameters={"user_key": user_key},
+                txn_id=transaction
+            )
+            user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+
+            # Get agents with individual access
+            individual_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE p.type = 'USER'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type
+            """
+
+            individual_result = await self.client.execute_query(
+                individual_query,
+                parameters={"user_key": user_key},
+                txn_id=transaction
+            )
+
+            agents = []
+            individual_agent_keys = set()
+
+            if individual_result:
+                for row in individual_result:
+                    agent_data = dict(row["agent"])
+                    agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
+                    agent["access_type"] = "INDIVIDUAL"
+                    agent["user_role"] = row["role"]
+                    agent["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
+                    agent["can_delete"] = row["role"] == "OWNER"
+                    agent["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
+                    agent["can_view"] = True
+                    agents.append(agent)
+                    # Store just the key for exclusion
+                    individual_agent_keys.add(agent_data.get("id", ""))
+
+            # Get agents with team access (excluding those already found)
+            if user_team_ids:
+                team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+                AND NOT agent.id IN $excluded_ids
+                RETURN agent, p.role AS role, 'TEAM' AS access_type
+                """
+
+                team_result = await self.client.execute_query(
+                    team_query,
+                    parameters={
+                        "team_ids": user_team_ids,
+                        "excluded_ids": list(individual_agent_keys)  # Convert set to list
+                    },
+                    txn_id=transaction
+                )
+
+                if team_result:
+                    for row in team_result:
+                        agent_data = dict(row["agent"])
+                        agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
+                        agent["access_type"] = "TEAM"
+                        agent["user_role"] = row["role"]
+                        agent["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
+                        agent["can_delete"] = row["role"] == "OWNER"
+                        agent["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
+                        agent["can_view"] = True
+                        agents.append(agent)
+
+            return agents
+
+        except Exception as e:
+            self.logger.error(f"Failed to get all agents: {str(e)}")
+            return []
+
+
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+        """
+        Update an agent.
+
+        New schema only allows: name, description, startMessage, systemPrompt, models (as keys), tags
+        Tools, connectors, kb, vectorDBs are handled via edges, not in agent document.
+        """
+        try:
+            # Check if user has permission to update the agent using the new method
+            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can edit the agent
+            if not agent_with_permission.get("can_edit", False):
+                self.logger.warning(f"User {user_id} does not have edit permission on agent {agent_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedBy": user_id
+            }
+
+            # Add only schema-allowed fields
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive"]
+            for field in allowed_fields:
+                if field in agent_updates:
+                    update_data[field] = agent_updates[field]
+
+            # Handle models specially - convert model objects to model keys and deduplicate
+            if "models" in agent_updates:
+                raw_models = agent_updates["models"]
+                if isinstance(raw_models, list):
+                    model_entries = []
+                    seen_entries = set()
+
+                    for model in raw_models:
+                        model_key = None
+                        model_name = None
+
+                        if isinstance(model, dict):
+                            model_key = model.get("modelKey")
+                            model_name = model.get("modelName", "")
+                        elif isinstance(model, str):
+                            if "_" in model:
+                                parts = model.split("_", 1)
+                                model_key = parts[0]
+                                model_name = parts[1] if len(parts) > 1 else ""
+                            else:
+                                model_key = model
+                                model_name = ""
+
+                        if model_key:
+                            if model_name:
+                                entry = f"{model_key}_{model_name}"
+                            else:
+                                entry = model_key
+
+                            if entry not in seen_entries:
+                                model_entries.append(entry)
+                                seen_entries.add(entry)
+
+                    update_data["models"] = model_entries
+                elif raw_models is None:
+                    update_data["models"] = []
+
+            # Update the agent using update_node method
+            result = await self.update_node(agent_id, CollectionNames.AGENT_INSTANCES.value, update_data, transaction=transaction)
+
+            if not result:
+                self.logger.error(f"Failed to update agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully updated agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to update agent: {str(e)}")
+            return False
+
+
+    async def delete_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+        """Delete an agent (soft delete)"""
+        try:
+            # Check if agent exists
+            agent = await self.get_document(agent_id, CollectionNames.AGENT_INSTANCES.value, transaction=transaction)
+            if agent is None:
+                self.logger.warning(f"Agent {agent_id} not found")
+                return False
+
+            # Check if user has permission to delete the agent using the new method
+            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can delete the agent
+            if not agent_with_permission.get("can_delete", False):
+                self.logger.warning(f"User {user_id} does not have delete permission on agent {agent_id}")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the agent using update_node
+            result = await self.update_node(agent_id, CollectionNames.AGENT_INSTANCES.value, update_data, transaction=transaction)
+
+            if not result:
+                self.logger.error(f"Failed to delete agent {agent_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted agent {agent_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to delete agent: {str(e)}")
+            return False
+
+
+    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
+        """Share an agent to users and teams"""
+        try:
+            # Check if agent exists and user has permission to share it
+            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return False
+
+            # Check if user can share the agent
+            if not agent_with_permission.get("can_share", False):
+                self.logger.warning(f"User {user_id} does not have share permission on agent {agent_id}")
+                return False
+
+            # Share the agent to users
+            user_agent_edges = []
+            if user_ids:
+                for user_id_to_share in user_ids:
+                    user = await self.get_user_by_user_id(user_id_to_share)
+                    if user is None:
+                        self.logger.warning(f"User {user_id_to_share} not found")
+                        continue
+                    user_key = user.get("id") or user.get("_key")
+                    edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{user_key}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                        "role": "READER",
+                        "type": "USER",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    user_agent_edges.append(edge)
+
+                result = await self.batch_create_edges(user_agent_edges, CollectionNames.PERMISSION.value, transaction=transaction)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to users")
+                    return False
+
+            # Share the agent to teams
+            team_agent_edges = []
+            if team_ids:
+                for team_id in team_ids:
+                    team = await self.get_document(team_id, CollectionNames.TEAMS.value, transaction=transaction)
+                    if team is None:
+                        self.logger.warning(f"Team {team_id} not found")
+                        continue
+                    team_key = team.get("id") or team.get("_key")
+                    edge = {
+                        "_from": f"{CollectionNames.TEAMS.value}/{team_key}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                        "role": "READER",
+                        "type": "TEAM",
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    team_agent_edges.append(edge)
+                result = await self.batch_create_edges(team_agent_edges, CollectionNames.PERMISSION.value, transaction=transaction)
+                if not result:
+                    self.logger.error(f"Failed to share agent {agent_id} to teams")
+                    return False
+            return True
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent: %s", str(e), exc_info=True)
+            return False
+
+
+    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[Dict]:
+        """Unshare an agent from users and teams - direct deletion without validation"""
+        try:
+            # Check if user has permission to unshare the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            if agent_with_permission is None or not agent_with_permission.get("can_share", False):
+                return {"success": False, "reason": "Insufficient permissions to unshare agent"}
+
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+
+            deleted_count = 0
+
+            # Delete user permissions
+            if user_ids:
+                user_keys = []
+                for uid in user_ids:
+                    user = await self.get_user_by_user_id(uid)
+                    if user:
+                        user_keys.append(user.get("id") or user.get("_key"))
+
+                if user_keys:
+                    delete_user_query = f"""
+                    MATCH (u:{user_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                    WHERE u.id IN $user_keys
+                    AND p.type = 'USER'
+                    AND p.role <> 'OWNER'
+                    DELETE p
+                    RETURN count(p) AS deleted
+                    """
+
+                    result = await self.client.execute_query(
+                        delete_user_query,
+                        parameters={"agent_id": agent_id, "user_keys": user_keys},
+                        txn_id=transaction
+                    )
+                    if result:
+                        deleted_count += result[0].get("deleted", 0)
+
+            # Delete team permissions
+            if team_ids:
+                delete_team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                DELETE p
+                RETURN count(p) AS deleted
+                """
+
+                result = await self.client.execute_query(
+                    delete_team_query,
+                    parameters={"agent_id": agent_id, "team_ids": team_ids},
+                    txn_id=transaction
+                )
+                if result:
+                    deleted_count += result[0].get("deleted", 0)
+
+            self.logger.info(f"Unshared agent {agent_id}: removed {deleted_count} permissions")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "deleted_permissions": deleted_count
+            }
+
+        except Exception as e:
+            self.logger.error("Failed to unshare agent: %s", str(e), exc_info=True)
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str, transaction: Optional[str] = None) -> Optional[Dict]:
+        """Update permission role for users and teams on an agent (only OWNER can do this)"""
+        try:
+            # Check if the requesting user is the OWNER of the agent
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id, transaction=transaction)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
+                return {"success": False, "reason": "Agent not found or no permission"}
+
+            # Only OWNER can update permissions
+            if agent_with_permission.get("user_role") != "OWNER":
+                self.logger.warning(f"User {owner_user_id} is not the OWNER of agent {agent_id}")
+                return {"success": False, "reason": "Only OWNER can update permissions"}
+
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            timestamp = get_epoch_timestamp_in_ms()
+
+            updated_count = 0
+            updated_users = 0
+            updated_teams = 0
+
+            # Update user permissions
+            if user_ids:
+                user_keys = []
+                for uid in user_ids:
+                    user = await self.get_user_by_user_id(uid)
+                    if user:
+                        user_keys.append(user.get("id") or user.get("_key"))
+
+                if user_keys:
+                    update_user_query = f"""
+                    MATCH (u:{user_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                    WHERE u.id IN $user_keys
+                    AND p.type = 'USER'
+                    AND p.role <> 'OWNER'
+                    SET p.role = $new_role, p.updatedAtTimestamp = $timestamp
+                    RETURN count(p) AS updated
+                    """
+
+                    result = await self.client.execute_query(
+                        update_user_query,
+                        parameters={"agent_id": agent_id, "user_keys": user_keys, "new_role": role, "timestamp": timestamp},
+                        txn_id=transaction
+                    )
+                    if result:
+                        updated_users = result[0].get("updated", 0)
+                        updated_count += updated_users
+
+            # Update team permissions
+            if team_ids:
+                update_team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                SET p.role = $new_role, p.updatedAtTimestamp = $timestamp
+                RETURN count(p) AS updated
+                """
+
+                result = await self.client.execute_query(
+                    update_team_query,
+                    parameters={"agent_id": agent_id, "team_ids": team_ids, "new_role": role, "timestamp": timestamp},
+                    txn_id=transaction
+                )
+                if result:
+                    updated_teams = result[0].get("updated", 0)
+                    updated_count += updated_teams
+
+            if updated_count == 0:
+                self.logger.warning(f"No permission edges found to update for agent {agent_id}")
+                return {"success": False, "reason": "No permissions found to update"}
+
+            self.logger.info(f"Successfully updated {updated_count} permissions for agent {agent_id} to role {role}")
+
+            return {
+                "success": True,
+                "agent_id": agent_id,
+                "new_role": role,
+                "updated_permissions": updated_count,
+                "updated_users": updated_users,
+                "updated_teams": updated_teams
+            }
+
+        except Exception as e:
+            self.logger.error(f"Failed to update agent permission: {str(e)}")
+            return {"success": False, "reason": f"Internal error: {str(e)}"}
+
+
+    async def get_agent_permissions(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[List[Dict]]:
+        """Get all permissions for an agent (only OWNER can view all permissions)"""
+        try:
+            # Check if user has access to the agent
+            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            if agent_with_permission is None:
+                self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
+                return None
+
+            # Only OWNER can view all permissions
+            if agent_with_permission.get("user_role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the OWNER of agent {agent_id}")
+                return None
+
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+
+            # Get all permissions for the agent
+            query = f"""
+            MATCH (entity)-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+            RETURN {{
+                id: entity.id,
+                name: COALESCE(entity.fullName, entity.name, entity.userName),
+                userId: entity.userId,
+                email: entity.email,
+                role: p.role,
+                type: p.type,
+                createdAtTimestamp: p.createdAtTimestamp,
+                updatedAtTimestamp: p.updatedAtTimestamp
+            }} AS permission
+            """
+
+            result = await self.client.execute_query(
+                query,
+                parameters={"agent_id": agent_id},
+                txn_id=transaction
+            )
+
+            return [r["permission"] for r in result] if result else []
+
+        except Exception as e:
+            self.logger.error(f"Failed to get agent permissions: {str(e)}")
+            return None
+
+    async def get_all_agent_templates(self, user_id: str, transaction: Optional[str] = None) -> List[Dict]:
+        """Get all agent templates accessible to a user via individual or team access"""
+        try:
+            template_label = collection_to_label(CollectionNames.AGENT_TEMPLATES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
+
+            # Get user's teams
+            user_teams_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(t:{team_label})
+            WHERE p.type = 'USER'
+            RETURN t.id AS team_id
+            """
+
+            user_teams_result = await self.client.execute_query(
+                user_teams_query,
+                parameters={"user_key": user_key},
+                txn_id=transaction
+            )
+            user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+
+            # Get templates with individual access
+            individual_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(template:{template_label})
+            WHERE p.type = 'USER'
+            AND (template.isDeleted IS NULL OR template.isDeleted = false)
+            RETURN template, p.role AS role, p.type AS access_type, p.id AS permission_id,
+                   p.createdAtTimestamp AS permission_created_at, p.updatedAtTimestamp AS permission_updated_at
+            """
+
+            individual_result = await self.client.execute_query(
+                individual_query,
+                parameters={"user_key": user_key},
+                txn_id=transaction
+            )
+
+            templates = []
+            individual_template_ids = set()
+
+            if individual_result:
+                for row in individual_result:
+                    template_data = dict(row["template"])
+                    template = self._neo4j_to_arango_node(template_data, CollectionNames.AGENT_TEMPLATES.value)
+                    template["access_type"] = row["access_type"]
+                    template["user_role"] = row["role"]
+                    template["permission_id"] = row.get("permission_id")
+                    template["permission_created_at"] = row.get("permission_created_at")
+                    template["permission_updated_at"] = row.get("permission_updated_at")
+                    template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
+                    template["can_delete"] = row["role"] == "OWNER"
+                    template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
+                    template["can_view"] = True
+                    templates.append(template)
+                    individual_template_ids.add(template.get("_id") or template.get("id"))
+
+            # Get templates with team access (excluding those already found)
+            if user_team_ids:
+                excluded_keys = [tid.split("/")[-1] if "/" in tid else tid for tid in individual_template_ids]
+
+                team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(template:{template_label})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                AND (template.isDeleted IS NULL OR template.isDeleted = false)
+                AND NOT template.id IN $excluded_ids
+                RETURN template, p.role AS role, p.type AS access_type, p.id AS permission_id,
+                    p.createdAtTimestamp AS permission_created_at, p.updatedAtTimestamp AS permission_updated_at
+                """
+
+                team_result = await self.client.execute_query(
+                    team_query,
+                    parameters={"team_ids": user_team_ids, "excluded_ids": excluded_keys},
+                    txn_id=transaction
+                )
+
+                if team_result:
+                    for row in team_result:
+                        template_data = dict(row["template"])
+                        template = self._neo4j_to_arango_node(template_data, CollectionNames.AGENT_TEMPLATES.value)
+                        template["access_type"] = row["access_type"]
+                        template["user_role"] = row["role"]
+                        template["permission_id"] = row.get("permission_id")
+                        template["permission_created_at"] = row.get("permission_created_at")
+                        template["permission_updated_at"] = row.get("permission_updated_at")
+                        template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
+                        template["can_delete"] = row["role"] == "OWNER"
+                        template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
+                        template["can_view"] = True
+                        templates.append(template)
+
+            return templates
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get all agent templates: %s", str(e))
+            return []
+
+    async def get_template(self, template_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+        """Get a template by ID with user permissions"""
+        try:
+            template_label = collection_to_label(CollectionNames.AGENT_TEMPLATES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
+
+            # Get user document by id to extract userId for team queries
+            user_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})
+            RETURN u
+            LIMIT 1
+            """
+            user_result = await self.client.execute_query(
+                user_query,
+                parameters={"user_key": user_key},
+                txn_id=transaction
+            )
+
+            # Get user's teams - need userId (external ID) for team lookup
+            user_team_ids = []
+            if user_result:
+                try:
+                    user_dict = dict(user_result[0]["u"])
+                    user_doc = self._neo4j_to_arango_node(user_dict, CollectionNames.USERS.value)
+                    actual_user_id = user_doc.get("userId")
+
+                    if actual_user_id:
+                        # Get user's teams using userId (external ID)
+                        user_teams_query = f"""
+                        MATCH (u:{user_label} {{userId: $user_id}})-[p:{permission_rel}]->(t:{team_label})
+                        WHERE p.type = 'USER'
+                        RETURN t.id AS team_id
+                        """
+                        user_teams_result = await self.client.execute_query(
+                            user_teams_query,
+                            parameters={"user_id": actual_user_id},
+                            txn_id=transaction
+                        )
+                        user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+                except Exception as e:
+                    self.logger.warning(f"Error getting user teams: {str(e)}")
+                    # Continue without teams - individual permission check will still work
+
+            # Check individual user permissions on the template
+            individual_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(template:{template_label} {{id: $template_id}})
+            WHERE p.type = 'USER'
+            AND (template.isDeleted IS NULL OR template.isDeleted = false)
+            RETURN template, p.role AS role, 'INDIVIDUAL' AS access_type, p.id AS permission_id,
+                   p.createdAtTimestamp AS permission_created_at, p.updatedAtTimestamp AS permission_updated_at
+            LIMIT 1
+            """
+
+            individual_result = await self.client.execute_query(
+                individual_query,
+                parameters={"user_key": user_key, "template_id": template_id},
+                txn_id=transaction
+            )
+
+            if individual_result:
+                row = individual_result[0]
+                template_data = dict(row["template"])
+                template = self._neo4j_to_arango_node(template_data, CollectionNames.AGENT_TEMPLATES.value)
+                template["access_type"] = "INDIVIDUAL"
+                template["user_role"] = row["role"]
+                template["permission_id"] = row.get("permission_id")
+                template["permission_created_at"] = row.get("permission_created_at")
+                template["permission_updated_at"] = row.get("permission_updated_at")
+                template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
+                template["can_delete"] = row["role"] == "OWNER"
+                template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
+                template["can_view"] = True
+                return template
+
+            # Check team permissions
+            if user_team_ids:
+                team_query = f"""
+                MATCH (t:{team_label})-[p:{permission_rel}]->(template:{template_label} {{id: $template_id}})
+                WHERE t.id IN $team_ids
+                AND p.type = 'TEAM'
+                AND (template.isDeleted IS NULL OR template.isDeleted = false)
+                RETURN template, p.role AS role, 'TEAM' AS access_type, p.id AS permission_id,
+                       p.createdAtTimestamp AS permission_created_at, p.updatedAtTimestamp AS permission_updated_at
+                LIMIT 1
+                """
+
+                team_result = await self.client.execute_query(
+                    team_query,
+                    parameters={"team_ids": user_team_ids, "template_id": template_id},
+                    txn_id=transaction
+                )
+
+                if team_result:
+                    row = team_result[0]
+                    template_data = dict(row["template"])
+                    template = self._neo4j_to_arango_node(template_data, CollectionNames.AGENT_TEMPLATES.value)
+                    template["access_type"] = "TEAM"
+                    template["user_role"] = row["role"]
+                    template["permission_id"] = row.get("permission_id")
+                    template["permission_created_at"] = row.get("permission_created_at")
+                    template["permission_updated_at"] = row.get("permission_updated_at")
+                    template["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
+                    template["can_delete"] = row["role"] == "OWNER"
+                    template["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
+                    template["can_view"] = True
+                    return template
+
+            return None
+
+        except Exception as e:
+            self.logger.error("❌ Failed to get template access: %s", str(e))
+            return None
+
+    async def share_agent_template(self, template_id: str, user_id: str, user_ids: Optional[List[str]] = None, team_ids: Optional[List[str]] = None, transaction: Optional[str] = None) -> Optional[bool]:
+        """Share an agent template with users"""
+        try:
+            self.logger.info(f"Sharing agent template {template_id} with users {user_ids}")
+
+            template_label = collection_to_label(CollectionNames.AGENT_TEMPLATES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
+
+            # Check if user is OWNER
+            owner_check_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(template:{template_label} {{id: $template_id}})
+            WHERE (template.isDeleted IS NULL OR template.isDeleted = false)
+            RETURN p.role AS role
+            LIMIT 1
+            """
+
+            owner_result = await self.client.execute_query(
+                owner_check_query,
+                parameters={"user_key": user_key, "template_id": template_id},
+                txn_id=transaction
+            )
+
+            if not owner_result or owner_result[0].get("role") != "OWNER":
+                return False
+
+            if user_ids is None and team_ids is None:
+                return False
+
+            # Create edges for users and teams
+            edges = []
+            if user_ids:
+                for user_id_to_share in user_ids:
+                    user = await self.get_user_by_user_id(user_id_to_share)
+                    if user is None:
+                        return False
+                    user_key_to_share = user.get("id") or user.get("_key")
+                    edge = {
+                        "_from": f"{CollectionNames.USERS.value}/{user_key_to_share}",
+                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                        "type": "USER",
+                        "role": "READER",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    edges.append(edge)
+
+            if team_ids:
+                for team_id in team_ids:
+                    team_key = team_id  # Assuming team_id is already the key
+                    edge = {
+                        "_from": f"{CollectionNames.TEAMS.value}/{team_key}",
+                        "_to": f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}",
+                        "type": "TEAM",
+                        "role": "READER",
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                    edges.append(edge)
+
+            result = await self.batch_create_edges(edges, CollectionNames.PERMISSION.value, transaction=transaction)
+            return result is not False
+
+        except Exception as e:
+            self.logger.error("❌ Failed to share agent template: %s", str(e))
+            return False
+
+    async def clone_agent_template(self, template_id: str, transaction: Optional[str] = None) -> Optional[str]:
+        """Clone an agent template"""
+        try:
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value, transaction=transaction)
+            if template is None:
+                return None
+            template_key = str(uuid.uuid4())
+            template["_key"] = template_key
+            template["id"] = template_key
+            template["isActive"] = True
+            template["isDeleted"] = False
+            template["deletedAtTimestamp"] = None
+            template["deletedByUserId"] = None
+            template["updatedAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["updatedByUserId"] = None
+            template["createdAtTimestamp"] = get_epoch_timestamp_in_ms()
+            template["createdBy"] = None
+            result = await self.batch_upsert_nodes([template], CollectionNames.AGENT_TEMPLATES.value, transaction=transaction)
+            if not result:
+                return None
+            return template_key
+        except Exception as e:
+            self.logger.error("❌ Failed to clone agent template: %s", str(e))
+            return None
+
+    async def delete_agent_template(self, template_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+        """Delete an agent template"""
+        try:
+            template_label = collection_to_label(CollectionNames.AGENT_TEMPLATES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
+
+            # Check if user is OWNER
+            permission_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(template:{template_label} {{id: $template_id}})
+            WHERE (template.isDeleted IS NULL OR template.isDeleted = false)
+            RETURN p.role AS role
+            LIMIT 1
+            """
+
+            permissions = await self.client.execute_query(
+                permission_query,
+                parameters={"user_key": user_key, "template_id": template_id},
+                txn_id=transaction
+            )
+
+            if not permissions or permissions[0].get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the owner of template {template_id}")
+                return False
+
+            # Check if template exists
+            template = await self.get_document(template_id, CollectionNames.AGENT_TEMPLATES.value, transaction=transaction)
+            if template is None:
+                self.logger.warning(f"Template {template_id} not found")
+                return False
+
+            # Prepare update data for soft delete
+            update_data = {
+                "isDeleted": True,
+                "deletedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "deletedByUserId": user_id
+            }
+
+            # Soft delete the template using update_node
+            result = await self.update_node(template_id, CollectionNames.AGENT_TEMPLATES.value, update_data, transaction=transaction)
+
+            if not result:
+                self.logger.error(f"Failed to delete template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully deleted template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to delete agent template: %s", str(e), exc_info=True)
+            return False
+
+    async def update_agent_template(self, template_id: str, template_updates: Dict[str, Any], user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+        """Update an agent template"""
+        try:
+            template_label = collection_to_label(CollectionNames.AGENT_TEMPLATES.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
+            # Use it directly to match the user node
+            user_key = user_id
+
+            # Check if user is OWNER
+            permission_query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(template:{template_label} {{id: $template_id}})
+            WHERE (template.isDeleted IS NULL OR template.isDeleted = false)
+            RETURN p.role AS role
+            LIMIT 1
+            """
+
+            permissions = await self.client.execute_query(
+                permission_query,
+                parameters={"user_key": user_key, "template_id": template_id},
+                txn_id=transaction
+            )
+
+            if not permissions or permissions[0].get("role") != "OWNER":
+                self.logger.warning(f"User {user_id} is not the owner of template {template_id}")
+                return False
+
+            # Prepare update data
+            update_data = {
+                "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                "updatedByUserId": user_id
+            }
+
+            # Add only the fields that are provided
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tools", "models", "memory", "tags"]
+            for field in allowed_fields:
+                if field in template_updates:
+                    update_data[field] = template_updates[field]
+
+            # Update the template using update_node
+            result = await self.update_node(template_id, CollectionNames.AGENT_TEMPLATES.value, update_data, transaction=transaction)
+
+            if not result:
+                self.logger.error(f"Failed to update template {template_id}")
+                return False
+
+            self.logger.info(f"Successfully updated template {template_id}")
+            return True
+
+        except Exception as e:
+            self.logger.error("❌ Failed to update agent template: %s", str(e))
+            return False
