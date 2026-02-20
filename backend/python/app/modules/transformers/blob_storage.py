@@ -515,10 +515,10 @@ class BlobStorage(Transformer):
                         form_data = aiohttp.FormData()
                         form_data.add_field('file',
                                         json_data,
-                                        filename=f'record_{record_id}.json',
+                                        filename=f'record_{virtual_record_id}.json',
                                         content_type='application/json')
-                        form_data.add_field('documentName', f'record_{record_id}')
-                        form_data.add_field('documentPath', 'records')
+                        form_data.add_field('documentName', f'record_{virtual_record_id}')
+                        form_data.add_field('documentPath', f'records/{virtual_record_id}')
                         form_data.add_field('isVersionedFile', 'false')
                         form_data.add_field('extension', 'json')
                         form_data.add_field('recordId', record_id)
@@ -562,7 +562,7 @@ class BlobStorage(Transformer):
                 if use_compression:
                     # Prepare placeholder with compression metadata for MongoDB
                     placeholder_data = {
-                        "documentName": f"record_{record_id}",
+                        "documentName": f"record_{virtual_record_id}",
                         "documentPath": f"records/{virtual_record_id}",
                         "extension": "json",
                         "isVersionedFile": False,
@@ -583,7 +583,7 @@ class BlobStorage(Transformer):
                 else:
                     # Fallback to uncompressed placeholder
                     placeholder_data = {
-                        "documentName": f"record_{record_id}",
+                        "documentName": f"record_{virtual_record_id}",
                         "documentPath": f"records/{virtual_record_id}",
                         "extension": "json",
                         "isVersionedFile": False,
