@@ -2926,7 +2926,6 @@ class SharePointConnector(BaseConnector):
                             data = await resp.json()
                             results = data.get('d', {}).get('results', [])
                             if results:
-                                self.logger.debug(f"\n\n\n\n!!!! Results (GUID filter fallback): {results}")
                                 return results[0].get('Id')
                         else:
                             self.logger.debug(
@@ -2935,25 +2934,7 @@ class SharePointConnector(BaseConnector):
             except Exception as e:
                 self.logger.debug(f"GUID filter lookup failed: {e}")
 
-            self.logger.debug(f"!!!! Could not resolve page GUID {page_id} to list item ID")
-            # Strategy 3: Fallback — iterate items to find matching GUID
-            # (expensive, but as a last resort)
-            # fallback_url = (
-            #     f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-            #     f"/items?$select=Id,GUID&$top=500"
-            # )
-
-            # try:
-            #     async with self.rate_limiter:
-            #         async with session.get(fallback_url, headers=headers) as resp:
-            #             if resp.status == HTTPStatus.OK:
-            #                 data = await resp.json()
-            #                 results = data.get('d', {}).get('results', [])
-            #                 for item in results:
-            #                     if item.get('GUID', '').lower() == page_id.lower():
-            #                         return item.get('Id')
-            # except Exception as e:
-            #     self.logger.debug(f"Fallback GUID scan failed: {e}")
+            self.logger.warning(f"Could not resolve page GUID {page_id} to list item ID")
 
         finally:
             # Only close the session if we created it here (not the caller's session)
