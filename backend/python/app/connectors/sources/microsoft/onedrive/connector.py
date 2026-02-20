@@ -1423,6 +1423,7 @@ class OneDriveConnector(BaseConnector):
             self.logger.info("Syncing user drives...")
             await self._process_users_in_batches(users)
 
+            #TODO: Cleanup as this method is not used anymore
             # Step 4: Detect and handle permission changes
             self.logger.info("Checking for permission changes...")
             await self._detect_and_handle_permission_changes()
