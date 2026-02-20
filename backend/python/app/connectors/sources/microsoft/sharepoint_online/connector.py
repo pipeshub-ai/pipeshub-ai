@@ -1057,7 +1057,6 @@ class SharePointConnector(BaseConnector):
             for drive_record_group, _permissions in drive_record_groups_with_permissions:
                 # Process items in the drive using delta
                 item_count = 0
-                self.logger.info(f"Drive record group: {drive_record_group}")
                 async for item_tuple in self._process_drive_delta(site_id, drive_record_group.external_group_id, modified_after=modified_after, modified_before=modified_before, created_after=created_after, created_before=created_before):
                     yield item_tuple
                     item_count += 1
@@ -1088,9 +1087,7 @@ class SharePointConnector(BaseConnector):
                 # Continue from previous sync point - use the URL as-is
 
                 # Ensure we're not accidentally processing this URL
-                self.logger.debug(f"Delta URL for drive_id: {drive_id} is {delta_url}")
                 parsed_url = urllib.parse.urlparse(delta_url)
-                self.logger.debug(f"Parsed URL for drive_id: {drive_id} is {parsed_url}")
                 if not (
                     parsed_url.scheme == 'https' and
                     parsed_url.hostname == 'graph.microsoft.com'
@@ -2708,7 +2705,7 @@ class SharePointConnector(BaseConnector):
 
                 if not root_item or not root_item.id:
                     self.logger.warning(f"⚠️ Could not find root item for drive {drive_id}")
-                    return [], False
+                    return [], True
 
                 # 3. Step 2: Use the 'items' accessor with the ID we just found
                 # The 'items' builder correctly has the .permissions property
@@ -2716,12 +2713,13 @@ class SharePointConnector(BaseConnector):
                     drive_client.items.by_drive_item_id(root_item.id).permissions.get()
                 )
 
-                self.logger.debug(f"Permissions response: {perms_response}")
             if perms_response and perms_response.value:
                 should_inherit = self._check_should_inherit(perms_response.value)
+                if should_inherit:
+                    return [], True
                 permissions = await self._convert_to_permissions(perms_response.value, site_id)
 
-            return permissions, should_inherit
+            return permissions, False
 
         except Exception as e:
             self.logger.warning(f"❌ Could not get drive permissions for {drive_id}: {e}")
@@ -2892,29 +2890,7 @@ class SharePointConnector(BaseConnector):
             session = owned_session
 
         try:
-            # Strategy 1: Filter Site Pages list by UniqueId (GUID)
-            # The GUID from Graph Pages API typically matches the list item's UniqueId
-            filter_url = (
-                f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-                f"/items?$filter=GUID eq '{page_id}'&$select=Id"
-            )
-
-            try:
-                async with self.rate_limiter:
-                    async with session.get(filter_url, headers=headers) as resp:
-                        if resp.status == HTTPStatus.OK:
-                            data = await resp.json()
-                            results = data.get('d', {}).get('results', [])
-                            if results:
-                                return results[0].get('Id')
-                        else:
-                            self.logger.debug(
-                                f"GUID filter failed (status {resp.status}), trying UniqueId approach"
-                            )
-            except Exception as e:
-                self.logger.debug(f"GUID filter lookup failed: {e}")
-
-            # Strategy 2: Try using getitembyuniqueid
+            # Strategy 1: Try using getitembyuniqueid (fastest — direct lookup by GUID)
             unique_id_url = (
                 f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
                 f"/getitembyuniqueid('{page_id}')?$select=Id"
@@ -2931,30 +2907,53 @@ class SharePointConnector(BaseConnector):
                         else:
                             resp_text = await resp.text()
                             self.logger.debug(
-                                f"UniqueId lookup failed: status={resp.status}, "
-                                f"response={resp_text[:300]}"
+                                f"getitembyuniqueid lookup failed: status={resp.status}, "
+                                f"response={resp_text[:300]}, falling back to GUID filter"
                             )
             except Exception as e:
-                self.logger.debug(f"UniqueId lookup failed: {e}")
+                self.logger.debug(f"getitembyuniqueid lookup failed: {e}, falling back to GUID filter")
 
-            # Strategy 3: Fallback — iterate items to find matching GUID
-            # (expensive, but as a last resort)
-            fallback_url = (
+            # Strategy 2: Fallback — filter Site Pages list by UniqueId (GUID) field
+            filter_url = (
                 f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
-                f"/items?$select=Id,GUID&$top=500"
+                f"/items?$filter=GUID eq '{page_id}'&$select=Id"
             )
 
             try:
                 async with self.rate_limiter:
-                    async with session.get(fallback_url, headers=headers) as resp:
+                    async with session.get(filter_url, headers=headers) as resp:
                         if resp.status == HTTPStatus.OK:
                             data = await resp.json()
                             results = data.get('d', {}).get('results', [])
-                            for item in results:
-                                if item.get('GUID', '').lower() == page_id.lower():
-                                    return item.get('Id')
+                            if results:
+                                self.logger.debug(f"\n\n\n\n!!!! Results (GUID filter fallback): {results}")
+                                return results[0].get('Id')
+                        else:
+                            self.logger.debug(
+                                f"GUID filter fallback also failed (status {resp.status})"
+                            )
             except Exception as e:
-                self.logger.debug(f"Fallback GUID scan failed: {e}")
+                self.logger.debug(f"GUID filter lookup failed: {e}")
+
+            self.logger.debug(f"!!!! Could not resolve page GUID {page_id} to list item ID")
+            # Strategy 3: Fallback — iterate items to find matching GUID
+            # (expensive, but as a last resort)
+            # fallback_url = (
+            #     f"{site_web_url}/_api/web/lists/getbytitle('Site Pages')"
+            #     f"/items?$select=Id,GUID&$top=500"
+            # )
+
+            # try:
+            #     async with self.rate_limiter:
+            #         async with session.get(fallback_url, headers=headers) as resp:
+            #             if resp.status == HTTPStatus.OK:
+            #                 data = await resp.json()
+            #                 results = data.get('d', {}).get('results', [])
+            #                 for item in results:
+            #                     if item.get('GUID', '').lower() == page_id.lower():
+            #                         return item.get('Id')
+            # except Exception as e:
+            #     self.logger.debug(f"Fallback GUID scan failed: {e}")
 
         finally:
             # Only close the session if we created it here (not the caller's session)
