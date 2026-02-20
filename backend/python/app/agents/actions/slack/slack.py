@@ -143,8 +143,15 @@ class SearchMessagesInput(BaseModel):
 class SetUserStatusInput(BaseModel):
     """Schema for setting user status"""
     status_text: str = Field(description="Status text to set")
-    status_emoji: Optional[str] = Field(default=None, description="Status emoji to set")
-    expiration: Optional[str] = Field(default=None, description="Expiration time for the status (Unix timestamp)")
+    status_emoji: Optional[str] = Field(default=None, description="Status emoji to set (e.g., ':away:', ':clock1:')")
+    duration_seconds: Optional[int] = Field(
+        default=None,
+        description="Duration in seconds from NOW for how long the status should last. "
+                    "Do NOT pass a Unix timestamp - pass only the number of seconds. "
+                    "Examples: 1 hour = 3600, 30 minutes = 1800, 2 hours = 7200, 1 day = 86400. "
+                    "The tool will compute the expiration time internally. "
+                    "If not provided, the status will not expire."
+    )
 
 class ScheduleMessageInput(BaseModel):
     """Schema for scheduling a message"""
@@ -543,12 +550,14 @@ class Slack:
         when_to_use=[
             "User wants to send a message to Slack",
             "User mentions 'Slack' + wants to send/post message",
-            "User wants to notify someone in Slack"
+            "User wants to notify someone in Slack",
+            "User asks to 'post in Slack', 'send to Slack', 'message in Slack'"
         ],
         when_not_to_use=[
             "User wants to read/search messages (use get_channel_history or search_messages)",
-            "User wants info ABOUT Slack (use retrieval)",
-            "No Slack mention (use other communication tools)"
+            "User wants general information about Slack (use retrieval only if no Slack tools available)",
+            "No Slack mention (use other communication tools)",
+            "User asks 'what is Slack' or 'how does Slack work' (use retrieval for general knowledge)"
         ],
         primary_intent=ToolIntent.ACTION,
         typical_queries=[
@@ -556,7 +565,8 @@ class Slack:
             "Post in Slack channel",
             "Notify the team in Slack"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description="Send a message to a Slack channel. Use this tool when user explicitly wants to send/post/write a message in Slack. The message will be automatically converted from standard markdown to Slack's mrkdwn format"
     )
     def send_message(self, channel: str, message: str) -> Tuple[bool, str]:
         """Send a message to a channel using Slack's mrkdwn format.
@@ -1450,7 +1460,8 @@ class Slack:
         when_to_use=[
             "User wants to set/update their Slack status",
             "User mentions 'Slack' + wants to change status",
-            "User asks to update status"
+            "User asks to update status",
+            "User wants to set status with expiration/duration"
         ],
         when_not_to_use=[
             "User wants to send message (use send_message)",
@@ -1461,20 +1472,33 @@ class Slack:
         typical_queries=[
             "Set my Slack status to 'In a meeting'",
             "Update my status in Slack",
-            "Change Slack status"
+            "Change Slack status",
+            "Set status to Away for 1 hour",
+            "Set status with expiration"
         ],
-        category=ToolCategory.COMMUNICATION
+        category=ToolCategory.COMMUNICATION,
+        llm_description="Set or update the user's Slack status. Pass duration_seconds as the number of seconds from NOW (e.g., 3600 for 1 hour, 1800 for 30 min). Do NOT pass a Unix timestamp - just the duration in seconds. The tool calculates the expiration time internally. No calculator or other tool is needed."
     )
-    def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, expiration: Optional[str] = None) -> Tuple[bool, str]:
-        """Set user status"""
-        """
+    def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, duration_seconds: Optional[int] = None) -> Tuple[bool, str]:
+        """Set user status in Slack.
+
         Args:
-            status_text: Status text to set
-            status_emoji: Status emoji to set
-            expiration: Expiration time for the status
+            status_text: Status text to set (e.g., "In a meeting", "Away", "agent testing")
+            status_emoji: Optional emoji for the status (e.g., ":away:", ":clock1:", ":meeting:")
+            duration_seconds: Optional number of seconds from NOW for the status to last.
+                      Examples: 1 hour = 3600, 30 minutes = 1800, 2 hours = 7200.
+                      The tool computes the Unix expiration timestamp internally.
+                      Do NOT pass a Unix timestamp here - just the duration in seconds.
+
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the status details
+
+        Example (single tool call - no calculator needed):
+        ```json
+        {"name": "slack.set_user_status", "args": {"status_text": "Away", "status_emoji": ":away:", "duration_seconds": 3600}}
+        ```
         """
+        import time as _time
         try:
             profile = {"status_text": status_text}
 
@@ -1483,8 +1507,9 @@ class Slack:
 
             kwargs = {"profile": profile}
 
-            if expiration:
-                kwargs["status_expiration"] = int(expiration)
+            if duration_seconds is not None and duration_seconds > 0:
+                expiration_ts = int(_time.time()) + duration_seconds
+                kwargs["status_expiration"] = expiration_ts
 
             response = run_async(self.client.users_profile_set(**kwargs))
             slack_response = self._handle_slack_response(response)

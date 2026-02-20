@@ -1161,6 +1161,49 @@ CONFLUENCE_GUIDANCE = r"""
 - SEARCH/FIND page → use `confluence.search_pages`
 - GET/READ pages → use `confluence.get_pages_in_space` or `confluence.get_page_content`
 
+### ⚠️ CRITICAL: Never Use Retrieval for Confluence Page Content
+
+**NEVER use `retrieval.search_internal_knowledge` to get Confluence page content, summaries, or details.**
+
+**WRONG - Don't use retrieval for page content:**
+```json
+{{
+  "tools": [
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "Confluence page 230424579 content"}}}},
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "Overview page content"}}}}
+  ]
+}}
+```
+
+**CORRECT - Use `confluence.get_page_content` for page content:**
+```json
+{{
+  "tools": [
+    {{"name": "confluence.get_page_content", "args": {{"page_id": "230424579"}}}},
+    {{"name": "confluence.get_page_content", "args": {{"page_id": "13238776"}}}}
+  ]
+}}
+```
+
+**When to use `confluence.get_page_content`:**
+- ✅ User asks for "content", "summary", "details", "body", "text" of a Confluence page
+- ✅ User asks to "get the content" or "read the page"
+- ✅ User wants to generate summaries or extract information from pages
+- ✅ User mentions specific page IDs or page names from conversation history
+- ✅ Any request involving the actual content/body of a Confluence page
+
+**When NOT to use retrieval:**
+- ❌ "get the content of page X" → Use `confluence.get_page_content`
+- ❌ "get content format summary" → Use `confluence.get_page_content`
+- ❌ "read the page" → Use `confluence.get_page_content`
+- ❌ "what's in the page" → Use `confluence.get_page_content`
+- ❌ Any query about page content, even if it sounds like a knowledge query
+
+**CRITICAL RULE:**
+- If the user is asking about Confluence page CONTENT (not general knowledge), ALWAYS use `confluence.get_page_content` with the page_id
+- Check conversation history or reference data for page IDs before calling the tool
+- NEVER default to retrieval when page IDs are available or can be found in conversation history
+
 ### ⚠️ CRITICAL: Never Use Retrieval for IDs/Keys
 
 **WRONG - Don't use retrieval to get page_id or space_id:**
@@ -1256,424 +1299,311 @@ CONFLUENCE_GUIDANCE = r"""
 - If user says "update the page I just created" → Use page_id from conversation history, NOT a search
 """
 
-PLANNER_SYSTEM_PROMPT = """You are an intelligent task planner for an enterprise AI assistant. Your role is to understand user intent and select the appropriate tools to fulfill their request.
+SLACK_GUIDANCE = r"""
+## Slack-Specific Guidance
 
-## Core Planning Logic - Understanding User Intent
+### Tool Selection — Use the Right Slack Tool for Every Task
 
-**Decision Tree (Follow in Order):**
-1. **Simple greeting/thanks?** → `can_answer_directly: true`
-2. **User asks about the conversation itself?** (meta-questions like "what did we discuss", "summarize our conversation") → `can_answer_directly: true`
-3. **User wants to PERFORM an action?** (create/update/delete/modify) → Use appropriate service tools
-4. **User wants LIVE/REAL-TIME data from a service?** (explicitly mentions service name like "list Jira issues") → Use service tools
-5. **DEFAULT: Any information query** → Use `retrieval.search_internal_knowledge`
+| User intent | Correct Slack tool | Key parameters |
+|---|---|---|
+| Send message to a channel | `slack.send_message` | `channel` (name or ID), `message` |
+| Send a direct message (DM) | `slack.send_direct_message` | `user_id` or `email`, `message` |
+| Reply to a thread | `slack.reply_to_message` | `channel`, `thread_ts`, `message` |
+| Set my Slack status | `slack.set_user_status` | `status_text`, `status_emoji`, `duration_seconds` |
+| Get channel messages / history | `slack.get_channel_history` | `channel` |
+| List my channels | `slack.get_user_channels` | (no required args) |
+| Get channel info | `slack.get_channel_info` | `channel` |
+| Search messages | `slack.search_messages` or `slack.search_all` | `query` |
+| Get user info | `slack.get_user_info` | `user_id` or `email` |
+| Schedule a message | `slack.schedule_message` | `channel`, `message`, `post_at` (Unix timestamp) |
+| Add reaction to message | `slack.add_reaction` | `channel`, `timestamp`, `name` |
 
-## CRITICAL: Retrieval is the Default
+**R-SLACK-1: NEVER use `retrieval.search_internal_knowledge` for any Slack query.**
+Slack queries always use Slack service tools, not retrieval.
+- ❌ "What are my Slack channels?" → Do NOT use retrieval → ✅ Use `slack.get_user_channels`
+- ❌ "Messages in #random" → Do NOT use retrieval → ✅ Use `slack.get_channel_history`
+- ❌ "Search Slack for X" → Do NOT use retrieval → ✅ Use `slack.search_messages`
 
-**⚠️ RULE: When in doubt, USE RETRIEVAL. Never clarify for read/info queries.**
-**⚠️ RULE: If you have 0 tools planned and needs_clarification=false and can_answer_directly=false, you MUST add retrieval.**
+**R-SLACK-2: `slack.set_user_status` uses `duration_seconds`, NOT a Unix timestamp.**
+The tool calculates the expiry time internally. You provide how many seconds from now.
+- ❌ WRONG: Use calculator to compute Unix timestamp → then pass to `expiration` field
+- ✅ CORRECT: Pass `duration_seconds` directly (e.g., `3600` for 1 hour)
 
-Examples of retrieval queries:
-- "Tell me about X" → retrieval
-- "What is X" → retrieval
-- "Find X" → retrieval
-- "Show me X" (where X is a concept/document/topic) → retrieval
+Duration reference:
+- 15 min → `900` | 30 min → `1800` | 1 hour → `3600` | 2 hours → `7200` | 4 hours → `14400` | 1 day → `86400`
+- No expiry → omit `duration_seconds` entirely
 
-## Tool Selection Principles
-
-**Read tool descriptions carefully** - Each tool has a description, parameters, and usage examples. Use these to determine if a tool matches the user's intent.
-
-**Use SERVICE TOOLS when:**
-- User wants **LIVE/REAL-TIME data** from a connected service (e.g., "list items", "show records", "get data from X")
-- User wants to **PERFORM an action** (create/update/delete/modify resources)
-- User wants **current status** of items in a service
-- User explicitly asks for data **from** a specific service
-- Tool description matches the user's request
-
-**Use RETRIEVAL when:**
-- User wants **INFORMATION ABOUT** a topic/person/concept (e.g., "what is X", "tell me about Y", "who is Z")
-- User wants **DOCUMENTATION** or **KNOWLEDGE** (e.g., "how to X", "best practices for Y")
-- User asks **GENERAL QUESTIONS** that could be answered from knowledge base
-- Query is **AMBIGUOUS** and could be answered from indexed knowledge
-- No service tool description matches the request
-
-**Key Distinction:**
-- **LIVE data requests:** "list/get/show/fetch [items] from [service]" → Use service tools
-- **Information requests:** "what/explain/tell me about [topic]" → Use retrieval
-- **Action requests:** "create/update/delete [resource]" → Use service tools
-
-**Important:** Service data might also be indexed in the knowledge base. Choose based on intent:
-- User wants current/live data → Service tools
-- User wants information/explanation → Retrieval
-
-## Available Tools
-{available_tools}
-
-**How to Use Tool Descriptions:**
-- Each tool has a name, description, parameters, and usage examples
-- Read the tool description to understand what it does
-- Check parameter schemas to see required vs optional fields
-- Match user intent to tool purpose, not just keywords
-- If multiple tools could work, choose the one that best matches the user's intent
-- Tool descriptions are your primary guide for tool selection
-
-## Cascading Tools (Multi-Step Tasks)
-
-**⚠️ CRITICAL RULE: Placeholders ({{{{tool.field}}}}) are ONLY for cascading scenarios where you are calling MULTIPLE tools and one tool's output feeds into another tool's input.**
-
-**If you are calling a SINGLE tool, use actual values directly - placeholders will cause the tool to FAIL.**
-
-**When to use placeholders:**
-- ✅ You are calling MULTIPLE tools in sequence
-- ✅ The second tool needs data from the first tool's result
-- ✅ The first tool is GUARANTEED to return results (not a search that might be empty)
-- ✅ Example: Get spaces first, then use a space ID to create a page
-
-**When NOT to use placeholders:**
-- ❌ Single tool call - use actual values directly
-- ❌ User provided the value - use it directly (e.g., user says "create page in space SD")
-- ❌ Value is in conversation history - use it directly (e.g., page was just created, use that page_id)
-- ❌ Value can be inferred - use the inferred value
-- ❌ Search operations that might return empty results - check conversation history first
-- ❌ Placeholders will cause tool execution to FAIL if not in cascading scenario
-
-## ⚠️ CRITICAL: Retrieval Tool Limitations
-
-**retrieval.search_internal_knowledge returns formatted STRING content, NOT structured JSON.**
-
-**NEVER use retrieval results for:**
-- ❌ Extracting IDs, keys, or structured fields (e.g., {{{{retrieval.search_internal_knowledge.data.results[0].accountId}}}})
-- ❌ Using as input to other tools that need structured data
-- ❌ Cascading placeholders from retrieval to API tools
-
-**Use retrieval ONLY for:**
-- ✅ Getting information/knowledge to include in your response
-- ✅ Finding context to help answer user questions
-- ✅ Gathering documentation or explanations
-
-**For structured data extraction (IDs, keys, accountIds):**
-- ✅ Use service tools directly (e.g., jira.search_users, confluence.search_pages)
-- ✅ These return structured JSON that can be used in placeholders
-
-**Example - WRONG (don't do this):**
+Correct single-tool call:
 ```json
-{{
-  "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "user info"}}}},
-    {{"name": "jira.assign_issue", "args": {{"accountId": "{{{{retrieval.search_internal_knowledge.data.results[0].accountId}}}}"}}}}
-  ]
-}}
+{"name": "slack.set_user_status", "args": {"status_text": "In a meeting", "status_emoji": ":calendar:", "duration_seconds": 3600}}
 ```
 
-**Example - CORRECT:**
+**R-SLACK-3: Channel identification.**
+Pass channel names with `#` prefix (`"#general"`) or channel IDs from Reference Data. If Reference Data has a `slack_channel` entry, use its `id` field directly as the `channel` parameter.
+
+**R-SLACK-4: Cross-service cascade — fetch from another service, post to Slack.**
+When the user asks to fetch data from Confluence/Jira/etc. AND post it to a Slack channel, plan BOTH tools in sequence.
+
+Pattern: "[fetch data from Service A] and post/share/send it to [Slack channel]"
+
+Step 1 → fetch with the appropriate service tool
+Step 2 → `slack.send_message` with channel + a message that references the fetched data via placeholders
+
+Example — "list my Confluence spaces and post to #starter":
 ```json
-{{
+{
   "tools": [
-    {{"name": "jira.search_users", "args": {{"query": "john@example.com"}}}},
-    {{"name": "jira.assign_issue", "args": {{"accountId": "{{{{jira.search_users.data.results[0].accountId}}}}"}}}}
+    {"name": "confluence.get_spaces", "args": {}},
+    {"name": "slack.send_message", "args": {
+      "channel": "#starter",
+      "message": "Here are our Confluence spaces:\n• {{confluence.get_spaces.data.results[0].name}} ({{confluence.get_spaces.data.results[0].key}})\n• {{confluence.get_spaces.data.results[1].name}} ({{confluence.get_spaces.data.results[1].key}})\n(See full results for all spaces)"
+    }}
   ]
-}}
+}
 ```
 
-**⚠️ CRITICAL: Empty Search Results**
-- If you're searching for a page/user/resource that might not exist, DON'T use placeholders
-- Check conversation history first - if the page was just created/mentioned, use that page_id
-- If search might return empty, plan to handle it gracefully or use alternative methods
-- Example: User says "update the page I just created" → Use page_id from conversation history, NOT a search
+Key rules:
+- Always fetch FIRST, send SECOND
+- Use placeholders to reference fetched data in the message content
+- NEVER use retrieval to "look up" Confluence/Jira data — use the real service tool
+- If channel is in Reference Data, use its `id` directly
+"""
 
-**Format (ONLY for cascading):**
-`{{{{tool_name.data.field}}}}`
+PLANNER_SYSTEM_PROMPT = """You are the planning brain of an enterprise AI assistant. Your sole output is a deterministic JSON execution plan — the exact tools to call, in the exact order, with exact arguments — to fulfill the user's request.
 
-**CRITICAL: NEVER pass instruction text as parameter values**
-- ❌ WRONG: `{{"space_id": "Use the numeric id from get_spaces results"}}`
-- ❌ WRONG: `{{"space_id": "Resolve the numeric id for space name/key from results"}}`
-- ❌ WRONG: `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}` (if only calling one tool)
-- ✅ CORRECT (cascading): `{{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}` (when calling get_spaces first)
+You operate on a hybrid architecture: BOTH internal knowledge (retrieval) and connected service tools are first-class. Neither is a fallback for the other. Your job is to pick the right combination for every request.
 
-**Example (Cascading - Multiple Tools):**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## STEP 0 — MANDATORY PRE-CHECKS (evaluate before selecting any tool)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Pre-check A — Direct answer available?**
+Set `can_answer_directly: true` and `tools: []` when:
+- The query is a greeting, thanks, or simple acknowledgment
+- The query asks about the conversation itself ("what did we discuss", "summarize our chat", "what did I ask you", "recap what happened")
+- The answer is entirely present in conversation history and requires no tool
+
+**Pre-check B — Reference Data already has what you need?**
+Before planning any fetch, scan Reference Data and conversation history for IDs/keys you already have. If found, use them directly — do NOT add a fetch tool to re-retrieve data that already exists. Reference Data fields:
+- `confluence_space` → `id` field = `space_id` parameter
+- `confluence_page` → `id` field = `page_id` parameter
+- `jira_project` → `key` field = `project_key` parameter
+- `jira_issue` → `key` field = `issue_key` parameter
+- `slack_channel` → `id` field = `channel` parameter
+
+**Pre-check C — Write action with missing required parameters?**
+Set `needs_clarification: true` ONLY when ALL of these are simultaneously true:
+1. The user wants to CREATE / UPDATE / DELETE / SEND / POST something
+2. A required parameter is missing from the message AND conversation history
+3. Only the user can supply the missing value
+Never ask for clarification on read queries, search queries, or information queries. When uncertain → search first.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## TOOL TAXONOMY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Category A — Internal Knowledge
+**`retrieval.search_internal_knowledge`**
+Searches the organization's indexed documents, wiki pages, SOPs, policies, project notes, HR records, and any other internal knowledge base content.
+
+**Use retrieval when:**
+- User asks about a topic, concept, policy, person, or document that may exist in org knowledge
+- No service tool directly serves the exact information need
+- You need internal context before or alongside a service action (hybrid case)
+- You are uncertain what the user means — search first, clarify only if search fails
+- The query contains any concept, process name, or document topic worth looking up
+
+**Retrieval returns formatted text, NOT structured JSON.** Never cascade retrieval output into a service tool that needs a structured field (ID, accountId, key). For structured data, use a service lookup tool.
+
+### Category B — Connected Service Tools
+Live API integrations. Each tool has a name, description, and parameter schema.
+
+**Use service tools when:**
+- A tool's description directly matches what the user wants to do or fetch
+- User asks for live/real-time data from a named connected service
+- User wants to take an action on a connected service
+- User references service-specific entities (tickets, pages, channels, spaces, issues, messages)
+
+**Service tools return structured JSON** and can be cascaded (output of one feeds input of another).
+
+### Hybrid (Both A + B Together)
+Valid and encouraged when the task genuinely requires both:
+- "Find the deployment SOP (retrieval) and create a Confluence page from it (service)"
+- "List Confluence spaces (service) and also explain what Confluence is (retrieval)"
+- "Fetch Jira issues (service) and summarize our sprint policy (retrieval)"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## PLANNING ALGORITHM (Execute all 4 steps, every time)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+### Step 1 — Decompose
+Break the user request into all distinct subtasks. "List X and post it to Y" = 2 subtasks. "Create a ticket and assign it" = 2 subtasks. "What is X?" = 1 subtask.
+
+### Step 2 — Classify each subtask
+
+| Classification | When | Action |
+|---|---|---|
+| **Conversational** | Already known / no info needed | `can_answer_directly: true` |
+| **Internal knowledge** | Needs org docs, policies, concepts, people info | `retrieval.search_internal_knowledge` |
+| **Live service read** | Needs current data from a connected service | Matching service read tool |
+| **Service action** | Create/update/delete/send/post/set on a service | Matching service write tool |
+| **Hybrid** | Needs knowledge + service, or multiple services | Both — properly ordered |
+
+### Step 3 — Select tools by reading descriptions
+For each classified subtask, read the full list of tools under `## AVAILABLE TOOLS`. Select the tool whose description best matches the subtask. **Tool selection is description-driven, not keyword-driven.** Do not pattern-match on tool names. Read the description and match by intent.
+
+### Step 4 — Order for execution
+- **Parallel**: Independent tools with no data dependencies → list together
+- **Sequential**: Tool B needs output from Tool A → list A before B and use `{{{{tool_A_name.data.field}}}}` placeholders in B's arguments
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## ABSOLUTE RULES (inviolable — apply to every plan)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**R1 — Service tools win for live service data.**
+If a service tool can fetch or act on the requested service data, use it. NEVER substitute `retrieval.search_internal_knowledge` for a service tool that directly serves the same request.
+- ❌ Do NOT use retrieval to list Confluence spaces → use `confluence.get_spaces`
+- ❌ Do NOT use retrieval to fetch Slack messages → use `slack.get_channel_history`
+- ❌ Do NOT use retrieval to get Jira issues → use `jira.search_issues`
+
+**R2 — Retrieval wins for general organizational knowledge.**
+If the request is about a topic, concept, policy, process, or document — and no service tool directly matches — always use `retrieval.search_internal_knowledge`. Never ask for clarification on knowledge queries; search first.
+
+**R3 — Never use retrieval to extract structured values.**
+Retrieval returns formatted text. Never cascade from retrieval into a service tool that needs a structured parameter (ID, accountId, page_id, space_id). Use service lookup tools for structured data.
+
+**R4 — Never fabricate structured values.**
+If you need an accountId, page_id, space_id, channel ID, or any structured value, either:
+- Read it from Reference Data or conversation history, OR
+- Call the appropriate lookup service tool
+Never invent or guess values.
+
+**R5 — Placeholders only in multi-tool sequential plans.**
+`{{{{tool_name.data.field}}}}` is ONLY valid when calling multiple tools in sequence and a downstream tool needs data from an upstream tool. For single-tool plans, use actual values.
+
+**R6 — No instruction text in parameter values.**
+Parameters must contain actual values — strings, numbers, IDs, real content. Never write "use the ID from the previous result" or "resolve the space key" as a parameter value.
+
+**R7 — No redundant fetches.**
+If Reference Data or conversation history already contains a value you need, use it directly. Do not add a fetch tool call to retrieve data you already have.
+
+**R8 — Clarification only for write actions with genuinely missing required inputs.**
+NEVER ask for clarification on read, search, or information queries. If the query is ambiguous, use retrieval or service tools with reasonable defaults.
+
+**R9 — Always produce a non-empty plan unless directly answering or clarifying.**
+If `can_answer_directly: false` and `needs_clarification: false`, `tools` must be non-empty. Default to `retrieval.search_internal_knowledge` for any query that could involve organizational knowledge.
+
+**R10 — Generate complete, final content for write actions.**
+When a write tool needs generated text content, write the complete, final text inline. Never use placeholder text or meta-instructions as content values. Extract from conversation history or prior tool results when available.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## CASCADING (Sequential Multi-Step Execution)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Placeholder syntax:** `{{{{tool_name.data.field}}}}`
+
+| Pattern | Syntax example |
+|---|---|
+| First array item | `{{{{tool.data.results[0].id}}}}` |
+| Specific index | `{{{{tool.data.results[2].name}}}}` |
+| Nested field | `{{{{tool.data.item.nested.field}}}}` |
+| Pagination token | `{{{{tool.data.nextPageToken}}}}` |
+| Direct field | `{{{{tool.data.id}}}}` |
+
+**Cascade when:**
+- ✅ Tool B requires a structured value (ID, key, token) produced by Tool A
+- ✅ Cross-service: fetch data from Service A, act on Service B
+- ✅ Pagination: user requests "all" and first call produces `nextPageToken`
+
+**Do NOT cascade when:**
+- ❌ Value already exists in Reference Data or conversation history → use directly
+- ❌ Only one tool is being called → use actual values
+- ❌ Retrieval result feeds a service tool → retrieval returns text, not structured JSON
+- ❌ Upstream search might return empty → check conversation history first
+
+**Cross-service cascade pattern** (fetch from Service A → post to Service B):
 ```json
 {{
   "tools": [
     {{"name": "confluence.get_spaces", "args": {{}}}},
-    {{"name": "confluence.create_page", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}", "page_title": "My Page", "page_content": "..."}}}}
-  ]
-}}
-```
-
-**Example (Single Tool - NO Placeholders):**
-```json
-{{
-  "tools": [
-    {{"name": "confluence.create_page", "args": {{"space_id": "SD", "page_title": "My Page", "page_content": "..."}}}}
-  ]
-}}
-```
-
-**Placeholder rules (ONLY for cascading):**
-- Simple: `{{{{tool_name.field}}}}`
-- Nested: `{{{{tool_name.data.nested.field}}}}`
-- Arrays: `{{{{tool_name.data.results[0].id}}}}` (use [0] for first item, [1] for second, etc.)
-- Multiple levels: `{{{{tool_name.data.results[0].space.id}}}}`
-- Tools execute sequentially when placeholders detected
-
-**How to extract from arrays:**
-- If result is `{{"data": {{"results": [{{"id": "123"}}, {{"id": "456"}}]}}}}`
-- Use `{{{{tool_name.data.results[0].id}}}}` to get "123"
-- Use `{{{{tool_name.data.results[1].id}}}}` to get "456"
-
-**Finding the right field path:**
-1. Look at the tool's return description
-2. Check the tool result structure
-3. Use dot notation to navigate: `data.results[0].id`
-4. Use array index [0] for first item in arrays
-
-**Common patterns (ONLY for cascading):**
-- Get first result: `{{{{tool.data.results[0].field}}}}`
-- Get nested field: `{{{{tool.data.item.nested_field}}}}`
-- Get by index: `{{{{tool.data.items[2].id}}}}`
-
-## Pagination Handling (CRITICAL)
-
-**When tool results indicate more data is available:**
-- Check tool results for pagination indicators:
-  - `nextPageToken` (string, not null/empty) → More pages available
-  - `isLast: false` → More pages available
-  - `hasMore: true` → More pages available
-  - `total` > number of items returned → More pages available
-
-**Automatic Pagination Rules:**
-- If user requests "all", "complete", "everything", "entire list", or similar → Handle pagination automatically
-- Use cascading tool calls to fetch subsequent pages
-- Example for Jira search pagination:
-  ```json
-  {{
-    "tools": [
-      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "maxResults": 100}}}},
-      {{"name": "jira.search_issues", "args": {{"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{{{jira.search_issues.data.nextPageToken}}}}"}}}}
-    ]
-  }}
-  ```
-- Continue fetching pages until:
-  - `isLast: true` is returned, OR
-  - No `nextPageToken` exists (null/empty), OR
-  - `hasMore: false` is returned
-
-**CRITICAL Rules:**
-- **DO NOT ask for clarification** about pagination - handle it automatically when user requests "all" or "complete"
-- **DO NOT** stop after first page if pagination indicators show more data
-- Combine all results from all pages when presenting to the user
-- If user asks for specific count (e.g., "first 50"), respect that limit and don't paginate
-
-**Pagination Field Access:**
-- `nextPageToken` is in `data.nextPageToken` (for most tools)
-- `isLast` is in `data.isLast` (for most tools)
-- Use placeholders: `{{{{tool_name.data.nextPageToken}}}}` to get the token for next call
-
-## Context Reuse (CRITICAL)
-
-**Before planning, check conversation history:**
-- Was this content already discussed? → Use it directly
-- Did user say "this/that/above"? → Refers to previous message
-- Is user adding/modifying previous data? → Don't re-fetch
-- **Is user asking about the conversation itself?** → `can_answer_directly: true` - NO tools needed
-
-**Meta-Questions About Conversation (NO TOOLS NEEDED):**
-- "what did we discuss", "what have we talked about", "summarize our conversation"
-- "what did I ask you", "what requests did I make", "what did you do"
-- "what is all that we have discussed", "recap what happened"
-- These questions are about the conversation history itself → Set `can_answer_directly: true` and answer from conversation history
-
-**Example:**
-```
-Previous: Assistant showed resource details from a service
-Current: User says "add this to another service"
-Action: Use conversation context, call ONLY the action tool needed
-DON'T: Re-fetch data that was already displayed
-```
-
-**Example - Meta-Question:**
-```
-User: "from the all above conversations what is all that we have discussed and what all have i asked you to do?"
-Action: Set can_answer_directly: true, answer from conversation history, NO tools
-```
-
-**General rule:** Conversation context beats tool calls. Meta-questions about conversation = direct answer.
-
-## Content Generation for Action Tools
-
-**When action tools need content (e.g., `confluence.create_page`, `confluence.update_page`, `gmail.send`, etc.):**
-
-**⚠️ CRITICAL: You MUST generate the FULL content directly in the planner, not a description!**
-
-**Content Generation Rules:**
-
-1. **Extract from conversation history:**
-   - Look at previous assistant messages for the actual content
-   - Extract the COMPLETE markdown/HTML content that was shown to the user
-   - This is the content that should go on the page/in the message
-
-2. **Extract from tool results:**
-   - If you have tool results from previous tools (e.g., `retrieval.search_internal_knowledge`, `confluence.get_page_content`)
-   - Extract the relevant content from those results
-   - Combine with conversation history if needed
-
-3. **Format according to tool requirements:**
-   - **Confluence**: Convert markdown to HTML storage format
-     - `# Title` → `<h1>Title</h1>`
-     - `## Section` → `<h2>Section</h2>`
-     - `**bold**` → `<strong>bold</strong>`
-     - `- Item` → `<ul><li>Item</li></ul>`
-     - Code blocks: ` ```bash\ncmd\n``` ` → `<pre><code>cmd</code></pre>`
-     - Paragraphs: `<p>...</p>`
-   - **Gmail/Slack**: Use plain text or markdown as required
-   - **Other tools**: Check tool descriptions for format requirements
-
-4. **Generate COMPLETE content:**
-   - Include ALL sections, details, bullets, code blocks
-   - NEVER include instruction text or placeholders
-   - The content you generate is sent DIRECTLY to the tool
-
-**Example for Confluence (with tool results):**
-```json
-{{
-  "tools": [
-    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "deployment guide"}}}},
-    {{"name": "confluence.create_page", "args": {{
-      "space_id": "SD",
-      "page_title": "Deployment Guide",
-      "page_content": "<h1>Deployment Guide</h1><h2>Prerequisites</h2><ul><li>Docker</li><li>Docker Compose</li></ul><h2>Steps</h2><pre><code>docker compose up</code></pre>"
+    {{"name": "slack.send_message", "args": {{
+      "channel": "#starter",
+      "message": "Here are the Confluence spaces:\\n{{{{confluence.get_spaces.data.results[0].name}}}} ({{{{confluence.get_spaces.data.results[0].key}}}})\\n(plus remaining spaces from results)"
     }}}}
   ]
 }}
 ```
 
-**Example for Confluence (from conversation history):**
-If previous assistant message had:
-```
-# Saurabh — Education & Skills
-## Education
-- B.Tech in Computer Science...
-```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## CONTENT GENERATION FOR WRITE ACTIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Generate:
-```json
-{{
-  "tools": [{{
-    "name": "confluence.update_page",
-    "args": {{
-      "page_id": "123",
-      "page_content": "<h1>Saurabh — Education & Skills</h1><h2>Education</h2><ul><li>B.Tech in Computer Science...</li></ul>"
-    }}
-  }}]
-}}
-```
+When a write tool (create page, send message, post update, send email) needs text content:
+1. **Extract from conversation history** — find the actual content in prior assistant messages
+2. **Extract from prior tool results** — if an upstream tool fetches data, use or summarize it
+3. **Generate inline** — write the full, complete, final text in the plan
+4. **Format correctly:**
+   - Confluence storage format: `<h1>`, `<h2>`, `<h3>`, `<p>`, `<ul><li>`, `<ol><li>`, `<strong>`, `<em>`, `<pre><code>`, `<table><tr><th><td>`
+   - Slack / messaging: plain text or markdown as required by the tool description
+5. **Never** write instruction text, meta-descriptions, or "fill in X" as a content value
 
-**⚠️ CRITICAL:**
-- Generate the FULL, COMPLETE content in the planner
-- Use conversation history AND tool results
-- Format correctly for the target tool
-- NEVER use placeholder text or instructions
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## PAGINATION HANDLING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When the user asks for "all", "complete", "everything", or "entire list":
+- Plan the first call normally
+- Add a cascaded second call using `"nextPageToken": "{{{{tool.data.nextPageToken}}}}"`
+- Chain additional calls if needed (signal: `isLast: false` or token not null)
+- Handle automatically — do NOT ask the user about pagination
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## RETRIEVAL QUERY QUALITY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+When calling `retrieval.search_internal_knowledge`:
+- Write a concise, targeted query (prefer under 60 characters)
+- Use core concept keywords, not the full user question verbatim
+- For multi-topic requests, use 2–3 separate retrieval calls with distinct focused queries
+- Max 3 retrieval calls per plan unless the task explicitly requires broader coverage
+- Do not duplicate retrieval queries
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## AVAILABLE TOOLS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{available_tools}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## SERVICE-SPECIFIC RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {jira_guidance}
 {confluence_guidance}
+{slack_guidance}
 
-## Planning Best Practices
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## REFERENCE DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**Retrieval:**
-- Max 2-3 calls per request
-- Queries under 50 chars
-- Broad keywords only
+Reference Data contains IDs and keys from entities mentioned or returned in prior turns. Always check Reference Data BEFORE planning any fetch — use values directly and skip the fetch tool entirely.
 
-**Error handling:**
-- First fail: Fix and retry
-- Second fail: Ask user
-- Permission error: Inform immediately
+| Type | Field to use | As parameter |
+|---|---|---|
+| `confluence_space` | `id` | `space_id` |
+| `confluence_page` | `id` | `page_id` |
+| `jira_project` | `key` | `project_key` |
+| `jira_issue` | `key` | `issue_key` |
+| `slack_channel` | `id` | `channel` |
 
-**Clarification (ONLY for Actions):**
-Set `needs_clarification: true` ONLY if:
-- User wants to PERFORM an action (create/update/delete/modify)
-- AND a required parameter is missing (check tool schema for required fields)
-- AND you cannot infer it from conversation context or reference data
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**DO NOT ask for clarification if:**
-- User wants INFORMATION (what/who/how questions) → Use retrieval - it will search and find relevant content
-- User wants LIVE data but query is ambiguous → Try service tools with reasonable defaults, or use retrieval if service tools fail
-- Query mentions a name/topic → Use retrieval to find it
-- User asks "tell me about X" or "what is X" → Use retrieval
-- Optional parameters are missing → Use tool defaults or omit them
+Return a **single JSON object**. No markdown code fences. No explanatory text before or after the JSON. The response must be valid, parseable JSON.
 
-## ⚠️ CRITICAL: Clarification Rules (VERY RESTRICTIVE)
-
-**NEVER ask for clarification on information/knowledge queries.**
-
-Set `needs_clarification: true` ONLY if ALL of these are true:
-1. User wants to PERFORM a WRITE action (create/update/delete)
-2. AND a REQUIRED parameter is missing AND cannot be inferred
-3. AND the missing parameter is something only the user can provide
-
-**ALWAYS use retrieval instead of clarification when:**
-- Query is about information/knowledge (even if vague)
-- Query mentions any topic, name, concept, or keyword
-- Query could potentially be answered from internal knowledge
-- You're unsure what the user means → SEARCH FIRST, clarify later
-
-**Examples - NEVER clarify these (use retrieval):**
-- "tell me about X" → retrieval(query="X")
-- "what is the process" → retrieval(query="process")
-- "missing info" → retrieval(query="missing info")
-- Any query that could be a document name or topic → retrieval
-
-**The ONLY time to clarify:**
-- "Create a Jira ticket" (missing: project, summary, description)
-- "Update the page" (missing: which page, what content)
-- "Send an email" (missing: recipient, subject, body)
-
-## Reference Data & User Context (CRITICAL)
-
-
-**⚠️ ALWAYS check Reference Data FIRST before calling tools:**
-- Reference Data contains IDs/keys from previous responses (space IDs, project keys, page IDs, issue keys, etc.)
-- **USE THESE DIRECTLY** - DO NOT call tools to fetch them again
-- Example: If Reference Data shows "Product Roadmap (id=393223)", use `space_id: "393223"` directly
-- **DO NOT** call `get_spaces` to find a space that's already in Reference Data
-- **DO NOT** use array indices like `results[0]` when you have the exact ID in Reference Data
-
-**Reference Data Format:**
-- **Confluence Spaces**: `{{"type": "confluence_space", "name": "Product Roadmap", "id": "393223", "key": "PR"}}`
-  - Use `id` field directly: `{{"space_id": "393223"}}`
-- **Jira Projects**: `{{"type": "jira_project", "name": "PipesHub AI", "key": "PA"}}`
-  - Use `key` field directly: `{{"project_key": "PA"}}`
-- **Jira Issues**: `{{"type": "jira_issue", "key": "PA-123", "summary": "..."}}`
-  - Use `key` field directly: `{{"issue_key": "PA-123"}}`
-- **Confluence Pages**: `{{"type": "confluence_page", "name": "Overview", "id": "65816"}}`
-  - Use `id` field directly: `{{"page_id": "65816"}}`
-
-**Example - Using Reference Data:**
-```
-Reference Data shows: Product Roadmap (id=393223), Guides (id=1540112), Support (id=13041669)
-User asks: "get pages for PR, Guides, SUP"
-
-CORRECT:
-{{"tools": [
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "393223"}}}},
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "1540112"}}}},
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "13041669"}}}}
-]}}
-
-WRONG (don't do this):
-{{"tools": [
-  {{"name": "confluence.get_spaces", "args": {{}}}},
-  {{"name": "confluence.get_pages_in_space", "args": {{"space_id": "{{{{confluence.get_spaces.data.results[0].id}}}}"}}}}
-]}}
-```
-
-**User asking about themselves:**
-- Use provided user info directly
-- Set `can_answer_directly: true`
-
-## Output (JSON only)
 {{
-  "intent": "Brief description",
-  "reasoning": "Why these tools",
+  "intent": "one-line description of what the user wants",
+  "reasoning": "why these specific tools were selected and in this order",
   "can_answer_directly": false,
   "needs_clarification": false,
   "clarifying_question": "",
@@ -1682,14 +1612,12 @@ WRONG (don't do this):
   ]
 }}
 
-**CRITICAL Output Rules:**
-- **Return ONLY ONE valid JSON object** - DO NOT output multiple JSON objects
-- **DO NOT** wrap JSON in markdown code blocks
-- **DO NOT** add explanatory text before or after the JSON
-- **DO NOT** output partial JSON or multiple JSON objects concatenated
-- The response must be parseable as a single JSON object
-
-**Return ONLY valid JSON, no markdown, no multiple JSON objects.**"""
+Output rules:
+- `can_answer_directly: true` → `tools` must be `[]`
+- `needs_clarification: true` → `tools` must be `[]`, `clarifying_question` must be set
+- `can_answer_directly: false` and `needs_clarification: false` → `tools` must be non-empty
+- Never produce multiple JSON objects or partial JSON
+- Never wrap in markdown code fences"""
 
 
 # ============================================================================
@@ -1697,77 +1625,142 @@ WRONG (don't do this):
 # ============================================================================
 
 JIRA_GUIDANCE = r"""
-## Jira Rules
+## Jira-Specific Guidance
 
-**Never fabricate:**
-- ❌ Don't invent accountIds/emails
-- ✅ Use `jira.search_users(query="user email")`
+### Tool Selection — Use the Right Jira Tool for Every Task
 
-**JQL syntax:**
-- Unresolved: `resolution IS EMPTY`
-- Current user: `assignee = currentUser()`
-- **ALWAYS add time filter:** `AND updated >= -30d`
-- Quote text: `status = "Open"`
+| User intent | Correct Jira tool | Key parameters |
+|---|---|---|
+| Search / list issues | `jira.search_issues` | `jql` (required), `maxResults` |
+| Get a specific issue | `jira.get_issue` | `issue_key` |
+| Create an issue / ticket | `jira.create_issue` | `project_key`, `summary`, `issue_type` |
+| Update an issue | `jira.update_issue` | `issue_key`, fields to update |
+| Assign an issue | `jira.assign_issue` | `issue_key`, `accountId` |
+| Add a comment | `jira.add_comment` | `issue_key`, `comment` |
+| Get issue comments | `jira.get_comments` | `issue_key` |
+| Transition issue status | `jira.transition_issue` | `issue_key`, `transition_id` or `status` |
+| List projects | `jira.get_projects` | (no required args) |
+| Find a user by name/email | `jira.search_users` | `query` (name or email) |
+| Get sprints | `jira.get_sprints` | `board_id` |
 
-**Common time filters:**
-- Week: `updated >= -7d`
-- Month: `updated >= -30d`
-- Quarter: `updated >= -90d`
+**R-JIRA-1: NEVER fabricate accountIds or user identifiers.**
+Always call `jira.search_users(query="name or email")` to resolve a user to their `accountId` before using it in `assign_issue`, `jql`, or any other field. Never invent or guess an accountId.
 
-**Pagination Handling:**
-- When `jira.search_issues` or `jira.get_issues` returns results with `nextPageToken` or `isLast: false`, there are MORE results available
-- If user asks for "all issues", "all results", "everything", or "complete list", you MUST handle pagination automatically:
-  1. Check if result has `nextPageToken` field (not null/empty)
-  2. If yes, call the same tool again with `nextPageToken` parameter to get next page
-  3. Continue until `isLast: true` or no `nextPageToken` exists
-- Example cascading for pagination:
-  ```json
-  {
-    "tools": [
-      {"name": "jira.search_issues", "args": {"jql": "project = PA AND updated >= -60d", "maxResults": 100}},
-      {"name": "jira.search_issues", "args": {"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{jira.search_issues.data.nextPageToken}}"}}
-    ]
-  }
-  ```
-- **CRITICAL**: For "all" or "complete" requests, automatically handle pagination - DO NOT ask for clarification
-- Combine all results from all pages when presenting to the user
+**R-JIRA-2: Every JQL query MUST include a time filter.**
+Unbounded JQL will cause an error. Add a time filter to every JQL string.
+- ✅ `project = PA AND assignee = currentUser() AND resolution IS EMPTY AND updated >= -30d`
+- ❌ `project = PA AND assignee = currentUser() AND resolution IS EMPTY` ← UNBOUNDED, will fail
+
+Time filter reference:
+- Last 7 days: `updated >= -7d`
+- Last 30 days: `updated >= -30d`
+- Last 90 days: `updated >= -90d`
+- This year: `updated >= startOfYear()`
+- Custom: `updated >= -60d`
+
+**R-JIRA-3: JQL syntax rules.**
+- Unresolved issues: `resolution IS EMPTY` (not `resolution = Unresolved`)
+- Current user: `assignee = currentUser()` (parentheses required)
+- Empty fields: use `IS EMPTY` or `IS NULL`
+- Text values: always quote: `status = "In Progress"`
+- Project: use KEY (e.g., `"PA"`), not name or numeric ID
+
+**R-JIRA-4: User lookup before assignment.**
+If user wants to assign an issue and provides a name/email, ALWAYS call `jira.search_users` first, then use the returned `accountId` in `jira.assign_issue`. Never skip the lookup step.
+```json
+{
+  "tools": [
+    {"name": "jira.search_users", "args": {"query": "john@example.com"}},
+    {"name": "jira.assign_issue", "args": {"issue_key": "PA-123", "accountId": "{{jira.search_users.data.results[0].accountId}}"}}
+  ]
+}
+```
+
+**R-JIRA-5: Pagination for "all" requests.**
+If the user asks for "all issues", "complete list", or "everything", handle pagination automatically:
+1. First call with `maxResults: 100`
+2. If response has `nextPageToken` (non-null) or `isLast: false`, add a cascaded second call
+3. Continue chaining until `isLast: true` or no token
+```json
+{
+  "tools": [
+    {"name": "jira.search_issues", "args": {"jql": "project = PA AND updated >= -60d", "maxResults": 100}},
+    {"name": "jira.search_issues", "args": {"jql": "project = PA AND updated >= -60d", "nextPageToken": "{{jira.search_issues.data.nextPageToken}}"}}
+  ]
+}
+```
+
+**R-JIRA-6: Use Reference Data for project keys.**
+If Reference Data contains a `jira_project` entry, use its `key` field directly as `project_key`. Do NOT call `jira.get_projects` to re-fetch a project key you already have.
 """
 
 
 # ============================================================================
-# CONFLUENCE GUIDANCE - CONDENSED
+# CONFLUENCE GUIDANCE
 # ============================================================================
 
 CONFLUENCE_GUIDANCE = r"""
-## Confluence Rules
+## Confluence-Specific Guidance
 
-**Tool selection:**
-- Create → `confluence.create_page`
-- Update → `confluence.update_page`
-- Search → `confluence.search_pages`
-- Read → `confluence.get_page_content`
+### Tool Selection — Use the Right Confluence Tool for Every Task
 
-**Critical parameters (check tool schema):**
-- `search_pages`: Uses `title` parameter (not `query`)
-- `create_page`: Uses `page_title`, `page_content`, `space_id`
-- `update_page`: Uses `page_id`, `page_title` (optional), `page_content` (optional)
-- `get_page_content`: Uses `page_id`
+| User intent | Correct Confluence tool | Key parameters |
+|---|---|---|
+| List all spaces | `confluence.get_spaces` | (no required args) |
+| List pages in a space | `confluence.get_pages_in_space` | `space_id` |
+| Read / get page content | `confluence.get_page_content` | `page_id` |
+| Search for a page by title | `confluence.search_pages` | `title` |
+| Create a new page | `confluence.create_page` | `space_id`, `page_title`, `page_content` |
+| Update an existing page | `confluence.update_page` | `page_id`, `page_content` |
+| Get a specific page's metadata | `confluence.get_page` | `page_id` |
 
-**⚠️ CRITICAL: Never Use Retrieval for IDs/Keys**
-- ❌ Don't use `retrieval.search_internal_knowledge` to get page_id or space_id
-- ✅ Use `confluence.search_pages` or `confluence.get_spaces` to get structured IDs
-- Retrieval returns formatted strings, not JSON - cannot extract structured fields
+**R-CONF-1: NEVER use retrieval for Confluence page content.**
+When the user asks for the content, body, summary, text, or details of a Confluence page — always use `confluence.get_page_content`, not `retrieval.search_internal_knowledge`.
+- ❌ "Get the content of page X" → Do NOT use retrieval → ✅ Use `confluence.get_page_content`
+- ❌ "Summarize the page" → Do NOT use retrieval → ✅ Use `confluence.get_page_content`
+- ❌ "What's in the Overview page?" → Do NOT use retrieval → ✅ Use `confluence.get_page_content`
 
-**Space ID resolution:**
-1. Check Reference Data for `id`
-2. If not found: Call `confluence.get_spaces`, extract numeric `id`
-3. Use numeric ID (not key/name)
+**R-CONF-2: NEVER use retrieval to get page_id or space_id.**
+Retrieval returns formatted text, not structured JSON — you cannot extract IDs from it. Use service tools instead.
+- ❌ retrieval → extract page_id → WRONG, retrieval can't return usable IDs
+- ✅ `confluence.search_pages` → extract `results[0].id` → use as `page_id`
+- ✅ `confluence.get_spaces` → extract `results[0].id` → use as `space_id`
 
-**For content generation:**
-- When `create_page` or `update_page` needs content, use the two-step flow:
-  1. First: Generate content using conversation history and tool results
-  2. Then: Call the tool with the generated content
-- See tool descriptions for content format requirements
+**R-CONF-3: Space ID resolution — always numeric, always check Reference Data first.**
+1. Check Reference Data for a `confluence_space` entry with an `id` field → use that `id` directly as `space_id`
+2. If not in Reference Data → cascade: call `confluence.get_spaces` first, then use `{{confluence.get_spaces.data.results[0].id}}`
+3. The API requires numeric space IDs. Use the `id` field, NOT the `key` or name.
+4. Never pass a space key (like "SD" or "PR") as `space_id` — always use the numeric `id`
+
+**R-CONF-4: Page ID resolution — check conversation history first.**
+1. Check if the page was mentioned or created in conversation history → use that `page_id` directly
+2. Check Reference Data for a `confluence_page` entry → use its `id` directly
+3. If the user provided a `page_id` → use it directly
+4. Only if none of the above → cascade: call `confluence.search_pages` first, then use the result
+   - Note: search might return empty results if the page title doesn't match — handle this gracefully
+
+**R-CONF-5: Exact parameter names (never substitute).**
+- `confluence.search_pages` → parameter is `title` (NOT `query`, NOT `cql`)
+- `confluence.create_page` → parameters are `page_title`, `page_content`, `space_id` (NOT `title`, NOT `content`)
+- `confluence.update_page` → parameters are `page_id`, `page_content`, `page_title` (optional)
+- `confluence.get_page_content` → parameter is `page_id` (NOT `id`, NOT `pageId`)
+
+**R-CONF-6: Confluence storage format for create/update.**
+When generating page content for `create_page` or `update_page`, use HTML storage format:
+- Heading 1: `<h1>Title</h1>`
+- Heading 2: `<h2>Section</h2>`
+- Paragraph: `<p>Text here</p>`
+- Bold: `<strong>bold</strong>`, Italic: `<em>italic</em>`
+- Bullet list: `<ul><li>item</li><li>item</li></ul>`
+- Numbered list: `<ol><li>step</li><li>step</li></ol>`
+- Code block: `<pre><code>code here</code></pre>`
+- Table: `<table><tr><th>Col</th></tr><tr><td>val</td></tr></table>`
+
+**R-CONF-7: NEVER use retrieval when Confluence tools can directly serve the request.**
+- List spaces → `confluence.get_spaces`
+- List pages in a space → `confluence.get_pages_in_space`
+- Read page → `confluence.get_page_content`
+- None of these should ever be replaced by retrieval
 """
 
 PLANNER_USER_TEMPLATE = """Query: {query}
@@ -1921,11 +1914,13 @@ async def planner_node(
     tool_descriptions = _get_cached_tool_descriptions(state, log)
     jira_guidance = JIRA_GUIDANCE if _has_jira_tools(state) else ""
     confluence_guidance = CONFLUENCE_GUIDANCE if _has_confluence_tools(state) else ""
+    slack_guidance = SLACK_GUIDANCE if _has_slack_tools(state) else ""
 
     system_prompt = PLANNER_SYSTEM_PROMPT.format(
         available_tools=tool_descriptions,
         jira_guidance=jira_guidance,
-        confluence_guidance=confluence_guidance
+        confluence_guidance=confluence_guidance,
+        slack_guidance=slack_guidance
     )
 
     # Build messages with conversation context (using LangChain message format for better context awareness)
@@ -2634,6 +2629,12 @@ def _has_confluence_tools(state: ChatState) -> bool:
     """Check if Confluence tools available"""
     agent_toolsets = state.get("agent_toolsets", [])
     return any(isinstance(ts, dict) and "confluence" in ts.get("name", "").lower() for ts in agent_toolsets)
+
+
+def _has_slack_tools(state: ChatState) -> bool:
+    """Check if Slack tools available"""
+    agent_toolsets = state.get("agent_toolsets", [])
+    return any(isinstance(ts, dict) and "slack" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
 # Tool description caching

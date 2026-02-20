@@ -988,7 +988,9 @@ async def handle_oauth_callback(
         logger.info(
             f"OAuth config for {toolset_type}: "
             f"has_token_response_path={bool(oauth_config.token_response_path)}, "
-            f"token_response_path={oauth_config.token_response_path}"
+            f"token_response_path={oauth_config.token_response_path}, "
+            f"client_id_length={len(oauth_config.client_id) if oauth_config.client_id else 0}, "
+            f"client_secret_length={len(oauth_config.client_secret) if oauth_config.client_secret else 0}"
         )
         oauth_provider = OAuthProvider(
             config=oauth_config,
