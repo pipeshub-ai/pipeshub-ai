@@ -13,7 +13,7 @@ Key features:
 """
 
 import logging
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -494,7 +494,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 # Create an async wrapper function that calls tool_wrapper.arun()
                 # This ensures proper async execution in the same event loop as FastAPI
                 def make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-                    async def async_tool_func(**kwargs):
+                    async def async_tool_func(**kwargs) -> Union[Tuple[bool, str], str, Dict[str, Any], List[Any]]:
                         """Async tool function that wraps RegistryToolWrapper.arun()"""
                         # Call arun with kwargs as a dict (arun handles both formats)
                         result = await wrapper.arun(kwargs)

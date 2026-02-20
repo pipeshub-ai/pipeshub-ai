@@ -6,7 +6,7 @@ Separate from connector token refresh to avoid interference
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
@@ -481,7 +481,7 @@ class ToolsetTokenRefreshService:
 
             # 6. Update stored credentials
             config["credentials"] = new_token.to_dict()
-            config["updatedAt"] = int(datetime.now().timestamp() * 1000)  # Epoch timestamp in ms
+            config["updatedAt"] = int(datetime.now(timezone.utc).timestamp() * 1000)  # Epoch timestamp in ms
             await self.configuration_service.set_config(config_path, config)
             self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
 
@@ -599,7 +599,7 @@ class ToolsetTokenRefreshService:
 
         except RecursionError as e:
             # Special handling for recursion errors
-            print(f"RECURSION ERROR in toolset token refresh for {config_path}: {str(e)[:100]}", flush=True)
+            self.logger.error(f"RECURSION ERROR in toolset token refresh for {config_path}: {str(e)[:100]}")
         except Exception as e:
             # Log full error details with traceback for debugging
             import traceback
@@ -640,7 +640,7 @@ class ToolsetTokenRefreshService:
             Tuple of (delay_seconds, refresh_time)
         """
         refresh_time = token.created_at + timedelta(seconds=max(0, token.expires_in - 600))
-        delay = (refresh_time - datetime.now()).total_seconds()
+        delay = (refresh_time - datetime.now(timezone.utc)).total_seconds()
         return delay, refresh_time
 
     async def _refresh_token_immediately(

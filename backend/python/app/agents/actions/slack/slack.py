@@ -1661,7 +1661,10 @@ class Slack:
                         normalized_emoji = f"{normalized_emoji}:"
 
                     # Only add emoji if it looks valid (has both colons and content between them)
-                    if normalized_emoji and len(normalized_emoji) > 2 and normalized_emoji.count(':') >= 2:
+                    # Minimum valid emoji is ":x:" (3 chars with 2 colons)
+                    MIN_EMOJI_LENGTH = 3
+                    MIN_COLON_COUNT = 2
+                    if normalized_emoji and len(normalized_emoji) >= MIN_EMOJI_LENGTH and normalized_emoji.count(':') >= MIN_COLON_COUNT:
                         profile["status_emoji"] = normalized_emoji
                         logger.debug(f"Setting status emoji: {normalized_emoji}")
                     else:

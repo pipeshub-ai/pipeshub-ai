@@ -78,9 +78,12 @@ export class ToolsetsContainer {
 
       const jwtSecret = config.jwtSecret;
       const scopedJwtSecret = config.scopedJwtSecret;
+      if (!jwtSecret || !scopedJwtSecret) {
+        throw new Error('JWT secrets are missing in configuration');
+      }
       const authTokenService = new AuthTokenService(
-        jwtSecret || ' ',
-        scopedJwtSecret || ' ',
+        jwtSecret,
+        scopedJwtSecret,
       );
       const authMiddleware = new AuthMiddleware(
         container.get('Logger'),

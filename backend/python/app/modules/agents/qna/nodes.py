@@ -743,6 +743,7 @@ class ToolExecutor:
 
         tool_results = []
         results_by_tool = {}  # Store successful results for placeholder resolution
+        tool_invocation_counts = {}  # Track how many times each tool has been called
 
         for i, tool_call in enumerate(planned_tools):
             tool_name = tool_call.get("name", "")
@@ -878,8 +879,20 @@ class ToolExecutor:
                 result_data = ToolResultExtractor.extract_data_from_result(
                     result_dict.get("result")
                 )
-                results_by_tool[actual_tool_name] = result_data
-                log.debug(f"✅ Stored result for {actual_tool_name} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
+
+                # Track tool invocation count for multiple calls to the same tool
+                if actual_tool_name not in tool_invocation_counts:
+                    tool_invocation_counts[actual_tool_name] = 0
+                    # Store first invocation without suffix
+                    results_by_tool[actual_tool_name] = result_data
+                    log.debug(f"✅ Stored result for {actual_tool_name} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
+                else:
+                    # For subsequent invocations, store with suffix
+                    tool_invocation_counts[actual_tool_name] += 1
+                    suffix_number = tool_invocation_counts[actual_tool_name] + 1
+                    storage_key = f"{actual_tool_name}_{suffix_number}"
+                    results_by_tool[storage_key] = result_data
+                    log.debug(f"✅ Stored result for {storage_key} (keys: {list(result_data.keys()) if isinstance(result_data, dict) else type(result_data).__name__})")
             else:
                 log.debug(f"❌ Skipped storing failed tool: {actual_tool_name}")
 
@@ -1760,6 +1773,28 @@ You are the AI agent with tool execution capabilities. The user CANNOT and SHOUL
 - ❌ NEVER use wildcard expressions: `[?]`, `[*]`, `[?(@)]`
 - ❌ These are NOT supported and will cause runtime errors
 - If you need a specific item from a list and can't use `[0]`, restructure your plan to avoid it
+
+**⚠️ CRITICAL: Multiple Calls to the Same Tool**
+When you need to call the same tool multiple times in one plan (e.g., search for 3 different users), you MUST reference each call uniquely:
+- **First call** → reference as `{{{{tool_name.data.field}}}}`
+- **Second call** → reference as `{{{{tool_name_2.data.field}}}}`
+- **Third call** → reference as `{{{{tool_name_3.data.field}}}}`
+- **Fourth call** → reference as `{{{{tool_name_4.data.field}}}}`, etc.
+
+**Example: Search for 3 users, then get their tickets**
+```json
+{{
+  "tools": [
+    {{"name": "jira.search_users", "args": {{"query": "Alice"}}}},
+    {{"name": "jira.search_users", "args": {{"query": "Bob"}}}},
+    {{"name": "jira.search_users", "args": {{"query": "Charlie"}}}},
+    {{"name": "jira.search_issues", "args": {{"jql": "assignee = {{{{jira.search_users.data.results[0].accountId}}}}"}}}},
+    {{"name": "jira.search_issues", "args": {{"jql": "assignee = {{{{jira.search_users_2.data.results[0].accountId}}}}"}}}},
+    {{"name": "jira.search_issues", "args": {{"jql": "assignee = {{{{jira.search_users_3.data.results[0].accountId}}}}"}}}}
+  ]
+}}
+```
+Notice: The 2nd and 3rd `jira.search_users` calls are referenced as `jira.search_users_2` and `jira.search_users_3` in the placeholders.
 
 **Cascade when:**
 - ✅ Tool B requires a structured value (ID, key, token) produced by Tool A
@@ -4932,7 +4967,8 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                 return reference_data
 
         # Unwrap tuple format (success, data)
-        if isinstance(result, tuple) and len(result) == 2:
+        # Tools return (bool, str) tuple - extract the data part
+        if isinstance(result, tuple) and len(result) == 2:  # noqa: PLR2004
             result = result[1]
             if isinstance(result, str):
                 try:

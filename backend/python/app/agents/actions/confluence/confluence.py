@@ -1,3 +1,4 @@
+import html
 import json
 import logging
 from typing import Any, Dict, Optional, Tuple
@@ -875,8 +876,6 @@ class Confluence:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
             # ✅ FIX: Properly format comment text with HTML escaping and storage format
-            import html
-
             # Escape HTML special characters
             escaped_text = html.escape(comment_text)
 

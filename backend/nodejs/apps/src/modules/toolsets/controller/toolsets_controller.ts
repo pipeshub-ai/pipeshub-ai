@@ -22,6 +22,24 @@ const logger = Logger.getInstance({
 });
 
 // ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Validate redirect URL to prevent open redirect vulnerabilities.
+ * Only allows URLs from trusted sources (backend response).
+ */
+function isValidRedirectUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    // Allow http/https protocols only
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+// ============================================================================
 // Registry Controllers
 // ============================================================================
 
@@ -545,6 +563,10 @@ export const handleOAuthCallback =
         connectorResponse.headers?.location
       ) {
         const redirectUrl = connectorResponse.headers.location;
+        // Validate redirect URL to prevent open redirect vulnerabilities
+        if (!isValidRedirectUrl(redirectUrl)) {
+          throw new BadRequestError('Invalid redirect URL from backend');
+        }
         res.status(200).json({ redirectUrl });
         return;
       }
@@ -556,6 +578,10 @@ export const handleOAuthCallback =
         const redirectUrlFromJson = responseData.redirect_url as string | undefined;
 
         if (redirectUrlFromJson) {
+          // Validate redirect URL to prevent open redirect vulnerabilities
+          if (!isValidRedirectUrl(redirectUrlFromJson)) {
+            throw new BadRequestError('Invalid redirect URL from backend');
+          }
           res.status(200).json({ redirectUrl: redirectUrlFromJson });
           return;
         }
