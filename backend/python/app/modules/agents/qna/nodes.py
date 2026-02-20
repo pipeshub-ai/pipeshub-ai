@@ -346,16 +346,25 @@ class ToolResultExtractor:
             # Handle array with index
             elif isinstance(current, list):
                 try:
-                    # Try to parse as index
+                    # Try to parse as numeric index; treat wildcards as 0
+                    if field in ('?', '*') or not field.lstrip('-').isdigit():
+                        raise ValueError("non-numeric index — use first element")
                     index = int(field)
                     if 0 <= index < len(current):
                         current = current[index]
                     else:
                         return None
                 except ValueError:
-                    # Not an index, try to get field from first item
-                    if len(current) > 0 and isinstance(current[0], dict):
-                        # Try direct field access first
+                    # Wildcard or non-numeric index — treat as field lookup on first item
+                    # or default to first element if the field is a known wildcard
+                    if field in ('?', '*'):
+                        # Wildcard: use first element and continue navigating
+                        if len(current) > 0:
+                            current = current[0]
+                        else:
+                            return None
+                    elif len(current) > 0 and isinstance(current[0], dict):
+                        # Try direct field access on first item
                         if field in current[0]:
                             current = current[0].get(field)
                         # Bidirectional alias fallback: content ↔ body
@@ -411,6 +420,28 @@ class ToolResultExtractor:
         # If current is already a string (direct content), return it as-is
         if isinstance(current, str):
             return current
+
+        # If current is None here and the last requested field was "id",
+        # check whether the parent dict has a usable "key" field instead.
+        # This handles Confluence spaces where the API returns id=null but key is set.
+        # The _resolve_space_id method will convert the key to a numeric ID at call time.
+        if current is None and field_path and field_path[-1] == "id":
+            # Re-navigate to the parent to check for a "key" fallback
+            try:
+                parent = data
+                for f in field_path[:-1]:
+                    if isinstance(parent, dict):
+                        parent = parent.get(f)
+                    elif isinstance(parent, list):
+                        try:
+                            parent = parent[int(f)]
+                        except (ValueError, IndexError):
+                            parent = None
+                            break
+                if isinstance(parent, dict) and parent.get("key"):
+                    return parent.get("key")
+            except Exception:
+                pass
 
         return current
 
@@ -533,7 +564,14 @@ class PlaceholderResolver:
             log.info(f"✅ Resolved {{{{{placeholder}}}}} → {str(extracted)[:50]}...")
         else:
             log.warning(f"❌ Could not extract field from placeholder: {{{{{placeholder}}}}}")
-            log.debug(f"Field path: {field_path}")
+            log.warning(f"  Field path used: {field_path}")
+            # If the LLM used a JSONPath predicate, call it out explicitly
+            if '[?' in placeholder or '[*]' in placeholder:
+                log.warning(
+                    "  ⚠️ Placeholder contained a JSONPath filter/wildcard expression "
+                    "(e.g. [?(@.key=='value')]) — normalised to [0]. "
+                    "The LLM must use simple numeric indices like [0] in placeholders."
+                )
             log.debug(f"Available data: {str(tool_data)[:200]}")
             # Try to show the structure for debugging
             if isinstance(tool_data, dict):
@@ -570,7 +608,12 @@ class PlaceholderResolver:
         """
         # Helper function to parse field path with array indices
         def parse_field_path(path_str: str) -> List[str]:
-            """Parse field path handling array indices like [0]"""
+            """Parse field path handling array indices like [0], [1], [?], [*].
+
+            Non-numeric indices ([?], [*], etc.) are normalised to '0' so that
+            LLM-generated placeholders like results[?].id still resolve to the
+            first element instead of failing entirely.
+            """
             if not path_str:
                 return []
 
@@ -588,14 +631,21 @@ class PlaceholderResolver:
                     if current:
                         parts.append(current)
                         current = ""
-                    # Extract index
+                    # Extract index content
                     i += 1
                     index = ""
                     while i < len(path_str) and path_str[i] != ']':
                         index += path_str[i]
                         i += 1
                     if index:
-                        parts.append(index)
+                        # Normalise non-numeric content to first element (index 0).
+                        # Covers: [?], [*], [?(@.key=='value')], [?(@.id==123)], any predicate.
+                        stripped = index.strip()
+                        if stripped and stripped.lstrip('-').isdigit():
+                            parts.append(stripped)
+                        else:
+                            # Any non-numeric token (wildcard / JSONPath predicate) → [0]
+                            parts.append('0')
                     # Skip closing ']'
                     if i < len(path_str) and path_str[i] == ']':
                         i += 1
@@ -1510,6 +1560,13 @@ When a write tool needs generated text content, write the complete, final text i
 | Pagination token | `{{{{tool.data.nextPageToken}}}}` |
 | Direct field | `{{{{tool.data.id}}}}` |
 
+**⚠️ PLACEHOLDER FORMAT RULES — STRICTLY ENFORCED:**
+- ✅ ONLY use simple numeric indices: `[0]`, `[1]`, `[2]`
+- ❌ NEVER use JSONPath filter expressions: `[?(@.key=='value')]`, `[?(@.id==123)]`, `[?(expr)]`
+- ❌ NEVER use wildcard expressions: `[?]`, `[*]`, `[?(@)]`
+- ❌ These are NOT supported and will cause runtime errors
+- If you need a specific item from a list and can't use `[0]`, restructure your plan to avoid it
+
 **Cascade when:**
 - ✅ Tool B requires a structured value (ID, key, token) produced by Tool A
 - ✅ Cross-service: fetch data from Service A, act on Service B
@@ -1726,11 +1783,12 @@ Retrieval returns formatted text, not structured JSON — you cannot extract IDs
 - ✅ `confluence.search_pages` → extract `results[0].id` → use as `page_id`
 - ✅ `confluence.get_spaces` → extract `results[0].id` → use as `space_id`
 
-**R-CONF-3: Space ID resolution — always numeric, always check Reference Data first.**
-1. Check Reference Data for a `confluence_space` entry with an `id` field → use that `id` directly as `space_id`
-2. If not in Reference Data → cascade: call `confluence.get_spaces` first, then use `{{confluence.get_spaces.data.results[0].id}}`
-3. The API requires numeric space IDs. Use the `id` field, NOT the `key` or name.
-4. Never pass a space key (like "SD" or "PR") as `space_id` — always use the numeric `id`
+**R-CONF-3: Space ID resolution — `get_pages_in_space` accepts keys directly (NO cascade needed).**
+1. Check Reference Data for a `confluence_space` entry → use its `id` field directly as `space_id` if numeric, OR its `key` field directly as `space_id`.
+2. If the user mentions a space name, key (e.g., "SD", "~abc123"), or the Reference Data has a `key` → **pass it directly to `get_pages_in_space`**. The tool resolves keys to numeric IDs internally.
+3. **NEVER cascade `get_spaces` → `get_pages_in_space`** just to resolve a space key to an ID. This is handled internally by `get_pages_in_space`.
+4. Only call `get_spaces` first if the user wants to LIST all spaces AND THEN get pages — and in that case use `[0]` index only, never a JSONPath filter like `[?(@.key=='value')]`.
+5. Exception: cascade IS appropriate when creating a page (`create_page`) and you don't know the numeric `space_id` yet.
 
 **R-CONF-4: Page ID resolution — check conversation history first.**
 1. Check if the page was mentioned or created in conversation history → use that `page_id` directly
@@ -2091,44 +2149,80 @@ def _build_conversation_messages(conversations: List[Dict], log: logging.Logger)
 
 
 def _format_reference_data(all_reference_data: List[Dict], log: logging.Logger) -> str:
-    """Format reference data for inclusion in messages"""
+    """
+    Format reference data for inclusion in planner messages.
+
+    Surfaces IDs, keys and timestamps that the planner should use directly
+    instead of fetching them again.  Every supported type is shown so the
+    planner has full context for tool argument construction.
+    """
     if not all_reference_data:
         return ""
 
-    result = "## Reference Data (from previous responses - use these IDs/keys directly):\n"
-
     # Group by type
-    spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
-    projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
-    issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
-    pages = [item for item in all_reference_data if item.get("type") == "confluence_page"]
+    spaces       = [d for d in all_reference_data if d.get("type") == "confluence_space"]
+    pages        = [d for d in all_reference_data if d.get("type") == "confluence_page"]
+    projects     = [d for d in all_reference_data if d.get("type") == "jira_project"]
+    issues       = [d for d in all_reference_data if d.get("type") == "jira_issue"]
+    channels     = [d for d in all_reference_data if d.get("type") == "slack_channel"]
+    msg_timestamps = [d for d in all_reference_data if d.get("type") == "slack_message_ts"]
 
-    # Show up to 10 reference items per type
     max_items = 10
+    lines = ["## Reference Data (use these IDs/keys directly — do NOT fetch them again):"]
 
     if spaces:
-        result += "**Confluence Spaces** (use `id` for space_id): "
-        result += ", ".join([f"{item.get('name', '?')} (id={item.get('id', '?')})" for item in spaces[:max_items]])
-        result += "\n"
-
-    if projects:
-        result += "**Jira Projects** (use `key`): "
-        result += ", ".join([f"{item.get('name', '?')} (key={item.get('key', '?')})" for item in projects[:max_items]])
-        result += "\n"
-
-    if issues:
-        result += "**Jira Issues** (use `key`): "
-        result += ", ".join([f"{item.get('key', '?')}" for item in issues[:max_items]])
-        result += "\n"
+        # Show both numeric id (for space_id) and key (accepted by get_pages_in_space)
+        parts = []
+        for item in spaces[:max_items]:
+            space_id  = item.get("id", "")
+            space_key = item.get("key", "")
+            name      = item.get("name", "?")
+            # Build a compact representation with all available identifiers
+            id_str    = f"id={space_id}" if space_id else ""
+            key_str   = f"key={space_key}" if space_key else ""
+            identifiers = ", ".join(filter(None, [id_str, key_str]))
+            parts.append(f"{name} ({identifiers})")
+        lines.append(f"**Confluence Spaces** (use numeric `id` for space_id, or `key` for get_pages_in_space): {', '.join(parts)}")
 
     if pages:
-        result += "**Confluence Pages** (use `id` for page_id): "
-        result += ", ".join([f"{item.get('title', '?')} (id={item.get('id', '?')})" for item in pages[:max_items]])
-        result += "\n"
+        parts = [
+            f"{item.get('name', '?')} (id={item.get('id', '?')}, space_key={item.get('key', '?')})"
+            for item in pages[:max_items]
+        ]
+        lines.append(f"**Confluence Pages** (use `id` for page_id): {', '.join(parts)}")
 
-    log.debug(f"📎 Included {len(all_reference_data)} reference items (showing up to {max_items} per type)")
+    if projects:
+        parts = [
+            f"{item.get('name', '?')} (key={item.get('key', '?')})"
+            for item in projects[:max_items]
+        ]
+        lines.append(f"**Jira Projects** (use `key`): {', '.join(parts)}")
 
-    return result
+    if issues:
+        parts = [item.get("key", "?") for item in issues[:max_items]]
+        lines.append(f"**Jira Issues** (use `key`): {', '.join(parts)}")
+
+    if channels:
+        parts = [
+            f"{item.get('name', item.get('id', '?'))} (id={item.get('id', '?')})"
+            for item in channels[:max_items]
+        ]
+        lines.append(f"**Slack Channels** (use `id` for channel parameter): {', '.join(parts)}")
+
+    if msg_timestamps:
+        parts = [
+            f"{item.get('name', 'ts')}={item.get('id', '?')}"
+            for item in msg_timestamps[:max_items]
+        ]
+        lines.append(f"**Slack Message Timestamps** (use as `thread_ts` for reply_to_message): {', '.join(parts)}")
+
+    log.debug(
+        f"📎 Reference data: {len(spaces)} spaces, {len(pages)} pages, "
+        f"{len(projects)} jira projects, {len(issues)} jira issues, "
+        f"{len(channels)} slack channels, {len(msg_timestamps)} slack ts"
+    )
+
+    return "\n".join(lines)
 
 
 def _build_planner_messages(state: ChatState, query: str, log: logging.Logger) -> List[Union[HumanMessage, AIMessage, SystemMessage]]:
@@ -2286,59 +2380,70 @@ def _build_retry_context(state: ChatState) -> str:
 
 
 def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
-    """Build context for continuing with more tools with full results for content generation"""
+    """
+    Build the context injected into the planner prompt when re-planning after a
+    partial iteration (continue_with_more_tools).
+
+    Key design goals:
+    - Surface ALL previous tool results (not just the last N) so the planner can
+      reference any value from any prior step.
+    - Clearly flag write/action tools that already succeeded so the planner does
+      NOT repeat them and create duplicates.
+    - Include enough data per result for the planner to extract IDs and content.
+    """
     tool_results = state.get("all_tool_results", [])
     if not tool_results:
         return ""
 
-    # Format last 5 results with more detail for content generation
+    # ── Format ALL tool results (cap individual payloads, not the list) ──────
     result_parts = []
-    for result in tool_results[-5:]:
-        tool_name = result.get("tool_name", "unknown")
-        status = result.get("status", "unknown")
+    for result in tool_results:          # ← ALL results, not just last 5
+        tool_name   = result.get("tool_name", "unknown")
+        status      = result.get("status", "unknown")
         result_data = result.get("result", "")
 
-        # For successful results, include full data (not truncated) for content generation
         if status == "success":
-            # Try to extract structured data
             if isinstance(result_data, dict):
-                # Include full data structure for content extraction
-                result_str = json.dumps(result_data, default=str, indent=2)[:2000]  # More data for content gen
+                # Pretty-print structured data; cap at 3 000 chars per result
+                result_str = json.dumps(result_data, default=str, indent=2)[:3000]
             else:
-                result_str = str(result_data)[:2000]
+                result_str = str(result_data)[:3000]
         else:
             result_str = str(result_data)[:500]
 
-        result_parts.append(f"- {tool_name} ({status}):\n{result_str}")
+        result_parts.append(f"- **{tool_name}** ({status}):\n{result_str}")
 
-    # Get conversation history for content generation
-    messages = state.get("messages", [])
-    conversation_context = ""
-    if messages:
-        # Get last few assistant messages (where content might be)
-        assistant_messages = [msg for msg in messages if hasattr(msg, 'content') and isinstance(msg.content, str)][-5:]
-        conversation_context = "\n\n".join([msg.content for msg in assistant_messages if msg.content])
+    # ── Detect completed write/action tools using the same helper used in
+    #    reflect_node so the definition is consistent (prefix-based, not ad-hoc). ──
+    completed_writes = [
+        r.get("tool_name", "unknown")
+        for r in tool_results
+        if r.get("status") == "success" and _is_write_tool(r.get("tool_name", ""))
+    ]
 
-    context_parts = [f"""## 📋 PREVIOUS TOOL RESULTS (use this data for next steps and content generation)
+    completed_warning = ""
+    if completed_writes:
+        completed_warning = (
+            "\n\n⚠️ **ALREADY COMPLETED — DO NOT REPEAT**: The following write/action "
+            "tools already succeeded. Calling them again will create duplicates:\n" +
+            "\n".join(f"  - ✅ {t}" for t in completed_writes) +
+            "\nOnly plan tools needed for **remaining** incomplete steps."
+        )
 
-{chr(10).join(result_parts)}
+    result_block = "\n".join(result_parts)
 
-**IMPORTANT**:
-- Use the data above to plan next steps
-- Extract IDs, keys, and other values for placeholders
-- For action tools that need content (confluence.create_page, confluence.update_page, etc.), extract content from:
-  1. Tool results above (especially retrieval results)
-  2. Conversation history below
-  3. Generate FULL, COMPLETE content in the correct format (HTML for Confluence, etc.)"""]
+    context = f"""## 📋 PREVIOUS TOOL RESULTS (all steps so far — use this data for next steps)
 
-    if conversation_context:
-        context_parts.append(f"""## 💬 CONVERSATION HISTORY (for content generation)
+{result_block}{completed_warning}
 
-{conversation_context}
+**Planning instructions for this continue cycle**:
+- Use the tool results above to determine what has already been done.
+- Extract IDs, keys, timestamps, and other values directly from the results above.
+- Use `{{{{tool_name.data.field[0].subfield}}}}` placeholders (simple numeric indices only) when passing values from one tool to the next.
+- For content-generation tools (e.g. confluence.create_page, confluence.update_page), produce FULL, complete content in the required format (Confluence HTML storage format, etc.).
+- Do NOT re-fetch data that is already present in the results above."""
 
-**Use this content** when generating page_content, body, or other content parameters for action tools.""")
-
-    return "\n\n".join(context_parts)
+    return context
 
 
 async def _plan_with_validation_retry(
@@ -3281,40 +3386,101 @@ def _parse_reflection_response(content: str, log: logging.Logger) -> Dict[str, A
 
 def _check_primary_tool_success(query: str, successful: List[Dict], log: logging.Logger) -> bool:
     """
-    Check if primary tool succeeded based on user intent.
+    In a partial-success scenario (some tools succeeded, some failed), determine
+    whether the *primary* / most important tool for the user's intent succeeded.
 
-    Examples:
-    - "Create ticket and comment" → primary is create
-    - "Search and update" → primary is search
+    If the primary tool succeeded we can proceed to respond even if secondary
+    tools failed (e.g. an enrichment step or a non-critical side action).
+
+    Strategy:
+    1. Infer the primary intent from clear action verbs in the query.
+    2. Check whether a tool whose name contains that intent verb succeeded.
+    3. If we cannot match precisely, fall back to True if *any* tool succeeded
+       (the respond node will surface partial results gracefully).
+
+    Note: "make" is intentionally excluded — it is too ambiguous ("make a
+    summary", "make a copy", etc.) and does not map reliably to a tool verb.
     """
-    query_lower = query.lower()
+    query_lower = (query or "").lower()
     successful_tools = [r.get("tool_name", "").lower() for r in successful]
 
-    # Map intent to tool patterns
-    intent_patterns = {
-        "create": ["create", "make", "add", "new"],
-        "update": ["update", "modify", "change", "edit"],
-        "delete": ["delete", "remove", "clear"],
-        "search": ["search", "find", "get", "list"],
-    }
+    # Intent verb → tool-name segment that signals the primary action completed.
+    # Order matters: more specific intents first.
+    intent_to_tool_segment: List[tuple] = [
+        # (query keywords that signal this intent, tool-name segment to look for)
+        (["create", "new"],              "create"),
+        (["update", "modify", "change", "edit"], "update"),
+        (["delete", "remove"],           "delete"),
+        (["add", "comment"],             "add"),
+        (["send", "post", "notify"],     "send"),
+        (["reply"],                      "reply"),
+        (["assign"],                     "assign"),
+        (["transition", "move"],         "transition"),
+        (["publish"],                    "publish"),
+        (["search", "find"],             "search"),
+        (["get", "list", "fetch"],       "get"),
+    ]
 
-    # Detect primary intent
-    primary_intent = None
-    for intent, keywords in intent_patterns.items():
-        if any(keyword in query_lower for keyword in keywords):
-            primary_intent = intent
+    for query_keywords, tool_segment in intent_to_tool_segment:
+        if any(kw in query_lower for kw in query_keywords):
+            # Check whether a tool with this segment succeeded
+            for tool in successful_tools:
+                # Match against the action part (after service prefix)
+                action_part = tool.split(".", 1)[1] if "." in tool else tool
+                if action_part.startswith(tool_segment + "_") or action_part == tool_segment:
+                    log.debug(f"✅ Primary intent '{tool_segment}' matched succeeded tool: {tool}")
+                    return True
+            # Intent identified but no matching tool succeeded — stop here.
+            # (The fallback below will still return True if anything succeeded.)
             break
 
-    if not primary_intent:
-        return len(successful) > 0  # Fallback: any success
+    # Fallback: if any tool succeeded, treat the primary as done and let
+    # the respond node explain partial results to the user.
+    return len(successful) > 0
 
-    # Check if primary intent tool succeeded
-    for tool in successful_tools:
-        if primary_intent in tool:
-            log.debug(f"✅ Primary '{primary_intent}' tool succeeded: {tool}")
-            return True
 
-    return len(successful) > 0  # Fallback
+def _is_write_tool(tool_name: str) -> bool:
+    """
+    Return True if the tool performs a write / action / side-effect operation.
+
+    Detection is done by inspecting the verb prefix of the tool's action segment
+    (the part after the service prefix, e.g. "slack.", "jira.", "confluence.").
+    Prefix matching is reliable because all service tools follow the convention
+    <service>.<verb>_<object> (e.g. slack.send_message, jira.create_issue).
+    """
+    name = tool_name.lower()
+    # Strip service prefix (e.g. "slack.", "jira.", "confluence.", "retrieval.")
+    if "." in name:
+        name = name.split(".", 1)[1]
+    _WRITE_PREFIXES = (
+        "create_", "update_", "delete_", "add_", "send_", "reply_",
+        "set_", "assign_", "transition_", "publish_", "post_",
+        "remove_", "move_", "archive_", "upload_", "comment_",
+        "edit_", "modify_", "write_", "submit_",
+    )
+    return any(name.startswith(p) for p in _WRITE_PREFIXES)
+
+
+def _is_read_tool(tool_name: str) -> bool:
+    """
+    Return True if the tool is a read-only / information-gathering operation.
+    """
+    name = tool_name.lower()
+    if "." in name:
+        name = name.split(".", 1)[1]
+    _READ_PREFIXES = (
+        "get_", "search_", "list_", "fetch_", "retrieve_",
+        "find_", "query_", "read_",
+    )
+    return any(name.startswith(p) for p in _READ_PREFIXES)
+
+
+# Compiled regex for detecting write-action intent in the user query.
+# Word-boundary anchors prevent false matches (e.g. "repository" won't match "reply").
+_WRITE_INTENT_RE = re.compile(
+    r"\b(post|send|reply|create|add|update|publish|upload|comment|notify|assign|write|set status|message)\b",
+    re.IGNORECASE,
+)
 
 
 def _check_if_task_needs_continue(
@@ -3324,31 +3490,40 @@ def _check_if_task_needs_continue(
     log: logging.Logger
 ) -> bool:
     """
-    Check if task needs more steps.
+    Determine whether the agent needs another planning cycle to complete the task.
 
-    Returns True if task is incomplete.
+    Logic (in order):
+    1. If at least one write/action tool already executed successfully → task is
+       done (or will be reported as done). Return False immediately.
+    2. Otherwise check whether the user's query clearly requires a write/action
+       step. If it does → continue so the planner can schedule that step.
+    3. Default → False (task is complete or read-only).
+
+    The helper `_is_write_tool` uses verb-prefix matching on the tool's action
+    segment (after the service prefix), making it robust to new tools being added
+    without touching this function.
     """
-    query_lower = query.lower()
-    executed_lower = [t.lower() for t in executed_tools]
+    query_lower = (query or "").lower()
 
-    # User wants to edit/update but only got data
-    if any(word in query_lower for word in ["edit", "update", "modify", "change"]):
-        has_read = any(x in t for x in ["get", "read", "fetch", "search", "find"] for t in executed_lower)
-        has_write = any(x in t for x in ["update", "edit", "modify", "send"] for t in executed_lower)
+    # ── 1. Was any write/action tool executed? ────────────────────────────────
+    # If yes, the task's action phase is done — no further iteration needed.
+    action_completed = any(_is_write_tool(t) for t in executed_tools)
+    if action_completed:
+        log.debug(
+            "Task complete: write/action tool already executed → no continue needed. "
+            f"Executed: {executed_tools}"
+        )
+        return False
 
-        if has_read and not has_write:
-            log.debug("Task incomplete: wants to update but only read")
-            return True
+    # ── 2. Does the query require a write action that hasn't happened yet? ────
+    if _WRITE_INTENT_RE.search(query_lower):
+        log.debug(
+            "Task incomplete: query indicates a write/action intent but no action "
+            f"tool has executed yet. Executed: {executed_tools}"
+        )
+        return True
 
-    # User wants to create but only searched
-    if any(word in query_lower for word in ["create", "make", "new", "add"]):
-        has_search = any(x in t for x in ["search", "find", "get", "fetch"] for t in executed_lower)
-        has_create = any(x in t for x in ["create", "make", "add", "post", "send"] for t in executed_lower)
-
-        if has_search and not has_create:
-            log.debug("Task incomplete: wants to create but only searched")
-            return True
-
+    # ── 3. Default: task is complete (read-only or already handled) ───────────
     return False
 
 
@@ -4519,91 +4694,212 @@ def _extract_citations_and_metadata(
 
 
 def _extract_reference_data_from_result(result: object, tool_name: str) -> List[Dict]:
-    """Extract reference data (IDs, keys) from tool results for follow-up queries"""
+    """
+    Extract reference data (IDs, keys, timestamps) from tool results so they can
+    be surfaced to the planner for follow-up queries.
+
+    Each returned dict has at minimum: {"type": str, "name": str} and usually "id"
+    and/or "key" fields that the planner can reference directly.
+    """
     reference_data = []
+    tn_lower = tool_name.lower()
 
     try:
-        # Parse result if it's a string
+        # ── Normalise result to a Python object ─────────────────────────────
         if isinstance(result, str):
-            import json
             try:
                 result = json.loads(result)
             except (json.JSONDecodeError, ValueError):
                 return reference_data
 
-        # Extract from common structures
-        if isinstance(result, dict):
-            # Jira issues
-            if "data" in result and isinstance(result["data"], dict):
-                issues = result["data"].get("issues", [])
+        # Unwrap tuple format (success, data)
+        if isinstance(result, tuple) and len(result) == 2:
+            result = result[1]
+            if isinstance(result, str):
+                try:
+                    result = json.loads(result)
+                except (json.JSONDecodeError, ValueError):
+                    return reference_data
+
+        # ── Confluence spaces ────────────────────────────────────────────────
+        # confluence.get_spaces → {"data": {"results": [{id, key, name, type, ...}]}}
+        if "confluence" in tn_lower and "space" in tn_lower:
+            if isinstance(result, dict):
+                data = result.get("data", {})
+                spaces_list: List = []
+                if isinstance(data, dict):
+                    spaces_list = data.get("results", [])
+                elif isinstance(data, list):
+                    spaces_list = data
+                for space in spaces_list:
+                    if not isinstance(space, dict):
+                        continue
+                    # Confluence v2 API may return id as integer or string
+                    raw_id = space.get("id")
+                    space_id = str(raw_id).strip() if raw_id is not None else ""
+                    space_key = space.get("key", "")
+                    space_name = space.get("name", "")
+                    if space_id or space_key:
+                        reference_data.append({
+                            "name": space_name,
+                            "id": space_id,
+                            "key": space_key,
+                            "type": "confluence_space",
+                        })
+            return reference_data
+
+        # ── Confluence pages ─────────────────────────────────────────────────
+        # confluence.get_pages_in_space / search_pages / get_page_content
+        if "confluence" in tn_lower and any(k in tn_lower for k in ("page", "search")):
+            if isinstance(result, dict):
+                data = result.get("data", {})
+                pages_list: List = []
+                if isinstance(data, dict):
+                    pages_list = data.get("results", [])
+                    # Single-page result: get_page_content embeds metadata in data
+                    if not pages_list and "id" in data:
+                        pages_list = [data]
+                elif isinstance(data, list):
+                    pages_list = data
+                for page in pages_list:
+                    if not isinstance(page, dict):
+                        continue
+                    raw_id = page.get("id")
+                    page_id = str(raw_id).strip() if raw_id is not None else ""
+                    page_title = page.get("title", "") or page.get("name", "")
+                    space_key = ""
+                    if isinstance(page.get("space"), dict):
+                        space_key = page["space"].get("key", "")
+                    if page_id:
+                        reference_data.append({
+                            "name": page_title,
+                            "id": page_id,
+                            "key": space_key,
+                            "type": "confluence_page",
+                        })
+            return reference_data
+
+        # ── Slack channels ───────────────────────────────────────────────────
+        if "slack" in tn_lower and "channel" in tn_lower:
+            if isinstance(result, dict):
+                data = result.get("data", {})
+                channels_list: List = []
+                if isinstance(data, dict):
+                    channels_list = data.get("channels", data.get("results", []))
+                elif isinstance(data, list):
+                    channels_list = data
+                for ch in channels_list:
+                    if not isinstance(ch, dict):
+                        continue
+                    ch_id = ch.get("id", "")
+                    ch_name = ch.get("name", "")
+                    if ch_id:
+                        reference_data.append({
+                            "name": f"#{ch_name}" if ch_name else ch_id,
+                            "id": ch_id,
+                            "type": "slack_channel",
+                        })
+            return reference_data
+
+        # ── Slack messages / threads ─────────────────────────────────────────
+        # send_message / reply_to_message return the message timestamp ("ts")
+        # which is needed for threading (reply_to_message thread_ts).
+        if "slack" in tn_lower and any(k in tn_lower for k in ("message", "reply", "send")):
+            if isinstance(result, dict):
+                data = result.get("data", {})
+                if not isinstance(data, dict):
+                    data = {}
+                ts = data.get("ts") or result.get("ts", "")
+                channel = data.get("channel") or result.get("channel", "")
+                if ts:
+                    reference_data.append({
+                        "name": "Posted message timestamp",
+                        "id": str(ts),
+                        "type": "slack_message_ts",
+                    })
+                if channel:
+                    reference_data.append({
+                        "name": channel,
+                        "id": channel,
+                        "type": "slack_channel",
+                    })
+            return reference_data
+
+        # ── Jira ─────────────────────────────────────────────────────────────
+        # Only process Jira data when the tool is actually a Jira tool.
+        # Without this guard, Confluence results that happen to contain a "key"
+        # field would be misclassified as Jira entities.
+        if "jira" in tn_lower and isinstance(result, dict):
+            data = result.get("data", {})
+
+            # Issues list: {"data": {"issues": [...]}}
+            if isinstance(data, dict):
+                issues = data.get("issues", [])
                 if isinstance(issues, list):
                     for issue in issues:
-                        if isinstance(issue, dict):
-                            issue_id = issue.get("id", "")
-                            issue_key = issue.get("key", "")
-                            # Only add if we have at least key or id
-                            if issue_key or issue_id:
-                                ref_data = {
-                                    "name": issue.get("summary", ""),
-                                    "key": issue_key,
-                                    "type": "jira_issue"
-                                }
-                                # Only add id if it exists and is not empty
-                                if issue_id:
-                                    ref_data["id"] = issue_id
-                                reference_data.append(ref_data)
-
-            # Jira projects
-            if "data" in result and isinstance(result["data"], list):
-                for project in result["data"]:
-                    if isinstance(project, dict):
-                        project_id = project.get("id", "")
-                        project_key = project.get("key", "")
-                        # Only add if we have at least key or id
-                        if project_key or project_id:
-                            ref_data = {
-                                "name": project.get("name", ""),
-                                "key": project_key,
-                                "type": "jira_project"
+                        if not isinstance(issue, dict):
+                            continue
+                        issue_id = issue.get("id", "")
+                        issue_key = issue.get("key", "")
+                        if issue_key or issue_id:
+                            ref: Dict[str, Any] = {
+                                "name": issue.get("summary", ""),
+                                "key": issue_key,
+                                "type": "jira_issue",
                             }
-                            # Only add id if it exists and is not empty
-                            if project_id:
-                                ref_data["id"] = project_id
-                            reference_data.append(ref_data)
+                            if issue_id:
+                                ref["id"] = str(issue_id)
+                            reference_data.append(ref)
 
-            # Direct issue/project
+            # Projects list: {"data": [...]}
+            if isinstance(data, list):
+                for project in data:
+                    if not isinstance(project, dict):
+                        continue
+                    project_id = project.get("id", "")
+                    project_key = project.get("key", "")
+                    if project_key or project_id:
+                        ref = {
+                            "name": project.get("name", ""),
+                            "key": project_key,
+                            "type": "jira_project",
+                        }
+                        if project_id:
+                            ref["id"] = str(project_id)
+                        reference_data.append(ref)
+
+            # Direct issue / project at result top-level (e.g. create_issue response)
             if "key" in result:
                 item_id = result.get("id", "")
                 item_key = result.get("key", "")
                 if item_key or item_id:
-                    ref_data = {
+                    ref = {
                         "name": result.get("summary") or result.get("name", ""),
                         "key": item_key,
-                        "type": "jira_issue" if "summary" in result else "jira_project"
+                        "type": "jira_issue" if "summary" in result else "jira_project",
                     }
-                    # Only add id if it exists and is not empty
                     if item_id:
-                        ref_data["id"] = item_id
-                    reference_data.append(ref_data)
+                        ref["id"] = str(item_id)
+                    reference_data.append(ref)
 
-        elif isinstance(result, list):
+        elif "jira" in tn_lower and isinstance(result, list):
             for item in result:
-                if isinstance(item, dict) and "key" in item:
-                    item_id = item.get("id", "")
-                    item_key = item.get("key", "")
-                    if item_key or item_id:
-                        ref_data = {
-                            "name": item.get("summary") or item.get("name", ""),
-                            "key": item_key,
-                            "type": "jira_issue" if "summary" in item else "jira_project"
-                        }
-                        # Only add id if it exists and is not empty
-                        if item_id:
-                            ref_data["id"] = item_id
-                        reference_data.append(ref_data)
+                if not isinstance(item, dict) or "key" not in item:
+                    continue
+                item_id = item.get("id", "")
+                item_key = item.get("key", "")
+                if item_key or item_id:
+                    ref = {
+                        "name": item.get("summary") or item.get("name", ""),
+                        "key": item_key,
+                        "type": "jira_issue" if "summary" in item else "jira_project",
+                    }
+                    if item_id:
+                        ref["id"] = str(item_id)
+                    reference_data.append(ref)
 
     except Exception as e:
-        logger.debug(f"Error extracting reference data: {e}")
+        logger.debug(f"Error extracting reference data from {tool_name}: {e}")
 
     return reference_data
 
