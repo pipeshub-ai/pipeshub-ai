@@ -1654,13 +1654,13 @@ When a write tool (create page, send message, post update, send email) needs tex
 
 **Confluence → Slack (WRONG — raw HTML in Slack message):**
 ```json
-{"name": "slack.send_message", "args": {"channel": "#ch", "message": "{{confluence.get_page_content.data.content}}"}}
+{{"name": "slack.send_message", "args": {{"channel": "#ch", "message": "{{{{confluence.get_page_content.data.content}}}}"}}}}
 ```
 This sends `<h1>Page Title</h1><p>Content...</p>` as literal text to Slack — unreadable.
 
 **Confluence → Slack (CORRECT — LLM writes a clean summary):**
 ```json
-{"name": "slack.send_message", "args": {"channel": "#ch", "message": "*Page Summary: Title*\n\n• Key point 1\n• Key point 2\n• Key point 3"}}
+{{"name": "slack.send_message", "args": {{"channel": "#ch", "message": "*Page Summary: Title*\n\n• Key point 1\n• Key point 2\n• Key point 3"}}}}
 ```
 
 **Rule: The `message` parameter in any Slack tool must ALWAYS contain text you compose yourself.** Never pipe raw tool output (HTML, JSON, Confluence storage format) directly into a Slack message field via a placeholder. Instead:
