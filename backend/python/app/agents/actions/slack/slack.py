@@ -142,15 +142,26 @@ class SearchMessagesInput(BaseModel):
 
 class SetUserStatusInput(BaseModel):
     """Schema for setting user status"""
-    status_text: str = Field(description="Status text to set")
-    status_emoji: Optional[str] = Field(default=None, description="Status emoji to set (e.g., ':away:', ':clock1:')")
+    status_text: str = Field(
+        description="Status text to set. Pass a non-empty string to SET a status (e.g., 'In a meeting', 'Away'). "
+                    "To CLEAR the status, pass an empty string: '' (you must also pass status_emoji='' to clear)."
+    )
+    status_emoji: Optional[str] = Field(
+        default=None,
+        description="OPTIONAL status emoji. Use standard Slack emoji names (with or without colons): "
+                    "':calendar:' or 'calendar' for meetings, ':airplane:' or 'airplane' for travel, "
+                    "':house:' or 'house' for working from home, ':palm_tree:' or 'palm_tree' for vacation. "
+                    "If unsure or emoji not critical, OMIT this parameter entirely - status will work fine without it. "
+                    "To CLEAR the status, pass an empty string: '' (you must also pass status_text='')."
+    )
     duration_seconds: Optional[int] = Field(
         default=None,
         description="Duration in seconds from NOW for how long the status should last. "
                     "Do NOT pass a Unix timestamp - pass only the number of seconds. "
                     "Examples: 1 hour = 3600, 30 minutes = 1800, 2 hours = 7200, 1 day = 86400. "
                     "The tool will compute the expiration time internally. "
-                    "If not provided, the status will not expire."
+                    "If not provided, the status will not expire. "
+                    "Ignored when clearing status (pass empty strings for status_text and status_emoji)."
     )
 
 class ScheduleMessageInput(BaseModel):
@@ -185,7 +196,7 @@ class GetUsersListInput(BaseModel):
 
 class GetUserConversationsInput(BaseModel):
     """Schema for getting conversations for the authenticated user"""
-    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types (public_channel, private_channel, mpim, im)")
+    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types.")
     exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived conversations")
     limit: Optional[int] = Field(default=None, description="Maximum number of conversations to return")
 
@@ -203,7 +214,7 @@ class GetUserGroupInfoInput(BaseModel):
 class GetUserChannelsInput(BaseModel):
     """Schema for getting channels for the authenticated user"""
     exclude_archived: Optional[bool] = Field(default=None, description="Exclude archived channels")
-    types: Optional[str] = Field(default=None, description="Comma-separated list of channel types (public_channel, private_channel)")
+    types: Optional[str] = Field(default=None, description="Comma-separated list of conversation types. Defaults to ALL types: 'public_channel,private_channel,mpim,im'. Only specify this if you want to filter to specific types.")
 
 
 class DeleteMessageInput(BaseModel):
@@ -908,11 +919,11 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="fetch_channels",
-        description="Fetch all channels in the workspace",
+        description="Fetch all conversations in the workspace (public channels, private channels, DMs, group DMs)",
         when_to_use=[
-            "User wants to list all Slack channels",
-            "User mentions 'Slack' + wants to see channels",
-            "User asks for available channels"
+            "User wants to list all Slack channels/conversations",
+            "User mentions 'Slack' + wants to see channels/DMs",
+            "User asks for available channels/conversations"
         ],
         when_not_to_use=[
             "User wants channel info (use get_channel_info)",
@@ -923,19 +934,24 @@ class Slack:
         typical_queries=[
             "List all Slack channels",
             "Show me available channels",
-            "What channels are in Slack?"
+            "What channels are in Slack?",
+            "Show all conversations"
         ],
         category=ToolCategory.COMMUNICATION
     )
     def fetch_channels(self) -> Tuple[bool, str]:
-        """Fetch all channels"""
+        """Fetch all conversations (public channels, private channels, DMs, group DMs)"""
         """
         Returns:
-            A tuple with a boolean indicating success/failure and a JSON string with the channels
+            A tuple with a boolean indicating success/failure and a JSON string with all conversations
         """
         try:
-            # Use SlackDataSource method
-            response = run_async(self.client.conversations_list())
+            # Fetch ALL conversation types: public, private, MPIMs (group DMs), IMs (DMs)
+            response = run_async(self.client.conversations_list(
+                types="public_channel,private_channel,mpim,im",
+                exclude_archived=False,
+                limit=1000  # Get more results per page
+            ))
             slack_response = self._handle_slack_response(response)
             return (slack_response.success, slack_response.to_json())
         except Exception as e:
@@ -1508,12 +1524,13 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="set_user_status",
-        description="Set user status",
+        description="Set or clear user status",
         args_schema=SetUserStatusInput,
         when_to_use=[
             "User wants to set/update their Slack status",
-            "User mentions 'Slack' + wants to change status",
-            "User asks to update status",
+            "User wants to clear/remove their Slack status",
+            "User mentions 'Slack' + wants to change/clear status",
+            "User asks to update status or make it active/available again",
             "User wants to set status with expiration/duration"
         ],
         when_not_to_use=[
@@ -1527,17 +1544,21 @@ class Slack:
             "Update my status in Slack",
             "Change Slack status",
             "Set status to Away for 1 hour",
-            "Set status with expiration"
+            "Clear my Slack status",
+            "Remove my status",
+            "Set status to active"
         ],
         category=ToolCategory.COMMUNICATION,
-        llm_description="Set or update the user's Slack status. Pass duration_seconds as the number of seconds from NOW (e.g., 3600 for 1 hour, 1800 for 30 min). Do NOT pass a Unix timestamp - just the duration in seconds. The tool calculates the expiration time internally. No calculator or other tool is needed."
+        llm_description="Set, update, or CLEAR the user's Slack status. To SET a status: pass status_text with the desired text. To CLEAR the status (make user appear active/available): pass status_text='' (empty string) AND status_emoji='' (empty string). Pass duration_seconds as the number of seconds from NOW (e.g., 3600 for 1 hour, 1800 for 30 min). Do NOT pass a Unix timestamp - just the duration in seconds. The status_emoji parameter is OPTIONAL when setting a status - if you're not sure which emoji to use or the user didn't specify one, simply omit it. Common emojis: calendar (meetings), airplane (travel), house (WFH), palm_tree (vacation). The tool calculates the expiration time internally. No calculator or other tool is needed."
     )
     def set_user_status(self, status_text: str, status_emoji: Optional[str] = None, duration_seconds: Optional[int] = None) -> Tuple[bool, str]:
         """Set user status in Slack.
 
         Args:
-            status_text: Status text to set (e.g., "In a meeting", "Away", "agent testing")
-            status_emoji: Optional emoji for the status (e.g., ":away:", ":clock1:", ":meeting:")
+            status_text: Status text to set (e.g., "In a meeting", "Away", "agent testing").
+                        To CLEAR the status, pass an empty string "" for this parameter.
+            status_emoji: Optional emoji for the status (e.g., ":away:", ":clock1:", ":meeting:").
+                         To CLEAR the status, pass an empty string "" for this parameter too.
             duration_seconds: Optional number of seconds from NOW for the status to last.
                       Examples: 1 hour = 3600, 30 minutes = 1800, 2 hours = 7200.
                       The tool computes the Unix expiration timestamp internally.
@@ -1550,19 +1571,52 @@ class Slack:
         ```json
         {"name": "slack.set_user_status", "args": {"status_text": "Away", "status_emoji": ":away:", "duration_seconds": 3600}}
         ```
+        
+        Example (clear status):
+        ```json
+        {"name": "slack.set_user_status", "args": {"status_text": "", "status_emoji": ""}}
+        ```
         """
         import time as _time
         try:
-            profile = {"status_text": status_text}
+            # Check if this is a "clear status" request (empty text)
+            is_clearing = not status_text or status_text.strip() == ""
+            
+            if is_clearing:
+                # To clear a Slack status, you MUST set both text and emoji to empty strings
+                logger.debug("Clearing Slack status (setting both text and emoji to empty)")
+                profile = {
+                    "status_text": "",
+                    "status_emoji": ""
+                }
+                # Expiration should be 0 when clearing
+                kwargs = {"profile": profile, "status_expiration": 0}
+            else:
+                # Setting a status
+                profile = {"status_text": status_text}
 
-            if status_emoji:
-                profile["status_emoji"] = status_emoji
+                # Validate and normalize emoji format if provided
+                if status_emoji:
+                    # Ensure emoji has colons - Slack API expects :emoji_name: format
+                    normalized_emoji = status_emoji.strip()
+                    if normalized_emoji and not normalized_emoji.startswith(':'):
+                        normalized_emoji = f":{normalized_emoji}"
+                    if normalized_emoji and not normalized_emoji.endswith(':'):
+                        normalized_emoji = f"{normalized_emoji}:"
+                    
+                    # Only add emoji if it looks valid (has both colons and content between them)
+                    if normalized_emoji and len(normalized_emoji) > 2 and normalized_emoji.count(':') >= 2:
+                        profile["status_emoji"] = normalized_emoji
+                        logger.debug(f"Setting status emoji: {normalized_emoji}")
+                    else:
+                        logger.warning(f"Invalid emoji format '{status_emoji}', skipping emoji")
 
-            kwargs = {"profile": profile}
+                kwargs = {"profile": profile}
 
-            if duration_seconds is not None and duration_seconds > 0:
-                expiration_ts = int(_time.time()) + duration_seconds
-                kwargs["status_expiration"] = expiration_ts
+                if duration_seconds is not None and duration_seconds > 0:
+                    expiration_ts = int(_time.time()) + duration_seconds
+                    kwargs["status_expiration"] = expiration_ts
+                    logger.debug(f"Status will expire in {duration_seconds} seconds (at {expiration_ts})")
 
             response = run_async(self.client.users_profile_set(**kwargs))
             slack_response = self._handle_slack_response(response)
@@ -1910,10 +1964,10 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_user_conversations",
-        description="Get conversations for the authenticated user (the user whose token is being used)",
+        description="Get ALL conversations for the authenticated user (public channels, private channels, DMs, group DMs)",
         args_schema=GetUserConversationsInput,
         when_to_use=[
-            "User wants to see their own conversations",
+            "User wants to see their own conversations/channels/DMs",
             "User mentions 'Slack' + wants their conversations",
             "User asks 'what channels am I in?', 'show my conversations'"
         ],
@@ -1926,7 +1980,8 @@ class Slack:
         typical_queries=[
             "What channels am I in?",
             "Show my Slack conversations",
-            "List my channels and DMs"
+            "List my channels and DMs",
+            "Show all my conversations"
         ],
         category=ToolCategory.COMMUNICATION
     )
@@ -1934,7 +1989,7 @@ class Slack:
         """Get conversations for the authenticated user"""
         """
         Args:
-            types: Comma-separated list of conversation types
+            types: Comma-separated list of conversation types (defaults to all: public_channel,private_channel,mpim,im)
             exclude_archived: Exclude archived conversations
             limit: Maximum number of conversations to return
         Returns:
@@ -1947,8 +2002,11 @@ class Slack:
                 return (False, SlackResponse(success=False, error="Could not determine authenticated user ID from token").to_json())
 
             kwargs = {"user": user_id}
+            # Default to ALL conversation types if not specified
             if types:
                 kwargs["types"] = types
+            else:
+                kwargs["types"] = "public_channel,private_channel,mpim,im"
             if exclude_archived is not None:
                 kwargs["exclude_archived"] = exclude_archived
             if limit:
@@ -2057,10 +2115,10 @@ class Slack:
     @tool(
         app_name="slack",
         tool_name="get_user_channels",
-        description="Get channels that the authenticated user (whose token is being used) is a member of",
+        description="Get ALL conversations that the authenticated user is a member of (public channels, private channels, DMs, group DMs)",
         args_schema=GetUserChannelsInput,
         when_to_use=[
-            "User wants to see their own channels",
+            "User wants to see their own channels/conversations/DMs",
             "User mentions 'Slack' + wants their channels",
             "User asks 'what channels am I in?', 'show my channels'"
         ],
@@ -2073,7 +2131,8 @@ class Slack:
         typical_queries=[
             "What channels am I in?",
             "Show my Slack channels",
-            "List channels I'm a member of"
+            "List channels I'm a member of",
+            "Show all my conversations"
         ],
         category=ToolCategory.COMMUNICATION
     )
@@ -2082,7 +2141,7 @@ class Slack:
         """
         Args:
             exclude_archived: Exclude archived channels
-            types: Comma-separated list of channel types
+            types: Comma-separated list of channel types (defaults to all: public_channel,private_channel,mpim,im)
         Returns:
             A tuple with a boolean indicating success/failure and a JSON string with the channels
         """
@@ -2095,8 +2154,11 @@ class Slack:
             kwargs = {"user": user_id}
             if exclude_archived is not None:
                 kwargs["exclude_archived"] = exclude_archived
+            # Default to ALL conversation types if not specified
             if types:
                 kwargs["types"] = types
+            else:
+                kwargs["types"] = "public_channel,private_channel,mpim,im"
 
             response = run_async(self.client.users_conversations(**kwargs))
             slack_response = self._handle_slack_response(response)
