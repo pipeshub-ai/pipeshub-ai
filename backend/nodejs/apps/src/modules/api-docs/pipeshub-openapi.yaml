@@ -5573,6 +5573,10 @@ paths:
                 $ref: '#/components/schemas/OAuthAppListResponse'
         '401':
           description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '429':
+          description: Rate limit exceeded
 
     post:
       tags:
@@ -5654,6 +5658,10 @@ paths:
                   category: "Records"
         '401':
           description: Unauthorized
+        '403':
+          description: Admin privileges required
+        '429':
+          description: Rate limit exceeded
 
   /oauth-clients/{appId}:
     get:
@@ -5684,8 +5692,12 @@ paths:
                 $ref: '#/components/schemas/OAuthAppResponse'
         '401':
           description: Unauthorized
+        '403':
+          description: Admin privileges required
         '404':
           description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
 
     put:
       tags:
@@ -5939,6 +5951,8 @@ paths:
           description: Admin privileges required
         '404':
           description: OAuth app not found
+        '429':
+          description: Rate limit exceeded
 
   /oauth-clients/{appId}/revoke-all-tokens:
     post:
