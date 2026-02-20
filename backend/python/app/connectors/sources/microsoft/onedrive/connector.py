@@ -66,8 +66,6 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-logging.getLogger("azure").setLevel(logging.WARNING)
-
 
 @dataclass
 class OneDriveCredentials:
@@ -180,6 +178,8 @@ class OneDriveConnector(BaseConnector):
         self.indexing_filters: FilterCollection = FilterCollection()
 
     async def init(self) -> bool:
+        logging.getLogger("azure").setLevel(logging.ERROR)
+
         config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
         if not config:
             self.logger.error("OneDrive config not found")
