@@ -438,12 +438,22 @@ class GraphTransactionStore(TransactionStore):
                     "from_id": child_record_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": parent_record_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.RECORDS.value,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
+        )
+
+    async def delete_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
+        await self.graph_provider.delete_edge(
+            from_id=child_record_id,
+            from_collection=CollectionNames.RECORDS.value,
+            to_id=parent_record_id,
+            to_collection=CollectionNames.RECORDS.value,
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=self.txn,
         )
     async def get_sync_point(self, sync_point_key: str) -> Optional[Dict]:
         return await self.graph_provider.get_sync_point(sync_point_key, CollectionNames.SYNC_POINTS.value, transaction=self.txn)

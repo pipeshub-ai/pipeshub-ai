@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     EntityRelations,
     MimeTypes,
     OriginTypes,
@@ -235,6 +236,15 @@ class DataSourceEntitiesProcessor:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
 
+                if record.inherit_permissions:
+                    if record.connector_name == Connectors.CONFLUENCE.value:
+                        self.logger.info(f"Creating inherit permissions relation for record: {record.id} to parent record: {parent_record.id}")
+                        await tx_store.create_inherit_permissions_relation_record(record.id, parent_record.id)
+                else:
+                    if record.connector_name == Connectors.CONFLUENCE.value:
+                        self.logger.info(f"Deleting inherit permissions relation for record: {record.id} to parent record: {parent_record.id}")
+                        await tx_store.delete_inherit_permissions_relation_record(record.id, parent_record.id)
+
     async def _handle_related_external_records(
         self,
         record: Record,
@@ -368,8 +378,10 @@ class DataSourceEntitiesProcessor:
             await tx_store.create_record_group_relation(record.id, record_group_id)
 
             if record.inherit_permissions:
+                self.logger.info(f"Creating inherit permissions relation for record: {record.id} to record group: {record_group_id}")
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
             else:
+                self.logger.info(f"Deleting inherit permissions relation for record: {record.id} to record group: {record_group_id}")
                 await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
@@ -694,19 +706,26 @@ class DataSourceEntitiesProcessor:
                 if permissions:
                     self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
                     await self._handle_record_permissions(record, permissions, tx_store)
-                # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
-                if record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
-                                                                      external_id=record.external_record_group_id)
+                # Create or delete inherit_permissions edges based on the flag
+                record_group = await tx_store.get_record_group_by_external_id(
+                    connector_id=record.connector_id,
+                    external_id=record.external_record_group_id
+                )
 
+                parent_record = None
+                if record.parent_external_record_id:
+                    parent_record = await tx_store.get_record_by_external_id(
+                        connector_id=record.connector_id,
+                        external_id=record.parent_external_record_id
+                    )
+
+                if record.inherit_permissions:
                     if record_group:
                         await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
-
-                if not record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
-                                                                      external_id=record.external_record_group_id)
+                    if parent_record and record.connector_name == Connectors.CONFLUENCE.value:
+                        await tx_store.create_inherit_permissions_relation_record(record.id, parent_record.id)
+                else:
                     if record_group:
-                        # Delete the INHERIT_PERMISSIONS edge
                         await tx_store.delete_edge(
                             from_id=record.id,
                             from_collection=CollectionNames.RECORDS.value,
@@ -714,8 +733,8 @@ class DataSourceEntitiesProcessor:
                             to_collection=CollectionNames.RECORD_GROUPS.value,
                             collection=CollectionNames.INHERIT_PERMISSIONS.value
                         )
-                else:
-                    self.logger.info(f"No new permissions to add for record: {record.id}")
+                    if parent_record and record.connector_name == Connectors.CONFLUENCE.value:
+                        await tx_store.delete_inherit_permissions_relation_record(record.id, parent_record.id)
 
                 self.logger.info(f"Successfully updated permissions for record: {record.id}")
 
