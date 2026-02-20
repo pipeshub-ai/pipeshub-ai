@@ -283,36 +283,55 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
       const llmNodes: Node<NodeData>[] = [];
       if (agent.models && agent.models.length > 0) {
         agent.models.forEach((modelConfig, index) => {
+          // Type guard: check if modelConfig is an object or a string
+          type ModelConfigObject = {
+            modelKey: string;
+            provider: string;
+            modelName: string;
+            isReasoning?: boolean;
+            isMultimodal?: boolean;
+            isDefault?: boolean;
+            modelType?: string;
+            [key: string]: any;
+          };
+          
+          const isModelObject = typeof modelConfig === 'object' && modelConfig !== null;
+          const modelConfigObj: ModelConfigObject | null = isModelObject ? (modelConfig as ModelConfigObject) : null;
+          const modelConfigString: string | null = typeof modelConfig === 'string' ? modelConfig : null;
+          
           // Match models with priority: modelKey > (modelName + provider) > modelName > provider
           let matchingModel = null;
-          const modelConfigAny = modelConfig; // Type assertion for optional fields that may exist in runtime data
           
-          // First, try to match by modelKey (most specific and unique identifier)
-          if (modelConfigAny.modelKey) {
-            matchingModel = models.find((m) => m.modelKey === modelConfigAny.modelKey);
-          }
-          
-          // If no match by modelKey, try matching by modelName AND provider together
-          if (!matchingModel && modelConfig.modelName && modelConfig.provider) {
-            matchingModel = models.find(
-              (m) => m.modelName === modelConfig.modelName && m.provider === modelConfig.provider
-            );
-          }
-          
-          // If still no match, try just modelName
-          if (!matchingModel && modelConfig.modelName) {
-            matchingModel = models.find((m) => m.modelName === modelConfig.modelName);
-          }
-          
-          // Last resort: match by provider only
-          if (!matchingModel && modelConfig.provider) {
-            matchingModel = models.find((m) => m.provider === modelConfig.provider);
+          // If modelConfig is a string, try to match by modelKey directly
+          if (modelConfigString) {
+            matchingModel = models.find((m) => m.modelKey === modelConfigString);
+          } else if (modelConfigObj) {
+            // First, try to match by modelKey (most specific and unique identifier)
+            if (modelConfigObj.modelKey) {
+              matchingModel = models.find((m) => m.modelKey === modelConfigObj.modelKey);
+            }
+            
+            // If no match by modelKey, try matching by modelName AND provider together
+            if (!matchingModel && modelConfigObj.modelName && modelConfigObj.provider) {
+              matchingModel = models.find(
+                (m) => m.modelName === modelConfigObj.modelName && m.provider === modelConfigObj.provider
+              );
+            }
+            
+            // If still no match, try just modelName
+            if (!matchingModel && modelConfigObj.modelName) {
+              matchingModel = models.find((m) => m.modelName === modelConfigObj.modelName);
+            }
+            
+            // Last resort: match by provider only
+            if (!matchingModel && modelConfigObj.provider) {
+              matchingModel = models.find((m) => m.provider === modelConfigObj.provider);
+            }
           }
 
           // Use friendly name if available, otherwise fallback to modelName
-          const displayName = matchingModel?.modelFriendlyName || modelConfig.modelName || 'AI Model';
+          const displayName = matchingModel?.modelFriendlyName || (modelConfigObj?.modelName) || modelConfigString || 'AI Model';
           const modelFriendlyName = matchingModel?.modelFriendlyName;
-
 
           nodeCounter += 1;
           const nodeId = `llm-${nodeCounter}`;
@@ -322,19 +341,19 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             position: calculateOptimalPosition('llm', index, counts.llm),
             data: {
               id: `llm-${nodeCounter - 1}`,
-              type: `llm-${matchingModel?.modelKey || modelConfig.modelName?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
+              type: `llm-${matchingModel?.modelKey || modelConfigObj?.modelName?.replace(/[^a-zA-Z0-9]/g, '-') || modelConfigString?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
               label: displayName.trim(),
-              description: `${formattedProvider(modelConfig.provider || 'AI')} language model`,
+              description: `${formattedProvider(modelConfigObj?.provider || 'AI')} language model`,
               icon: brainIcon,
               config: {
-                modelKey: matchingModel?.modelKey || modelConfigAny.modelKey || modelConfig.modelName,
-                modelName: modelConfig.modelName,
+                modelKey: matchingModel?.modelKey || modelConfigObj?.modelKey || modelConfigString || modelConfigObj?.modelName || '',
+                modelName: modelConfigObj?.modelName || modelConfigString || '',
                 modelFriendlyName,
-                provider: modelConfig.provider,
-                modelType: matchingModel?.modelType || modelConfigAny.modelType || 'llm',
-                isMultimodal: matchingModel?.isMultimodal ?? modelConfigAny.isMultimodal ?? false,
-                isDefault: matchingModel?.isDefault ?? modelConfigAny.isDefault ?? false,
-                isReasoning: modelConfig.isReasoning || false,
+                provider: modelConfigObj?.provider || '',
+                modelType: matchingModel?.modelType || modelConfigObj?.modelType || 'llm',
+                isMultimodal: matchingModel?.isMultimodal ?? modelConfigObj?.isMultimodal ?? false,
+                isDefault: matchingModel?.isDefault ?? modelConfigObj?.isDefault ?? false,
+                isReasoning: modelConfigObj?.isReasoning || false,
               },
               inputs: ['prompt', 'context'],
               outputs: ['response'],

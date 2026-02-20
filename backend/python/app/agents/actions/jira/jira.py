@@ -1717,7 +1717,10 @@ class Jira:
 
                 return True, json.dumps({
                     "message": "Users fetched successfully",
-                    "data": cleaned_users
+                    "data": {
+                        "results": cleaned_users,
+                        "total": len(cleaned_users)
+                    }
                 })
             else:
                 return self._handle_response(

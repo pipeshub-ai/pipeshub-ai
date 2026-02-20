@@ -75,7 +75,6 @@ export interface Model {
   provider: string;
   modelKey: string;
   modelName: string;
-  modelKey?: string;
   modelFriendlyName?: string;
 }
 
@@ -689,6 +688,7 @@ const AgentChat = () => {
                 provider: m.provider || 'unknown',
                 modelKey: m.modelKey || '',
                 modelName: m.modelName || m.modelKey || 'Unknown Model',
+                modelFriendlyName: m.modelFriendlyName || m.modelName || m.modelKey || 'Unknown Model',
               };
             }
             console.log('m', m);
@@ -1225,7 +1225,6 @@ const AgentChat = () => {
           ? currentModel.modelFriendlyName.trim() 
           : undefined,
         chatMode: chatMode || currentMode?.id,
-        modelKey: modelKey || currentModel?.modelKey,
 
         // Tools: List of tool full names to enable (filters agent's toolsets)
         // Empty means use all tools from agent's toolsets

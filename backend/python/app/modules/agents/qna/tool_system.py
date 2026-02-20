@@ -494,20 +494,19 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                 # Create an async wrapper function that calls tool_wrapper.arun()
                 # This ensures proper async execution in the same event loop as FastAPI
                 def make_async_tool_func(wrapper: RegistryToolWrapper) -> Callable:
-                    async def async_tool_func(**kwargs) -> str:
+                    async def async_tool_func(**kwargs):
                         """Async tool function that wraps RegistryToolWrapper.arun()"""
                         # Call arun with kwargs as a dict (arun handles both formats)
                         result = await wrapper.arun(kwargs)
-                        # Convert result to string if needed (StructuredTool expects string)
-                        if isinstance(result, (tuple, list)) and len(result) == 2:
-                            # Handle (bool, str) tuple format
-                            return str(result[1]) if result[0] else str(result[1])
-                        return str(result) if not isinstance(result, str) else result
+                        # Return result as-is to preserve tuple format (bool, str) if present
+                        # The tool executor in nodes.py will handle both tuple and string formats
+                        return result
                     return async_tool_func
 
                 async_tool_func = make_async_tool_func(tool_wrapper)
 
                 # Create StructuredTool with schema if available
+                # Explicitly mark as coroutine to ensure LangChain handles it correctly
                 if args_schema:
                     # Use schema for validation
                     structured_tool = StructuredTool.from_function(
@@ -515,6 +514,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                         name=sanitized_tool_name,
                         description=tool_wrapper.description,
                         args_schema=args_schema,
+                        coroutine=async_tool_func,  # Explicitly pass the coroutine
                     )
                 else:
                     # Fallback: no schema (for legacy tools without Pydantic schemas)
@@ -522,6 +522,7 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
                         func=async_tool_func,
                         name=sanitized_tool_name,
                         description=tool_wrapper.description,
+                        coroutine=async_tool_func,  # Explicitly pass the coroutine
                     )
 
                 # Store original name and wrapper reference for backward compatibility

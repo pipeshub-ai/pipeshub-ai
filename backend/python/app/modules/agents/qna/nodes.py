@@ -4104,10 +4104,14 @@ async def respond_node(
         else:
             all_queries = [query]
 
-        # Create fetch_full_record_tool
-        from app.utils.fetch_full_record import create_fetch_full_record_tool
-        fetch_tool = create_fetch_full_record_tool(virtual_record_map)
-        tools = [fetch_tool]
+        # Create fetch_full_record_tool only if we have retrieval results
+        # This prevents the LLM from trying to use it on non-retrieval tool results (like Jira)
+        tools = []
+        if virtual_record_map:
+            from app.utils.fetch_full_record import create_fetch_full_record_tool
+            fetch_tool = create_fetch_full_record_tool(virtual_record_map)
+            tools = [fetch_tool]
+            log.debug(f"Added fetch_full_record tool ({len(virtual_record_map)} records available)")
 
         # Create tool_runtime_kwargs
         tool_runtime_kwargs = {

@@ -586,6 +586,7 @@ async def _enrich_agent_models(agent: Dict[str, Any], config_service: Configurat
                     "isMultimodal": matching_config.get("isMultimodal", False),
                     "isDefault": matching_config.get("isDefault", False),
                     "modelType": "llm",
+                    "modelFriendlyName": matching_config.get("modelFriendlyName", model_name),
                 })
             else:
                 logger.warning(f"Model key {model_key} not found in LLM configs")
@@ -597,6 +598,7 @@ async def _enrich_agent_models(agent: Dict[str, Any], config_service: Configurat
                     "isMultimodal": False,
                     "isDefault": False,
                     "modelType": "llm",
+                    "modelFriendlyName": model_name or model_key,
                 })
 
         agent["models"] = enriched_models

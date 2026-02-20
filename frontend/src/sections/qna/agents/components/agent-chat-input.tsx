@@ -42,7 +42,6 @@ export interface Model {
   provider: string;
   modelKey: string;
   modelName: string;
-  modelKey?: string;
   modelFriendlyName?: string;
 }
 
@@ -851,7 +850,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               </Tooltip>
 
               {/* Model Selector */}
-              <Tooltip title={`Model: ${getModelDisplayName(selectedModel) || 'Select'}`}>
+              <Tooltip title={`Model: ${getModelDisplayName(selectedModel) || 'Select'} | ${selectedModel?.modelName.substring(0, 16) || ''}`}>
                 <Button
                   onClick={handleModelMenuOpen}
                   size="small"
@@ -916,7 +915,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                   {getModelDisplayName(model)}
                 </Typography>
                 <Typography variant="caption" color="text.secondary" sx={{ fontSize: '0.65rem' }}>
-                  {normalizeDisplayName(model.provider || 'AI')}
+                  {`${normalizeDisplayName(model.provider || 'AI')} | ${model.modelName.substring(0, 16)}`}
                 </Typography>
               </Box>
             </MenuItem>

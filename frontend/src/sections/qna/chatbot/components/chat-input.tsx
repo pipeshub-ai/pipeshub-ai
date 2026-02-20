@@ -561,7 +561,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
 
                 {/* Model Selector */}
                 <Tooltip
-                  title={`AI Model: ${selectedModel ? `${formattedProvider(selectedModel.provider)} - ${getModelDisplayName(selectedModel)}` : 'Select AI model'}`}
+                  title={`AI Model: ${selectedModel ? `${formattedProvider(selectedModel.provider)} - ${selectedModel.modelFriendlyName ? `${selectedModel.modelFriendlyName} | ${selectedModel.modelName.substring(0, 16)}` : getModelDisplayName(selectedModel)}` : 'Select AI model'}`}
                 >
                   <Box
                     onClick={handleModelMenuOpen}
@@ -748,7 +748,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
                     fontWeight="medium"
                     sx={{ fontSize: '0.9rem', mb: 0.5 }}
                   >
-                    {getModelDisplayName(model)}
+                    {model.modelFriendlyName ? `${model.modelFriendlyName} | ${model.modelName.substring(0, 16)}` : getModelDisplayName(model)}
                   </Typography>
                   <Typography
                     variant="caption"
