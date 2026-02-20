@@ -116,10 +116,13 @@ export class UploadDocumentService {
       
       // Construct rootPath matching regular upload structure (lines 205-211)
       let rootPath = '';
+      let fullDocumentPath = '';
       if (placeholderDocumentPath) {
         rootPath = `${orgId}/PipesHub/${placeholderDocumentPath}/${documentId}`;
+        fullDocumentPath = `${orgId}/PipesHub/${placeholderDocumentPath}`;
       } else {
         rootPath = `${orgId}/PipesHub/${documentId}`;
+        fullDocumentPath = `${orgId}/PipesHub`;
       }
       
       // Construct final path matching regular upload structure (lines 213-216)
@@ -158,7 +161,7 @@ export class UploadDocumentService {
         } else if (this.storageVendor === StorageVendor.AzureBlob) {
           placeholderDocument.document.azureBlob = { url: baseUrl };
         }
-
+        placeholderDocument.document.documentPath = fullDocumentPath;
         await placeholderDocument.document.save();
         res.status(HTTP_STATUS.PERMANENT_REDIRECT).json(placeholderDocument);
         return;
@@ -226,13 +229,11 @@ export class UploadDocumentService {
     };
 
     const savedDocument = await DocumentModel.create(documentInfo);
-    let rootPath = '';
-    // path of the document in the storage service
-    if (documentPath) {
-      rootPath = `${orgId}/PipesHub/${documentPath}/${savedDocument._id}`;
-    } else {
-      rootPath = `${orgId}/PipesHub/${savedDocument._id}`;
-    }
+
+    const fullDocumentPath = documentPath
+      ? `${orgId}/PipesHub/${documentPath}`
+      : `${orgId}/PipesHub`;
+    const rootPath = `${fullDocumentPath}/${savedDocument._id}`;
 
     const concatenatedPath =
       isVersioned === false
@@ -248,7 +249,7 @@ export class UploadDocumentService {
       });
 
     if (uploadResult.statusCode === HTTP_STATUS.OK && uploadResult.data) {
-      savedDocument.documentPath = rootPath;
+      savedDocument.documentPath = fullDocumentPath;
 
       const storageTypeKey = this.storageVendor;
       let normalizedUrl = '';
@@ -300,6 +301,8 @@ export class UploadDocumentService {
           buffer,
           newDocumentFilePath,
         );
+        const versionLocalPath =
+          storageTypeKey === StorageVendor.Local ? cloneResponse.data ?? '' : '';
         // normalize the url to the local storage
         if (storageTypeKey === StorageVendor.Local) {
           cloneResponse.data = normalizedUrl;
@@ -310,7 +313,10 @@ export class UploadDocumentService {
             version: nextVersion,
             [`${storageTypeKey}`]: {
               url: cloneResponse.data,
-              localPath: localPath,
+              localPath:
+                storageTypeKey === StorageVendor.Local
+                  ? versionLocalPath
+                  : localPath,
             },
             createdAt: Date.now(),
             size: savedDocument.sizeInBytes,
