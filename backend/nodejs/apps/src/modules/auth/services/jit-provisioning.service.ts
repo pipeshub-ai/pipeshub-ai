@@ -9,7 +9,7 @@ import {
   UserAddedEvent,
   SyncAction,
 } from '../../user_management/services/entity_events.service';
-import { deriveNameFromEmail } from '../../storage/utils/utils';
+import { deriveNameFromEmail } from '../../../utils/generic-functions';
 
 export interface JitUserDetails {
   firstName?: string;

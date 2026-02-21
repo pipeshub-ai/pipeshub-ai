@@ -30,7 +30,6 @@ import { ConfigurationManagerService } from '../services/cm.service';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
 import { UserActivities } from '../schema/userActivities.schema';
 import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
-// import { deriveNameFromEmail } from '../../storage/utils/utils';
 
 const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
