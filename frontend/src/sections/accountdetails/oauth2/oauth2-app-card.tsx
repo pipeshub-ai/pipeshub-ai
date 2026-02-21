@@ -1,0 +1,110 @@
+import React from 'react';
+import {
+  useTheme,
+  alpha,
+  Box,
+  Typography,
+  Card,
+  CardContent,
+  Avatar,
+  Chip,
+  Stack,
+} from '@mui/material';
+import { Iconify } from 'src/components/iconify';
+import type { OAuth2App } from './services/oauth2-api';
+
+interface OAuth2AppCardProps {
+  app: OAuth2App;
+  onClick?: () => void;
+}
+
+export function OAuth2AppCard({ app, onClick }: OAuth2AppCardProps) {
+  const theme = useTheme();
+  const isDark = theme.palette.mode === 'dark';
+
+  return (
+    <Card
+      elevation={0}
+      onClick={onClick}
+      sx={{
+        height: '100%',
+        minHeight: 200,
+        display: 'flex',
+        flexDirection: 'column',
+        borderRadius: 2,
+        border: `1px solid ${theme.palette.divider}`,
+        backgroundColor: theme.palette.background.paper,
+        cursor: onClick ? 'pointer' : 'default',
+        transition: theme.transitions.create(['transform', 'box-shadow', 'border-color'], {
+          duration: theme.transitions.duration.shorter,
+          easing: theme.transitions.easing.easeOut,
+        }),
+        '&:hover': {
+          transform: onClick ? 'translateY(-2px)' : 'none',
+          borderColor: onClick ? alpha(theme.palette.primary.main, 0.5) : theme.palette.divider,
+          boxShadow: onClick
+            ? isDark
+              ? `0 8px 32px ${alpha('#000', 0.3)}`
+              : `0 8px 32px ${alpha(theme.palette.primary.main, 0.12)}`
+            : 'none',
+        },
+      }}
+    >
+      <CardContent sx={{ p: 2, display: 'flex', flexDirection: 'column', height: '100%', gap: 1.5, '&:last-child': { pb: 2 } }}>
+        <Stack spacing={1.5} alignItems="center">
+          <Avatar
+            sx={{
+              width: 48,
+              height: 48,
+              backgroundColor: isDark ? alpha(theme.palette.common.white, 0.9) : alpha(theme.palette.grey[100], 0.8),
+              border: `1px solid ${theme.palette.divider}`,
+            }}
+          >
+            <Iconify icon="mdi:application-cog" width={24} height={24} sx={{ color: theme.palette.primary.main }} />
+          </Avatar>
+          <Box sx={{ textAlign: 'center', width: '100%' }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, color: theme.palette.text.primary, mb: 0.25 }}>
+              {app.name}
+            </Typography>
+            <Typography variant="caption" sx={{ color: theme.palette.text.secondary, fontSize: '0.8125rem' }}>
+              {app.clientId}
+            </Typography>
+          </Box>
+        </Stack>
+        {app.description && (
+          <Typography
+            variant="caption"
+            sx={{
+              color: theme.palette.text.secondary,
+              fontSize: '0.75rem',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              overflow: 'hidden',
+            }}
+          >
+            {app.description}
+          </Typography>
+        )}
+        <Stack direction="row" spacing={0.5} justifyContent="center" flexWrap="wrap" sx={{ mt: 'auto' }}>
+          <Chip
+            size="small"
+            label={app.status}
+            sx={{
+              height: 20,
+              fontSize: '0.6875rem',
+              textTransform: 'capitalize',
+              bgcolor: app.status === 'active' ? alpha(theme.palette.success.main, 0.16) : alpha(theme.palette.warning.main, 0.16),
+              color: app.status === 'active' ? theme.palette.success.dark : theme.palette.warning.dark,
+            }}
+          />
+          <Chip
+            size="small"
+            label={`${app.allowedScopes?.length ?? 0} scopes`}
+            sx={{ height: 20, fontSize: '0.6875rem' }}
+          />
+        </Stack>
+      </CardContent>
+    </Card>
+  );
+}
