@@ -1,6 +1,5 @@
 """Generic Event Service for handling connector-specific events"""
 
-import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -9,6 +8,7 @@ from dependency_injector import providers
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.factory.connector_factory import ConnectorFactory
+from app.connectors.core.sync.task_manager import sync_task_manager
 from app.containers.connector import ConnectorAppContainer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -155,8 +155,8 @@ class EventService:
                     # Continue with sync even if sync point deletion fails
                     self.logger.warning("Continuing with sync despite sync point deletion failure")
 
-            # Run the sync
-            asyncio.create_task(connector.run_sync())
+            # Run the sync — at most one task per connector at a time
+            await sync_task_manager.start_sync(connector_id, connector.run_sync())
             self.logger.info(f"Started sync for {connector_name} {connector_id} connector")
             return True
 

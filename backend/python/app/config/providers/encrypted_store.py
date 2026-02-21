@@ -2,7 +2,8 @@ import asyncio
 import hashlib
 import json
 import os
-from typing import Callable, Dict, Generic, List, Optional, TypeVar, Union
+from datetime import datetime
+from typing import Any, Callable, Dict, Generic, List, Optional, TypeVar, Union
 
 import dotenv  # type: ignore
 
@@ -15,6 +16,14 @@ from app.utils.encryption.encryption_service import EncryptionService
 dotenv.load_dotenv()
 
 T = TypeVar("T")
+
+
+class _DatetimeSafeEncoder(json.JSONEncoder):
+    """JSON encoder that safely handles datetime objects by converting them to ISO format strings."""
+    def default(self, obj: Any) -> Any:  # noqa: ANN401
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+        return super().default(obj)
 
 
 class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
@@ -175,7 +184,8 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return False  # Key was not created (already exists)
 
             # Convert value to JSON string
-            value_json = json.dumps(value)
+            # Use datetime-safe encoder to handle any datetime objects that may have leaked into the config
+            value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
 
             EXCLUDED_KEYS = [
                 config_node_constants.ENDPOINTS.value,
