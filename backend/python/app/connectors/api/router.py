@@ -2986,10 +2986,8 @@ async def update_connector_instance_filters_sync_config(
         # Delete all sync points so the next sync is a clean full sweep based on
         # the updated filter configuration
         try:
-            deleted_count, success = await graph_provider._delete_nodes_by_connector_id(
-                transaction=None,
-                connector_id=connector_id,
-                collection=CollectionNames.SYNC_POINTS.value
+            deleted_count, success = await graph_provider.delete_sync_points_by_connector_id(
+                connector_id=connector_id
             )
             if success:
                 logger.info(f"Deleted {deleted_count} sync points for connector {connector_id} after filter change")

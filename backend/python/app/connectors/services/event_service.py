@@ -140,11 +140,8 @@ class EventService:
             if full_sync:
                 self.logger.info(f"Full sync requested - deleting sync points for connector {connector_id}")
                 try:
-                    from app.config.constants.arangodb import CollectionNames
-                    deleted_count, success = await self.graph_provider._delete_nodes_by_connector_id(
-                        transaction=None,
-                        connector_id=connector_id,
-                        collection=CollectionNames.SYNC_POINTS.value
+                    deleted_count, success = await self.graph_provider.delete_sync_points_by_connector_id(
+                        connector_id=connector_id
                     )
                     if success:
                         self.logger.info(f"✅ Successfully deleted {deleted_count} sync points for connector {connector_id}")
