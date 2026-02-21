@@ -102,35 +102,6 @@ export default function UsersAndGroups() {
     navigate(TAB_ROUTES[newValue].path);
   };
 
-
-
-  // useEffect(() => {
-  //   if (location.pathname.includes('users')) {
-  //     setTabValue(0);
-  //   } else if (location.pathname.includes('groups')) {
-  //     setTabValue(1);
-  //   } else if (location.pathname.includes('invites')) {
-  //     setTabValue(2);
-  //   } else if (location.pathname.includes('blocked-users')) {
-  //     setTabValue(3);
-  //   }
-  // }, [location.pathname]);
-
-  // const handleTabChange = (event: React.SyntheticEvent, newValue: number) => {
-  //   console.log('Tab changed to:', newValue);
-  //   setTabValue(newValue);
-  //   if (newValue === 0) {
-  //     navigate('/account/company-settings/users');
-  //   } else if (newValue === 1) {
-  //     navigate('/account/company-settings/groups');
-  //   } else if (newValue === 2) {
-  //     navigate('/account/company-settings/invites');
-  //   }
-  //   else if (newValue === 3) {
-  //     navigate('/account/company-settings/blocked-users');
-  //   }
-  // };
-
   if (loading) {
     return (
       <Box

@@ -220,7 +220,7 @@ export const allGroups = async () => {
 };
 export const allblockedUsers = async () => {
   try {
-    const response = await axios.get<GroupUser[]>(`${CONFIG.backendUrl}/api/v1/users/blockedUsers`); // Replace with the actual API endpoint
+    const response = await axios.get<GroupUser[]>(`${CONFIG.backendUrl}/api/v1/users?blocked=true`); // Replace with the actual API endpoint
     return response.data;
   } catch (error) {
     throw new Error('Error fetching blocked users');
@@ -389,7 +389,7 @@ export const getDataCollectionConsent = async (): Promise<boolean> => {
 
 export const unblockUser = async (userId: string) => {
   try {
-    const response = await axios.put(`${CONFIG.backendUrl}/api/v1/users/unblock/${userId}`);
+    const response = await axios.put(`${CONFIG.backendUrl}/api/v1/users/${userId}/unblock`);
     return response.data;
   } catch (error) {
     throw new Error('Error unblocking user');

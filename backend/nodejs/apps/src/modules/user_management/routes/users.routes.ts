@@ -217,24 +217,8 @@ export function createUserRouter(container: Container) {
     },
   );
 
-  router.get(
-    '/blockedUsers',
-    authMiddleware.authenticate,
-    metricsMiddleware(container),
-    userAdminCheck,
-
-    async (req: Request, res: Response, next: NextFunction) => {
-      try {
-        const userController = container.get<UserController>('UserController');
-        await userController.getBlockedUsers(req, res);
-      } catch (error) {
-        next(error);
-      }
-    },
-  );
-
   router.put(
-    '/unblock/:id',
+    '/:id/unblock',
     authMiddleware.authenticate,
     userAdminCheck,
 

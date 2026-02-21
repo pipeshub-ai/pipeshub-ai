@@ -54,6 +54,52 @@ export class UserController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
+    const { blocked } = req.query;
+    if (blocked === 'true') {
+
+      const blockedUsers = await UserCredentials.aggregate([
+        {
+          $match: {
+            orgId: req.user?.orgId,
+            isBlocked: true,
+            isDeleted: false,
+          },
+        },
+        {
+          $lookup: {
+            from: 'users',
+            let: { credUserId: '$userId' },
+            pipeline: [
+              {
+                $match: {
+                  $expr: {
+                    $eq: ['$_id', { $toObjectId: '$$credUserId' }],
+                  },
+                },
+              },
+            ],
+            as: 'userProfile',
+          },
+        },
+        { $unwind: '$userProfile' },
+        {
+          $project: {
+            _id: '$userProfile._id',
+            email: '$userProfile.email',
+            orgId: '$userProfile.orgId',
+            fullName: '$userProfile.fullName',
+            hasLoggedIn: '$userProfile.hasLoggedIn',
+            slug: '$userProfile.slug',
+            createdAt: '$userProfile.createdAt',
+            updatedAt: '$userProfile.updatedAt',
+          },
+        },
+      ]);
+
+      res.status(200).json(blockedUsers);
+      return;
+    }
+    
     const users = await Users.find({
       orgId: req.user?.orgId,
       isDeleted: false,
@@ -167,6 +213,7 @@ export class UserController {
 
     try {
       // 1. Use the ID as a STRING, not an ObjectId, to match your DB sample
+
       const orgId = req.user?.orgId;
       const blockedUsers = await UserCredentials.aggregate([
         {
