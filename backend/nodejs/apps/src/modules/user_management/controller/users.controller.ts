@@ -1698,7 +1698,6 @@ export class UserController {
         throw new BadRequestError('Email is required');
       }
       const result = await this.sendValidateEmailIdEmail(user, newEmail);
-      console.log('Email change response:emailChange', result, result.statusCode);
 
       if (result.statusCode !== 200) {
         return {
