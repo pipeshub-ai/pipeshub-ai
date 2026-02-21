@@ -5,21 +5,20 @@ from uuid import uuid4
 
 from jinja2 import Template
 
+from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupType, SemanticMetadata
 from app.models.entities import (
-    Record,
-    TicketRecord,
-    ProjectRecord,
-    FileRecord,
-    MailRecord,
-    LinkRecord,
-    CommentRecord,
-    RecordType,
-    OriginTypes,
     Connectors,
+    FileRecord,
     LinkPublicStatus,
+    LinkRecord,
+    MailRecord,
+    OriginTypes,
+    ProjectRecord,
+    Record,
+    RecordType,
+    TicketRecord,
 )
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.modules.qna.prompt_templates import (
     block_group_prompt,
     qna_prompt_context,
@@ -29,6 +28,7 @@ from app.modules.qna.prompt_templates import (
     table_prompt,
 )
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
@@ -37,6 +37,14 @@ group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_
 
 # Create a logger for this module
 logger = create_logger("chat_helpers")
+
+collection_map = {
+                    RecordType.TICKET.value: "tickets",
+                    RecordType.PROJECT.value: "projects",
+                    RecordType.FILE.value: "files",
+                    RecordType.MAIL.value: "mails",
+                    RecordType.LINK.value: "links",
+                }
 
 def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Optional[Dict[str, Any]] = None) -> Optional[Record]:
     """
@@ -71,124 +79,81 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
 
     record_type = record_dict.get("record_type")
 
+    base_args = {
+        "id": record_dict.get("id", ""),
+        "org_id": record_dict.get("org_id", ""),
+        "record_name": record_dict.get("record_name", ""),
+        "external_record_id": record_dict.get("external_record_id", ""),
+        "version": record_dict.get("version", 1),
+        "origin": OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+        "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+        "connector_id": record_dict.get("connector_id", ""),
+        "mime_type": record_dict.get("mime_type", ""),
+        "source_created_at": record_dict.get("source_created_at", ""),
+        "source_updated_at": record_dict.get("source_updated_at", ""),
+        "weburl": record_dict.get("weburl", ""),
+        "semantic_metadata": SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+    }
+
     try:
         if record_type == RecordType.TICKET.value and graph_doc:
-            return TicketRecord(
-                id=record_dict.get("id", ""),
-                org_id=record_dict.get("org_id", ""),
-                record_name=record_dict.get("record_name", ""),
-                record_type=RecordType.TICKET,
-                external_record_id=record_dict.get("external_record_id", ""),
-                version=record_dict.get("version", 1),
-                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-                connector_id=record_dict.get("connector_id", ""),
-                # Ticket-specific fields from graph_doc
-                status=graph_doc.get("status"),
-                priority=graph_doc.get("priority"),
-                type=graph_doc.get("type"),
-                delivery_status=graph_doc.get("deliveryStatus"),
-                assignee=graph_doc.get("assignee"),
-                assignee_email=graph_doc.get("assigneeEmail"),
-                reporter_name=graph_doc.get("reporterName"),
-                reporter_email=graph_doc.get("reporterEmail"),
-                creator_name=graph_doc.get("creatorName"),
-                creator_email=graph_doc.get("creatorEmail"),
-                mime_type=record_dict.get("mime_type", ""),
-                source_created_at=record_dict.get("source_created_at", ""),
-                source_updated_at=record_dict.get("source_updated_at", ""),
-                weburl=record_dict.get("weburl", ""),
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-            )
+            specific_args = {
+                "record_type": RecordType.TICKET,
+                "status": graph_doc.get("status"),
+                "priority": graph_doc.get("priority"),
+                "type": graph_doc.get("type"),
+                "delivery_status": graph_doc.get("deliveryStatus"),
+                "assignee": graph_doc.get("assignee"),
+                "assignee_email": graph_doc.get("assigneeEmail"),
+                "reporter_name": graph_doc.get("reporterName"),
+                "reporter_email": graph_doc.get("reporterEmail"),
+                "creator_name": graph_doc.get("creatorName"),
+                "creator_email": graph_doc.get("creatorEmail"),
+            }
+            return TicketRecord(**base_args, **specific_args)
+
         elif record_type == RecordType.PROJECT.value and graph_doc:
-            return ProjectRecord(
-                id=record_dict.get("id", ""),
-                org_id=record_dict.get("org_id", ""),
-                record_name=record_dict.get("record_name", ""),
-                record_type=RecordType.PROJECT,
-                external_record_id=record_dict.get("external_record_id", ""),
-                version=record_dict.get("version", 1),
-                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-                connector_id=record_dict.get("connector_id", ""),
-                # Project-specific fields from graph_doc
-                status=graph_doc.get("status"),
-                priority=graph_doc.get("priority"),
-                lead_name=graph_doc.get("leadName"),
-                lead_email=graph_doc.get("leadEmail"),
-                mime_type=record_dict.get("mime_type", ""),
-                source_created_at=record_dict.get("source_created_at", ""),
-                source_updated_at=record_dict.get("source_updated_at", ""),
-                weburl=record_dict.get("weburl", ""),
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-            )
+            specific_args = {
+                "record_type": RecordType.PROJECT,
+                "status": graph_doc.get("status"),
+                "priority": graph_doc.get("priority"),
+                "lead_name": graph_doc.get("leadName"),
+                "lead_email": graph_doc.get("leadEmail"),
+            }
+            return ProjectRecord(**base_args, **specific_args)
+
         elif record_type == RecordType.FILE.value and graph_doc:
-            return FileRecord(
-                id=record_dict.get("id", ""),
-                org_id=record_dict.get("org_id", ""),
-                record_name=record_dict.get("record_name", ""),
-                record_type=RecordType.FILE,
-                external_record_id=record_dict.get("external_record_id", ""),
-                version=record_dict.get("version", 1),
-                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-                connector_id=record_dict.get("connector_id", ""),
-                is_file=graph_doc.get("isFile", True),
-                extension=graph_doc.get("extension"),
-                mime_type=record_dict.get("mime_type", ""),
-                source_created_at=record_dict.get("source_created_at", ""),
-                source_updated_at=record_dict.get("source_updated_at", ""),
-                weburl=record_dict.get("weburl", ""),
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-            )
+            specific_args = {
+                "record_type": RecordType.FILE,
+                "is_file": graph_doc.get("isFile", True),
+                "extension": graph_doc.get("extension"),
+            }
+            return FileRecord(**base_args, **specific_args)
+
         elif record_type == RecordType.MAIL.value and graph_doc:
-            return MailRecord(
-                id=record_dict.get("id", ""),
-                org_id=record_dict.get("org_id", ""),
-                record_name=record_dict.get("record_name", ""),
-                record_type=RecordType.MAIL,
-                external_record_id=record_dict.get("external_record_id", ""),
-                version=record_dict.get("version", 1),
-                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-                connector_id=record_dict.get("connector_id", ""),
-                subject=graph_doc.get("subject"),
-                from_email=graph_doc.get("from"),
-                to_emails=graph_doc.get("to"),
-                cc_emails=graph_doc.get("cc"),
-                bcc_emails=graph_doc.get("bcc"),
-                mime_type=record_dict.get("mime_type", ""),
-                source_created_at=record_dict.get("source_created_at", ""),
-                source_updated_at=record_dict.get("source_updated_at", ""),
-                weburl=record_dict.get("weburl", ""),
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-            )
+            specific_args = {
+                "record_type": RecordType.MAIL,
+                "subject": graph_doc.get("subject"),
+                "from_email": graph_doc.get("from"),
+                "to_emails": graph_doc.get("to"),
+                "cc_emails": graph_doc.get("cc"),
+                "bcc_emails": graph_doc.get("bcc"),
+            }
+            return MailRecord(**base_args, **specific_args)
 
         elif record_type == RecordType.LINK.value and graph_doc:
-            return LinkRecord(
-                id=record_dict.get("id", ""),
-                org_id=record_dict.get("org_id", ""),
-                record_name=record_dict.get("record_name", ""),
-                record_type=RecordType.LINK,
-                external_record_id=record_dict.get("external_record_id", ""),
-                version=record_dict.get("version", 1),
-                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
-                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
-                connector_id=record_dict.get("connector_id", ""),
-                url=graph_doc.get("url", ""),
-                title=graph_doc.get("title"),
-                is_public=LinkPublicStatus(graph_doc.get("isPublic", "unknown")),
-                mime_type=record_dict.get("mime_type", ""),
-                source_created_at=record_dict.get("source_created_at", ""),
-                source_updated_at=record_dict.get("source_updated_at", ""),
-                weburl=record_dict.get("weburl", ""),
-                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
-                linked_record_id=graph_doc.get("linkedRecordId"),
-            )
+            specific_args = {
+                "record_type": RecordType.LINK,
+                "url": graph_doc.get("url", ""),
+                "title": graph_doc.get("title"),
+                "is_public": LinkPublicStatus(graph_doc.get("isPublic", "unknown")),
+                "linked_record_id": graph_doc.get("linkedRecordId"),
+            }
+            return LinkRecord(**base_args, **specific_args)
+
         else:
             return None
     except Exception as e:
-        # Log error but don't fail - graceful degradation
         logger.error(f"Error creating record instance: {str(e)}")
         return None
 
@@ -220,7 +185,19 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if virtual_record_id and virtual_record_id not in virtual_record_id_to_result:
             records_to_fetch.add(virtual_record_id)
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider) for virtual_record_id in records_to_fetch])
+    # Fetch frontend URL once for all records
+    frontend_url = None
+    try:
+        endpoints_config = await blob_store.config_service.get_config(
+            config_node_constants.ENDPOINTS.value,
+            default={}
+        )
+        if isinstance(endpoints_config, dict):
+            frontend_url = endpoints_config.get("frontend", {}).get("publicEndpoint")
+    except Exception as e:
+        logger.warning(f"Failed to fetch frontend URL from config service: {str(e)}")
+
+    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url) for virtual_record_id in records_to_fetch])
 
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
@@ -625,7 +602,7 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None,graph_provider: Optional[IGraphDBProvider] = None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None,graph_provider: Optional[IGraphDBProvider] = None,frontend_url: Optional[str] = None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
@@ -653,13 +630,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
                 if graph_provider and record_key:
                     try:
                         # Determine collection name based on record type
-                        collection_map = {
-                            RecordType.TICKET.value: "tickets",
-                            RecordType.PROJECT.value: "projects",
-                            RecordType.FILE.value: "files",
-                            RecordType.MAIL.value: "mails",
-                            RecordType.LINK.value: "links",
-                        }
+
                         collection = collection_map.get(record_type)
 
                         if collection:
@@ -670,10 +641,10 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
                     except Exception as e:
                         # Log but don't fail - graceful degradation
                         logger.error(f"Error fetching type-specific metadata for record {record_key}: {str(e)}")
-                
+
                 record_instance = create_record_instance_from_dict(record, graph_doc)
                 if record_instance:
-                    record["context_metadata"] = record_instance.to_llm_context()
+                    record["context_metadata"] = record_instance.to_llm_context(frontend_url=frontend_url)
                 else:
                     record["context_metadata"] = ""
 
@@ -1159,8 +1130,8 @@ Record blocks (sorted):\n\n"""
                                 record_number=record_number,
                             )
                             record_string += f"{rendered_form}\n\n"
-                        
-                            
+
+
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -1271,7 +1242,6 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                 record = virtual_record_id_to_result[virtual_record_id]
                 if record is None:
                     continue
-                semantic_metadata = record.get("semantic_metadata")
 
                 template = Template(qna_prompt_context)
                 rendered_form = template.render(
