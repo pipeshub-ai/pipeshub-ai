@@ -15704,8 +15704,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     async def is_record_descendant_of(
         self,
+        record_id: str,
         ancestor_id: str,
-        potential_descendant_id: str,
         transaction: Optional[str] = None
     ) -> bool:
         """
@@ -15735,14 +15735,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "ancestor_id": ancestor_id,
-                    "descendant_id": potential_descendant_id,
+                    "descendant_id": record_id,
                     "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 },
                 txn_id=transaction
             )
             is_descendant = len(result) > 0 if result else False
             self.logger.debug(
-                f"Circular reference check: {potential_descendant_id} is "
+                f"Circular reference check: {record_id} is "
                 f"{'a descendant' if is_descendant else 'not a descendant'} of {ancestor_id}"
             )
             return is_descendant
@@ -15783,9 +15783,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         )
 
         RETURN parent_id != null ? {
-            parentId: parent_id,
-            parentType: parent_type,
-            edgeKey: parent_edge._key
+            id: parent_id,
+            type: parent_type,
         } : null
         """
         try:
@@ -15805,6 +15804,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
+        collection: str,
         transaction: Optional[str] = None
     ) -> int:
         """
@@ -15831,7 +15831,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "record_id": record_id,
-                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
+                    "@record_relations": collection,
                 },
                 txn_id=transaction
             )
@@ -15848,7 +15848,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         parent_id: str,
         child_id: str,
-        parent_is_kb: bool,
+        parent_is_kb: bool = False,
         transaction: Optional[str] = None
     ) -> bool:
         """

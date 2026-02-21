@@ -11478,9 +11478,9 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         parent_id: str,
         child_id: str,
-        parent_collection: str,
-        child_collection: str,
-        collection: str,
+        parent_collection: str = "records",
+        child_collection: str = "records",
+        collection: str = "recordRelations",
         transaction: Optional[str] = None
     ) -> bool:
         """Create parent-child relationship edge."""
@@ -11492,7 +11492,7 @@ class Neo4jProvider(IGraphDBProvider):
             query = f"""
             MATCH (parent:{parent_label} {{id: $parent_id}})
             MATCH (child:{child_label} {{id: $child_id}})
-            MERGE (child)-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->(parent)
+            MERGE (parent)-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->(child)
             RETURN count(r) > 0 as created
             """
             results = await self.client.execute_query(
@@ -11544,7 +11544,7 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             rel_type = edge_collection_to_relationship(collection)
             query = f"""
-            MATCH (child:Record {{id: $record_id}})-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->()
+            MATCH ()-[r:{rel_type} {{relationshipType: "PARENT_CHILD"}}]->(child:Record {{id: $record_id}})
             DELETE r
             RETURN count(r) > 0 as deleted
             """
@@ -11787,10 +11787,9 @@ class Neo4jProvider(IGraphDBProvider):
         """Get parent information for a record."""
         try:
             query = """
-            MATCH (r:Record {id: $record_id})-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(parent:Record)
+            MATCH (parent:Record)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(r:Record {id: $record_id})
             RETURN {
                 id: parent.id,
-                name: parent.recordName,
                 type: parent.recordType
             } as parent_info
             LIMIT 1
@@ -11881,7 +11880,7 @@ class Neo4jProvider(IGraphDBProvider):
         """Check if record is descendant of ancestor."""
         try:
             query = """
-            MATCH path = (r:Record {id: $record_id})-[:RECORD_RELATION*1..20 {relationshipType: "PARENT_CHILD"}]->(ancestor:Record {id: $ancestor_id})
+            MATCH path = (ancestor:Record {id: $ancestor_id})-[:RECORD_RELATION*1..20 {relationshipType: "PARENT_CHILD"}]->(r:Record {id: $record_id})
             RETURN count(path) > 0 as is_descendant
             """
             results = await self.client.execute_query(
@@ -11897,18 +11896,18 @@ class Neo4jProvider(IGraphDBProvider):
     async def is_record_folder(
         self,
         record_id: str,
-        folder_mime_types: List[str],
         transaction: Optional[str] = None
     ) -> bool:
-        """Check if record is a folder."""
+        """Check if record is a folder (isFile == false on its linked File node)."""
         try:
             query = """
-            MATCH (r:Record {id: $record_id})
-            RETURN r.mimeType IN $folder_mime_types as is_folder
+            MATCH (r:Record {id: $record_id})-[:IS_OF_TYPE]->(f:File)
+            WHERE f.isFile = false
+            RETURN count(f) > 0 as is_folder
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "folder_mime_types": folder_mime_types},
+                parameters={"record_id": record_id},
                 txn_id=transaction
             )
             return results[0].get("is_folder", False) if results else False
@@ -11953,25 +11952,29 @@ class Neo4jProvider(IGraphDBProvider):
     async def update_record_external_parent_id(
         self,
         record_id: str,
-        external_parent_id: Optional[str],
+        new_parent_id: Optional[str] = None,
+        external_parent_id: Optional[str] = None,
         transaction: Optional[str] = None
     ) -> bool:
         """Update record's external parent ID."""
         try:
+            # Accept both param names for compatibility (interface uses new_parent_id)
+            parent_val = new_parent_id if new_parent_id is not None else external_parent_id
             query = """
             MATCH (r:Record {id: $record_id})
-            SET r.externalParentId = $external_parent_id
-            RETURN count(r) > 0 as updated
+            SET r.externalParentId = $parent_val
+            RETURN count(r) > 0 AS updated
             """
             results = await self.client.execute_query(
                 query,
-                parameters={"record_id": record_id, "external_parent_id": external_parent_id},
+                parameters={"record_id": record_id, "parent_val": parent_val},
                 txn_id=transaction
             )
-            return results[0].get("updated", False) if results else False
+            updated = results[0].get("updated", False) if results else False
+            return updated
         except Exception as e:
-            self.logger.error(f"❌ Update record external parent ID failed: {str(e)}")
-            return False
+            self.logger.error(f"❌ Update record external parent ID failed for {record_id}: {str(e)}")
+            raise
 
     def _create_typed_record_from_neo4j_simple(self, record_data: Dict) -> Optional[Record]:
         """

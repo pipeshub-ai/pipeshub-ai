@@ -1781,3 +1781,177 @@ class KnowledgeBaseService:
     async def upload_records_to_folder(self, kb_id: str, folder_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
         """Upload to specific folder"""
         return await self.graph_provider.upload_records(kb_id, user_id, org_id, files, parent_folder_id=folder_id)
+
+    async def move_record(
+        self,
+        kb_id: str,
+        record_id: str,
+        new_parent_id: Optional[str],
+        user_id: str,
+    ) -> Dict:
+        """
+        Move a record (file or folder) to a new location within the same KB.
+
+        Args:
+            kb_id:          The knowledge base ID.
+            record_id:      The record to move (_key in RECORDS collection).
+            new_parent_id:  Target folder ID, or None to move to KB root.
+            user_id:        The requesting user's external userId.
+
+        Returns:
+            Dict with success/failure details.
+        """
+        # Normalise: treat empty string the same as None (= move to KB root)
+        new_parent_id = new_parent_id or None
+        txn_id: Optional[str] = None
+
+        try:
+            destination = "KB root" if new_parent_id is None else f"folder {new_parent_id}"
+            self.logger.info(f"🚀 Moving record {record_id} → {destination} in KB {kb_id}")
+
+            # ── 1. Resolve user ──────────────────────────────────────────────
+            user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
+            if not user:
+                return {"success": False, "code": 404, "reason": f"User not found: {user_id}"}
+            user_key = user.get("id") or user.get("_key")
+
+            # ── 2. Permission check ──────────────────────────────────────────
+            user_role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
+            if user_role not in ["OWNER", "WRITER"]:
+                return {
+                    "success": False,
+                    "code": 403,
+                    "reason": f"Insufficient permissions to move records. Role: {user_role}",
+                }
+
+            self.logger.info(f"User role: {user_role}")
+
+            # ── 3. Verify record belongs to this KB ──────────────────────────
+            kb_context = await self.graph_provider._get_kb_context_for_record(record_id)
+            if not kb_context or kb_context.get("kb_id") != kb_id:
+                return {
+                    "success": False,
+                    "code": 404,
+                    "reason": f"Record {record_id} not found in KB {kb_id}",
+                }
+            self.logger.info(f"KB context: {kb_context}")
+
+            # ── 4. Get current parent via RECORD_RELATIONS ───────────────────
+            parent_info = await self.graph_provider.get_record_parent_info(record_id)
+            self.logger.info(f"Parent info: {parent_info}")
+            # parent_info = {"parentId": str, "parentType": "record"|"recordGroup", "edgeKey": str} | None
+            # None  →  record is already at KB root (no PARENT_CHILD edge exists)
+            current_parent_id = parent_info.get("id") if parent_info else ""
+            self.logger.info(f"Current parent id: {current_parent_id}")
+            self.logger.info(
+                f"📍 Record {record_id} current parent: {current_parent_id or 'KB root'}"
+            )
+
+            # ── 5. No-op check ───────────────────────────────────────────────
+            if new_parent_id == current_parent_id:
+                self.logger.info(f"↩️  Record {record_id} already at {destination}, skipping")
+                return {
+                    "success": True,
+                    "message": "Record is already in the requested location",
+                    "recordId": record_id,
+                    "newParentId": new_parent_id,
+                }
+
+            # ── 6. Validate target folder (if not moving to root) ────────────
+            if new_parent_id is not None:
+                folder_valid = await self.graph_provider.validate_folder_in_kb(kb_id, new_parent_id)
+                if not folder_valid:
+                    return {
+                        "success": False,
+                        "code": 404,
+                        "reason": f"Target folder {new_parent_id} not found in KB {kb_id}",
+                    }
+
+                # Circular-reference guard (only relevant when moving a folder)
+                if new_parent_id == record_id:
+                    return {"success": False, "code": 400, "reason": "Cannot move a folder into itself"}
+
+                record_is_folder = await self.graph_provider.is_record_folder(record_id)
+                if record_is_folder:
+                    is_circular = await self.graph_provider.is_record_descendant_of(
+                        record_id=new_parent_id,
+                        ancestor_id=record_id,
+                    )
+                    if is_circular:
+                        return {
+                            "success": False,
+                            "code": 400,
+                            "reason": "Cannot move a folder into one of its own sub-folders (circular reference)",
+                        }
+
+            # ── 7. Transactional graph update ────────────────────────────────
+            txn_id = await self.graph_provider.begin_transaction(
+                read=[],
+                write=[
+                    CollectionNames.RECORDS.value,
+                    CollectionNames.RECORD_RELATIONS.value,
+                ],
+            )
+
+            # 7a. Delete existing PARENT_CHILD edge (only if there is one)
+            if parent_info is not None:
+                deleted = await self.graph_provider.delete_parent_child_edge_to_record(
+                    record_id=record_id,
+                    collection=CollectionNames.RECORD_RELATIONS.value,
+                    transaction=txn_id,
+                )
+                if not deleted:
+                    raise RuntimeError(
+                        f"Failed to delete PARENT_CHILD edge for record {record_id} "
+                        f"(current parent: {current_parent_id})"
+                    )
+                self.logger.info(f"🔗 Removed PARENT_CHILD edge from {current_parent_id} → {record_id}")
+
+            # 7b. Create new PARENT_CHILD edge (skip when moving to KB root)
+            if new_parent_id is not None:
+                created = await self.graph_provider.create_parent_child_edge(
+                    parent_id=new_parent_id,
+                    child_id=record_id,
+                    transaction=txn_id,
+                )
+                if not created:
+                    raise RuntimeError(
+                        f"Failed to create PARENT_CHILD edge from folder {new_parent_id} → record {record_id}"
+                    )
+                self.logger.info(f"🔗 Created PARENT_CHILD edge {new_parent_id} → {record_id}")
+
+            # 7c. Update externalParentId on the record document
+            updated = await self.graph_provider.update_record_external_parent_id(
+                record_id=record_id,
+                new_parent_id=new_parent_id,  # None clears it for KB root
+                transaction=txn_id,
+            )
+            if not updated:
+                raise RuntimeError(f"Failed to update externalParentId for record {record_id}")
+            self.logger.info(f"📝 Updated externalParentId → {new_parent_id!r}")
+
+            await self.graph_provider.commit_transaction(txn_id)
+            txn_id = None  # mark committed so rollback is skipped
+
+            self.logger.info(f"✅ Record {record_id} moved → {destination}")
+            return {
+                "success": True,
+                "recordId": record_id,
+                "kbId": kb_id,
+                "newParentId": new_parent_id,
+                "previousParentId": current_parent_id,
+            }
+
+        except Exception as e:
+            self.logger.error(
+                f"❌ move_record failed: record={record_id} target={new_parent_id!r} "
+                f"kb={kb_id} — {str(e)}",
+                exc_info=True,
+            )
+            if txn_id is not None:
+                try:
+                    await self.graph_provider.rollback_transaction(txn_id)
+                    self.logger.info("🔄 Transaction rolled back")
+                except Exception as rb_err:
+                    self.logger.warning(f"Rollback failed: {rb_err}")
+            return {"success": False, "code": 500, "reason": str(e)}
