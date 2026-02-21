@@ -189,7 +189,7 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     name: 'connector:read',
     description: 'Read connector configurations',
     category: 'Connectors',
-    endpoints: ['GET /api/v1/connectors'],
+    endpoints: ['GET /api/v1/connectors', 'GET /api/v1/connectors/registry'],
     requiresUserConsent: true,
   },
   'connector:write': {
