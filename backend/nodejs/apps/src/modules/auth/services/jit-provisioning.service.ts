@@ -9,6 +9,7 @@ import {
   UserAddedEvent,
   SyncAction,
 } from '../../user_management/services/entity_events.service';
+import { deriveNameFromEmail } from '../../../utils/generic-functions';
 
 export interface JitUserDetails {
   firstName?: string;
@@ -27,7 +28,7 @@ export class JitProvisioningService {
   constructor(
     @inject('Logger') private logger: Logger,
     @inject('EntitiesEventProducer') private eventService: EntitiesEventProducer,
-  ) {}
+  ) { }
 
   /**
    * Provision a new user via JIT from an OAuth/SAML provider.
@@ -40,6 +41,7 @@ export class JitProvisioningService {
     provider: JitProvider,
   ) {
     this.logger.info(`Auto-provisioning user from ${provider}`, { email, orgId });
+
 
     // Check if user was previously deleted
     const deletedUser = await Users.findOne({
@@ -189,7 +191,7 @@ export class JitProvisioningService {
       samlUser.firstName ||
       samlUser.givenName ||
       samlUser[SAML_CLAIM_GIVENNAME] ||
-      samlUser[SAML_OID_GIVENNAME];
+      samlUser[SAML_OID_GIVENNAME] || deriveNameFromEmail(email).firstName;
 
     // Try multiple SAML attribute names for last name
     const lastName =
@@ -197,7 +199,7 @@ export class JitProvisioningService {
       samlUser.surname ||
       samlUser.sn ||
       samlUser[SAML_CLAIM_SURNAME] ||
-      samlUser[SAML_OID_SURNAME];
+      samlUser[SAML_OID_SURNAME] || deriveNameFromEmail(email).lastName;
 
     // Try multiple SAML attribute names for display name
     const displayName =
@@ -205,13 +207,13 @@ export class JitProvisioningService {
       samlUser.name ||
       samlUser.fullName ||
       samlUser[SAML_CLAIM_NAME] ||
-      samlUser[SAML_OID_DISPLAYNAME];
+      samlUser[SAML_OID_DISPLAYNAME] || deriveNameFromEmail(email).fullName;
 
     // Construct full name with fallbacks
     const fullName =
       displayName ||
       [firstName, lastName].filter(Boolean).join(' ') ||
-      email.split('@')[0];
+      deriveNameFromEmail(email).fullName;
 
     return {
       firstName: firstName || undefined,

@@ -24,6 +24,9 @@ import { generateFetchConfigAuthToken } from '../utils/generateAuthToken';
 import { iamJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { samlSsoCallbackUrl, samlSsoConfigUrl } from '../constants/constants';
+import { ConfigurationManagerService, SSO_AUTH_CONFIG_PATH } from '../services/cm.service';
+import { SessionService } from '../services/session.service';
+
 const orgIdToSamlEmailKey: Record<string, string> = {};
 passport.serializeUser((user, done) => {
   done(null, user);
@@ -40,7 +43,9 @@ export class SamlController {
     @inject('IamService') private iamService: IamService,
     @inject('AppConfig') private config: AppConfig,
     @inject('Logger') private logger: Logger,
-  ) {}
+    @inject('ConfigurationManagerService') private configurationManagerService: ConfigurationManagerService,
+    private sessionService: SessionService,
+  ) { }
   // update the mapping
   updateOrgIdToSamlEmailKey(orgId: string, samlEmailKey: string) {
     orgIdToSamlEmailKey[orgId] = samlEmailKey;
@@ -82,8 +87,8 @@ export class SamlController {
               (req as any).body?.RelayState || (req as any).query?.RelayState;
             const relayStateDecoded = relayStateBase64
               ? JSON.parse(
-                  Buffer.from(relayStateBase64, 'base64').toString('utf8'),
-                )
+                Buffer.from(relayStateBase64, 'base64').toString('utf8'),
+              )
               : {};
 
             // Attach additional metadata to profile
@@ -112,6 +117,7 @@ export class SamlController {
     try {
       const email = req.query.email as string;
       const sessionToken = req.query.sessionToken as string;
+      const session = await this.sessionService.getSession(sessionToken);
 
       if (!email) {
         throw new BadRequestError('Email is required');
@@ -120,10 +126,25 @@ export class SamlController {
       this.logger.debug(email);
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
-      if (result.statusCode !== 200) {
+      let user = { orgId: result.data?.orgId ? result.data?.orgId : session?.orgId, email };
+
+      const configManagerResponse = await this.configurationManagerService.getConfig(
+        this.config.cmBackend,
+        SSO_AUTH_CONFIG_PATH,
+        user,
+        this.config.scopedJwtSecret,
+      );
+
+      // CASE 1: User not found AND JIT disabled → block
+      if (result.statusCode !== 200 && !configManagerResponse.data?.enableJit) {
         throw new NotFoundError('User not found');
       }
-      const user = result.data;
+
+      // CASE 2: User found → use it
+      if (result.data.orgId) {
+        user = result.data;
+      }
+
       const orgId = user.orgId;
       const orgAuthConfig = await OrgAuthConfig.findOne({
         orgId: user.orgId,
@@ -135,14 +156,14 @@ export class SamlController {
         throw new NotFoundError('Organisation configuration not found');
       }
       let configurationManagerCommandOptions: ConfigurationManagerCommandOptions =
-        {
-          uri: `${this.config.cmBackend}/${samlSsoConfigUrl}`,
-          method: HttpMethod.GET,
-          headers: {
-            Authorization: `Bearer ${await generateFetchConfigAuthToken(user, this.config.scopedJwtSecret)}`,
-            'Content-Type': 'application/json',
-          },
-        };
+      {
+        uri: `${this.config.cmBackend}/${samlSsoConfigUrl}`,
+        method: HttpMethod.GET,
+        headers: {
+          Authorization: `Bearer ${await generateFetchConfigAuthToken(user, this.config.scopedJwtSecret)}`,
+          'Content-Type': 'application/json',
+        },
+      };
       const getCredentialsCommand = new ConfigurationManagerServiceCommand(
         configurationManagerCommandOptions,
       );
