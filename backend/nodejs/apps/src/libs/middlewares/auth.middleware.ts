@@ -14,6 +14,7 @@ import { OAuthTokenPayload } from '../../modules/oauth_provider/types/oauth.type
 import { OAuthScopes } from '../../modules/oauth_provider/config/scopes.config';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
+import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 
 const { LOGOUT, PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
@@ -157,15 +158,34 @@ export class AuthMiddleware {
     }
 
     // Build req.user in the format controllers expect
-    const userId = payload.sub;
+    let userId = payload.sub;
     const orgId = payload.org_id;
 
     let email: string | undefined;
     let fullName: string | undefined;
     let accountType: string | undefined;
 
-    // Look up user details for user-delegated tokens (not client_credentials)
-    if (userId && userId !== payload.client_id) {
+    // For client_credentials tokens (sub === client_id), resolve the app owner
+    const isClientCredentials = userId === payload.client_id;
+    if (isClientCredentials) {
+      try {
+        const app = await OAuthApp.findOne({
+          clientId: payload.client_id,
+          isDeleted: false,
+        })
+          .select('createdBy')
+          .lean()
+          .exec();
+        if (app) {
+          userId = app.createdBy.toString();
+        }
+      } catch (err) {
+        this.logger.error('Failed to look up OAuth app owner', err);
+      }
+    }
+
+    // Look up user details
+    if (userId) {
       try {
         const user = await Users.findOne({
           _id: userId,
@@ -210,6 +230,17 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
+
+    // Replace the OAuth token in the Authorization header with a regular JWT
+    // so downstream Python services (which only understand regular/scoped JWTs) can validate it
+    const downstreamToken = this.tokenService.generateToken({
+      userId,
+      orgId,
+      email,
+      fullName,
+      accountType,
+    });
+    req.headers.authorization = `Bearer ${downstreamToken}`;
 
     this.logger.debug('OAuth user authenticated', {
       userId,
