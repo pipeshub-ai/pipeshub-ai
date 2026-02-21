@@ -57,6 +57,7 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
 import { verifyTurnstileToken } from '../../../libs/utils/turnstile-verification';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
+import { Users } from '../../user_management/schema/users.schema';
 
 const {
   LOGIN,
@@ -1864,4 +1865,37 @@ export class UserAccountController {
       next(error);
     }
   }
+
+  async validateEmailChange(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const token = req.query.token as string;
+
+      const decoded = jwt.verify(token, this.config.scopedJwtSecret,) as any;
+
+      const { userId, newEmail, orgId } = decoded;
+
+      const exists = await Users.findOne({ email: newEmail });
+      if (exists) {
+        throw new BadRequestError(`Email already in use: ${newEmail}`);
+      }
+      await Users.findByIdAndUpdate(userId, {
+        email: newEmail.toLowerCase().trim(),
+      });
+
+      await UserActivities.create({
+        orgId: orgId,
+        userId: userId,
+        activityType: PASSWORD_CHANGED,
+        ipAddress: req.ip || '',
+      });
+
+      res.status(200).json({ message: 'Email updated successfully' });
+
+
+    } catch (err) {
+
+      next(err);
+    }
+  }
+
 }

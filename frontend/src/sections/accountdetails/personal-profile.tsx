@@ -125,14 +125,14 @@ export default function PersonalProfile() {
     current: false,
     new: false,
   });
-  
+
   // Turnstile hook for change password
-  const { 
-    turnstileToken, 
-    handleSuccess: handleTurnstileSuccess, 
-    handleError: handleTurnstileError, 
+  const {
+    turnstileToken,
+    handleSuccess: handleTurnstileSuccess,
+    handleError: handleTurnstileError,
     handleExpire: handleTurnstileExpire,
-    resetTurnstile 
+    resetTurnstile
   } = useTurnstile();
   const turnstileRef = useRef<TurnstileWidgetHandle>(null);
 
@@ -179,6 +179,7 @@ export default function PersonalProfile() {
 
         // Get email from JWT token since it's no longer returned by the API
         const email = getUserEmailFromToken();
+        if (!email) { return }
 
         // Store the current email to check if it changes later
         setCurrentEmail(email);
@@ -249,39 +250,36 @@ export default function PersonalProfile() {
     try {
       setSaveChanges(true);
       const userId = await getUserIdFromToken();
-      
+
       // Get email from JWT token to include in the update request
       const emailFromToken = getUserEmailFromToken();
       const userData = {
         ...data,
         email: data.email || emailFromToken, // Use form email if provided, otherwise use token email
       };
-      
-      await updateUser(userId, userData);
+
+      const response = await updateUser(userId, userData);
 
       // Check if email was changed
-      const emailChanged = data.email !== currentEmail;
-
       setSnackbar({
         open: true,
         message: 'Profile updated successfully',
         severity: 'success',
       });
 
-      if (emailChanged) {
-        // Show a message about logout
+      if (response?.meta?.emailChangeMailStatus === 'sent') {
         setSnackbar({
           open: true,
-          message: 'Email updated. You will be logged out.',
-          severity: 'info',
+          message: 'Verification email has been sent to your new email address',
+          severity: 'success',
         });
-
-        // Add a slight delay to show the message before logout
-        setTimeout(() => {
-          logout(); // Call the logout function
-        }, 2000);
+      } else if (response?.meta?.emailChangeMailStatus === 'failed') {
+        setSnackbar({
+          open: true,
+          message: 'Failed to send verification email',
+          severity: 'error',
+        });
       }
-
       setLoading(false);
     } catch (err) {
       setError('Failed to update user');
@@ -546,7 +544,7 @@ export default function PersonalProfile() {
                     />
                     {watchEmail !== currentEmail && (
                       <Alert severity="warning" sx={{ mt: 1, borderRadius: 1 }}>
-                        Changing your email will log you out of the system
+                        Changing your email will send verification link to new email.
                       </Alert>
                     )}
                   </Grid>
@@ -769,8 +767,7 @@ export default function PersonalProfile() {
         </DialogTitle>
         <DialogContent sx={{ pt: 1, pb: 1 }}>
           <Alert severity="warning" sx={{ mb: 2, borderRadius: 1 }}>
-            Changing your email will log you out of the system
-          </Alert>
+            You’ll receive a verification email at new email address to confirm this change.          </Alert>
 
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             Your email will be changed from:
@@ -796,7 +793,7 @@ export default function PersonalProfile() {
           </Box>
 
           <Typography variant="body2" color="text.secondary">
-            You will need to log in again with your new email address. All your data and settings
+            You will need to log in again with your new email address after successful confirmation. All your data and settings
             will remain intact.
           </Typography>
         </DialogContent>
@@ -829,7 +826,7 @@ export default function PersonalProfile() {
               },
             }}
           >
-            Confirm & Log Out
+            Confirm
           </Button>
         </DialogActions>
       </Dialog>

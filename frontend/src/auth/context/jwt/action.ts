@@ -42,6 +42,9 @@ type ForgotPasswordParams = {
   email: string;
   turnstileToken?: string | null;
 };
+type EmailChangeParams = {
+  token: string;
+};
 
 type GetOtpParams = {
   email: string;
@@ -123,6 +126,18 @@ export const forgotPassword = async ({ email, turnstileToken }: ForgotPasswordPa
     await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/password/forgot`, params);
   } catch (error) {
     throw new Error('error in sending mail to reset password', error);
+  }
+};
+/** **************************************
+ * Change Email
+ *************************************** */
+
+export const changeEmail = async ({ token }: EmailChangeParams): Promise<void> => {
+  try {
+
+    await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/validateEmailChange?token=${token}`);
+  } catch (error) {
+    throw new Error(error.message);
   }
 };
 

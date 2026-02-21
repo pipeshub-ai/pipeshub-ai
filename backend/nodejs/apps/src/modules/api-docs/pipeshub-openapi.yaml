@@ -5085,6 +5085,50 @@ paths:
         '404':
           description: OAuth provider configuration not found
 
+  /userAccount/validateEmailChange:
+    get:
+      tags:
+        - User Account
+      summary: Validate email change token
+      description: |
+        Validate a token for changing the user's email address.
+        This is used in the email change flow to verify the token before allowing the change.
+        <br><br>
+        <b>Flow:</b><br>
+        1. User requests email change and receives a token via email<br>
+        2. This endpoint validates the token and returns success if valid<br>
+        3. If valid, user can proceed to change their email address
+      operationId: validateEmailChangeToken
+      security:
+        - scopedToken: []
+      parameters:
+        - name: token
+          in: query
+          required: true
+          description: Email change token received via email
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Token is valid
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  valid:
+                    type: boolean
+                    description: Whether the token is valid for email change
+        '400':
+          description: Invalid request or malformed token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+        '401':
+          description: Invalid or expired token
+        '404':
+          description: User not found
   # ==================== OAUTH PROVIDER ENDPOINTS ====================
   /oauth/authorize:
     get:

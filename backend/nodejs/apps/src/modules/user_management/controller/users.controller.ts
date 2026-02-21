@@ -7,6 +7,7 @@ import sharp from 'sharp';
 import {
   fetchConfigJwtGenerator,
   jwtGeneratorForNewAccountPassword,
+  jwtGeneratorForValidateEmailLink,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
 import {
@@ -485,6 +486,8 @@ export class UserController {
       if (!req.user) {
         throw new UnauthorizedError('Unauthorized to update the user');
       }
+      let emailChangeRequested = 'notNeeded';
+
 
       // Define whitelist of allowed fields that can be updated
       const ALLOWED_UPDATE_FIELDS = [
@@ -566,7 +569,18 @@ export class UserController {
           if (existingUser) {
             throw new BadRequestError('Email already exists for another user');
           }
-          user.email = email;
+
+          const emailSentResponse = await this.emailChange(
+            email,
+            newEmail,
+            user,
+          )
+
+          if (emailSentResponse.statusCode !== 200) {
+            emailChangeRequested = 'failed';
+          } else {
+            emailChangeRequested = 'sent';
+          }
         }
       }
     
@@ -591,7 +605,12 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
       // Save the updated user
-      res.json(user.toObject());
+      res.json({
+        ...user.toObject(),
+        meta: {
+          emailChangeMailStatus: emailChangeRequested,
+        },
+      });
     } catch (error) {
       next(error);
     }
@@ -1571,4 +1590,84 @@ export class UserController {
       fullName,
     };
   }
+
+  async emailChange(
+    email: string,
+    newEmail: string,
+    user: Record<string, any>,
+    // authToken: string,
+  ) {
+    try {
+      if (!email) {
+        throw new BadRequestError('Email is required');
+      }
+      const result = await this.sendValidateEmailIdEmail(user, newEmail);
+      console.log('Email change response:emailChange', result, result.statusCode);
+
+      if (result.statusCode !== 200) {
+        return {
+          statusCode: 400,
+          data: 'Failed to send email',
+        };
+      }
+      return {
+        statusCode: 200,
+        data: 'Email change verification mail sent',
+      };
+      // res.status(200).send({ data: 'email change verification mail sent' });
+      // return;
+    } catch (error) {
+      return {
+        statusCode: 400,
+        data: 'Failed to send email',
+      };
+    }
+  };
+
+
+  async sendValidateEmailIdEmail(user: Record<string, any>, newEmail: string) {
+    try {
+      const { validateEmailToken, mailAuthToken } =
+        jwtGeneratorForValidateEmailLink(
+          user.email,
+          newEmail,
+          user._id,
+          user.orgId,
+          this.config.scopedJwtSecret,
+        );
+
+      const validateEmailLink = `${this.config.frontendUrl}/reset-email?token=${validateEmailToken}`;
+      const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
+      const emailSentResponse = await this.mailService.sendMail({
+        emailTemplateType: 'resetEmail',
+        initiator: { jwtAuthToken: mailAuthToken },
+        usersMails: [newEmail],
+        subject: 'PipesHub | Verify your email !',
+        templateData: {
+          orgName: org?.shortName || org?.registeredName,
+          name: user.fullName,
+          link: validateEmailLink,
+        },
+      });
+
+
+      if (emailSentResponse.statusCode !== 200) {
+        return {
+          statusCode: 400,
+          data: 'Failed to send email',
+        };
+      }
+
+      return {
+        statusCode: 200,
+        data: 'mail sent',
+      };
+    } catch (error) {
+      return {
+        statusCode: 400,
+        data: 'Failed to send email',
+      };
+    }
+  }
 }
+

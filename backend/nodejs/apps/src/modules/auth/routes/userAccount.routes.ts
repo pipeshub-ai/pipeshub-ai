@@ -243,6 +243,20 @@ export function createUserAccountRouter(container: Container) {
       }
     },
   );
-  // router.post('/setup', resetViaLinkValidator, userAccountSetup);
+
+  router.post(
+    '/validateEmailChange',
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
+        authMiddleware.scopedTokenValidator(TokenScopes.VALIDATE_EMAIL),
+          await userAccountController.validateEmailChange(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
   return router;
 }

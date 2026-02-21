@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+
+<html>
+  {{>head}}
+  <main>
+    <body>
+      <table
+ {{{containerstyle}}}
+    
+      >
+        <tr> 
+          <td>{{> header}}</td>
+        </tr>
+        <tr>
+          <td> 
+            <table
+              class="mobile-width"
+ {{{bodytablestyle}}}
+              
+            >
+              <tr>
+                <td>
+                  <div {{{divstyle}}}>
+                  <p>Dear {{name}},</p>
+                      <p>A request to reset your email on the platform has been initiated.<p>
+                      
+                  </div>
+
+                  <div {{{divstyle}}}>
+                    <p>Click the button below to validate your email</p>
+                    <p {{{pstyle}}}>
+                      <a href={{link}} target="_blank">
+                        <button
+                          {{{buttonstyle}}}
+                        >
+                          Verify Email
+                        </button>
+                      </a>
+                    </p>
+
+                   <p>If it wasn’t you who initiated the request, please contact the technical support at support@pipeshub.com</p> 
+                  </div>
+ 
+                </td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+
+        <tr>
+          <td>{{> footer}}</td>
+        </tr>
+      </table>
+    </body>
+  </main>
+</html>
+
+ 
