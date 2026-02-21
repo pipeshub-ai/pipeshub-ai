@@ -60,6 +60,8 @@ import {
   createOIDCDiscoveryRouter,
 } from './modules/oauth_provider/routes';
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
+import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
+import { AuthMiddleware } from './libs/middlewares/auth.middleware';
 
 const loggerConfig = {
   service: 'Application',
@@ -159,6 +161,17 @@ export class Application {
         configurationManagerConfig,
         appConfig,
       );
+
+      // Wire OAuth services into AuthMiddleware so all instances can verify OAuth tokens
+      try {
+        const oauthTokenService = this.oauthProviderContainer.get<OAuthTokenService>('OAuthTokenService');
+        AuthMiddleware.setOAuthServices(oauthTokenService);
+        this.logger.info('OAuth services wired into AuthMiddleware');
+      } catch (error) {
+        this.logger.warn('Failed to wire OAuth services into AuthMiddleware - OAuth tokens will not be accepted on regular endpoints', {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
 
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');

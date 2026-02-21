@@ -23,11 +23,11 @@ import {
 
 interface AuthenticatedRequest extends Request {
   user?: {
-    id: string
+    userId: string
     orgId: string
     email: string
-    firstName?: string
-    lastName?: string
+    fullName?: string
+    accountType?: string
   }
 }
 
@@ -127,9 +127,7 @@ export class OAuthProviderController {
         })),
         user: {
           email: user.email,
-          name: user.firstName
-            ? `${user.firstName} ${user.lastName || ''}`.trim()
-            : undefined,
+          name: user.fullName,
         },
         redirectUri: query.redirect_uri,
         state: query.state,
@@ -211,7 +209,7 @@ export class OAuthProviderController {
       const user = req.user!
       const code = await this.authorizationCodeService.generateCode(
         client_id,
-        user.id,
+        user.userId,
         user.orgId,
         redirect_uri,
         requestedScopes,
@@ -226,7 +224,7 @@ export class OAuthProviderController {
 
       this.logger.info('Authorization code issued', {
         clientId: client_id,
-        userId: user.id,
+        userId: user.userId,
         scopes: requestedScopes,
       })
 
