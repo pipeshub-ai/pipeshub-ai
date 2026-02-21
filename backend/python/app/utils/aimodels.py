@@ -1,7 +1,12 @@
 
+from __future__ import annotations
+
 import os
 from enum import Enum
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
+
+if TYPE_CHECKING:
+    from botocore.client import BaseClient
 
 from langchain_core.embeddings.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -78,7 +83,7 @@ def get_default_embedding_model() -> Embeddings:
 
 logger = create_logger("aimodels")
 
-def _create_bedrock_client(configuration: Dict[str, Any], service_name: str = "bedrock-runtime"):
+def _create_bedrock_client(configuration: Dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
     """Create a boto3 Bedrock client with proper credential handling.
 
     Tries credentials in this order:
