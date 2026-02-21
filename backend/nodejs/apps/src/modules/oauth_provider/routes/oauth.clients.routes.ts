@@ -19,7 +19,7 @@ export function createOAuthClientsRouter(container: Container): Router {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware')
   const logger = container.get<Logger>('Logger')
 
-  // Rate limiter for OAuth client management (10 requests per minute)
+  // Rate limiter for OAuth client management (1000 requests per minute)
   const oauthClientRateLimiter = createOAuthClientRateLimiter(logger)
 
   // All routes require authentication

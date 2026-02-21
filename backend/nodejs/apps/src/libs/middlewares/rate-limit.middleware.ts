@@ -103,13 +103,13 @@ export function createGlobalRateLimiter(logger: Logger): RequestHandler {
 
 /**
  * Rate limiter for OAuth client management endpoints
- * Stricter limits: 10 requests per minute per user/IP
+ * Stricter limits: 1000 requests per minute per user/IP
  * Used for creating, updating, and deleting OAuth applications
  */
 export function createOAuthClientRateLimiter(logger: Logger): RequestHandler {
   const config: Partial<Options> = {
     windowMs: 60 * 1000, // 1 minute
-    max: 10, // 10 requests per minute
+    max: 1000, // 1000 requests per minute
     standardHeaders: true,
     legacyHeaders: false,
 
