@@ -43,6 +43,7 @@ class RecordGroupType(str, Enum):
     BOOK = "BOOK"
     CHAPTER = "CHAPTER"
     RSS_FEED = "RSS_FEED"
+    SAVED_FILTERS = "SAVED_FILTERS"
 
 class RecordType(str, Enum):
     FILE = "FILE"
@@ -64,6 +65,8 @@ class RecordType(str, Enum):
     SHAREPOINT_DOCUMENT_LIBRARY = "SHAREPOINT_DOCUMENT_LIBRARY"
     LINK = "LINK"
     PROJECT = "PROJECT"
+    FILTER_SCHEMA = "FILTER_SCHEMA"
+    SAVED_FILTER = "SAVED_FILTER"
     OTHERS = "OTHERS"
 
 
@@ -72,6 +75,11 @@ class LinkPublicStatus(str, Enum):
     TRUE = "true"
     FALSE = "false"
     UNKNOWN = "unknown"
+
+class QueryLanguage(str, Enum):
+    """Query language for saved filters (e.g. Jira JQL, Confluence CQL)"""
+    JQL = "JQL"
+
 
 class IndexingStatus(str, Enum):
     """Status of record indexing for search and AI features"""
@@ -1085,6 +1093,74 @@ class ProjectRecord(Record):
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
             "signedUrl": self.signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+        }
+
+class SavedFilterRecord(Record):
+    """Record class for saved filters (e.g., Jira JQL filters, Confluence CQL filters)"""
+    query_language: QueryLanguage
+    owner_source_id: Optional[str] = None
+
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "queryLanguage": self.query_language.value,
+            "ownerSourceId": self.owner_source_id,
+        }
+
+    @staticmethod
+    def from_arango_record(saved_filter_doc: Dict, record_doc: Dict) -> "SavedFilterRecord":
+        """Create SavedFilterRecord from ArangoDB documents"""
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SavedFilterRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            virtual_record_id=record_doc.get("virtualRecordId"),
+            preview_renderable=record_doc.get("previewRenderable", True),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId", None),
+            md5_hash=record_doc.get("md5Checksum"),
+            query_language=saved_filter_doc.get("queryLanguage", ""),
+            owner_source_id=saved_filter_doc.get("ownerSourceId"),
+        )
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
             "origin": self.origin.value,
             "webUrl": self.weburl,
             "sourceCreatedAtTimestamp": self.source_created_at,

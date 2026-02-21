@@ -1,5 +1,7 @@
 """Jira Cloud Connector Implementation"""
 import base64
+import hashlib
+import json
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -68,6 +70,8 @@ from app.models.blocks import (
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
+    BlockSubType,
+    BlockType,
     ChildRecord,
     ChildType,
     DataFormat,
@@ -82,12 +86,15 @@ from app.models.entities import (
     IndexingStatus,
     MimeTypes,
     OriginTypes,
+    QueryLanguage,
     Record,
     RecordGroup,
     RecordGroupType,
     RecordType,
     RelatedExternalRecord,
+    SavedFilterRecord,
     TicketRecord,
+    WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.jira.jira import JiraClient
@@ -99,6 +106,9 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # API URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
+
+# Constant for pseudo-user group prefix (used when user email is not available)
+PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 # Pagination/constants
 DEFAULT_MAX_RESULTS: int = 50
@@ -747,6 +757,14 @@ async def adf_to_text_with_images(
             description="Enable indexing of issue attachments",
             default_value=True
         ))
+        .add_filter_field(FilterField(
+            name="saved_filters",
+            display_name="Index Saved Filters",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of saved JQL filters",
+            default_value=True
+        ))
     )\
     .build_decorator()
 class JiraConnector(BaseConnector):
@@ -1015,11 +1033,8 @@ class JiraConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            # Fetch and sync users
+            # Fetch and sync users (includes save + pseudo-group migration)
             jira_users = await self._fetch_users()
-            if jira_users:
-                await self.data_entities_processor.on_new_app_users(jira_users)
-                self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
             # Fetch and sync user groups (returns mapping for role resolution)
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -1059,6 +1074,9 @@ class JiraConnector(BaseConnector):
             # Update sync checkpoint and handle deletions
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
             await self._handle_issue_deletions(last_sync_time)
+
+            # Sync filters (pass jira_users and groups_members_map for role member sync)
+            await self._sync_filters(jira_users, groups_members_map)
 
             self.logger.info(
                 f"✅ Jira sync completed. Total: {sync_stats['total_synced']} issues "
@@ -1435,7 +1453,9 @@ class JiraConnector(BaseConnector):
 
     async def _fetch_users(self) -> List[AppUser]:
         """
-        Fetch all active Jira users using DataSource
+        Fetch all active Jira users, persist them, and migrate any pseudo-group
+        permissions to users (when email was previously hidden).
+        Returns the list of synced AppUser (only users with email).
         """
 
         if not self.data_source:
@@ -1502,6 +1522,27 @@ class JiraConnector(BaseConnector):
             app_users.append(app_user)
 
         self.logger.info(f"👥 Fetched {len(app_users)} active users with emails")
+
+        if app_users:
+            await self.data_entities_processor.on_new_app_users(app_users)
+            self.logger.info(f"👥 Synced {len(app_users)} Jira users")
+
+            # Migrate pseudo-group permissions to users (when email was previously hidden)
+            for user in app_users:
+                if user.email and "@" in user.email and user.source_user_id:
+                    try:
+                        await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                            group_external_id=user.source_user_id,
+                            user_email=user.email,
+                            connector_id=self.connector_id,
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                            exc_info=True,
+                        )
+                        continue
+
         return app_users
 
     async def _fetch_application_roles_to_groups_mapping(self) -> Dict[str, List[Dict[str, str]]]:
@@ -4157,6 +4198,7 @@ class JiraConnector(BaseConnector):
         """
         Stream record content (issue, comment, or attachment).
         """
+        # raise ValueError(f"Unsupported record type for streaming")
         try:
             if not self.cloud_id:
                 await self.init()
@@ -4213,6 +4255,28 @@ class JiraConnector(BaseConnector):
                     mime_type=record.mime_type if hasattr(record, 'mime_type') else MimeTypes.UNKNOWN.value,
                     fallback_filename=f"attachment_{attachment_id}",
                     additional_headers=additional_headers
+                )
+
+            elif record.record_type == RecordType.FILTER_SCHEMA:
+                # Stream filter schema blocks
+                content_bytes = await self._process_filter_schema_blockgroups_for_streaming(record)
+                return StreamingResponse(
+                    iter([content_bytes]),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.json"'
+                    }
+                )
+
+            elif record.record_type == RecordType.SAVED_FILTER:
+                # Stream saved filter blocks
+                content_bytes = await self._stream_saved_filter_blocks(record)
+                return StreamingResponse(
+                    iter([content_bytes]),
+                    media_type=MimeTypes.BLOCKS.value,
+                    headers={
+                        "Content-Disposition": f'inline; filename="{record.external_record_id}.json"'
+                    }
                 )
 
             else:
@@ -4312,6 +4376,10 @@ class JiraConnector(BaseConnector):
                 return await self._check_and_fetch_updated_issue(record)
             elif record.record_type == RecordType.FILE:
                 return await self._check_and_fetch_updated_attachment(record)
+            elif record.record_type == RecordType.FILTER_SCHEMA:
+                return await self._check_and_fetch_updated_filter_schema(record)
+            elif record.record_type == RecordType.SAVED_FILTER:
+                return await self._check_and_fetch_updated_saved_filter(record)
             else:
                 self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
                 return None
@@ -4419,6 +4487,7 @@ class JiraConnector(BaseConnector):
                 source_updated_at=current_updated_at,
                 created_at=issue_data["created_at"],
                 updated_at=current_updated_at,
+                inherit_permissions=True,
                 preview_renderable=False,
                 is_dependent_node=False,  # Tickets are not dependent
                 parent_node_id=None,  # Tickets have no parent node
@@ -4552,6 +4621,878 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
             return None
+
+    async def _check_and_fetch_updated_filter_schema(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch filter schema from source for reindexing.
+
+        Filter schema is static (JQL operators/fields), so we just increment version.
+        """
+        try:
+            current_time = get_epoch_timestamp_in_ms()
+            version = record.version + 1 if hasattr(record, 'version') else 1
+
+            schema_record = WebpageRecord(
+                id=record.id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=record.record_name or "Jira JQL Schema",
+                record_type=RecordType.FILTER_SCHEMA,
+                external_record_id=record.external_record_id,
+                version=version,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                mime_type=MimeTypes.BLOCKS.value,
+                weburl=record.weburl if hasattr(record, 'weburl') else None,
+                created_at=record.created_at if hasattr(record, 'created_at') else current_time,
+                updated_at=current_time,
+                source_created_at=record.source_created_at if hasattr(record, 'source_created_at') else current_time,
+                source_updated_at=current_time,
+                preview_renderable=False,
+                is_dependent_node=False,
+                inherit_permissions=False,
+                external_record_group_id=record.external_record_group_id if hasattr(record, 'external_record_group_id') else f"{self.connector_id}_savedfilter",
+                record_group_type=RecordGroupType.SAVED_FILTERS,
+            )
+
+            # Org-level permission
+            org_permission = Permission(
+                type=PermissionType.READ,
+                entity_type=EntityType.ORG,
+                external_id=self.data_entities_processor.org_id,
+            )
+
+            return (schema_record, [org_permission])
+
+        except Exception as e:
+            self.logger.error(f"Error reindexing filter schema {record.external_record_id}: {e}")
+            return None
+
+    async def _check_and_fetch_updated_saved_filter(
+        self, record: Record
+    ) -> Optional[Tuple[Record, List[Permission]]]:
+        """Fetch saved filter from source for reindexing.
+
+        Handles update internally using on_record_content_update + on_updated_record_permissions
+        (same pattern as _process_saved_filter for updates).
+        Returns None since update is handled internally.
+        """
+        try:
+            ext_id = record.external_record_id
+            filter_id = ext_id[7:] if ext_id.startswith("filter_") else ext_id
+
+            # Fetch filter from source
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_filter(
+                id=int(filter_id),
+                expand="jql,owner,sharePermissions,editPermissions,description"
+            )
+
+            if response.status == HttpStatusCode.GONE.value or response.status == HttpStatusCode.BAD_REQUEST.value:
+                self.logger.warning(f"Filter {filter_id} not found at source")
+                return None
+
+            if response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"Failed to fetch filter {filter_id}: HTTP {response.status}")
+                return None
+
+            filter_data = response.json()
+            filter_name = filter_data.get("name", "Unnamed Filter")
+            jql = filter_data.get("jql", "")
+            owner = filter_data.get("owner", {})
+            owner_account_id = owner.get("accountId")
+            share_permissions = filter_data.get("sharePermissions", [])
+            edit_permissions = filter_data.get("editPermissions", [])
+            view_url = filter_data.get("viewUrl", "")
+
+            # Compute content hash
+            content_hash = self._compute_filter_hash(
+                filter_name, jql, owner_account_id, share_permissions, edit_permissions
+            )
+
+            # Compare with stored hash (external_revision_id)
+            if hasattr(record, 'external_revision_id') and record.external_revision_id == content_hash:
+                self.logger.debug(f"Filter {filter_id} has not changed at source")
+                return None
+
+            self.logger.info(f"Filter {filter_id} has changed at source")
+
+            current_time = get_epoch_timestamp_in_ms()
+            version = record.version + 1 if hasattr(record, 'version') else 1
+
+            schema_external_id = f"filter_schema_{self.connector_id}_jql"
+            related_external_records = [
+                RelatedExternalRecord(
+                    external_record_id=schema_external_id,
+                    record_type=RecordType.FILTER_SCHEMA,
+                    relation_type=RecordRelations.HAS_SCHEMA,
+                )
+            ]
+
+            saved_filters_external_id = f"{self.connector_id}_savedfilter"
+
+            filter_record = SavedFilterRecord(
+                id=record.id,
+                org_id=self.data_entities_processor.org_id,
+                record_name=filter_name,
+                record_type=RecordType.SAVED_FILTER,
+                external_record_id=f"filter_{filter_id}",
+                external_revision_id=content_hash,
+                md5_hash=content_hash,
+                version=version,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                mime_type=MimeTypes.BLOCKS.value,
+                weburl=view_url or (f"{self.site_url}/issues/?filter={filter_id}" if self.site_url else None),
+                created_at=record.created_at if hasattr(record, 'created_at') else current_time,
+                updated_at=current_time,
+                source_created_at=record.source_created_at if hasattr(record, 'source_created_at') else current_time,
+                source_updated_at=current_time,
+                preview_renderable=False,
+                is_dependent_node=False,
+                inherit_permissions=False,
+                external_record_group_id=saved_filters_external_id,
+                record_group_type=RecordGroupType.SAVED_FILTERS,
+                query_language=QueryLanguage.JQL,
+                owner_source_id=owner_account_id,
+                related_external_records=related_external_records,
+            )
+
+            # Build permissions
+            permissions = await self._build_saved_filter_permissions(filter_data)
+
+            # Handle update internally (same pattern as _process_saved_filter)
+            # 1. Update record content
+            await self.data_entities_processor.on_record_content_update(filter_record)
+            # 2. Update permissions separately
+            await self.data_entities_processor.on_updated_record_permissions(filter_record, permissions)
+
+            self.logger.info(f"✅ Reindexed saved filter {filter_id}")
+            # Return None since update is handled internally
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Error fetching saved filter {record.external_record_id}: {e}")
+            return None
+
+    # ============================================================================
+    # Filter Sync Methods
+    # ============================================================================
+
+    async def _sync_filters(
+        self,
+        jira_users: List[AppUser] = None,
+        groups_members_map: Dict[str, List[AppUser]] = None,
+    ) -> None:
+        """
+        Sync Jira saved filters and JQL schema.
+
+        Args:
+            jira_users: List of AppUser objects for role member resolution
+            groups_members_map: Mapping of group_id/name -> list of AppUser members
+        """
+        self.logger.info("🔍 Starting Jira filter sync...")
+
+        try:
+            # Ensure Saved Filters record group exists (connector_id + savedfilter), with org permission
+            saved_filters_external_id = f"{self.connector_id}_savedfilter"
+            saved_filters_group = RecordGroup(
+                id=str(uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                name="Saved Filters",
+                external_group_id=saved_filters_external_id,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                group_type=RecordGroupType.SAVED_FILTERS,
+                web_url=f"{self.site_url}/jira/filters" if self.site_url else None,
+                created_at=get_epoch_timestamp_in_ms(),
+                updated_at=get_epoch_timestamp_in_ms(),
+                is_internal=True,
+            )
+            org_permission = Permission(
+                type=PermissionType.READ,
+                entity_type=EntityType.ORG,
+                external_id=self.data_entities_processor.org_id,
+            )
+            await self.data_entities_processor.on_new_record_groups([(saved_filters_group, [org_permission])])
+
+            schema_external_id = f"filter_schema_{self.connector_id}_jql"
+            existing_schema = await self.data_entities_processor.get_record_by_external_id(
+                schema_external_id, self.connector_id
+            )
+
+            if existing_schema:
+                self.logger.debug(f"📋 JQL schema already exists: {schema_external_id}")
+            else:
+                await self._sync_filter_schema()
+            await self._sync_saved_filters(schema_external_id, jira_users, groups_members_map)
+
+            self.logger.info("✅ Jira filter sync completed")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error during filter sync: {e}", exc_info=True)
+            raise
+
+    async def _sync_filter_schema(self) -> None:
+        """
+        Create and save JQL schema record. No existing check; caller does that.
+        Stored in webpages collection (FILTER_SCHEMA mapped to WEBPAGES in arangodb).
+        """
+        try:
+            schema_external_id = f"filter_schema_{self.connector_id}_jql"
+            current_time = get_epoch_timestamp_in_ms()
+            record_id = str(uuid4())
+
+            schema_record = WebpageRecord(
+                id=record_id,
+                org_id=self.data_entities_processor.org_id,
+                record_name="Jira JQL Schema",
+                record_type=RecordType.FILTER_SCHEMA,
+                external_record_id=schema_external_id,
+                version=1,
+                origin=OriginTypes.CONNECTOR,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                mime_type=MimeTypes.BLOCKS.value,
+                weburl=f"{self.site_url}/issues/filters" if self.site_url else None,
+                created_at=current_time,
+                updated_at=current_time,
+                source_created_at=current_time,
+                source_updated_at=current_time,
+                preview_renderable=False,
+                is_dependent_node=False,
+                inherit_permissions=False,
+                external_record_group_id=f"{self.connector_id}_savedfilter",
+                record_group_type=RecordGroupType.SAVED_FILTERS,
+            )
+            if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.SAVED_FILTERS):
+                schema_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+            org_permission = Permission(
+                type=PermissionType.READ,
+                entity_type=EntityType.ORG,
+                external_id=self.data_entities_processor.org_id,
+            )
+            await self.data_entities_processor.on_new_records([(schema_record, [org_permission])])
+            self.logger.info(f"📋 Created JQL schema record: {schema_external_id}")
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing JQL schema: {e}", exc_info=True)
+            raise
+
+    async def _sync_saved_filters(
+        self,
+        schema_external_id: str,
+        jira_users: List[AppUser] = None,
+        groups_members_map: Dict[str, List[AppUser]] = None,
+    ) -> None:
+        """
+        Sync saved JQL filters. Always runs (filters are always synced).
+
+        Args:
+            schema_external_id: External ID of the JQL schema record
+            jira_users: List of AppUser objects for role member resolution
+            groups_members_map: Mapping of group_id/name -> list of AppUser members
+        """
+        try:
+            start_at = 0
+            max_results = DEFAULT_MAX_RESULTS
+            total_synced = 0
+            new_count = 0
+            updated_count = 0
+            skipped_count = 0
+
+            while True:
+                # Fetch filters paginated
+                response = await self.data_source.get_filters_paginated(
+                    startAt=start_at,
+                    maxResults=max_results,
+                    expand="jql,owner,sharePermissions,editPermissions,description"
+                )
+
+                if response.status != HttpStatusCode.OK.value:
+                    self.logger.error(f"Failed to fetch filters: {response.status}")
+                    break
+
+                data = response.json()
+                filters = data.get("values", [])
+
+                if not filters:
+                    break
+
+                for filter_data in filters:
+                    try:
+                        result = await self._process_saved_filter(
+                            filter_data, schema_external_id, jira_users, groups_members_map
+                        )
+                        if result == "new":
+                            new_count += 1
+                            total_synced += 1
+                        elif result == "updated":
+                            updated_count += 1
+                            total_synced += 1
+                        else:
+                            skipped_count += 1
+                    except Exception as e:
+                        self.logger.error(f"Error processing filter {filter_data.get('id')}: {e}")
+                        continue
+
+                # Check if there are more results
+                total = data.get("total", 0)
+                start_at += len(filters)
+
+                if start_at >= total:
+                    break
+
+            self.logger.info(
+                f"📋 Synced {total_synced} saved filters "
+                f"(New: {new_count}, Updated: {updated_count}, Skipped: {skipped_count})"
+            )
+
+        except Exception as e:
+            self.logger.error(f"❌ Error syncing saved filters: {e}", exc_info=True)
+            raise
+
+    async def _get_user_email_by_account_id(self, account_id: str) -> Optional[str]:
+        """
+        Get user by accountId via Jira GET /rest/api/3/user; return emailAddress from user object.
+        emailAddress may be None (e.g. hidden by user/org). Only create USER permission when present.
+        """
+        if not account_id:
+            return None
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_user(accountId=account_id)
+            if response.status != HttpStatusCode.OK.value:
+                return None
+            data = response.json()
+            email = data.get("emailAddress") or data.get("email")
+            return email if email else None
+        except Exception as e:
+            self.logger.debug("Could not fetch user for accountId %s: %s", account_id, e)
+            return None
+
+    async def _get_or_create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
+        """
+        Get existing pseudo-group by accountId or create one if not found.
+
+        Used when building saved filter permissions for a user whose email is not
+        available; when the user later syncs with email, migration will move
+        permissions from this group to the user. The pseudo-group uses the user's
+        accountId as source_user_group_id.
+
+        Args:
+            account_id: Jira user accountId
+
+        Returns:
+            AppUserGroup or None
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=account_id,
+            )
+            if group:
+                return group
+
+        try:
+            pseudo_group = AppUserGroup(
+                app_name=Connectors.JIRA,
+                connector_id=self.connector_id,
+                source_user_group_id=account_id,
+                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
+                org_id=self.data_entities_processor.org_id,
+            )
+            await self.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
+            self.logger.info(f"Created pseudo-group for user without email: {account_id}")
+            return pseudo_group
+        except Exception as e:
+            self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
+            return None
+
+    async def _fetch_project_permissions_for_filter(
+        self,
+        project_key: str,
+        permission_type: PermissionType,
+    ) -> List[Permission]:
+        """
+        Fetch project permissions for a saved filter.
+        Called when filter has project permission without specific role (entire project access).
+        """
+        try:
+            app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+            # Fetch permission scheme (returns READ permissions by default)
+            scheme_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
+
+            # Convert to requested permission_type (READ or WRITE)
+            permissions = []
+            for perm in scheme_permissions:
+                permissions.append(Permission(
+                    entity_type=perm.entity_type,
+                    type=permission_type,
+                    email=perm.email,
+                    external_id=perm.external_id,
+                ))
+
+            return permissions
+
+        except Exception as e:
+            self.logger.warning(f"Failed to fetch project permissions for filter: {project_key}: {e}")
+            return []
+
+    async def _parse_saved_filter_permission_entry(
+        self,
+        perm: Dict[str, Any],
+        permission_type: PermissionType,
+        jira_users: List[AppUser] = None,
+        groups_members_map: Dict[str, List[AppUser]] = None,
+    ) -> List[Permission]:
+        """
+        Parse one Jira share/edit permission entry for saved filters.
+        Uses project roles directly (not application roles).
+        Calls _get_user_email_by_account_id for each user permission.
+
+        Args:
+            perm: Permission entry from Jira API
+            permission_type: READ or WRITE permission type
+            jira_users: List of AppUser objects for role member resolution
+            groups_members_map: Mapping of group_id/name -> list of AppUser members
+        """
+        perm_type = perm.get("type")
+        if not perm_type:
+            return []
+
+        if perm_type == "user":
+            user_obj = perm.get("user") or {}
+            account_id = user_obj.get("accountId")
+            if not account_id:
+                return []
+            email = await self._get_user_email_by_account_id(account_id)
+            if email:
+                return [
+                    Permission(
+                        entity_type=EntityType.USER,
+                        type=permission_type,
+                        email=email,
+                    )
+                ]
+            # No email (e.g. not public) - use pseudo-group so we can migrate when email appears
+            pseudo_group = await self._get_or_create_pseudo_group(account_id)
+            if pseudo_group:
+                return [
+                    Permission(
+                        entity_type=EntityType.GROUP,
+                        type=permission_type,
+                        external_id=account_id,
+                    )
+                ]
+            return []
+
+        if perm_type == "group":
+            group_obj = perm.get("group") or {}
+            group_id = group_obj.get("groupId")
+            if not group_id:
+                return []
+            return [
+                Permission(
+                    entity_type=EntityType.GROUP,
+                    type=permission_type,
+                    external_id=group_id,
+                )
+            ]
+
+        if perm_type == "project":
+            project_obj = perm.get("project") or {}
+            project_key = project_obj.get("key")
+            if not project_key:
+                return []
+
+            # STEP 1: Always sync project roles first (ensures role nodes exist in DB with members)
+            await self._sync_project_roles([project_key], jira_users, groups_members_map)
+
+            # STEP 2: Check if specific role or entire project
+            role_obj = perm.get("role")
+            if role_obj:
+                # Specific role - return single permission
+                role_id = role_obj.get("id")
+                if role_id is not None:
+                    return [
+                        Permission(
+                            entity_type=EntityType.ROLE,
+                            type=permission_type,
+                            external_id=f"{project_key}_{role_id}",
+                        )
+                    ]
+                return []
+
+            # No role specified - fetch all project permissions
+            return await self._fetch_project_permissions_for_filter(project_key, permission_type)
+
+        if perm_type in ("loggedin", "global"):
+            return [
+                Permission(
+                    entity_type=EntityType.ORG,
+                    type=permission_type,
+                    external_id=self.data_entities_processor.org_id,
+                )
+            ]
+
+        return []
+
+    async def _build_saved_filter_permissions(
+        self,
+        filter_data: Dict[str, Any],
+        jira_users: List[AppUser] = None,
+        groups_members_map: Dict[str, List[AppUser]] = None,
+    ) -> List[Permission]:
+        """
+        Build list of Permission from sharePermissions (READ) and editPermissions (WRITE).
+        Simple logic:
+        1. Owner always gets WRITE (owner access).
+        2. Parse sharePermissions and editPermissions directly (API returns unique, no dedup needed).
+
+        Args:
+            filter_data: Filter data from Jira API
+            jira_users: List of AppUser objects for role member resolution
+            groups_members_map: Mapping of group_id/name -> list of AppUser members
+        """
+        share_perms = filter_data.get("sharePermissions") or []
+        edit_perms = filter_data.get("editPermissions") or []
+        owner = filter_data.get("owner") or {}
+        owner_account_id = owner.get("accountId")
+
+        permissions: List[Permission] = []
+
+        # Step 1: Parse share permissions (READ)
+        for perm in share_perms:
+            parsed = await self._parse_saved_filter_permission_entry(
+                perm, PermissionType.READ, jira_users, groups_members_map
+            )
+            permissions.extend(parsed)
+
+        # Step 2: Parse edit permissions (WRITE)
+        for perm in edit_perms:
+            parsed = await self._parse_saved_filter_permission_entry(
+                perm, PermissionType.WRITE, jira_users, groups_members_map
+            )
+            permissions.extend(parsed)
+
+        # Step 3: Owner always has owner access (OWNER)
+        if owner_account_id:
+            owner_email = await self._get_user_email_by_account_id(owner_account_id)
+            if owner_email:
+                permissions.append(Permission(
+                    entity_type=EntityType.USER,
+                    type=PermissionType.OWNER,
+                    email=owner_email,
+                ))
+            else:
+                # No email (e.g. not public) - use pseudo-group so we can migrate when email appears
+                pseudo_group = await self._get_or_create_pseudo_group(owner_account_id)
+                if pseudo_group:
+                    permissions.append(Permission(
+                        entity_type=EntityType.GROUP,
+                        type=PermissionType.OWNER,
+                        external_id=owner_account_id,
+                    ))
+
+        return permissions
+
+    async def _process_saved_filter(
+        self,
+        filter_data: Dict[str, Any],
+        schema_external_id: str,
+        jira_users: List[AppUser] = None,
+        groups_members_map: Dict[str, List[AppUser]] = None,
+    ) -> str:
+        """
+        Process a single saved filter.
+
+        Args:
+            filter_data: Filter data from Jira API
+            schema_external_id: External ID of the JQL schema record
+            jira_users: List of AppUser objects for role member resolution
+            groups_members_map: Mapping of group_id/name -> list of AppUser members
+
+        Returns:
+            "new" if created new record
+            "updated" if updated existing record
+            "skipped" if unchanged
+        """
+        filter_id = str(filter_data.get("id", ""))
+        filter_name = filter_data.get("name", "Unnamed Filter")
+        jql = filter_data.get("jql", "")
+        owner = filter_data.get("owner", {})
+        owner_account_id = owner.get("accountId")
+        share_permissions = filter_data.get("sharePermissions", [])
+        view_url = filter_data.get("viewUrl", "")
+
+        edit_permissions = filter_data.get("editPermissions", [])
+        content_hash = self._compute_filter_hash(
+            filter_name, jql, owner_account_id, share_permissions, edit_permissions
+        )
+
+        # Check if filter already exists (hash stored as external_revision_id for skip check)
+        existing_record = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id,
+            external_record_id=f"filter_{filter_id}"
+        )
+
+        if existing_record:
+            existing_hash = existing_record.external_revision_id
+            if existing_hash and content_hash == existing_hash:
+                return "skipped"
+
+        # Create or update record
+        current_time = get_epoch_timestamp_in_ms()
+        record_id = existing_record.id if existing_record else str(uuid4())
+        version = (existing_record.version + 1) if existing_record else 1
+
+        related_external_records = [
+            RelatedExternalRecord(
+                external_record_id=schema_external_id,
+                record_type=RecordType.FILTER_SCHEMA,
+                relation_type=RecordRelations.HAS_SCHEMA,
+            )
+        ]
+
+        saved_filters_external_id = f"{self.connector_id}_savedfilter"
+
+        filter_record = SavedFilterRecord(
+            id=record_id,
+            org_id=self.data_entities_processor.org_id,
+            record_name=filter_name,
+            record_type=RecordType.SAVED_FILTER,
+            external_record_id=f"filter_{filter_id}",
+            external_revision_id=content_hash,
+            md5_hash=content_hash,
+            version=version,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+            weburl=view_url or (f"{self.site_url}/issues/?filter={filter_id}" if self.site_url else None),
+            created_at=current_time,
+            updated_at=current_time,
+            source_created_at=current_time,
+            source_updated_at=current_time,
+            preview_renderable=False,
+            is_dependent_node=False,
+            inherit_permissions=False,
+            external_record_group_id=saved_filters_external_id,
+            record_group_type=RecordGroupType.SAVED_FILTERS,
+            query_language=QueryLanguage.JQL,
+            owner_source_id=owner.get("accountId"),
+            related_external_records=related_external_records,
+        )
+
+        # Set indexing status based on filters
+        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.SAVED_FILTERS):
+            filter_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
+        permissions = await self._build_saved_filter_permissions(
+            filter_data, jira_users, groups_members_map
+        )
+
+        if existing_record:
+            # UPDATE: record exists and hash changed
+            # 1. Update record content
+            await self.data_entities_processor.on_record_content_update(filter_record)
+            # 2. Update permissions separately
+            await self.data_entities_processor.on_updated_record_permissions(filter_record, permissions)
+            return "updated"
+        else:
+            # NEW: create record with permissions
+            await self.data_entities_processor.on_new_records([(filter_record, permissions)])
+            return "new"
+
+    def _compute_filter_hash(
+        self,
+        name: str,
+        jql: str,
+        owner_account_id: str,
+        share_permissions: List[Dict[str, Any]],
+        edit_permissions: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        """
+        Compute SHA256 hash of filter content for change detection.
+        """
+        content = {
+            "name": name,
+            "jql": jql,
+            "owner_account_id": owner_account_id,
+            "sharePermissions": share_permissions,
+            "editPermissions": edit_permissions or [],
+        }
+        content_str = json.dumps(content, sort_keys=True)
+        return hashlib.sha256(content_str.encode()).hexdigest()
+
+    async def _process_filter_schema_blockgroups_for_streaming(self, record: Record) -> bytes:
+        """
+        Build filter schema for streaming: saved filters only as examples.
+
+        Used as context for the LLM when the tool creates JQL from natural language. Saved filter
+        examples (name + JQL) help the LLM produce correct JQL and fetch records from the Jira API.
+
+        Returns BlocksContainer with one BlockGroup "Saved filter examples" and one Block per saved filter,
+        each block with parent_index pointing to that group.
+        """
+        block_groups: List[BlockGroup] = []
+        blocks: List[Block] = []
+        base_id = record.external_record_id
+
+        example_block_indices: List[int] = []
+        try:
+            datasource = await self._get_fresh_datasource()
+            start_at = 0
+            max_results = 50
+            block_index = 0
+            while True:
+                resp = await datasource.get_filters_paginated(
+                    startAt=start_at,
+                    maxResults=max_results,
+                    expand="jql,description",
+                )
+                if resp.status != HttpStatusCode.OK.value:
+                    break
+                data = resp.json()
+                values = data.get("values", []) or []
+                if not values:
+                    break
+                for filter_data in values:
+                    jql = filter_data.get("jql") or ""
+                    if not jql:
+                        continue
+                    filter_name = filter_data.get("name", f"Filter {filter_data.get('id', block_index)}")
+                    filter_description = (filter_data.get("description") or "").strip()
+                    # Include name and description in block data so indexing/tool can match user intent
+                    # (e.g. "my open tickets") to this filter and use the JQL for the tool call
+                    parts = [f"**Name:** {filter_name}"]
+                    if filter_description:
+                        parts.append(f"**Description:** {filter_description}")
+                    parts.append(f"```jql\n{jql}\n```")
+                    block_data_markdown = "\n\n".join(parts)
+                    block = Block(
+                        id=str(uuid4()),
+                        index=block_index,
+                        parent_index=0,
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.QUERY,
+                        name=filter_name,
+                        format=DataFormat.MARKDOWN,
+                        data=block_data_markdown,
+                    )
+                    blocks.append(block)
+                    example_block_indices.append(block_index)
+                    block_index += 1
+                total = data.get("total", 0)
+                start_at += len(values)
+                if start_at >= total:
+                    break
+            self.logger.debug(f"Fetched {len(blocks)} saved filters as examples")
+        except Exception as e:
+            self.logger.warning(f"Could not fetch saved filters for schema examples: {e}")
+
+        examples_description = (
+            "Example saved filters (name and JQL). Use these as reference when building JQL from natural language."
+        )
+        block_groups.append(BlockGroup(
+            id=str(uuid4()),
+            index=0,
+            name="Saved filter examples",
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.CONTENT,
+            description=examples_description,
+            source_group_id=f"{base_id}_examples",
+            children=BlockGroupChildren.from_indices(block_indices=example_block_indices) if example_block_indices else None,
+            format=DataFormat.MARKDOWN,
+            requires_processing=False,
+        ))
+
+        blocks_container = BlocksContainer(block_groups=block_groups, blocks=blocks)
+        return blocks_container.model_dump_json(indent=2).encode("utf-8")
+
+    async def _stream_saved_filter_blocks(self, record: Record) -> bytes:
+        """
+        Stream saved filter as BlocksContainer with a parent BlockGroup and one Block.
+
+        BlockGroup (index=0): name and description from the filter.
+        Block (index=0): JQL query with parent_index=0 pointing to the BlockGroup.
+
+        Args:
+            record: SavedFilterRecord to stream
+
+        Returns:
+            bytes: Serialized BlocksContainer as JSON bytes
+        """
+        ext_id = record.external_record_id
+        filter_id = ext_id[7:] if ext_id.startswith("filter_") else ext_id
+
+        # Fetch filter details from API
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_filter(
+                id=int(filter_id),
+                expand="jql,description"
+            )
+
+            if response.status != HttpStatusCode.OK.value:
+                raise Exception(f"Failed to fetch filter: {response.status}")
+
+            filter_data = response.json()
+        except Exception as e:
+            self.logger.error(f"Error fetching filter {filter_id} for streaming: {e}")
+            filter_data = {}
+
+        filter_name = filter_data.get("name", record.record_name)
+        filter_description = (filter_data.get("description") or "").strip()
+        jql = filter_data.get("jql") or ""
+
+        # Block data: name, description, and JQL in markdown (same as filter schema examples)
+        # so indexing/tool can match user intent and use the JQL for the tool call
+        parts = [f"**Name:** {filter_name}"]
+        if filter_description:
+            parts.append(f"**Description:** {filter_description}")
+        if jql:
+            parts.append(f"```jql\n{jql}\n```")
+        block_data_markdown = "\n\n".join(parts) if parts else ""
+
+        block_group_index = 0
+        block_index = 0
+
+        # Parent BlockGroup: name and description of the filter
+        block_group = BlockGroup(
+            id=str(uuid4()),
+            index=block_group_index,
+            name=filter_name,
+            type=GroupType.TEXT_SECTION,
+            sub_type=GroupSubType.CONTENT,
+            description=filter_description,
+            source_group_id=f"{filter_id}_filter",
+            format=DataFormat.MARKDOWN,
+            requires_processing=False,
+            children=BlockGroupChildren.from_indices(block_indices=[block_index]),
+        )
+
+        # Block: name, description, and JQL in markdown with parent_index pointing to the BlockGroup
+        block = Block(
+            id=str(uuid4()),
+            index=block_index,
+            parent_index=block_group_index,
+            type=BlockType.TEXT,
+            sub_type=BlockSubType.QUERY,
+            name=filter_name,
+            format=DataFormat.MARKDOWN,
+            weburl=record.weburl if hasattr(record, 'weburl') else None,
+            data=block_data_markdown,
+        )
+
+        blocks_container = BlocksContainer(block_groups=[block_group], blocks=[block])
+
+        blocks_json = blocks_container.model_dump_json(indent=2)
+        return blocks_json.encode('utf-8')
 
     @classmethod
     async def create_connector(

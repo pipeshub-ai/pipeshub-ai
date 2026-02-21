@@ -51,6 +51,7 @@ class BlockSubType(str, Enum):
     EQUATION = "equation"
     DIVIDER = "divider"
     LINK = "link"
+    QUERY = "query"  # Query block (e.g., JQL, SQL filters)
 
 class DataFormat(str, Enum):
     TXT = "txt"
