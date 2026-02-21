@@ -62,6 +62,13 @@ class Neo4jLabel(Enum):
     # Teams
     TEAMS = "Teams"
 
+    # Agent Builder collections
+    AGENT_TEMPLATES = "AgentTemplate"
+    AGENT_INSTANCES = "AgentInstance"
+    AGENT_KNOWLEDGE = "AgentKnowledge"
+    AGENT_TOOLSETS = "AgentToolset"
+    AGENT_TOOLS = "AgentTool"
+
 
 class Neo4jRelationshipType(Enum):
     """Neo4j relationship types mapped from ArangoDB edge collections"""
@@ -77,6 +84,11 @@ class Neo4jRelationshipType(Enum):
     BELONGS_TO_CATEGORY = "BELONGS_TO_CATEGORY"
     BELONGS_TO_LANGUAGE = "BELONGS_TO_LANGUAGE"
     BELONGS_TO_TOPIC = "BELONGS_TO_TOPIC"
+
+    # Agent Builder relationships
+    AGENT_HAS_KNOWLEDGE = "AGENT_HAS_KNOWLEDGE"
+    AGENT_HAS_TOOLSET = "AGENT_HAS_TOOLSET"
+    TOOLSET_HAS_TOOL = "TOOLSET_HAS_TOOL"
 
 
 # Mapping from ArangoDB CollectionNames to Neo4j Labels
@@ -114,6 +126,12 @@ COLLECTION_TO_LABEL: Dict[str, str] = {
     CollectionNames.TOPICS.value: Neo4jLabel.TOPICS.value,
     # Teams
     CollectionNames.TEAMS.value: Neo4jLabel.TEAMS.value,
+    # Agent Builder collections
+    CollectionNames.AGENT_TEMPLATES.value: Neo4jLabel.AGENT_TEMPLATES.value,
+    CollectionNames.AGENT_INSTANCES.value: Neo4jLabel.AGENT_INSTANCES.value,
+    CollectionNames.AGENT_KNOWLEDGE.value: Neo4jLabel.AGENT_KNOWLEDGE.value,
+    CollectionNames.AGENT_TOOLSETS.value: Neo4jLabel.AGENT_TOOLSETS.value,
+    CollectionNames.AGENT_TOOLS.value: Neo4jLabel.AGENT_TOOLS.value,
 }
 
 # Mapping from ArangoDB edge collections to Neo4j relationship types
@@ -130,6 +148,10 @@ EDGE_COLLECTION_TO_RELATIONSHIP: Dict[str, str] = {
     CollectionNames.BELONGS_TO_CATEGORY.value: Neo4jRelationshipType.BELONGS_TO_CATEGORY.value,
     CollectionNames.BELONGS_TO_LANGUAGE.value: Neo4jRelationshipType.BELONGS_TO_LANGUAGE.value,
     CollectionNames.BELONGS_TO_TOPIC.value: Neo4jRelationshipType.BELONGS_TO_TOPIC.value,
+    # Agent Builder relationships
+    CollectionNames.AGENT_HAS_KNOWLEDGE.value: Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value,
+    CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,
+    CollectionNames.TOOLSET_HAS_TOOL.value: Neo4jRelationshipType.TOOLSET_HAS_TOOL.value,
 }
 
 

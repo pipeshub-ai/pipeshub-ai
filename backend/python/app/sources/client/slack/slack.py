@@ -217,6 +217,61 @@ class SlackClient(IClient):
             logger.error(f"Failed to build Slack client from services: {str(e)}")
             raise
 
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        logger: logging.Logger,
+    ) -> 'SlackClient':
+        """
+        Build SlackClient using toolset configuration from etcd.
+
+        NEW ARCHITECTURE: This method uses toolset configs directly instead of
+        connector instance configs. Toolset configs are stored per-user at:
+        /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+
+        Returns:
+            SlackClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for Slack client")
+
+            # Extract auth configuration from toolset config
+            auth_config = toolset_config.get("auth", {}) or {}
+            credentials_config = toolset_config.get("credentials", {}) or {}
+            auth_type = auth_config.get("type", "userOAuthAccessToken")
+
+            # Create appropriate client based on auth type
+            if auth_type == "OAUTH":
+                # For OAuth/token-based auth, use the OAuth access token
+                token = credentials_config.get("access_token", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+                client = SlackRESTClientViaToken(token)
+
+            elif auth_type == "API_TOKEN":
+                # For API_TOKEN (bot token), use the api_token from auth config
+                # API_TOKEN is typically a bot token like "xoxb-..." stored in auth_config
+                token = auth_config.get("api_token", "") or auth_config.get("apiToken", "")
+                if not token:
+                    raise ValueError("API token required for API_TOKEN auth type")
+                client = SlackRESTClientViaToken(token)
+
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+
+            logger.info(f"Built Slack client from toolset config with auth type: {auth_type}")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Slack client from toolset config: {str(e)}")
+            raise
+
     @staticmethod
     async def _get_connector_config(
         logger: logging.Logger,

@@ -11,6 +11,7 @@ import {
   CircularProgress,
   Alert,
   Snackbar,
+  Skeleton,
 } from '@mui/material';
 import { Iconify } from 'src/components/iconify';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
@@ -114,7 +115,6 @@ export default function PromptsSettings() {
         elevation={0}
         sx={{
           overflow: 'hidden',
-          position: 'relative',
           p: { xs: 2, md: 3 },
           borderRadius: 1,
           border: '1px solid',
@@ -124,27 +124,6 @@ export default function PromptsSettings() {
             : theme.palette.background.paper,
         }}
       >
-        {/* Loading overlay */}
-        {loading && (
-          <Box
-            sx={{
-              position: 'absolute',
-              top: 0,
-              left: 0,
-              right: 0,
-              bottom: 0,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              backgroundColor: alpha(theme.palette.background.paper, 0.7),
-              backdropFilter: 'blur(4px)',
-              zIndex: 10,
-            }}
-          >
-            <CircularProgress size={28} />
-          </Box>
-        )}
-
         {/* Header section */}
         <Box
           sx={{
@@ -200,7 +179,46 @@ export default function PromptsSettings() {
           </Alert>
         )}
 
-        <Stack spacing={3}>
+        {loading ? (
+          /* Loading Skeletons */
+          <Stack spacing={3}>
+            {/* Header Skeleton */}
+            <Box>
+              <Skeleton variant="text" width="40%" height={32} sx={{ mb: 1 }} />
+              <Skeleton variant="text" width="60%" height={24} />
+            </Box>
+
+            {/* System Prompt Section Skeleton */}
+            <Box>
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5, mb: 2 }}>
+                <Skeleton variant="circular" width={40} height={40} />
+                <Box sx={{ flex: 1 }}>
+                  <Skeleton variant="text" width="25%" height={24} sx={{ mb: 0.5 }} />
+                  <Skeleton variant="text" width="50%" height={20} />
+                </Box>
+              </Box>
+              <Box
+                sx={{
+                  p: 2.5,
+                  borderRadius: 1,
+                  bgcolor: isDark
+                    ? alpha(theme.palette.background.default, 0.3)
+                    : alpha(theme.palette.grey[50], 0.8),
+                  border: `1px solid ${theme.palette.divider}`,
+                }}
+              >
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
+                  <Skeleton variant="text" width="30%" height={20} />
+                  <Skeleton variant="rectangular" width={140} height={32} sx={{ borderRadius: 1 }} />
+                </Box>
+                <Skeleton variant="rectangular" width="100%" height={144} sx={{ borderRadius: 1 }} />
+                <Skeleton variant="text" width="90%" height={16} sx={{ mt: 2 }} />
+                <Skeleton variant="text" width="75%" height={16} />
+              </Box>
+            </Box>
+          </Stack>
+        ) : (
+          <Stack spacing={3}>
           {/* Custom System Prompt Section */}
           <Box>
             <Box
@@ -328,6 +346,7 @@ export default function PromptsSettings() {
             </Box>
           </Box>
         </Stack>
+        )}
 
         <Box sx={{ display: 'flex', justifyContent: 'flex-end', mt: 3 }}>
           {/* Save button */}

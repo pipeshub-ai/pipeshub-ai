@@ -7,12 +7,169 @@ from typing import List, Optional, Tuple
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.gitlab.gitlab import GitLabClient, GitLabResponse
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_project",
+        description="Create a new GitLab project",
+        parameters=[
+            {"name": "name", "type": "string", "description": "Project name", "required": True},
+            {"name": "visibility", "type": "string", "description": "Project visibility", "required": False}
+        ],
+        tags=["projects", "create"]
+    ),
+    ToolDefinition(
+        name="get_project",
+        description="Get details of a project",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True}
+        ],
+        tags=["projects", "read"]
+    ),
+    ToolDefinition(
+        name="update_project",
+        description="Update project settings",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True}
+        ],
+        tags=["projects", "update"]
+    ),
+    ToolDefinition(
+        name="delete_project",
+        description="Delete a project",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True}
+        ],
+        tags=["projects", "delete"]
+    ),
+    ToolDefinition(
+        name="create_issue",
+        description="Create a new issue",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "title", "type": "string", "description": "Issue title", "required": True}
+        ],
+        tags=["issues", "create"]
+    ),
+    ToolDefinition(
+        name="get_issue",
+        description="Get issue details",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "issue_id", "type": "integer", "description": "Issue ID", "required": True}
+        ],
+        tags=["issues", "read"]
+    ),
+    ToolDefinition(
+        name="update_issue",
+        description="Update an issue",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "issue_id", "type": "integer", "description": "Issue ID", "required": True}
+        ],
+        tags=["issues", "update"]
+    ),
+    ToolDefinition(
+        name="delete_issue",
+        description="Delete an issue",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "issue_id", "type": "integer", "description": "Issue ID", "required": True}
+        ],
+        tags=["issues", "delete"]
+    ),
+    ToolDefinition(
+        name="create_merge_request",
+        description="Create a merge request",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "source_branch", "type": "string", "description": "Source branch", "required": True},
+            {"name": "target_branch", "type": "string", "description": "Target branch", "required": True},
+            {"name": "title", "type": "string", "description": "MR title", "required": True}
+        ],
+        tags=["merge-requests", "create"]
+    ),
+    ToolDefinition(
+        name="get_merge_request",
+        description="Get merge request details",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "merge_request_id", "type": "integer", "description": "MR ID", "required": True}
+        ],
+        tags=["merge-requests", "read"]
+    ),
+    ToolDefinition(
+        name="merge_merge_request",
+        description="Merge a merge request",
+        parameters=[
+            {"name": "project_id", "type": "string", "description": "Project ID", "required": True},
+            {"name": "merge_request_id", "type": "integer", "description": "MR ID", "required": True}
+        ],
+        tags=["merge-requests", "merge"]
+    ),
+    ToolDefinition(
+        name="search_projects",
+        description="Search for projects",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["projects", "search"]
+    ),
+]
 
+
+# Register GitLab toolset
+@ToolsetBuilder("GitLab")\
+    .in_group("Development")\
+    .with_description("GitLab integration for repository management, issues, and merge requests")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="GitLab",
+            authorize_url="https://gitlab.com/oauth/authorize",
+            token_url="https://gitlab.com/oauth/token",
+            redirect_uri="toolsets/oauth/callback/gitlab",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "api",
+                    "read_user",
+                    "read_repository",
+                    "write_repository"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("GitLab Application Settings"),
+                CommonFields.client_secret("GitLab Application Settings")
+            ],
+            icon_path="/assets/icons/connectors/gitlab.svg",
+            app_group="Development",
+            app_description="GitLab OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("GitLab Personal Access Token", "glpat-your-token-here")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/gitlab.svg"))\
+    .build_decorator()
 class GitLab:
     """GitLab tools exposed to the agents using GitLabDataSource"""
 

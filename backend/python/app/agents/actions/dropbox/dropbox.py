@@ -2,18 +2,141 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.dropbox.dropbox_ import DropboxClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_account_info",
+        description="Get Dropbox account information",
+        parameters=[],
+        tags=["account", "info"]
+    ),
+    ToolDefinition(
+        name="list_folder",
+        description="List files and folders",
+        parameters=[
+            {"name": "path", "type": "string", "description": "Folder path", "required": False}
+        ],
+        tags=["files", "list"]
+    ),
+    ToolDefinition(
+        name="get_metadata",
+        description="Get file or folder metadata",
+        parameters=[
+            {"name": "path", "type": "string", "description": "File or folder path", "required": True}
+        ],
+        tags=["files", "read"]
+    ),
+    ToolDefinition(
+        name="download_file",
+        description="Download a file",
+        parameters=[
+            {"name": "path", "type": "string", "description": "File path", "required": True}
+        ],
+        tags=["files", "download"]
+    ),
+    ToolDefinition(
+        name="upload_file",
+        description="Upload a file",
+        parameters=[
+            {"name": "path", "type": "string", "description": "File path", "required": True},
+            {"name": "content", "type": "string", "description": "File content", "required": True}
+        ],
+        tags=["files", "upload"]
+    ),
+    ToolDefinition(
+        name="delete_file",
+        description="Delete a file or folder",
+        parameters=[
+            {"name": "path", "type": "string", "description": "File or folder path", "required": True}
+        ],
+        tags=["files", "delete"]
+    ),
+    ToolDefinition(
+        name="create_folder",
+        description="Create a folder",
+        parameters=[
+            {"name": "path", "type": "string", "description": "Folder path", "required": True}
+        ],
+        tags=["folders", "create"]
+    ),
+    ToolDefinition(
+        name="search",
+        description="Search files and folders",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["search"]
+    ),
+    ToolDefinition(
+        name="get_shared_link",
+        description="Get or create a shared link",
+        parameters=[
+            {"name": "path", "type": "string", "description": "File or folder path", "required": True}
+        ],
+        tags=["sharing"]
+    ),
+]
 
+
+# Register Dropbox toolset
+@ToolsetBuilder("Dropbox")\
+    .in_group("Storage")\
+    .with_description("Dropbox integration for file storage and management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Dropbox",
+            authorize_url="https://www.dropbox.com/oauth2/authorize",
+            token_url="https://api.dropboxapi.com/oauth2/token",
+            redirect_uri="toolsets/oauth/callback/dropbox",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "files.content.read",
+                    "files.content.write",
+                    "files.metadata.read",
+                    "sharing.read",
+                    "sharing.write"
+                ]
+            ),
+            fields=[
+                CommonFields.client_id("Dropbox App Console"),
+                CommonFields.client_secret("Dropbox App Console")
+            ],
+            icon_path="/assets/icons/connectors/dropbox.svg",
+            app_group="Storage",
+            app_description="Dropbox OAuth application for agent integration"
+        ),
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("Dropbox Access Token", "sl.your-token-here")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/dropbox.svg"))\
+    .build_decorator()
 class Dropbox:
     """Dropbox tool exposed to the agents"""
     def __init__(self, client: DropboxClient) -> None:

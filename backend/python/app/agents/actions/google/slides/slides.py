@@ -1,24 +1,122 @@
 import asyncio
 import json
 import logging
-from typing import Optional
+from typing import List, Optional
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.slides.slides import GoogleSlidesDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_presentation",
+        description="Get a Google Slides presentation",
+        parameters=[
+            {"name": "presentation_id", "type": "string", "description": "The ID of the presentation to retrieve", "required": True}
+        ],
+        tags=["presentations", "read"]
+    ),
+    ToolDefinition(
+        name="create_presentation",
+        description="Create a new Google Slides presentation",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Title of the presentation", "required": False}
+        ],
+        tags=["presentations", "create"]
+    ),
+    ToolDefinition(
+        name="batch_update_presentation",
+        description="Apply batch updates to a Google Slides presentation",
+        parameters=[
+            {"name": "presentation_id", "type": "string", "description": "The ID of the presentation to update", "required": True},
+            {"name": "requests", "type": "array", "description": "List of update requests to apply", "required": False}
+        ],
+        tags=["presentations", "update"]
+    ),
+    ToolDefinition(
+        name="get_slide_page",
+        description="Get a specific slide page from a presentation",
+        parameters=[
+            {"name": "presentation_id", "type": "string", "description": "The ID of the presentation", "required": True},
+            {"name": "page_object_id", "type": "string", "description": "The object ID of the slide page", "required": True}
+        ],
+        tags=["slides", "read"]
+    ),
+    ToolDefinition(
+        name="get_slide_thumbnail",
+        description="Get a thumbnail of a slide page",
+        parameters=[
+            {"name": "presentation_id", "type": "string", "description": "The ID of the presentation", "required": True},
+            {"name": "page_object_id", "type": "string", "description": "The object ID of the slide page", "required": True},
+            {"name": "mime_type", "type": "string", "description": "MIME type of the thumbnail (e.g., 'image/png')", "required": False},
+            {"name": "thumbnail_size", "type": "string", "description": "Size of the thumbnail (e.g., 'LARGE', 'MEDIUM', 'SMALL')", "required": False}
+        ],
+        tags=["slides", "thumbnail"]
+    ),
+]
+
+
+# Register Google Slides toolset
+@ToolsetBuilder("Slides")\
+    .in_group("Google Workspace")\
+    .with_description("Google Slides integration for presentation management and creation")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Slides",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/slides",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/presentations",
+                    "https://www.googleapis.com/auth/presentations.readonly"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/slides.svg",
+            app_group="Google Workspace",
+            app_description="Slides OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/slides.svg"))\
+    .build_decorator()
 class GoogleSlides:
-    """Google Slides tool exposed to the agents using GoogleSlidesDataSource"""
+    """Slides tool exposed to the agents using SlidesDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Slides tool"""
         """
         Args:
-            client: Google Slides client
+            client: Slides client
         Returns:
             None
         """

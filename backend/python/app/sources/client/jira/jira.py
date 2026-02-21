@@ -338,3 +338,68 @@ class JiraClient(IClient):
         except Exception as e:
             logger.error(f"Failed to get Jira connector config: {e}")
             raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")
+
+    # =========================================================================
+    # TOOLSET-BASED CLIENT CREATION (New Architecture)
+    # =========================================================================
+
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        logger: logging.Logger,
+    ) -> "JiraClient":
+        """
+        Build JiraClient from toolset configuration stored in etcd.
+
+        This is the new architecture for creating clients - toolset configs
+        are stored per-user at /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration from etcd containing:
+                - auth: { type, clientId, clientSecret } for OAuth
+                - auth: { type, bearerToken } for Bearer Token
+                - credentials: { access_token, refresh_token } for OAuth
+                - isAuthenticated: bool
+            logger: Logger instance
+
+        Returns:
+            JiraClient instance
+
+        Raises:
+            ValueError: If configuration is invalid or missing required fields
+        """
+        if not toolset_config:
+            raise ValueError("Toolset configuration is required")
+
+        auth_config = toolset_config.get("auth", {})
+        credentials_config = toolset_config.get("credentials", {})
+        is_authenticated = toolset_config.get("isAuthenticated", False)
+
+        if not is_authenticated:
+            raise ValueError("Toolset is not authenticated. Please complete authentication first.")
+
+        auth_type = auth_config.get("type", "").upper()
+
+        try:
+            if auth_type == "OAUTH":
+                # OAuth authentication - use access_token from credentials
+                access_token = credentials_config.get("access_token", "")
+                if not access_token:
+                    raise ValueError("Access token not found in OAuth credentials. Please re-authenticate.")
+
+                base_url = await cls.get_jira_base_url(access_token)
+                if not base_url:
+                    raise ValueError("Failed to get Jira base URL")
+
+                client = JiraRESTClientViaToken(base_url, access_token)
+
+            else:
+                raise ValueError(f"Unsupported auth type: {auth_type}. Supported: OAUTH, BEARER_TOKEN, API_TOKEN")
+
+            logger.info(f"Created Jira client from toolset config (auth type: {auth_type})")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Jira client from toolset: {e}")
+            raise ValueError(f"Failed to create Jira client: {str(e)}") from e

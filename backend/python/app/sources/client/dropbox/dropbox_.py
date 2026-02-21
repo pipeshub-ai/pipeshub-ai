@@ -287,6 +287,67 @@ class DropboxClient(IClient):
             logger.error(f"Failed to build Dropbox client from services: {str(e)}")
             raise
 
+    @classmethod
+    async def build_from_toolset(
+        cls,
+        toolset_config: Dict[str, Any],
+        logger: logging.Logger,
+    ) -> "DropboxClient":
+        """
+        Build DropboxClient using toolset configuration from etcd.
+
+        NEW ARCHITECTURE: This method uses toolset configs directly instead of
+        connector instance configs. Toolset configs are stored per-user at:
+        /services/toolsets/{user_id}/{toolset_type}
+
+        Args:
+            toolset_config: Toolset configuration dictionary from etcd
+            logger: Logger instance
+
+        Returns:
+            DropboxClient instance
+        """
+        try:
+            if not toolset_config:
+                raise ValueError("Toolset config is required for Dropbox client")
+
+            # Extract auth configuration from toolset config
+            auth_config = toolset_config.get("auth", {}) or {}
+            auth_type = auth_config.get("type", "APP_KEY_SECRET")
+
+            # Create appropriate client based on auth type
+            if auth_type == "APP_KEY_SECRET":
+                app_key = auth_config.get("appKey", "")
+                app_secret = auth_config.get("appSecret", "")
+                timeout = auth_config.get("timeout", None)
+                is_team = auth_config.get("isTeam", False)
+                if not app_key or not app_secret:
+                    raise ValueError("App key and app secret required for app_key_secret auth type")
+
+                app_config = DropboxAppKeySecretConfig(
+                    app_key=app_key,
+                    app_secret=app_secret,
+                    timeout=timeout
+                )
+                client = await app_config.create_client(is_team=is_team)
+
+            elif auth_type == "OAUTH":
+                is_team = auth_config.get("isTeam", False)
+                access_token = auth_config.get("accessToken") or auth_config.get("access_token", "")
+                if not access_token:
+                    raise ValueError("Access token required for OAuth auth type")
+                client = await DropboxTokenConfig(token=access_token).create_client(is_team=is_team)
+
+            else:
+                raise ValueError(f"Unsupported auth type: {auth_type}")
+
+            logger.info(f"Built Dropbox client from toolset config with auth type: {auth_type}")
+            return cls(client)
+
+        except Exception as e:
+            logger.error(f"Failed to build Dropbox client from toolset config: {str(e)}")
+            raise
+
     @staticmethod
     async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
         """Fetch connector config from etcd for Dropbox."""

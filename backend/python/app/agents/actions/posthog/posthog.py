@@ -2,17 +2,95 @@ import asyncio
 import json
 import logging
 import threading
-from typing import Coroutine, Optional, Tuple
+from typing import Coroutine, List, Optional, Tuple
 
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.posthog.posthog import PostHogClient
 from app.sources.external.posthog.posthog import PostHogDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="capture_event",
+        description="Capture an event",
+        parameters=[
+            {"name": "event_name", "type": "string", "description": "Event name", "required": True},
+            {"name": "properties", "type": "object", "description": "Event properties", "required": False}
+        ],
+        tags=["events", "capture"]
+    ),
+    ToolDefinition(
+        name="get_event",
+        description="Get event details",
+        parameters=[
+            {"name": "event_id", "type": "string", "description": "Event ID", "required": True}
+        ],
+        tags=["events", "read"]
+    ),
+    ToolDefinition(
+        name="get_person",
+        description="Get person details",
+        parameters=[
+            {"name": "person_id", "type": "string", "description": "Person ID", "required": True}
+        ],
+        tags=["persons", "read"]
+    ),
+    ToolDefinition(
+        name="update_person",
+        description="Update person properties",
+        parameters=[
+            {"name": "person_id", "type": "string", "description": "Person ID", "required": True},
+            {"name": "properties", "type": "object", "description": "Person properties", "required": True}
+        ],
+        tags=["persons", "update"]
+    ),
+    ToolDefinition(
+        name="delete_person",
+        description="Delete a person",
+        parameters=[
+            {"name": "person_id", "type": "string", "description": "Person ID", "required": True}
+        ],
+        tags=["persons", "delete"]
+    ),
+    ToolDefinition(
+        name="search_events",
+        description="Search for events",
+        parameters=[
+            {"name": "query", "type": "string", "description": "Search query", "required": True}
+        ],
+        tags=["events", "search"]
+    ),
+]
 
+
+# Register PostHog toolset
+@ToolsetBuilder("PostHog")\
+    .in_group("Analytics")\
+    .with_description("PostHog integration for product analytics and event tracking")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("PostHog API Key", "phc_your-api-key"),
+            CommonFields.api_token("PostHog Project API Key", "phx_your-project-key", field_name="projectApiKey")
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/posthog.svg"))\
+    .build_decorator()
 class PostHog:
     """PostHog tools exposed to agents using PostHogDataSource.
 

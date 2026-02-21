@@ -1,12 +1,38 @@
 import logging
 
+from pydantic import BaseModel, Field
+
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agents.tools.models import ToolIntent
+from app.connectors.core.registry.auth_builder import AuthBuilder
+from app.connectors.core.registry.tool_builder import (
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 
 logger = logging.getLogger(__name__)
 
+class CalculatorSingleOperandInput(BaseModel):
+    a: float = Field(description="The first number")
+    operation: str = Field(description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)")
 
+class CalculatorTwoOperandsInput(BaseModel):
+    a: float = Field(description="The first number")
+    b: float = Field(description="The second number")
+    operation: str = Field(description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'")
+
+# Register Calculator toolset (internal - always available, no auth required, backend-only)
+@ToolsetBuilder("Calculator")\
+    .in_group("Internal Tools")\
+    .with_description("Mathematical calculator tool - always available, no authentication required")\
+    .with_category(ToolsetCategory.UTILITY)\
+    .with_auth([
+        AuthBuilder.type("NONE").fields([])
+    ])\
+    .as_internal()\
+    .configure(lambda builder: builder.with_icon("/assets/icons/toolsets/calculator.svg"))\
+    .build_decorator()
 class Calculator:
     """Calculator tool exposed to the agents"""
     def __init__(self) -> None:
@@ -30,21 +56,29 @@ class Calculator:
     @tool(
         app_name="calculator",
         tool_name="calculate_single_operand",
-        parameters=[
-            ToolParameter(
-                name="a",
-                type=ParameterType.NUMBER,
-                description="The first number",
-                required=True
-                ),
-            ToolParameter(
-                name="operation",
-                type=ParameterType.STRING,
-                description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)",
-                required=True
-                )
-            ]
-        )
+        args_schema=CalculatorSingleOperandInput,
+        llm_description="Calculate the result of a mathematical operation with a single operand (square root, cube root)",
+        category=ToolCategory.UTILITY,
+        is_essential=True,
+        requires_auth=False,
+        when_to_use=[
+            "User wants to calculate the square root of a number",
+            "User wants to calculate the cube root of a number",
+        ],
+        when_not_to_use=[
+            "User wants to calculate the result of a mathematical operation with two operands",
+        ],
+        primary_intent=ToolIntent.QUESTION,
+        typical_queries=[
+            "Calculate the square root of 16",
+            "Calculate the cube root of 27",
+            "Calculate the result of 16 + 27",
+            "Calculate the result of 16 - 27",
+            "Calculate the result of 16 * 27",
+            "Calculate the result of 16 / 27",
+            "Calculate the result of 16 ^ 27",
+        ]
+    )
     def calculate_single_operand(self, a: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:
@@ -64,27 +98,26 @@ class Calculator:
     @tool(
         app_name="calculator",
         tool_name="calculate_two_operands",
-        parameters=[
-            ToolParameter(
-                name="a",
-                type=ParameterType.NUMBER,
-                description="The first number",
-                required=True
-                ),
-            ToolParameter(
-                name="b",
-                type=ParameterType.NUMBER,
-                description="The second number",
-                required=True
-                ),
-            ToolParameter(
-                name="operation",
-                type=ParameterType.STRING,
-                description="Mathematical operation: 'add', 'subtract', 'multiply', 'divide', 'power'",
-                required=True
-                )
-            ]
-        )
+        args_schema=CalculatorTwoOperandsInput,
+        llm_description="Calculate the result of a mathematical operation with two operands (add, subtract, multiply, divide, power)",
+        category=ToolCategory.UTILITY,
+        is_essential=True,
+        requires_auth=False,
+        when_to_use=[
+            "User wants to calculate the result of a mathematical operation with two operands",
+        ],
+        when_not_to_use=[
+            "User wants to calculate the result of a mathematical operation with a single operand",
+        ],
+        primary_intent=ToolIntent.QUESTION,
+        typical_queries=[
+            "Calculate the result of 16 + 27",
+            "Calculate the result of 16 - 27",
+            "Calculate the result of 16 * 27",
+            "Calculate the result of 16 / 27",
+            "Calculate the result of 16 ^ 27",
+        ]
+    )
     def calculate_two_operands(self, a: float, b: float, operation: str) -> float:
         """Calculate the result of a mathematical operation
         Args:

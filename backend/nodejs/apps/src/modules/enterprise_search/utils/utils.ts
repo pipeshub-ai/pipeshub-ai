@@ -129,8 +129,12 @@ export const buildAIResponseMessage = (
 
   // Include referenceData if present (IDs for follow-up queries)
   // This stores technical IDs that were in the response for later reference
+  // Filter out invalid items (must have name and at least key or id)
   if (aiResponse.data.referenceData && Array.isArray(aiResponse.data.referenceData)) {
-    message.referenceData = aiResponse.data.referenceData;
+    message.referenceData = aiResponse.data.referenceData.filter((item) => {
+      // Ensure item has name and at least one of key or id (id can be optional)
+      return item && item.name;
+    });
   }
 
   return message;

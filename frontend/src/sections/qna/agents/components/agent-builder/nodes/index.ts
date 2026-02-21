@@ -12,4 +12,5 @@ export * from './BaseNode';
 export * from './NodeHandles';
 export * from './NodeIcon';
 export * from './NodeActions';
+export * from './ToolsetNode';
 

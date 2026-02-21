@@ -185,6 +185,16 @@ class CollectionNames(Enum):
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
 
+    # Agent Builder Graph collections
+    AGENT_KNOWLEDGE = "agentKnowledge"
+    AGENT_TOOLSETS = "agentToolsets"
+    AGENT_TOOLS = "agentTools"
+
+    # Agent Builder Graph edges
+    AGENT_HAS_KNOWLEDGE = "agentHasKnowledge"
+    AGENT_HAS_TOOLSET = "agentHasToolset"
+    TOOLSET_HAS_TOOL = "toolsetHasTool"
+
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
 

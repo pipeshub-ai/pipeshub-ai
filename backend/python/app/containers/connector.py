@@ -15,6 +15,9 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.health.health import Health
 from app.migrations.connector_migration_service import ConnectorMigrationService
+from app.migrations.delete_old_agents_templates_migration import (
+    run_delete_old_agents_templates_migration,
+)
 from app.migrations.drive_to_drive_workspace_migration import (
     run_drive_to_drive_workspace_migration,
 )
@@ -501,6 +504,25 @@ async def initialize_container(container) -> bool:
             else:
                 error_msg = result_rg_app_edge.get("message", "Unknown error")
                 logger.error(f"❌ Record Group -> App edge migration failed: {error_msg}")
+
+        if migration_completed(migration_state, "deleteOldAgentsTemplates"):
+            logger.info("⏭️ Delete Old Agents and Templates migration already completed, skipping.")
+        else:
+            logger.info("🔄 Running Delete Old Agents and Templates migration...")
+            result_delete_agents_templates = await run_delete_old_agents_templates_migration(container)
+            if result_delete_agents_templates.get("success"):
+                agents_deleted = result_delete_agents_templates.get("agents_deleted", 0)
+                templates_deleted = result_delete_agents_templates.get("templates_deleted", 0)
+                total_edges_deleted = result_delete_agents_templates.get("total_edges_deleted", 0)
+                logger.info(
+                    f"✅ Delete Old Agents and Templates migration completed: "
+                    f"{agents_deleted} agents, {templates_deleted} templates, "
+                    f"{total_edges_deleted} edges deleted"
+                )
+                await mark_migration_completed("deleteOldAgentsTemplates", result_delete_agents_templates)
+            else:
+                error_msg = result_delete_agents_templates.get("message", "Unknown error")
+                logger.error(f"❌ Delete Old Agents and Templates migration failed: {error_msg}")
 
         return True
 

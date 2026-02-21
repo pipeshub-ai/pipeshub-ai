@@ -190,6 +190,8 @@ export interface SidebarNodeItemProps {
   itemIcon?: IconifyIcon | string;
   /** Whether the icon is a dynamic image path */
   isDynamicIcon?: boolean;
+  /** Whether the item is draggable (default: true) */
+  isDraggable?: boolean;
 }
 
 /**

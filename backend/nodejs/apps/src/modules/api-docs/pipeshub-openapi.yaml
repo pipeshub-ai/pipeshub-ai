@@ -163,6 +163,16 @@ tags:
   - name: Webhooks
     description: Webhook handlers for real-time updates
 
+  # Toolsets
+  - name: Toolset Registry
+    description: Browse available toolsets and their configuration schemas for agent integrations
+  - name: Toolset Instances
+    description: Create, manage, and configure toolset instances for your organization
+  - name: Toolset Configuration
+    description: Configure authentication and settings for toolset instances
+  - name: Toolset OAuth
+    description: OAuth 2.0 authorization flow for toolsets requiring user consent
+
   # Configuration Manager
   - name: Storage Configuration
     description: Configure storage backend for file uploads and documents. Supports AWS S3, Azure Blob Storage, or local filesystem.
@@ -16089,6 +16099,390 @@ paths:
           description: Unauthorized
         '404':
           description: Connector or filter not found
+
+  # ==================== TOOLSETS ENDPOINTS ====================
+  # -------------------- Toolset Registry --------------------
+  /toolsets/registry:
+    get:
+      tags:
+        - Toolset Registry
+      summary: List available toolsets
+      description: |
+        Get all available toolsets from the registry.<br><br>
+        <b>Overview:</b><br>
+        Returns toolsets that can be configured and used with agents.
+        Supports pagination and search.
+      operationId: listToolsetRegistry
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: include_tools
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Toolsets retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+        '401':
+          description: Unauthorized
+
+  /toolsets/registry/{toolsetType}/schema:
+    get:
+      tags:
+        - Toolset Registry
+      summary: Get toolset schema
+      description: Get configuration schema for a specific toolset type
+      operationId: getToolsetSchema
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetType
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Schema retrieved successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset type not found
+
+  # -------------------- Toolset Instances --------------------
+  /toolsets:
+    post:
+      tags:
+        - Toolset Instances
+      summary: Create toolset instance
+      description: |
+        Create a new toolset instance with authentication configuration
+      operationId: createToolset
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - auth
+              properties:
+                name:
+                  type: string
+                displayName:
+                  type: string
+                type:
+                  type: string
+                auth:
+                  type: object
+                  required:
+                    - type
+                  properties:
+                    type:
+                      type: string
+                    clientId:
+                      type: string
+                    clientSecret:
+                      type: string
+                    apiToken:
+                      type: string
+                    oauthAppId:
+                      type: string
+                    scopes:
+                      type: array
+                      items:
+                        type: string
+                baseUrl:
+                  type: string
+      responses:
+        '201':
+          description: Toolset created successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+
+  /toolsets/configured:
+    get:
+      tags:
+        - Toolset Instances
+      summary: List configured toolsets
+      description: |
+        Get all configured toolsets for the authenticated user
+      operationId: listConfiguredToolsets
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Configured toolsets retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  toolsets:
+                    type: array
+                    items:
+                      type: object
+        '401':
+          description: Unauthorized
+
+  /toolsets/{toolsetId}/status:
+    get:
+      tags:
+        - Toolset Instances
+      summary: Check toolset status
+      description: Check authentication status of a toolset instance
+      operationId: checkToolsetStatus
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Status retrieved successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset not found
+
+  # -------------------- Toolset Configuration --------------------
+  /toolsets/{toolsetId}/config:
+    get:
+      tags:
+        - Toolset Configuration
+      summary: Get toolset configuration
+      description: Get configuration for a specific toolset instance
+      operationId: getToolsetConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Configuration retrieved successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset not found
+
+    post:
+      tags:
+        - Toolset Configuration
+      summary: Save toolset configuration
+      description: Save or update toolset configuration (deprecated - use PUT)
+      operationId: saveToolsetConfig
+      deprecated: true
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                baseUrl:
+                  type: string
+      responses:
+        '200':
+          description: Configuration saved successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+
+    put:
+      tags:
+        - Toolset Configuration
+      summary: Update toolset configuration
+      description: Update toolset configuration
+      operationId: updateToolsetConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                baseUrl:
+                  type: string
+      responses:
+        '200':
+          description: Configuration updated successfully
+        '400':
+          description: Invalid request
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset not found
+
+    delete:
+      tags:
+        - Toolset Configuration
+      summary: Delete toolset configuration
+      description: Delete a toolset instance and its configuration
+      operationId: deleteToolsetConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Configuration deleted successfully
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset not found
+
+  # -------------------- Toolset OAuth --------------------
+  /toolsets/{toolsetId}/oauth/authorize:
+    get:
+      tags:
+        - Toolset OAuth
+      summary: Get OAuth authorization URL
+      description: |
+        Get OAuth authorization URL for a toolset.<br><br>
+        Returns a URL that the user should visit to authorize the toolset.
+      operationId: getToolsetOAuthUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: toolsetId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: base_url
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Authorization URL generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  authorizationUrl:
+                    type: string
+        '401':
+          description: Unauthorized
+        '404':
+          description: Toolset not found
+
+  /toolsets/oauth/callback:
+    get:
+      tags:
+        - Toolset OAuth
+      summary: Handle OAuth callback
+      description: |
+        Handle OAuth callback from the authorization server.<br><br>
+        This endpoint processes the authorization code and completes the OAuth flow.
+      operationId: handleToolsetOAuthCallback
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: error
+          in: query
+          schema:
+            type: string
+        - name: base_url
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: OAuth callback handled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  redirectUrl:
+                    type: string
+        '401':
+          description: Unauthorized
+        '400':
+          description: OAuth error or invalid request
 
   # -------------------- OAuth Configuration (Admin) --------------------
   /oauth/registry:
