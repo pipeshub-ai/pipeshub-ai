@@ -244,15 +244,15 @@ export function createUserAccountRouter(container: Container) {
     },
   );
 
-  router.post(
+  router.put(
     '/validateEmailChange',
+    authMiddleware.scopedTokenValidator(TokenScopes.VALIDATE_EMAIL),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
         const userAccountController = container.get<UserAccountController>(
           'UserAccountController',
         );
-        authMiddleware.scopedTokenValidator(TokenScopes.VALIDATE_EMAIL),
-          await userAccountController.validateEmailChange(req, res, next);
+        await userAccountController.validateEmailChange(req, res, next);
       } catch (error) {
         next(error);
       }

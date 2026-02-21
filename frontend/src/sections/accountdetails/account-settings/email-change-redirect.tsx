@@ -9,7 +9,7 @@ import {
     Paper,
 } from '@mui/material';
 import checkCircleIcon from '@iconify-icons/mdi/check-circle-outline';
-import { STORAGE_KEY } from 'src/auth/context/jwt/constant';
+import { STORAGE_KEY, STORAGE_KEY_REFRESH } from 'src/auth/context/jwt/constant';
 
 import errorIcon from '@iconify-icons/mdi/error';
 import axios from 'axios';
@@ -45,8 +45,9 @@ export function EmailChangeRedirect() {
                 await changeEmail({ token });
 
                 setStatus('success');
+                localStorage.removeItem(STORAGE_KEY);
+                localStorage.removeItem(STORAGE_KEY_REFRESH);
 
-                localStorage.clear();
                 window.location.replace('/auth/sign-in');
 
             } catch (error) {

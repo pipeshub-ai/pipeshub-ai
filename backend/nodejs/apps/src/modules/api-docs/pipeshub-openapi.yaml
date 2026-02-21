@@ -5086,7 +5086,7 @@ paths:
           description: OAuth provider configuration not found
 
   /userAccount/validateEmailChange:
-    get:
+    put:
       tags:
         - User Account
       summary: Validate email change token

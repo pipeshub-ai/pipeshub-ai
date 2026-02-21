@@ -212,7 +212,7 @@ export class UserAccountController {
 
       const authToken = iamJwtGenerator(email, this.config.scopedJwtSecret);
       let result = await this.iamService.getUserByEmail(email, authToken);
-      
+
       if (result.statusCode !== 200) {
         // User not found - check if JIT provisioning is available for this email domain
         const domain = this.getDomainFromEmail(email);
@@ -240,7 +240,7 @@ export class UserAccountController {
 
         if (orgAuthConfig) {
           const allowedMethods = orgAuthConfig.authSteps[0]?.allowedMethods.map((m: any) => m.type) || [];
-          
+
           // Create a new user object for fetching configs (using orgId from config)
           const newUser = { orgId: orgAuthConfig.orgId, email };
 
@@ -1262,8 +1262,8 @@ export class UserAccountController {
         user,
         this.config.scopedJwtSecret,
       );
-    
-    const { 
+
+    const {
       userInfoEndpoint
     } = configManagerResponse.data;
     const { accessToken } = credentials;
@@ -1279,7 +1279,7 @@ export class UserAccountController {
     try {
       // Verify token and get user info from OAuth provider
       let userInfo;
-      
+
       if (accessToken && userInfoEndpoint) {
         // If access token is provided, fetch user info from the provider
         const userInfoResponse = await fetch(userInfoEndpoint, {
@@ -1290,9 +1290,9 @@ export class UserAccountController {
         });
 
         if (!userInfoResponse.ok) {
-          this.logger.warn('OAuth userinfo fetch failed', { 
-            status: userInfoResponse.status, 
-            provider: configManagerResponse.data.providerName 
+          this.logger.warn('OAuth userinfo fetch failed', {
+            status: userInfoResponse.status,
+            provider: configManagerResponse.data.providerName
           });
           throw new UnauthorizedError('Failed to fetch user information from OAuth provider');
         }
@@ -1341,7 +1341,7 @@ export class UserAccountController {
       this.logger.info('running authenticate');
       const { method, credentials, 'cf-turnstile-response': turnstileToken } = req.body;
       const { sessionInfo } = req;
-      
+
       // Verify Turnstile token for password authentication
       if (method === AuthMethodType.PASSWORD) {
         const turnstileSecretKey = process.env.TURNSTILE_SECRET_KEY;
@@ -1357,7 +1357,7 @@ export class UserAccountController {
           }
         }
       }
-      
+
       if (!method) {
         throw new BadRequestError('method is required');
       }
@@ -1372,7 +1372,7 @@ export class UserAccountController {
         // Check if JIT is enabled for this auth method
         const jitConfig = sessionInfo.jitConfig as Record<string, boolean> | undefined;
         const methodKey = method === AuthMethodType.AZURE_AD ? 'azureAd' : method;
-        
+
         if (!jitConfig || !jitConfig[methodKey]) {
           // JIT not enabled - return generic error
           throw new BadRequestError(
@@ -1388,10 +1388,10 @@ export class UserAccountController {
 
         // Create mock user for fetching config
         const newUser = { orgId, email: sessionInfo.email };
-        
+
         // Authenticate and provision based on method
         let userDetails: { firstName?: string; lastName?: string; fullName: string };
-        
+
         switch (method) {
           case AuthMethodType.GOOGLE: {
             const configManagerResponse = await this.configurationManagerService.getConfig(
@@ -1625,7 +1625,7 @@ export class UserAccountController {
               user,
               this.config.scopedJwtSecret,
             );
-          
+
           const { clientSecret, tokenEndpoint, userInfoEndpoint, ...publicConfig } = configManagerResponse.data;
           authProviders.oauth = publicConfig;
         }
@@ -1725,11 +1725,11 @@ export class UserAccountController {
       const { code, email, provider, redirectUri } = req.body;
 
       if (!code || !email || !provider || !redirectUri) {
-        this.logger.warn('OAuth token exchange failed: missing required parameters', { 
-          hasCode: !!code, 
-          hasEmail: !!email, 
-          hasProvider: !!provider, 
-          hasRedirectUri: !!redirectUri 
+        this.logger.warn('OAuth token exchange failed: missing required parameters', {
+          hasCode: !!code,
+          hasEmail: !!email,
+          hasProvider: !!provider,
+          hasRedirectUri: !!redirectUri
         });
         throw new BadRequestError('Missing required OAuth parameters');
       }
@@ -1866,13 +1866,12 @@ export class UserAccountController {
     }
   }
 
-  async validateEmailChange(req: Request, res: Response, next: NextFunction): Promise<void> {
+  async validateEmailChange(req: AuthenticatedServiceRequest, res: Response, next: NextFunction): Promise<void> {
     try {
-      const token = req.query.token as string;
 
-      const decoded = jwt.verify(token, this.config.scopedJwtSecret,) as any;
-
-      const { userId, newEmail, orgId } = decoded;
+      const userId = req?.tokenPayload?.userId;
+      const newEmail = req?.tokenPayload?.newEmail;
+      const orgId = req?.tokenPayload?.orgId;
 
       const exists = await Users.findOne({ email: newEmail });
       if (exists) {
