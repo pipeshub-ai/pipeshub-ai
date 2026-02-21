@@ -1,15 +1,28 @@
 import asyncio
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
 from jinja2 import Template
 
-from app.models.blocks import BlockType, GroupType
+from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.entities import (
+    Record,
+    TicketRecord,
+    ProjectRecord,
+    FileRecord,
+    MailRecord,
+    LinkRecord,
+    CommentRecord,
+    RecordType,
+    OriginTypes,
+    Connectors,
+    LinkPublicStatus,
+)
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.modules.qna.prompt_templates import (
     block_group_prompt,
     qna_prompt_context,
-    qna_prompt_context_for_tool,
     qna_prompt_instructions_1,
     qna_prompt_instructions_2,
     qna_prompt_simple,
@@ -25,7 +38,161 @@ group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False) -> List[Dict[str, Any]]:
+def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Optional[Dict[str, Any]] = None) -> Optional[Record]:
+    """
+    Creates a Record subclass instance from a dictionary.
+
+    Args:
+        record_dict: Dictionary with record data from blob storage
+        graph_doc: Optional dictionary with type-specific data from ArangoDB collection
+
+    Returns:
+        Record subclass instance or None
+    """
+    if not record_dict:
+        return None
+
+    if not graph_doc:
+        return Record(
+                id=record_dict.get("id", ""),
+                record_name=record_dict.get("record_name", ""),
+                record_type=RecordType(record_dict.get("record_type")),
+                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+                mime_type=record_dict.get("mime_type", ""),
+                external_record_id=record_dict.get("external_record_id", ""),
+                weburl=record_dict.get("weburl", ""),
+                version=record_dict.get("version", 1),
+                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+                connector_id=record_dict.get("connector_id", ""),
+                source_created_at=record_dict.get("source_created_at", ""),
+                source_updated_at=record_dict.get("source_updated_at", ""),
+                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+            )
+
+    record_type = record_dict.get("record_type")
+
+    try:
+        if record_type == RecordType.TICKET.value and graph_doc:
+            return TicketRecord(
+                id=record_dict.get("id", ""),
+                org_id=record_dict.get("org_id", ""),
+                record_name=record_dict.get("record_name", ""),
+                record_type=RecordType.TICKET,
+                external_record_id=record_dict.get("external_record_id", ""),
+                version=record_dict.get("version", 1),
+                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+                connector_id=record_dict.get("connector_id", ""),
+                # Ticket-specific fields from graph_doc
+                status=graph_doc.get("status"),
+                priority=graph_doc.get("priority"),
+                type=graph_doc.get("type"),
+                delivery_status=graph_doc.get("deliveryStatus"),
+                assignee=graph_doc.get("assignee"),
+                assignee_email=graph_doc.get("assigneeEmail"),
+                reporter_name=graph_doc.get("reporterName"),
+                reporter_email=graph_doc.get("reporterEmail"),
+                creator_name=graph_doc.get("creatorName"),
+                creator_email=graph_doc.get("creatorEmail"),
+                mime_type=record_dict.get("mime_type", ""),
+                source_created_at=record_dict.get("source_created_at", ""),
+                source_updated_at=record_dict.get("source_updated_at", ""),
+                weburl=record_dict.get("weburl", ""),
+                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+            )
+        elif record_type == RecordType.PROJECT.value and graph_doc:
+            return ProjectRecord(
+                id=record_dict.get("id", ""),
+                org_id=record_dict.get("org_id", ""),
+                record_name=record_dict.get("record_name", ""),
+                record_type=RecordType.PROJECT,
+                external_record_id=record_dict.get("external_record_id", ""),
+                version=record_dict.get("version", 1),
+                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+                connector_id=record_dict.get("connector_id", ""),
+                # Project-specific fields from graph_doc
+                status=graph_doc.get("status"),
+                priority=graph_doc.get("priority"),
+                lead_name=graph_doc.get("leadName"),
+                lead_email=graph_doc.get("leadEmail"),
+                mime_type=record_dict.get("mime_type", ""),
+                source_created_at=record_dict.get("source_created_at", ""),
+                source_updated_at=record_dict.get("source_updated_at", ""),
+                weburl=record_dict.get("weburl", ""),
+                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+            )
+        elif record_type == RecordType.FILE.value and graph_doc:
+            return FileRecord(
+                id=record_dict.get("id", ""),
+                org_id=record_dict.get("org_id", ""),
+                record_name=record_dict.get("record_name", ""),
+                record_type=RecordType.FILE,
+                external_record_id=record_dict.get("external_record_id", ""),
+                version=record_dict.get("version", 1),
+                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+                connector_id=record_dict.get("connector_id", ""),
+                is_file=graph_doc.get("isFile", True),
+                extension=graph_doc.get("extension"),
+                mime_type=record_dict.get("mime_type", ""),
+                source_created_at=record_dict.get("source_created_at", ""),
+                source_updated_at=record_dict.get("source_updated_at", ""),
+                weburl=record_dict.get("weburl", ""),
+                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+            )
+        elif record_type == RecordType.MAIL.value and graph_doc:
+            return MailRecord(
+                id=record_dict.get("id", ""),
+                org_id=record_dict.get("org_id", ""),
+                record_name=record_dict.get("record_name", ""),
+                record_type=RecordType.MAIL,
+                external_record_id=record_dict.get("external_record_id", ""),
+                version=record_dict.get("version", 1),
+                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+                connector_id=record_dict.get("connector_id", ""),
+                subject=graph_doc.get("subject"),
+                from_email=graph_doc.get("from"),
+                to_emails=graph_doc.get("to"),
+                cc_emails=graph_doc.get("cc"),
+                bcc_emails=graph_doc.get("bcc"),
+                mime_type=record_dict.get("mime_type", ""),
+                source_created_at=record_dict.get("source_created_at", ""),
+                source_updated_at=record_dict.get("source_updated_at", ""),
+                weburl=record_dict.get("weburl", ""),
+                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+            )
+
+        elif record_type == RecordType.LINK.value and graph_doc:
+            return LinkRecord(
+                id=record_dict.get("id", ""),
+                org_id=record_dict.get("org_id", ""),
+                record_name=record_dict.get("record_name", ""),
+                record_type=RecordType.LINK,
+                external_record_id=record_dict.get("external_record_id", ""),
+                version=record_dict.get("version", 1),
+                origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
+                connector_name=Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
+                connector_id=record_dict.get("connector_id", ""),
+                url=graph_doc.get("url", ""),
+                title=graph_doc.get("title"),
+                is_public=LinkPublicStatus(graph_doc.get("isPublic", "unknown")),
+                mime_type=record_dict.get("mime_type", ""),
+                source_created_at=record_dict.get("source_created_at", ""),
+                source_updated_at=record_dict.get("source_updated_at", ""),
+                weburl=record_dict.get("weburl", ""),
+                semantic_metadata=SemanticMetadata(**record_dict.get("semantic_metadata", {})),
+                linked_record_id=graph_doc.get("linkedRecordId"),
+            )
+        else:
+            return None
+    except Exception as e:
+        # Log error but don't fail - graceful degradation
+        logger.error(f"Error creating record instance: {str(e)}")
+        return None
+
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
@@ -53,7 +220,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if virtual_record_id and virtual_record_id not in virtual_record_id_to_result:
             records_to_fetch.add(virtual_record_id)
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map) for virtual_record_id in records_to_fetch])
+    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider) for virtual_record_id in records_to_fetch])
 
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
@@ -458,22 +625,57 @@ def extract_bounding_boxes(citation_metadata) -> List[Dict[str, float]]:
         except Exception as e:
             raise e
 
-async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None) -> None:
+async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[str, Dict[str, Any]],blob_store: BlobStorage,org_id: str,virtual_to_record_map: Dict[str, Dict[str, Any]]=None,graph_provider: Optional[IGraphDBProvider] = None) -> None:
     try:
         record = await blob_store.get_record_from_storage(virtual_record_id=virtual_record_id, org_id=org_id)
         if record:
-            arango_record = (virtual_to_record_map or {}).get(virtual_record_id)
-            if arango_record:
-                record["id"] = arango_record.get("_key")
+            graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
+            if graphDb_record:
+                record_type = graphDb_record.get("recordType")
+                record_key = graphDb_record.get("_key")
+
+                record["id"] = record_key
                 record["org_id"] = org_id
-                record["record_name"] = arango_record.get("recordName")
-                record["record_type"] = arango_record.get("recordType")
-                record["version"] = arango_record.get("version")
-                record["origin"] = arango_record.get("origin")
-                record["connector_name"] = arango_record.get("connectorName")
-                record["weburl"] = arango_record.get("webUrl")
-                record["preview_renderable"] = arango_record.get("previewRenderable", True)
-                record["hide_weburl"] = arango_record.get("hideWeburl", False)
+                record["record_name"] = graphDb_record.get("recordName")
+                record["record_type"] = record_type
+                record["version"] = graphDb_record.get("version")
+                record["origin"] = graphDb_record.get("origin")
+                record["connector_name"] = graphDb_record.get("connectorName")
+                record["weburl"] = graphDb_record.get("webUrl")
+                record["preview_renderable"] = graphDb_record.get("previewRenderable", True)
+                record["hide_weburl"] = graphDb_record.get("hideWeburl", False)
+                record["mime_type"] = graphDb_record.get("mimeType")
+                record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
+                record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+
+                # Fetch type-specific metadata and generate formatted string
+                graph_doc = None
+                if graph_provider and record_key:
+                    try:
+                        # Determine collection name based on record type
+                        collection_map = {
+                            RecordType.TICKET.value: "tickets",
+                            RecordType.PROJECT.value: "projects",
+                            RecordType.FILE.value: "files",
+                            RecordType.MAIL.value: "mails",
+                            RecordType.LINK.value: "links",
+                        }
+                        collection = collection_map.get(record_type)
+
+                        if collection:
+                            graph_doc = await graph_provider.get_document(
+                                document_key=record_key,
+                                collection=collection
+                            )
+                    except Exception as e:
+                        # Log but don't fail - graceful degradation
+                        logger.error(f"Error fetching type-specific metadata for record {record_key}: {str(e)}")
+                
+                record_instance = create_record_instance_from_dict(record, graph_doc)
+                if record_instance:
+                    record["context_metadata"] = record_instance.to_llm_context()
+                else:
+                    record["context_metadata"] = ""
 
             virtual_record_id_to_result[virtual_record_id] = record
         else:
@@ -843,7 +1045,7 @@ def build_group_blocks(block_groups: List[Dict[str, Any]], blocks: List[Dict[str
     return result_blocks
 
 
-def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str:
+def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[str, Any]] = None) -> str|None:
     """
     Convert a record JSON object to message content format matching get_message_content.
 
@@ -856,21 +1058,10 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
     """
 
     try:
-        content = []
         record_string = ""
-        record_id = record.get("id", "")
-        record_name = record.get("record_name", "")
-        content.append({
-            "type": "text",
-            "text": f"""<record>
-            * Record Id: {record_id}
-            * Record Name: {record_name}
-            * Record content:
-            """
-        })
-        record_string += f"""* Record Id: {record_id}
-        * Record Name: {record_name}
-        * Record content:\n\n"""
+        context_metadata = record.get("context_metadata", "")
+        record_string += f"""<record>\n{context_metadata}
+Record blocks (sorted):\n\n"""
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
@@ -910,10 +1101,6 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
             if block_type == BlockType.IMAGE.value:
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
-                })
                 record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
             elif block_type == BlockType.TABLE_ROW.value:
                 # Group table rows by their parent_index for block group processing
@@ -971,16 +1158,9 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                                 table_rows=child_results,
                                 record_number=record_number,
                             )
-                            content.append({
-                                "type": "text",
-                                "text": f"{rendered_form}\n\n"
-                            })
                             record_string += f"{rendered_form}\n\n"
-                        else:
-                            content.append({
-                                "type": "text",
-                                "text": f"* Block Group Number: R{record_number}-{block_group_index}\n* Block Type: table summary\n* Block Content: {table_summary}\n\n"
-                            })
+                        
+                            
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -1004,17 +1184,7 @@ def record_to_message_content(record: Dict[str, Any], final_results: List[Dict[s
                 )
                 record_string += f"{rendered_form}\n\n"
             else:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
-                })
                 record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {data}\n\n"
-
-        # Add closing tags
-        content.append({
-            "type": "text",
-            "text": "</record>"
-        })
 
         return record_string
     except Exception as e:
@@ -1105,9 +1275,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
 
                 template = Template(qna_prompt_context)
                 rendered_form = template.render(
-                    record_id=record.get("id","Not available"),
-                    record_name=record.get("record_name","Not available"),
-                    semantic_metadata=semantic_metadata,
+                    context_metadata=record.get("context_metadata", ""),
                 )
                 content.append({
                     "type": "text",
@@ -1200,9 +1368,7 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
             seen_virtual_record_ids.add(virtual_record_id)
             virtual_record_id_to_record_number[virtual_record_id] = record_number
             record_number = record_number + 1
-    all_contents = []
     all_record_strings = []
-    content = []
     seen_blocks = set()
     seen_virtual_record_ids.clear()
     record_ids =[]
@@ -1211,32 +1377,15 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
         virtual_record_id = result.get("virtual_record_id")
         if virtual_record_id not in seen_virtual_record_ids:
             if i > 0:
-                content.append({
-                    "type": "text",
-                    "text": "</record>"
-                })
-                all_contents.append(content)
                 all_record_strings.append(record_string)
                 record_string = ""
-                content = []
             seen_virtual_record_ids.add(virtual_record_id)
             record = virtual_record_id_to_result[virtual_record_id]
             if record is None:
                 continue
 
-            template = Template(qna_prompt_context_for_tool)
-            rendered_form = template.render(
-                record_id=record.get("id","Not available"),
-                record_name=record.get("record_name","Not available"),
-            )
-            content.append({
-                "type": "text",
-                "text": rendered_form
-            })
-            record_string += f"""* Record Id: {record.get("id","Not available")}
-            * Record Name: {record.get("record_name","Not available")}
-            * Record blocks (sorted):\n\n
-            """
+            record_string += f"""<record>\n{record.get("context_metadata", "")}
+Record blocks (sorted):\n\n"""
             record_ids.append(record.get("id"))
 
         result_id = f"{virtual_record_id}_{result.get('block_index')}"
@@ -1248,21 +1397,6 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
             if record_number is None:
                 continue
             block_number = f"R{record_number}-{block_index}"
-            # if block_type == BlockType.IMAGE.value:
-            #     if result.get("content").startswith("data:image/"):
-            #         content.append({
-            #             "type": "text",
-            #             "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content:"
-            #         })
-            #         content.append({
-            #             "type": "image_url",
-            #             "image_url": {"url": result.get("content")}
-            #         })
-            #     else:
-            #         content.append({
-            #             "type": "text",
-            #             "text": f"* Block Number: {block_number}\n* Block Type: image description\n* Block Content: {result.get('content')}\n\n"
-            #         })
             if block_type == GroupType.TABLE.value:
                 table_summary,child_results = result.get("content")
                 if child_results:
@@ -1273,47 +1407,16 @@ def get_message_content_for_tool(flattened_results: List[Dict[str, Any]], virtua
                         table_rows=child_results,
                         record_number=record_number,
                     )
-                    content.append({
-                        "type": "text",
-                        "text": f"{rendered_form}\n\n"
-                    })
                     record_string += f"{rendered_form}\n\n"
                 else:
-                    content.append({
-                        "type": "text",
-                        "text": f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
-                    })
                     record_string += f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
             elif block_type == BlockType.TEXT.value:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                })
                 record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-            elif block_type == BlockType.TABLE_ROW.value:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: table row\n* Block Content: {result.get('content')}\n\n"
-                })
-            elif block_type in group_types:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                })
             elif block_type != BlockType.IMAGE.value:
-                content.append({
-                    "type": "text",
-                    "text": f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
-                })
                 record_string += f"* Block Number: {block_number}\n* Block Type: {block_type}\n* Block Content: {result.get('content')}\n\n"
         else:
             continue
 
-    content.append({
-        "type": "text",
-        "text": "</record>\n\n"
-    })
-    all_contents.append(content)
     all_record_strings.append(record_string)
 
     return all_record_strings
