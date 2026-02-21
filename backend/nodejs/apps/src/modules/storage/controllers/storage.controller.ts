@@ -239,13 +239,17 @@ export class StorageController {
         );
       }
 
+      const fullDocumentPath = documentPath
+        ? `${orgId}/PipesHub/${documentPath}`
+        : `${orgId}/PipesHub`;
+
       const storageConfig =
         (await this.keyValueStoreService.get<string>(storageEtcdPaths)) || '{}';
       const { storageType } = JSON.parse(storageConfig);
       const storageVendor = getStorageVendor(storageType ?? '');
       const documentInfo: Partial<Document> = {
         documentName,
-        documentPath,
+        documentPath: fullDocumentPath,
         alternateDocumentName,
         orgId: new mongoose.Types.ObjectId(orgId),
         isVersionedFile: isVersionedFile,
