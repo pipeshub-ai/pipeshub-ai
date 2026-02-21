@@ -114,6 +114,9 @@ export const CreateDocumentSchema = z.object({
     documentPath: z.string(),
     permissions: z.string().optional(),
     metaData: z.any().optional(),
+    customMetadata: z
+      .array(z.object({ key: z.string(), value: z.any() }))
+      .optional(),
     isVersionedFile: z.boolean().optional(),
     extension : z.string(),
   }),
