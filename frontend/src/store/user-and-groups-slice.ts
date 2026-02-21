@@ -7,6 +7,7 @@ interface CountsState {
   usersCount: number;
   groupsCount: number;
   invitesCount: number;
+  blockedUsersCount: number;
   loading: boolean;
 }
 
@@ -15,12 +16,14 @@ interface SetCountsPayload {
   usersCount: number;
   groupsCount: number;
   invitesCount: number;
+  blockedUsersCount: number;
 }
 
 const initialState: CountsState = {
   usersCount: 0,
   groupsCount: 0,
   invitesCount: 0,
+  blockedUsersCount: 0,
   loading: true,
 };
 
@@ -32,6 +35,7 @@ const countsSlice = createSlice({
       state.usersCount = action.payload.usersCount;
       state.groupsCount = action.payload.groupsCount;
       state.invitesCount = action.payload.invitesCount;
+      state.blockedUsersCount = action.payload.blockedUsersCount;
       state.loading = false;
     },
     setLoading: (state, action: PayloadAction<boolean>) => {
@@ -40,8 +44,14 @@ const countsSlice = createSlice({
     incrementUserCount: (state) => {
       state.usersCount += 1;
     },
+    incrementBlockedUserCount: (state) => {
+      state.blockedUsersCount += 1;
+    },
     decrementUserCount: (state) => {
       state.usersCount -= 1;
+    },
+    decrementBlockedUserCount: (state) => {
+      state.blockedUsersCount -= 1;
     },
     decrementInvitesCount: (state) => {
       state.invitesCount -= 1;
@@ -49,7 +59,7 @@ const countsSlice = createSlice({
     updateInvitesCount: (state, action: PayloadAction<number>) => {
       state.invitesCount += action.payload;
     },
-    setInviteCount:(state,action: PayloadAction<number>) =>{
+    setInviteCount: (state, action: PayloadAction<number>) => {
       state.invitesCount = action.payload;
     },
     decrementGroupCount: (state) => {
@@ -71,6 +81,9 @@ export const {
   setInviteCount,
   decrementGroupCount,
   incrementGroupCount,
+  incrementBlockedUserCount,
+  decrementBlockedUserCount
+
 } = countsSlice.actions;
 
 // Export the reducer
