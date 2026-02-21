@@ -574,7 +574,7 @@ async def askAIStream(
 
                 virtual_record_id_to_result = {}
                 flattened_results = await get_flattened_results(
-                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map
+                    search_results, blob_store, org_id, is_multimodal_llm, virtual_record_id_to_result, virtual_to_record_map, graph_provider=graph_provider
                 )
 
                 # Re-rank results

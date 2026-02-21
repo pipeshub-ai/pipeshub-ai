@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Type, TypeVar, Union
 from uuid import uuid4
@@ -20,7 +21,6 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
-
 
 class RecordGroupType(str, Enum):
     SLACK_CHANNEL = "SLACK_CHANNEL"
@@ -217,6 +217,47 @@ class Record(BaseModel):
     # Hierarchy fields
     is_dependent_node: bool = Field(default=False, description="True for dependent records, False for root records")
     parent_node_id: Optional[str] = Field(default=None, description="Internal record ID of the parent node")
+
+    def _format_timestamp(self, epoch_ms: Optional[int]) -> str:
+        if epoch_ms is None:
+            return "N/A"
+        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    def _format_person(self, name: Optional[str], email: Optional[str]) -> str:
+        """Helper to format a person with name and/or email"""
+        if name and email:
+            return f"{name} ({email})"
+        return name or email or "N/A"
+
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        lines = [
+            f"Record ID       : {self.id}",
+            f"Name            : {self.record_name}",
+            f"Connector       : {self.connector_name.value}",
+            f"Type            : {self.record_type.value}",
+            f"External ID     : {self.external_record_id}",
+            f"Created At      : {self._format_timestamp(self.source_created_at)}",
+            f"Last Updated At : {self._format_timestamp(self.source_updated_at)}",
+        ]
+        if self.mime_type:
+            lines.append(f"MIME Type       : {self.mime_type}")
+
+        if self.weburl:
+            if not self.weburl.startswith("http"):
+                if frontend_url:
+                    weburl = f"{frontend_url}{self.weburl}"
+                else:
+                    weburl = self.weburl
+            else:
+                weburl = self.weburl
+
+            lines.append(f"Web URL         : {weburl}")
+
+        if self.semantic_metadata:
+            lines.extend(self.semantic_metadata.to_llm_context())
+
+        return "\n".join(lines)
+
     def to_arango_base_record(self) -> Dict:
         return {
             "_key": self.id,
@@ -315,6 +356,21 @@ class FileRecord(Record):
     crc32_hash: Optional[str] = None
     sha1_hash: Optional[str] = None
     sha256_hash: Optional[str] = None
+
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        """Returns formatted file-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.extension:
+            specific_lines.append(f"* Extension: {self.extension}")
+
+        if specific_lines:
+            lines.append("File Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_arango_record(self) -> Dict:
         return {
@@ -431,6 +487,32 @@ class MailRecord(Record):
     conversation_index: Optional[str] = None
     label_ids: Optional[List[str]] = None
 
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        """Returns formatted email-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.subject:
+            specific_lines.append(f"* Subject: {self.subject}")
+
+        if self.from_email:
+            specific_lines.append(f"* From: {self.from_email}")
+
+        if self.to_emails:
+            specific_lines.append(f"* To: {', '.join(self.to_emails)}")
+
+        if self.cc_emails:
+            specific_lines.append(f"* CC: {', '.join(self.cc_emails)}")
+
+        if self.bcc_emails:
+            specific_lines.append(f"* BCC: {', '.join(self.bcc_emails)}")
+
+        if specific_lines:
+            lines.append("Email Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_arango_record(self) -> Dict:
         return {
@@ -573,6 +655,31 @@ class LinkRecord(Record):
     is_public: LinkPublicStatus = Field(description="Link public accessibility status")
     linked_record_id: Optional[str] = Field(default=None, description="Internal record ID of linked record with same weburl")
 
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        """Returns formatted link-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.url:
+            specific_lines.append(f"* URL: {self.url}")
+
+        if self.title:
+            specific_lines.append(f"* Title: {self.title}")
+
+        if self.is_public:
+            public_status = self.is_public.value if isinstance(self.is_public, Enum) else self.is_public
+            specific_lines.append(f"* Public Access: {public_status}")
+
+        if self.linked_record_id:
+            specific_lines.append(f"* Linked Record ID: {self.linked_record_id}")
+
+        if specific_lines:
+            lines.append("Link Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
+
     def to_kafka_record(self) -> Dict:
         return {
             "recordId": self.id,
@@ -647,6 +754,21 @@ class CommentRecord(Record):
     author_source_id: str
     resolution_status: Optional[str] = None
     comment_selection: Optional[str] = None
+
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        """Returns formatted comment-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.resolution_status:
+            specific_lines.append(f"* Resolution Status: {self.resolution_status}")
+
+        if specific_lines:
+            lines.append("Comment Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_kafka_record(self) -> Dict:
         return {
@@ -724,6 +846,43 @@ class TicketRecord(Record):
     assignee_source_timestamp: Optional[int] = None
     creator_source_timestamp: Optional[int] = None
     reporter_source_timestamp: Optional[int] = None
+
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        """Returns formatted ticket-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.status:
+            status_val = self.status.value if isinstance(self.status, Enum) else self.status
+            specific_lines.append(f"* Status: {status_val}")
+
+        if self.priority:
+            priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
+            specific_lines.append(f"* Priority: {priority_val}")
+
+        if self.type:
+            type_val = self.type.value if isinstance(self.type, Enum) else self.type
+            specific_lines.append(f"* Type: {type_val}")
+
+        if self.assignee or self.assignee_email:
+            specific_lines.append(f"* Assignee: {self._format_person(self.assignee, self.assignee_email)}")
+
+        if self.delivery_status:
+            delivery_val = self.delivery_status.value if isinstance(self.delivery_status, Enum) else self.delivery_status
+            specific_lines.append(f"* Delivery Status: {delivery_val}")
+
+        if self.reporter_name or self.reporter_email:
+            specific_lines.append(f"* Reporter: {self._format_person(self.reporter_name, self.reporter_email)}")
+
+        if self.creator_name or self.creator_email:
+            specific_lines.append(f"* Creator: {self._format_person(self.creator_name, self.creator_email)}")
+
+        if specific_lines:
+            lines.append("Ticket Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_arango_record(self) -> Dict:
         def _get_value(field_value: Optional[Union[Enum, str]]) -> Optional[str]:
@@ -842,6 +1001,27 @@ class ProjectRecord(Record):
     lead_id: Optional[str] = None
     lead_name: Optional[str] = None
     lead_email: Optional[str] = None
+
+    def to_llm_context(self, frontend_url: Optional[str] = None) -> str:
+        """Returns formatted project-specific metadata for LLM context"""
+        base = super().to_llm_context(frontend_url=frontend_url)
+        lines = [base]
+
+        specific_lines = []
+        if self.status:
+            specific_lines.append(f"* Status: {self.status}")
+
+        if self.priority:
+            specific_lines.append(f"* Priority: {self.priority}")
+
+        if self.lead_name or self.lead_email:
+            specific_lines.append(f"* Lead: {self._format_person(self.lead_name, self.lead_email)}")
+
+        if specific_lines:
+            lines.append("Project Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_arango_record(self) -> Dict:
         return {

@@ -697,7 +697,7 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error getting document ID by virtual record ID: %s", str(e))
             raise e
 
-    async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> str:
+    async def get_record_from_storage(self, virtual_record_id: str, org_id: str) -> dict | None:
             """
             Retrieve a record's content from blob storage using the virtual_record_id.
             Returns:
