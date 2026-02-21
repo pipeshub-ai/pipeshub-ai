@@ -118,6 +118,8 @@ class ChatState(TypedDict):
 
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: Optional[Dict[str, Dict[str, Any]]]  # Mapping for citations
+    record_label_to_uuid_map: Optional[Dict[str, str]]  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
+    qna_message_content: Optional[Any]  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Optional[Any]  # BlobStorage instance for processing results
     is_multimodal_llm: Optional[bool]  # Whether LLM supports multimodal content
 
@@ -378,7 +380,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "quick_mode": chat_query.get("quickMode", False),
         "filters": filters,
         "retrieval_mode": chat_query.get("retrievalMode", "HYBRID"),
-        "chat_mode": chat_query.get("chatMode", "quick"),
+        "chat_mode": chat_query.get("chatMode", "standard"),
 
         # Query analysis (will be populated by analyze_query_node)
         "query_analysis": None,
@@ -455,6 +457,8 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},
+        "record_label_to_uuid_map": {},
+        "qna_message_content": None,
         "blob_store": None,
         "is_multimodal_llm": False,
 

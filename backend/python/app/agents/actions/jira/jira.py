@@ -932,7 +932,7 @@ class Jira:
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links")
                     .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields")
+                          "issuetype", "created", "updated", "description", "fields", "url")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1265,7 +1265,7 @@ class Jira:
                             "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
                     .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
                           "priority", "issuetype", "created", "updated", "description", "fields",
-                          "total", "startAt", "maxResults", "nextPageToken", "isLast")
+                          "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1322,7 +1322,8 @@ class Jira:
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
                     .keep("key", "id", "summary", "status", "assignee", "reporter", "priority",
-                          "issuetype", "created", "updated", "description", "fields", "labels", "components")
+                          "issuetype", "created", "updated", "description", "fields", "labels",
+                          "components", "url")
                     .clean()
                 )
                 return True, json.dumps({
@@ -1432,7 +1433,7 @@ class Jira:
                                 "*.properties", "*._links", "*.watches", "*.votes", "*.worklog")
                         .keep("issues", "key", "id", "summary", "status", "assignee", "reporter",
                               "priority", "issuetype", "created", "updated", "description", "fields",
-                              "total", "startAt", "maxResults", "nextPageToken", "isLast")
+                              "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
                         .clean()
                     )
                     logger.info(f"Response cleaned successfully - issues count: {len(cleaned_data.get('issues', [])) if isinstance(cleaned_data, dict) else 'N/A'}")

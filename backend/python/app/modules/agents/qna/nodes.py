@@ -3891,7 +3891,14 @@ def merge_and_number_retrieval_results(
     OPTION B: This function is called ONCE after all parallel retrieval
     calls are complete. It:
     1. Deduplicates blocks by (virtual_record_id, block_index)
-    2. Sorts consistently by virtual_record_id, then block_index
+    2. Groups blocks by document, ordering documents by their best relevance
+       score (most relevant first). Within each document, blocks are ordered
+       by block_index for readability.
+
+    Sorting by relevance score (not by UUID string) ensures that R1 always
+    refers to the most relevant document. This matters critically for
+    fetch_full_record tool calls — when the LLM calls fetch_full_record(["R1"])
+    it should retrieve the most relevant document, not an arbitrarily-ordered one.
 
     NOTE: Block numbering is done by get_message_content() (same as chatbot).
     This function only merges and sorts - no numbering here.
@@ -3901,14 +3908,20 @@ def merge_and_number_retrieval_results(
         log: Logger instance
 
     Returns:
-        Deduplicated and sorted results (block numbers assigned later by get_message_content)
+        Deduplicated and relevance-sorted results (block numbers assigned later
+        by get_message_content)
     """
     if not final_results:
         return []
 
     # Step 1: Deduplicate by (virtual_record_id, block_index)
-    seen_blocks = {}
-    for result in final_results:
+    seen_blocks: Dict[tuple, Any] = {}
+    # Track the best score seen for each document (used for document ordering)
+    doc_best_score: Dict[str, float] = {}
+    # Track the earliest position each document appeared in the results list
+    doc_first_position: Dict[str, int] = {}
+
+    for position, result in enumerate(final_results):
         virtual_record_id = result.get("virtual_record_id")
         if not virtual_record_id:
             virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
@@ -3918,26 +3931,37 @@ def merge_and_number_retrieval_results(
 
         block_index = result.get("block_index", 0)
         block_key = (virtual_record_id, block_index)
+        score = float(result.get("score", 0.0))
 
-        # Keep the first occurrence (or the one with highest score if available)
+        # Track best score per document for ordering
+        if virtual_record_id not in doc_best_score or score > doc_best_score[virtual_record_id]:
+            doc_best_score[virtual_record_id] = score
+
+        # Track earliest position per document as tiebreaker
+        if virtual_record_id not in doc_first_position:
+            doc_first_position[virtual_record_id] = position
+
+        # Keep the first occurrence (or the one with highest score if duplicate)
         if block_key not in seen_blocks:
             seen_blocks[block_key] = result
         else:
-            # If duplicate, keep the one with higher score
             existing_score = seen_blocks[block_key].get("score", 0.0)
-            new_score = result.get("score", 0.0)
-            if new_score > existing_score:
+            if score > existing_score:
                 seen_blocks[block_key] = result
 
-    # Step 2: Convert back to list and sort consistently
+    # Step 2: Sort documents by relevance (best score desc, then earliest position asc)
+    # Within each document, sort blocks by block_index for natural reading order.
     deduplicated = list(seen_blocks.values())
-    deduplicated = sorted(
-        deduplicated,
-        key=lambda x: (
-            x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
-            x.get("block_index", 0)
-        )
-    )
+
+    def sort_key(x: Dict[str, Any]) -> tuple:
+        vid = x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", "")
+        best_score = doc_best_score.get(vid, 0.0)
+        first_pos = doc_first_position.get(vid, 999999)
+        block_idx = x.get("block_index", 0)
+        # Primary: highest score first (-best_score), Secondary: earliest position, Tertiary: block_index
+        return (-best_score, first_pos, block_idx)
+
+    deduplicated.sort(key=sort_key)
 
     # Step 3: Count unique records for logging
     seen_virtual_record_ids = set()
@@ -3950,7 +3974,7 @@ def merge_and_number_retrieval_results(
 
     log.info(
         f"✅ Merged {len(deduplicated)} blocks from {len(seen_virtual_record_ids)} records "
-        f"(deduplicated from {len(final_results)} raw results). "
+        f"(deduplicated from {len(final_results)} raw results, sorted by relevance score). "
         f"Block numbering will be done by get_message_content()."
     )
 
@@ -4084,25 +4108,108 @@ async def respond_node(
     # Generate success response
     final_results = state.get("final_results", [])
     virtual_record_map = state.get("virtual_record_id_to_result", {})
+    query = state.get("query", "")
 
     # ================================================================
-    # OPTION B: Merge and number retrieval results ONCE after all
-    # parallel calls are complete. This prevents R-number collisions.
+    # Merge and deduplicate retrieval results from parallel calls.
+    # Then sort by (virtual_record_id, block_index) — the SAME ordering
+    # the chatbot uses so that get_message_content() assigns consistent
+    # R-labels (R1 = first record's blocks, R2 = second record, etc.)
     # ================================================================
     if final_results:
         final_results = merge_and_number_retrieval_results(final_results, log)
+        # Mirror chatbot sort: group by record then by block order within record
+        final_results = sorted(
+            final_results,
+            key=lambda x: (
+                x.get("virtual_record_id") or x.get("metadata", {}).get("virtualRecordId", ""),
+                x.get("block_index", 0),
+            ),
+        )
         state["final_results"] = final_results
 
     log.info(f"📚 Citation data: {len(final_results)} results, {len(virtual_record_map)} records")
 
-    # Build messages
+    # ================================================================
+    # Use get_message_content() — the EXACT same function the chatbot
+    # uses — to build the user message with knowledge context.
+    # This ensures:
+    #   • Consistent R{record_number}-{block_index} block labels
+    #   • The same rich context_metadata per record
+    #   • The same tool instructions (fetch_full_record with R-labels)
+    #   • The same output-format instructions
+    # The formatted content is stored in state["qna_message_content"]
+    # and consumed by create_response_messages() below.
+    # ================================================================
+    if final_results and virtual_record_map:
+        from app.utils.chat_helpers import get_message_content as _get_msg_content
+
+        # Build user_data string (same logic as chatbot's askAIStream)
+        user_data = ""
+        user_info = state.get("user_info") or {}
+        org_info = state.get("org_info") or {}
+        if user_info:
+            account_type = (org_info.get("accountType") or "") if org_info else ""
+            if account_type in ("Enterprise", "Business"):
+                user_data = (
+                    "I am the user of the organization. "
+                    f"My name is {user_info.get('fullName', 'a user')} "
+                    f"({user_info.get('designation', '')}) "
+                    f"from {org_info.get('name', 'the organization')}. "
+                    "Please provide accurate and relevant information."
+                )
+            else:
+                user_data = (
+                    "I am the user. "
+                    f"My name is {user_info.get('fullName', 'a user')} "
+                    f"({user_info.get('designation', '')}). "
+                    "Please provide accurate and relevant information."
+                )
+
+        qna_content = _get_msg_content(
+            final_results, virtual_record_map, user_data, query, log, "json"
+        )
+        state["qna_message_content"] = qna_content
+        log.debug("✅ Built qna_message_content via get_message_content() (chatbot-identical format)")
+    else:
+        state["qna_message_content"] = None
+
+    # Build R-label → virtual_record_id mapping AFTER sorting so the numbering
+    # matches what get_message_content() assigned above.
+    from app.modules.qna.response_prompt import build_record_label_mapping
+    record_label_map: dict = build_record_label_mapping(final_results) if final_results else {}
+    if record_label_map:
+        log.debug(f"📌 Record label mapping: {record_label_map}")
+    state["record_label_to_uuid_map"] = record_label_map
+
+    # Build messages (create_response_messages uses qna_message_content as user msg)
     messages = create_response_messages(state)
 
-    if tool_results or final_results:
-        context = _build_tool_results_context(tool_results, final_results)
+    # Append non-retrieval tool results (API tools: Jira, Slack, etc.)
+    # Retrieval results are already embedded in the user message via get_message_content().
+    non_retrieval_results = [
+        r for r in tool_results
+        if r.get("status") == "success"
+        and "retrieval" not in r.get("tool_name", "").lower()
+        and "knowledge" not in r.get("tool_name", "").lower()
+    ]
+    failed_results = [r for r in tool_results if r.get("status") == "error"]
+
+    if non_retrieval_results or (failed_results and not any(r.get("status") == "success" for r in tool_results)):
+        # Build context for non-retrieval tools only (pass empty final_results
+        # so _build_tool_results_context skips the "Internal Knowledge" section)
+        context = _build_tool_results_context(
+            tool_results,
+            [] if state.get("qna_message_content") else final_results,
+        )
         if context.strip():
             if messages and isinstance(messages[-1], HumanMessage):
-                messages[-1].content += context
+                last_content = messages[-1].content
+                if isinstance(last_content, list):
+                    # qna_message_content is a list of content items — append as text item
+                    last_content.append({"type": "text", "text": context})
+                else:
+                    messages[-1].content = last_content + context
             else:
                 messages.append(HumanMessage(content=context))
 
@@ -4113,9 +4220,25 @@ async def respond_node(
         retrieval_service = state.get("retrieval_service")
         user_id = state.get("user_id", "")
         org_id = state.get("org_id", "")
-        blob_store = state.get("blob_store")
-        is_multimodal_llm = state.get("is_multimodal_llm", False)
         graph_provider = state.get("graph_provider")
+        is_multimodal_llm = state.get("is_multimodal_llm", False)
+
+        # blob_store is not set by retrieval.py (which creates its own local instance);
+        # create one here so stream_llm_response_with_tools can use it when the token
+        # threshold is exceeded and a secondary retrieval is needed.
+        blob_store = state.get("blob_store")
+        if blob_store is None:
+            try:
+                from app.modules.transformers.blob_storage import BlobStorage
+                config_svc = state.get("config_service")
+                blob_store = BlobStorage(
+                    logger=log,
+                    config_service=config_svc,
+                    graph_provider=graph_provider,
+                )
+                state["blob_store"] = blob_store
+            except Exception as _bs_err:
+                log.warning(f"Could not initialise BlobStorage in respond_node: {_bs_err}")
 
         # Get context_length from config or use default
         DEFAULT_CONTEXT_LENGTH = 128000
@@ -4139,14 +4262,24 @@ async def respond_node(
         else:
             all_queries = [query]
 
-        # Create fetch_full_record_tool only if we have retrieval results
-        # This prevents the LLM from trying to use it on non-retrieval tool results (like Jira)
+        # Create the agent-specific fetch_full_record tool (mirrors the chatbot
+        # pipeline: returns raw record dicts so execute_tool_calls in streaming.py
+        # formats them via record_to_message_content() — identical to chatbot).
         tools = []
         if virtual_record_map:
-            from app.utils.fetch_full_record import create_fetch_full_record_tool
-            fetch_tool = create_fetch_full_record_tool(virtual_record_map)
+            from app.utils.agent_fetch_full_record import (
+                create_agent_fetch_full_record_tool,
+            )
+            fetch_tool = create_agent_fetch_full_record_tool(
+                virtual_record_map,
+                label_to_virtual_record_id=record_label_map if record_label_map else None,
+            )
             tools = [fetch_tool]
-            log.debug(f"Added fetch_full_record tool ({len(virtual_record_map)} records available)")
+            log.debug(
+                f"Added agent fetch_full_record tool "
+                f"({len(virtual_record_map)} records available, "
+                f"{len(record_label_map)} labels mapped)"
+            )
 
         # Create tool_runtime_kwargs
         tool_runtime_kwargs = {
@@ -4378,7 +4511,19 @@ def _build_tool_results_context(tool_results: List[Dict], final_results: List[Di
     else:
         parts.append("**API DATA**: Transform into professional markdown. Show user-facing IDs (keys), hide internal IDs.\n")
 
-    parts.append("\nReturn ONLY JSON: {\"answer\": \"...\", \"confidence\": \"High\", \"referenceData\": [...]}\n")
+    parts.append(
+        "\n## 🔗 LINK REQUIREMENTS (MANDATORY)\n\n"
+        "For EVERY item from an external service, you MUST include a clickable markdown link:\n"
+        "- **Jira issue**: `[KEY-123](url)` — use the `url` field if present, else `[KEY-123]` with text\n"
+        "- **Confluence page/space**: `[Page Title](url)` — use the `url` field from the result\n"
+        "- **Google Drive file**: `[filename](webViewLink)` — use the `url` / `webViewLink` field\n"
+        "- **Gmail message**: `[subject/id](url)` — use the `url` field (gmail.google.com link)\n"
+        "- **Slack channel**: include `#channel-name` and link if `url` is present\n"
+        "If no URL is available, still mention the item name/key so the user can find it.\n"
+        "Include ALL links in the referenceData array as `{\"name\": ..., \"url\": ..., \"type\": ...}`.\n\n"
+    )
+
+    parts.append("Return ONLY JSON: {\"answer\": \"...\", \"confidence\": \"High\", \"referenceData\": [...]}\n")
 
     return "".join(parts)
 
@@ -4977,12 +5122,17 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     return reference_data
 
         # ── Confluence spaces ────────────────────────────────────────────────
-        # confluence.get_spaces → {"data": {"results": [{id, key, name, type, ...}]}}
+        # confluence.get_spaces → {"data": {"results": [{id, key, name, _links, ...}]}}
         if "confluence" in tn_lower and "space" in tn_lower:
             if isinstance(result, dict):
                 data = result.get("data", {})
                 spaces_list: List = []
+                # Extract base URL from the root _links (Confluence v2 API)
+                confluence_base_url = ""
                 if isinstance(data, dict):
+                    root_links = data.get("_links", {})
+                    if isinstance(root_links, dict):
+                        confluence_base_url = root_links.get("base", "")
                     spaces_list = data.get("results", [])
                 elif isinstance(data, list):
                     spaces_list = data
@@ -4994,22 +5144,39 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     space_id = str(raw_id).strip() if raw_id is not None else ""
                     space_key = space.get("key", "")
                     space_name = space.get("name", "")
+                    # Build web URL from _links.webui
+                    space_url = ""
+                    space_links = space.get("_links", {})
+                    if isinstance(space_links, dict):
+                        webui = space_links.get("webui", "")
+                        if webui and confluence_base_url:
+                            space_url = f"{confluence_base_url.rstrip('/')}{webui}"
+                        elif webui:
+                            space_url = webui
                     if space_id or space_key:
-                        reference_data.append({
+                        ref_entry: Dict[str, Any] = {
                             "name": space_name,
                             "id": space_id,
                             "key": space_key,
                             "type": "confluence_space",
-                        })
+                        }
+                        if space_url:
+                            ref_entry["url"] = space_url
+                        reference_data.append(ref_entry)
             return reference_data
 
         # ── Confluence pages ─────────────────────────────────────────────────
         # confluence.get_pages_in_space / search_pages / get_page_content
-        if "confluence" in tn_lower and any(k in tn_lower for k in ("page", "search")):
+        if "confluence" in tn_lower and any(k in tn_lower for k in ("page", "search", "child")):
             if isinstance(result, dict):
                 data = result.get("data", {})
                 pages_list: List = []
+                # Extract base URL from the root _links (Confluence v2 API)
+                confluence_base_url = ""
                 if isinstance(data, dict):
+                    root_links = data.get("_links", {})
+                    if isinstance(root_links, dict):
+                        confluence_base_url = root_links.get("base", "")
                     pages_list = data.get("results", [])
                     # Single-page result: get_page_content embeds metadata in data
                     if not pages_list and "id" in data:
@@ -5048,12 +5215,17 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                         continue
                     ch_id = ch.get("id", "")
                     ch_name = ch.get("name", "")
+                    # Slack deep link for channels (workspace-agnostic)
+                    ch_url = ch.get("permalink") or ch.get("url", "")
                     if ch_id:
-                        reference_data.append({
+                        ref_entry = {
                             "name": f"#{ch_name}" if ch_name else ch_id,
                             "id": ch_id,
                             "type": "slack_channel",
-                        })
+                        }
+                        if ch_url:
+                            ref_entry["url"] = ch_url
+                        reference_data.append(ref_entry)
             return reference_data
 
         # ── Slack messages / threads ─────────────────────────────────────────
@@ -5066,12 +5238,16 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     data = {}
                 ts = data.get("ts") or result.get("ts", "")
                 channel = data.get("channel") or result.get("channel", "")
+                permalink = data.get("permalink") or result.get("permalink", "")
                 if ts:
-                    reference_data.append({
+                    msg_ref: Dict[str, Any] = {
                         "name": "Posted message timestamp",
                         "id": str(ts),
                         "type": "slack_message_ts",
-                    })
+                    }
+                    if permalink:
+                        msg_ref["url"] = permalink
+                    reference_data.append(msg_ref)
                 if channel:
                     reference_data.append({
                         "name": channel,
@@ -5096,6 +5272,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                             continue
                         issue_id = issue.get("id", "")
                         issue_key = issue.get("key", "")
+                        issue_url = issue.get("url", "")
                         if issue_key or issue_id:
                             ref: Dict[str, Any] = {
                                 "name": issue.get("summary", ""),
@@ -5104,7 +5281,26 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                             }
                             if issue_id:
                                 ref["id"] = str(issue_id)
+                            if issue_url:
+                                ref["url"] = issue_url
                             reference_data.append(ref)
+
+            # Single issue at data level (get_issue / create_issue response)
+            if isinstance(data, dict) and "key" in data:
+                issue_key = data.get("key", "")
+                issue_id = data.get("id", "")
+                issue_url = data.get("url", "")
+                if issue_key or issue_id:
+                    ref = {
+                        "name": data.get("summary", ""),
+                        "key": issue_key,
+                        "type": "jira_issue",
+                    }
+                    if issue_id:
+                        ref["id"] = str(issue_id)
+                    if issue_url:
+                        ref["url"] = issue_url
+                    reference_data.append(ref)
 
             # Projects list: {"data": [...]}
             if isinstance(data, list):
@@ -5127,6 +5323,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
             if "key" in result:
                 item_id = result.get("id", "")
                 item_key = result.get("key", "")
+                item_url = result.get("url", "")
                 if item_key or item_id:
                     ref = {
                         "name": result.get("summary") or result.get("name", ""),
@@ -5135,6 +5332,8 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     }
                     if item_id:
                         ref["id"] = str(item_id)
+                    if item_url:
+                        ref["url"] = item_url
                     reference_data.append(ref)
 
         elif "jira" in tn_lower and isinstance(result, list):
@@ -5143,6 +5342,7 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     continue
                 item_id = item.get("id", "")
                 item_key = item.get("key", "")
+                item_url = item.get("url", "")
                 if item_key or item_id:
                     ref = {
                         "name": item.get("summary") or item.get("name", ""),
@@ -5151,6 +5351,8 @@ def _extract_reference_data_from_result(result: object, tool_name: str) -> List[
                     }
                     if item_id:
                         ref["id"] = str(item_id)
+                    if item_url:
+                        ref["url"] = item_url
                     reference_data.append(ref)
 
     except Exception as e:

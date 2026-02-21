@@ -181,7 +181,9 @@ class Retrieval:
                 })
 
             # === FLATTEN ===
-            chat_mode = self.state.get("chat_mode", "quick")
+            # Default to "standard" (not "quick") so reranking is enabled by default,
+            # matching the chatbot's behaviour.
+            chat_mode = self.state.get("chat_mode", "standard")
 
             blob_store = BlobStorage(
                 logger=logger_instance,
@@ -201,20 +203,28 @@ class Retrieval:
                 pass
 
             virtual_record_id_to_result = {}
+            # Retrieve virtual_to_record_map from search results — same as chatbot.
+            # This enriches records with graph-DB metadata (record type, web URL, etc.)
+            # so that context_metadata is populated for get_message_content().
+            virtual_to_record_map = results.get("virtual_to_record_map", {})
 
             flattened_results = await get_flattened_results(
                 search_results,
                 blob_store,
                 org_id,
                 is_multimodal_llm,
-                virtual_record_id_to_result
+                virtual_record_id_to_result,
+                virtual_to_record_map,
+                graph_provider=graph_provider,
             )
             logger_instance.info(f"Processed {len(flattened_results)} flattened results")
 
             # === RERANK ===
+            # Match chatbot behaviour: rerank unless explicitly in quick mode.
+            # Default was "quick" which silently disabled reranking — fixed here.
             should_rerank = (
                 len(flattened_results) > 1
-                and chat_mode != "quick"
+                and chat_mode not in ("quick",)
             )
 
             if should_rerank and reranker_service:
@@ -227,11 +237,14 @@ class Retrieval:
             else:
                 final_results = search_results if not flattened_results else flattened_results
 
-            # === SORT (same as chatbot) ===
-            final_results = sorted(
-                final_results,
-                key=lambda x: (x.get('virtual_record_id', ''), x.get('block_index', 0))
-            )
+            # === TRIM ===
+            # Do NOT sort here. The reranker has already ordered results by relevance.
+            # merge_and_number_retrieval_results() in nodes.py will correctly:
+            #   1. Deduplicate blocks across parallel retrieval calls
+            #   2. Group blocks by document (by best-score descending)
+            #   3. Sort blocks within each document by block_index
+            # Any intermediate sort here would discard the reranker's ordering and
+            # produce incorrect document-to-R-label assignments.
             final_results = final_results[:adjusted_limit]
 
             # ================================================================

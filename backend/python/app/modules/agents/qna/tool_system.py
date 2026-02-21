@@ -375,21 +375,27 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
     """
     tools = ToolLoader.load_tools(state)
 
-    # Add dynamic fetch_full_record tool
+    # Add dynamic agent fetch_full_record tool
     virtual_record_map = state.get("virtual_record_id_to_result", {})
     if virtual_record_map:
         try:
-            from app.utils.fetch_full_record import create_fetch_full_record_tool
-            fetch_tool = create_fetch_full_record_tool(virtual_record_map)
+            from app.utils.agent_fetch_full_record import (
+                create_agent_fetch_full_record_tool,
+            )
+            record_label_to_uuid_map = state.get("record_label_to_uuid_map", {})
+            fetch_tool = create_agent_fetch_full_record_tool(
+                virtual_record_map,
+                label_to_virtual_record_id=record_label_to_uuid_map if record_label_to_uuid_map else None,
+            )
             tools.append(fetch_tool)
 
             state_logger = state.get("logger")
             if state_logger:
-                state_logger.debug(f"Added fetch_full_record_tool ({len(virtual_record_map)} records)")
+                state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
         except Exception as e:
             state_logger = state.get("logger")
             if state_logger:
-                state_logger.warning(f"Failed to add fetch_full_record_tool: {e}")
+                state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
 
     return tools
 
@@ -541,21 +547,27 @@ def get_agent_tools_with_schemas(state: ChatState) -> List:
             tool_names = [getattr(t, 'name', str(t)) for t in structured_tools]
             state_logger.debug(f"Structured tool names: {tool_names[:10]}")
 
-        # Add dynamic fetch_full_record tool
+        # Add dynamic agent fetch_full_record tool
         virtual_record_map = state.get("virtual_record_id_to_result", {})
         if virtual_record_map:
             try:
-                from app.utils.fetch_full_record import create_fetch_full_record_tool
-                fetch_tool = create_fetch_full_record_tool(virtual_record_map)
+                from app.utils.agent_fetch_full_record import (
+                    create_agent_fetch_full_record_tool,
+                )
+                record_label_to_uuid_map = state.get("record_label_to_uuid_map", {})
+                fetch_tool = create_agent_fetch_full_record_tool(
+                    virtual_record_map,
+                    label_to_virtual_record_id=record_label_to_uuid_map if record_label_to_uuid_map else None,
+                )
                 structured_tools.append(fetch_tool)
 
                 state_logger = state.get("logger")
                 if state_logger:
-                    state_logger.debug(f"Added fetch_full_record_tool ({len(virtual_record_map)} records)")
+                    state_logger.debug(f"Added agent fetch_full_record tool ({len(virtual_record_map)} records)")
             except Exception as e:
                 state_logger = state.get("logger")
                 if state_logger:
-                    state_logger.warning(f"Failed to add fetch_full_record_tool: {e}")
+                    state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
 
         return structured_tools
     except ImportError:

@@ -1005,42 +1005,18 @@ async def handle_oauth_callback(
         # ============================================================
         # Post-Processing: Cache, Token Refresh, Status Update
         # ============================================================
-        # Refresh configuration cache (same pattern as connectors)
+        # Update toolset authentication status (same pattern as connectors)
         try:
-            updated_config = await config_service.get_config(config_path)
+            updated_config = await config_service.get_config(config_path, use_cache=False)
             if isinstance(updated_config, dict):
-                # Update metadata fields
+                # Update only top-level metadata fields (not credentials) to avoid datetime issues
                 updated_config["isAuthenticated"] = True
                 updated_config["updatedAt"] = get_epoch_timestamp_in_ms()
                 updated_config["updatedBy"] = toolset_user_id
-
-                # IMPORTANT: Persist OAuth infrastructure fields to auth config
-                # This ensures token refresh can find tokenUrl, authorizeUrl, redirectUri
-                if "auth" not in updated_config:
-                    updated_config["auth"] = {}
-
-                # Update auth config with OAuth infrastructure fields from oauth_flow_config
-                updated_config["auth"].update({
-                    "authorizeUrl": oauth_flow_config.get("authorizeUrl", ""),
-                    "tokenUrl": oauth_flow_config.get("tokenUrl", ""),
-                    "redirectUri": oauth_flow_config.get("redirectUri", ""),
-                    "scopes": oauth_flow_config.get("scopes", []),
-                })
-
-                # Add optional fields if present
-                if "tokenAccessType" in oauth_flow_config:
-                    updated_config["auth"]["tokenAccessType"] = oauth_flow_config["tokenAccessType"]
-                if "additionalParams" in oauth_flow_config:
-                    updated_config["auth"]["additionalParams"] = oauth_flow_config["additionalParams"]
-                if "scopeParameterName" in oauth_flow_config:
-                    updated_config["auth"]["scopeParameterName"] = oauth_flow_config["scopeParameterName"]
-                if "tokenResponsePath" in oauth_flow_config:
-                    updated_config["auth"]["tokenResponsePath"] = oauth_flow_config["tokenResponsePath"]
-
                 await config_service.set_config(config_path, updated_config)
-                logger.info(f"Refreshed config cache for toolset {toolset_type}")
+                logger.info(f"Toolset {toolset_type} marked as authenticated")
         except Exception as cache_err:
-            logger.warning(f"Could not refresh config cache: {cache_err}")
+            logger.warning(f"Could not update toolset authentication status: {cache_err}")
 
         # Schedule token refresh (same pattern as connectors)
         try:
