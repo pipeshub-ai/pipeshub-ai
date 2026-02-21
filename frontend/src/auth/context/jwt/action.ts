@@ -42,6 +42,9 @@ type ForgotPasswordParams = {
   email: string;
   turnstileToken?: string | null;
 };
+type EmailChangeParams = {
+  token: string;
+};
 
 type GetOtpParams = {
   email: string;
@@ -116,13 +119,31 @@ export const OrgExists = async (): Promise<orgExistsReponse> => {
 
 export const forgotPassword = async ({ email, turnstileToken }: ForgotPasswordParams): Promise<void> => {
   try {
-    const params = { 
+    const params = {
       email,
       ...(turnstileToken && { 'cf-turnstile-response': turnstileToken })
     };
     await axios.post(`${CONFIG.authUrl}/api/v1/userAccount/password/forgot`, params);
   } catch (error) {
     throw new Error('error in sending mail to reset password', error);
+  }
+};
+/** **************************************
+ * Change Email
+ *************************************** */
+
+export const changeEmail = async ({ token }: EmailChangeParams): Promise<void> => {
+  try {
+
+    await axios.put(`${CONFIG.authUrl}/api/v1/userAccount/validateEmailChange`,
+      null,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+  } catch (error) {
+    throw new Error(error.message);
   }
 };
 
@@ -392,7 +413,7 @@ export const signUp = async ({
 export const signOut = async (): Promise<void> => {
   try {
     const accessToken = localStorage.getItem(STORAGE_KEY);
-    
+
     if (accessToken) {
       try {
         await axios.post(
@@ -408,7 +429,7 @@ export const signOut = async (): Promise<void> => {
         console.error('Logout API call failed, proceeding with session cleanup:', error);
       }
     }
-    
+
     // Clear session after logout API call (or if it failed)
     await setSession(null, null);
   } catch (error) {

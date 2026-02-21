@@ -9,6 +9,7 @@ import {
   accountCreation,
   appUserInvite,
   loginWithOTPRequest,
+  resetEmail,
   resetPassword,
   suspiciousLoginAttempt,
 } from '../utils/emailTemplates';
@@ -66,6 +67,9 @@ export class MailController {
 
       case EmailTemplateType.ResetPassword:
         emailContent = resetPassword(templateData);
+        return emailContent;
+      case EmailTemplateType.ResetEmail:
+        emailContent = resetEmail(templateData);
         return emailContent;
 
       case EmailTemplateType.AppuserInvite:

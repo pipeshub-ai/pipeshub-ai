@@ -148,7 +148,7 @@ export const changePassword = async ({ currentPassword, newPassword, 'cf-turnsti
 export const updateUser = async (userId: string, userData: any) => {
   try {
     const response = await axios.put(`${CONFIG.backendUrl}/api/v1/users/${userId}`, userData);
-    return response.data.message;
+    return response.data.message || response.data;
   } catch (error) {
     throw new Error('Error updating user');
   }
@@ -327,11 +327,21 @@ export const getUserIdFromToken = (): string => {
   return userId;
 };
 
-export const getUserEmailFromToken = (): string => {
+export const getUserEmailFromToken = (): string | null => {
   const accessToken = localStorage.getItem(STORAGE_KEY);
-  const decodedToken = jwtDecode(accessToken);
-  const { email } = decodedToken;
-  return email;
+
+  if (!accessToken) {
+    console.warn("No access token found");
+    return null;  // ✅ prevent crash
+  }
+
+  try {
+    const decodedToken = jwtDecode(accessToken);
+    return decodedToken.email ?? null;
+  } catch (err) {
+    console.error("Invalid token", err);
+    return null;
+  }
 };
 
 export const logout = async (): Promise<void> => {

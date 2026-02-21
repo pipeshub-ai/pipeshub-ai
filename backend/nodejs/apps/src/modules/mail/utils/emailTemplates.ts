@@ -7,6 +7,7 @@ const loadTemplate = (path: string): string => fs.readFileSync(`${cwd}/${path}`,
 const loginTemplate = loadTemplate('src/modules/mail/views/layouts/user/login.hbs');
 const suspiciousLoginTemplate = loadTemplate('src/modules/mail/views/layouts/user/suspiciousLogin.hbs');
 const resetPasswordTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetPassword.hbs');
+const resetEmailTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetEmail.hbs');
 const accountCreationTemplate = loadTemplate('src/modules/mail/views/layouts/org/accountCreation.hbs');
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
 const headerTemplate = loadTemplate('src/modules/mail/views/partials/header.hbs');
@@ -59,6 +60,7 @@ const compileTemplate = (template: string, templateData:Record<string,any>): str
 export const loginWithOTPRequest = (templateData: Record<string,any>): string => compileTemplate(loginTemplate, templateData);
 export const suspiciousLoginAttempt = (templateData: Record<string,any>): string => compileTemplate(suspiciousLoginTemplate, templateData);
 export const resetPassword = (templateData: Record<string,any>): string => compileTemplate(resetPasswordTemplate, templateData);
+export const resetEmail = (templateData: Record<string,any>): string => compileTemplate(resetEmailTemplate, templateData);
 export const accountCreation = (templateData: Record<string,any>): string => compileTemplate(accountCreationTemplate, templateData);
 export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
 

@@ -160,3 +160,36 @@ export const scopedStorageServiceJwtGenerator = (
     },
   );
 };
+
+export const jwtGeneratorForValidateEmailLink = (
+  userEmail: string,
+  newEmail: string,
+  userId: string,
+  orgId: string,
+  scopedJwtSecret: string,
+) => {
+  // Token for password reset
+  const validateEmailToken = jwt.sign(
+    {
+      userEmail,
+      userId,
+      orgId,
+      newEmail,
+      scopes: [TokenScopes.VALIDATE_EMAIL],
+    },
+    scopedJwtSecret,
+    { expiresIn: '20m' },
+  );
+  const mailAuthToken = jwt.sign(
+    {
+      userEmail,
+      userId,
+      orgId,
+      scopes: [TokenScopes.SEND_MAIL],
+    },
+    scopedJwtSecret,
+    { expiresIn: '1h' },
+  );
+
+  return { validateEmailToken, mailAuthToken };
+};

@@ -4,6 +4,7 @@ import { Outlet } from 'react-router-dom';
 import { SimpleLayout } from 'src/layouts/simple';
 
 import { SplashScreen } from 'src/components/loading-screen';
+import { EmailChangeRedirect } from 'src/sections/accountdetails/account-settings/email-change-redirect';
 
 // ----------------------------------------------------------------------
 
@@ -38,6 +39,7 @@ export const mainRoutes = [
       { path: '500', element: <Page500 /> },
       { path: '404', element: <Page404 /> },
       { path: '403', element: <Page403 /> },
+      { path: 'reset-email', element: <EmailChangeRedirect /> },
     ],
   },
   // OAuth routes (outside dashboard layout)
