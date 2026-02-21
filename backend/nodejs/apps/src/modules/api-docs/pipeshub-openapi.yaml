@@ -3997,10 +3997,10 @@ components:
               description: Deployment name (Azure OpenAI)
             awsAccessKeyId:
               type: string
-              description: AWS access key (Bedrock)
+              description: AWS access key (Bedrock). Optional - omit to use IAM role credentials.
             awsAccessSecretKey:
               type: string
-              description: AWS secret key (Bedrock)
+              description: AWS secret key (Bedrock). Optional - omit to use IAM role credentials.
             region:
               type: string
               description: AWS region (Bedrock)

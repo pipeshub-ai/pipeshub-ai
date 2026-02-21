@@ -96,6 +96,14 @@ services:
       # Indexing service config
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-5}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-5}
+
+      - OPIK_API_KEY=${OPIK_API_KEY:-}
+      - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
+
+      # AWS credentials (for Bedrock IAM role access from inside the container)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
     depends_on:
       qdrant:
         condition: service_healthy

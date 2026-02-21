@@ -74,6 +74,11 @@ services:
 
       - OLLAMA_API_URL=http://host.docker.internal:11434
 
+      # AWS credentials (for Bedrock IAM role access from inside the container)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+
       # Rate limit config
       - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
 

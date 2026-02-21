@@ -719,7 +719,7 @@ export const ConnectorStatsCard = ({
                       Indexing
                     </>
                   ) : (
-                    'Index Manual Sync'
+                    'Index Manual Records'
                   )}
                 </Button>
               )}
