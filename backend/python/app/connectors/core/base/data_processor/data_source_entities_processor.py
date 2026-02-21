@@ -1164,7 +1164,7 @@ class DataSourceEntitiesProcessor:
                     user_group.org_id = self.org_id
 
                     self.logger.info(f"Processing user group: {user_group.name} with id {user_group.id}")
-                    self.logger.info(f"Processing user group permissions: {members}")
+                    self.logger.debug(f"Processing user group permissions: {members}")
 
                     # Check if the user group already exists in the DB
                     existing_user_group = await tx_store.get_user_group_by_external_id(

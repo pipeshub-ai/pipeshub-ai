@@ -19,6 +19,7 @@ import aiohttp
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
+from langchain_aws import ChatBedrock
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.output_parsers import PydanticOutputParser
@@ -1604,7 +1605,7 @@ def bind_tools_for_llm(llm, tools: List[object]) -> BaseChatModel|bool:
         return False
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
-    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI)):
+    if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock)):
 
         additional_kwargs = {}
         if isinstance(llm, ChatAnthropic):
@@ -1619,7 +1620,8 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
             additional_kwargs["stream"] = True
 
-        additional_kwargs["method"] = "json_schema"
+        if not isinstance(llm, ChatBedrock):
+            additional_kwargs["method"] = "json_schema"
 
         try:
             model_with_structure = llm.with_structured_output(

@@ -153,12 +153,12 @@ export const LLM_PROVIDERS: readonly ProviderConfig[] = [
   {
     id: 'bedrock',
     label: 'AWS Bedrock',
-    description: 'Enter your AWS Bedrock API credentials to get started.',
+    description: 'Enter your AWS Bedrock credentials, or leave keys empty to use IAM role.',
     modelPlaceholder:
       'e.g. us.anthropic.claude-sonnet-4-20250514-v1:0, arn:aws:bedrock:us-east-1:106782021127:inference-profile/apac.anthropic.claude-sonnet-4-20250514-v1:0"',
     fields: [
-      { name: 'awsAccessKeyId', required: true },
-      { name: 'awsAccessSecretKey', required: true },
+      { name: 'awsAccessKeyId', required: false },
+      { name: 'awsAccessSecretKey', required: false },
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'model id/arn' },
       { name: 'modelFriendlyName', required: false, defaultValue: undefined },
@@ -345,11 +345,11 @@ export const EMBEDDING_PROVIDERS: readonly ProviderConfig[] = [
   {
     id: 'bedrock',
     label: 'AWS Bedrock',
-    description: 'Enter your AWS Bedrock API credentials for embeddings.',
+    description: 'Enter your AWS Bedrock credentials for embeddings, or leave keys empty to use IAM role.',
     modelPlaceholder: 'e.g. cohere2.embed-multilingual-v3',
     fields: [
-      { name: 'awsAccessKeyId', required: true },
-      { name: 'awsAccessSecretKey', required: true },
+      { name: 'awsAccessKeyId', required: false },
+      { name: 'awsAccessSecretKey', required: false },
       { name: 'region', required: true },
       { name: 'model', required: true, placeholder: 'Model ID/ARN' },
       { name: 'modelFriendlyName', required: false, defaultValue: undefined },

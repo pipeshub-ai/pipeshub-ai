@@ -1,7 +1,12 @@
 
+from __future__ import annotations
+
 import os
 from enum import Enum
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
+
+if TYPE_CHECKING:
+    from botocore.client import BaseClient
 
 from langchain_core.embeddings.embeddings import Embeddings
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -77,6 +82,36 @@ def get_default_embedding_model() -> Embeddings:
         raise e
 
 logger = create_logger("aimodels")
+
+def _create_bedrock_client(configuration: Dict[str, Any], service_name: str = "bedrock-runtime") -> BaseClient:
+    """Create a boto3 Bedrock client with proper credential handling.
+
+    Tries credentials in this order:
+      1. Explicit keys from configuration (awsAccessKeyId / awsAccessSecretKey)
+      2. boto3 default credential chain (env vars, ~/.aws, EC2 IAM role, ECS task role)
+    """
+    import boto3
+
+    region = configuration.get("region") or os.environ.get("AWS_DEFAULT_REGION")
+    aws_access_key = (configuration.get("awsAccessKeyId") or "").strip()
+    aws_secret_key = (configuration.get("awsAccessSecretKey") or "").strip()
+
+    if aws_access_key and aws_secret_key:
+        logger.info("Creating Bedrock client with explicit AWS credentials")
+        session = boto3.Session(
+            aws_access_key_id=aws_access_key,
+            aws_secret_access_key=aws_secret_key,
+            region_name=region,
+        )
+    else:
+        logger.info(
+            "No explicit AWS credentials provided for Bedrock; "
+            "using default credential chain (env vars AWS_ACCESS_KEY_ID / "
+            "AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, EC2 IAM role, ECS task role)"
+        )
+        session = boto3.Session(region_name=region)
+
+    return session.client(service_name)
 
 def is_multimodal_llm(config: Dict[str, Any]) -> bool:
     """
@@ -219,11 +254,11 @@ def get_embedding_model(provider: str, config: Dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
         from langchain_aws import BedrockEmbeddings
 
+        bedrock_client = _create_bedrock_client(configuration)
         return BedrockEmbeddings(
-            model_id=configuration["model"],
-            aws_access_key_id=configuration["awsAccessKeyId"],
-            aws_secret_access_key=configuration["awsAccessSecretKey"],
-            region_name=configuration["region"],
+            model_id=model_name,
+            client=bedrock_client,
+            region_name=configuration.get("region"),
         )
 
     elif provider == EmbeddingProvider.SENTENCE_TRANSFOMERS.value:
@@ -354,20 +389,17 @@ def get_generator_model(provider: str, config: Dict[str, Any], model_name: str |
         else:
             model_kwargs = {}
 
-        # Create the ChatBedrock instance
-        # Note: Do NOT pass anthropic_version or any Anthropic-specific client parameters
-        # AWS Bedrock handles the underlying model interaction differently
+        bedrock_client = _create_bedrock_client(configuration)
+
         return ChatBedrock(
-                model_id=model_name,
-                temperature=0.2,
-                aws_access_key_id=configuration["awsAccessKeyId"],
-                aws_secret_access_key=configuration["awsAccessSecretKey"],
-                region_name=configuration["region"],
-                provider=provider_in_bedrock,
-                model_kwargs=model_kwargs,
-                # Explicitly disable any client-specific parameters that might be auto-added
-                beta_use_converse_api=True,  # Use the Converse API which is more standardized
-            )
+            model_id=model_name,
+            client=bedrock_client,
+            temperature=0.2,
+            region_name=configuration.get("region"),
+            provider=provider_in_bedrock,
+            model_kwargs=model_kwargs,
+            beta_use_converse_api=True,
+        )
     elif provider == LLMProvider.AZURE_AI.value:
         from langchain_anthropic import ChatAnthropic
         from langchain_openai import ChatOpenAI
