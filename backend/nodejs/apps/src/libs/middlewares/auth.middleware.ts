@@ -35,10 +35,19 @@ export class AuthMiddleware {
 
       const decoded = await this.tokenService.verifyToken(token);
       req.user = decoded;
+      // Normalize for OAuth tokens that use org_id / sub so controllers get orgId / userId
+      if (req.user) {
+        if (req.user.orgId === undefined && req.user.org_id !== undefined) {
+          req.user.orgId = req.user.org_id;
+        }
+        if (req.user.userId === undefined && req.user.sub !== undefined) {
+          req.user.userId = req.user.sub;
+        }
+      }
 
       // Search for user activities for this user
-      const userId = decoded?.userId;
-      const orgId = decoded?.orgId;
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
 
       if (userId && orgId) {
         let userActivity: any;

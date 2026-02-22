@@ -143,14 +143,14 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     name: 'conversation:read',
     description: 'Read conversations',
     category: 'Conversations',
-    endpoints: ['GET /api/v1/conversations'],
+    endpoints: ['GET /api/v1/conversations', 'GET /api/v1/conversations/show/archives'],
     requiresUserConsent: true,
   },
   'conversation:write': {
     name: 'conversation:write',
     description: 'Create and manage conversations',
     category: 'Conversations',
-    endpoints: ['POST /api/v1/conversations', 'PUT /api/v1/conversations/*'],
+    endpoints: ['POST /api/v1/conversations/create', 'PUT /api/v1/conversations/*'],
     requiresUserConsent: true,
   },
   'conversation:chat': {
@@ -189,7 +189,7 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     name: 'connector:read',
     description: 'Read connector configurations',
     category: 'Connectors',
-    endpoints: ['GET /api/v1/connectors'],
+    endpoints: ['GET /api/v1/connectors', 'GET /api/v1/connectors/registry'],
     requiresUserConsent: true,
   },
   'connector:write': {
