@@ -1,19 +1,18 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
 import jwt from 'jsonwebtoken';
-import { UnauthorizedError, ForbiddenError } from '../errors/http.errors';
+import { UnauthorizedError } from '../errors/http.errors';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
-import { UserActivities } from '../../modules/auth/schema/userActivities.schema';
+import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
 import { userActivitiesType } from '../utils/userActivities.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
-import OAuthUtils from './utils/oauth.utils';
 
 const { LOGOUT, PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
@@ -34,6 +33,12 @@ export class AuthMiddleware {
     AuthMiddleware.oauthTokenService = oauthTokenService;
   }
 
+  private isOAuthToken(
+    decoded: Record<string, any> | null,
+  ): boolean {
+    return decoded !== null && decoded.tokenType === 'oauth' && typeof decoded.client_id === 'string' && typeof decoded.iss === 'string';
+  }
+
   async authenticate(
     req: AuthenticatedUserRequest,
     _res: Response,
@@ -48,15 +53,15 @@ export class AuthMiddleware {
       // peek at the token payload to determine token type
       const rawDecoded = jwt.decode(token) as Record<string, any> | null;
 
-      if (OAuthUtils.isOAuthToken(rawDecoded)) {
+      if (!this.isOAuthToken(rawDecoded)) {
+        // authenticate regular token
+        await this.authenticateRegularToken(token, req);
+      } else {
         if (!AuthMiddleware.oauthTokenService) {
           throw new UnauthorizedError('OAuth authentication is not configured');
         }
         // authenticate oauth token
         await this.authenticateOAuthToken(token, req);
-      } else {
-        // authenticate regular token
-        await this.authenticateRegularToken(token, req);
       }
 
       next();
@@ -80,7 +85,7 @@ export class AuthMiddleware {
     const orgId = decoded?.orgId;
 
     if (userId && orgId) {
-      let userActivity: any;
+      let userActivity: IUserActivity | null = null;
       try {
         userActivity = await UserActivities.findOne({
           userId: userId,
@@ -98,7 +103,7 @@ export class AuthMiddleware {
 
       if(userActivity) {
         const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
-        const activityTimestamp = (userActivity?.createdAt).getTime()
+        const activityTimestamp = userActivity.createdAt?.getTime() || 0;
         if (activityTimestamp > tokenIssuedAt + PASSWORD_CHANGE_TOKEN_DELAY_MS) {
           throw new UnauthorizedError('Session expired, please login again');
         }
@@ -121,27 +126,7 @@ export class AuthMiddleware {
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
-    // enforce scope-based access control
     const tokenScopes = payload.scope.split(' ');
-    const requiredScopes = OAuthUtils.getRequiredScopesForEndpoint(
-      req.method,
-      req.originalUrl,
-    );
-
-    if (requiredScopes.length === 0) {
-      // no oauth scope covers this endpoint
-      throw new ForbiddenError(
-        'This endpoint is not accessible with OAuth tokens',
-      );
-    }
-
-    // check if the token has at least one of the required scopes
-    const hasScope = requiredScopes.some((scope) => tokenScopes.includes(scope));
-    if (!hasScope) {
-      throw new ForbiddenError(
-        `Insufficient scope. Required: ${requiredScopes.join(' or ')}`,
-      );
-    }
 
     // build req.user in the format controllers expect
     let userId = payload.userId;
@@ -166,6 +151,7 @@ export class AuthMiddleware {
         }
       } catch (err) {
         this.logger.error('Failed to look up OAuth app owner', err);
+        throw new UnauthorizedError('Failed to look up OAuth app owner');
       }
     }
 
@@ -202,10 +188,11 @@ export class AuthMiddleware {
             .lean()
             .exec();
           if (org) {
-            accountType = (org as any).accountType;
+            accountType = org.accountType;
           }
         } catch (err) {
           this.logger.error('Failed to look up org for OAuth token', err);
+          throw new UnauthorizedError('Failed to look up org for OAuth token');
         }
       }
     }
@@ -257,7 +244,7 @@ export class AuthMiddleware {
         this.logger.info(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
 
         if (userId && orgId && scope === TokenScopes.PASSWORD_RESET) {
-          let userActivity: any;
+          let userActivity: IUserActivity | null = null;
           try {
             userActivity = await UserActivities.findOne({
               userId: userId,
@@ -275,7 +262,7 @@ export class AuthMiddleware {
 
           if(userActivity) {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
-            const activityTimestamp = (userActivity?.createdAt).getTime()
+            const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt ) {
               throw new UnauthorizedError('Password reset link expired, please request for a new link');
             }
