@@ -35,6 +35,14 @@ interface RootState {
   counts: CountsState;
 }
 
+const TAB_ROUTES = [
+  { key: 'users', path: '/account/company-settings/users' },
+  { key: 'groups', path: '/account/company-settings/groups' },
+  { key: 'invites', path: '/account/company-settings/invites' },
+  { key: 'blocked-users', path: '/account/company-settings/blocked-users' },
+];
+
+
 export default function UsersAndGroups() {
   const theme = useTheme();
   const navigate = useNavigate();
@@ -47,12 +55,6 @@ export default function UsersAndGroups() {
   const groupCount = useSelector((state: RootState) => state.counts.groupsCount);
   const invitesCount = useSelector((state: RootState) => state.counts.invitesCount);
   const blockedUsersCount = useSelector((state: RootState) => state.counts.blockedUsersCount);
-  const TAB_ROUTES = [
-    { key: 'users', path: '/account/company-settings/users' },
-    { key: 'groups', path: '/account/company-settings/groups' },
-    { key: 'invites', path: '/account/company-settings/invites' },
-    { key: 'blocked-users', path: '/account/company-settings/blocked-users' },
-  ];
 
   useEffect(() => {
     const fetchCounts = async (): Promise<void> => {

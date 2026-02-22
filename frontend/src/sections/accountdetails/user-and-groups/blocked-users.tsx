@@ -240,7 +240,7 @@ const BlockedUsers = () => {
         ];
 
         // Simple hash function using array methods instead of for loop with i++
-        const hash = name?.split('').reduce((acc, char) => char?.charCodeAt(0) + (acc * 32 - acc), 0);
+        const hash = name?.split('').reduce((acc, char) => char.charCodeAt(0) + (acc * 32 - acc), 0);
 
         return colors[Math.abs(hash) % colors.length];
     };
