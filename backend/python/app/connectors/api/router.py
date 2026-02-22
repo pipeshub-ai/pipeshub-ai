@@ -43,6 +43,7 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.services.kafka_service import KafkaService
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import Record
@@ -2887,6 +2888,7 @@ async def update_connector_instance_auth_config(
 async def update_connector_instance_filters_sync_config(
     connector_id: str,
     request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> Dict[str, Any]:
     """
     Update filters and sync configuration for a connector instance.
@@ -2974,6 +2976,26 @@ async def update_connector_instance_filters_sync_config(
         # Save configuration
         await config_service.set_config(config_path, new_config)
         logger.info(f"Updated filters-sync config for instance {connector_id}")
+
+        # Cancel any running sync task for this connector (safety net — normally the
+        # connector must be disabled before filters can be changed, but a task may
+        # still be winding down from a previous run)
+        await sync_task_manager.cancel_sync(connector_id)
+        logger.info(f"Cancelled any running sync task for connector {connector_id}")
+
+        # Delete all sync points so the next sync is a clean full sweep based on
+        # the updated filter configuration
+        try:
+            deleted_count, success = await graph_provider.delete_sync_points_by_connector_id(
+                connector_id=connector_id
+            )
+            if success:
+                logger.info(f"Deleted {deleted_count} sync points for connector {connector_id} after filter change")
+            else:
+                logger.warning(f"Failed to delete sync points for connector {connector_id} after filter change, continuing anyway")
+        except Exception as sp_error:
+            logger.error(f"Error deleting sync points for connector {connector_id} after filter change: {sp_error}")
+            # Non-fatal — continue with the config update response
 
         # For filters/sync updates, keep connector status as is
         # Only update the timestamp

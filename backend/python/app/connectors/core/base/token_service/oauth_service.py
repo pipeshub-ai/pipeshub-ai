@@ -143,6 +143,8 @@ class OAuthToken:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'OAuthToken':
         """Create token from dictionary, filtering out unknown fields"""
+        # Make a shallow copy to avoid mutating the caller's dict
+        data = dict(data)
         if 'created_at' in data and isinstance(data['created_at'], str):
             data['created_at'] = datetime.fromisoformat(data['created_at'])
         # Filter to only known fields to handle varying OAuth provider responses

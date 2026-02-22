@@ -294,8 +294,7 @@ class ConfigurationService:
 
             # Store in KV store
             try:
-                await self.store.create_key(key, value, overwrite=True)
-                success = True
+                success = await self.store.create_key(key, value, overwrite=True)
             except Exception as store_error:
                 self.logger.error("❌ Failed to create key in store: %s", str(store_error))
                 success = False

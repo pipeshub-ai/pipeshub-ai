@@ -19,6 +19,7 @@ from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.connector_registry import (
     ConnectorRegistry,
 )
+from app.connectors.core.sync.task_manager import sync_task_manager
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import knowledge_hub_router
 from app.containers.connector import (
@@ -295,6 +296,13 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
     logger = container.logger()
 
     try:
+        # Cancel all running connector sync tasks first so they can clean up
+        # gracefully before the database and messaging connections are torn down
+        try:
+            await sync_task_manager.cancel_all()
+        except Exception as e:
+            logger.warning(f"Error cancelling sync tasks at shutdown: {e}")
+
         # Stop Kafka consumers
         await stop_kafka_consumers(container)
 

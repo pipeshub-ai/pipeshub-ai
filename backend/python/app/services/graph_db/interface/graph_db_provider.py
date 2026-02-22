@@ -2233,6 +2233,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def delete_sync_points_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: Optional[str] = None
+    ) -> Tuple[int, bool]:
+        """
+        Delete all sync points for a given connector.
+
+        Args:
+            connector_id (str): The connector ID to delete sync points for
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Tuple[int, bool]: Tuple of (deleted_count, success_flag)
+        """
+        pass
+
     # ==================== Batch/Bulk Operations ====================
 
     @abstractmethod

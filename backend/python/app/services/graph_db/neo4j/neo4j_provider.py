@@ -5165,6 +5165,27 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to delete nodes from {collection} by connectorId: {str(e)}")
             return (0, False)
 
+    async def delete_sync_points_by_connector_id(
+        self,
+        connector_id: str,
+        transaction: Optional[str] = None
+    ) -> Tuple[int, bool]:
+        """
+        Delete all sync points for a given connector.
+
+        Args:
+            connector_id: The connector ID to delete sync points for
+            transaction: Optional transaction context
+
+        Returns:
+            Tuple of (deleted_count, success_flag)
+        """
+        return await self._delete_nodes_by_connector_id(
+            transaction=transaction,
+            connector_id=connector_id,
+            collection=CollectionNames.SYNC_POINTS.value
+        )
+
     async def delete_connector_instance(
         self,
         connector_id: str,

@@ -8056,6 +8056,66 @@ paths:
         '401':
           description: Unauthorized
 
+  /users/{id}/unblock:
+    put:
+      tags:
+        - Users
+      summary: Unblock a user in organization
+      description: |
+        Unblock a previously blocked user within the authenticated administrator's organization.<br><br>
+
+        <b>Overview:</b><br>
+        This endpoint updates the user's credential record by setting <code>isBlocked</code> to <code>false</code> 
+        and resetting <code>wrongCredentialCount</code> to <code>0</code>.<br><br>
+
+        <b>Authorization:</b><br>
+        <ul>
+        <li><b>Admin only:</b> Only organization administrators can unblock users</li>
+        <li>Requires a valid Bearer token</li>
+        </ul>
+
+        <b>Validation & Conditions:</b><br>
+        <ul>
+        <li>User must belong to the same <code>orgId</code> as the authenticated admin</li>
+        <li>User must currently be blocked (<code>isBlocked: true</code>)</li>
+        <li>User must not be deleted (<code>isDeleted: false</code>)</li>
+        </ul>
+
+        <b>Note:</b> If the user is not blocked or does not exist in the organization, a 404 response is returned.
+      operationId: unblockUser
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: User ID to unblock
+          schema:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+            example: "507f1f77bcf86cd799439011"
+      responses:
+        '200':
+          description: User unblocked successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: "User unblocked successfully"
+        '400':
+          description: User ID is required
+        '401':
+          description: Unauthorized - Valid bearer token required
+        '403':
+          description: Forbidden - Admin access required
+        '404':
+          description: User not found or not blocked
+        '500':
+          description: Internal server error
+
   # ==================== TEAMS ENDPOINTS ====================
   /teams:
     post:
@@ -20384,3 +20444,5 @@ paths:
           description: Invalid parse_result data
         '500':
           description: Block creation failed
+  
+  
