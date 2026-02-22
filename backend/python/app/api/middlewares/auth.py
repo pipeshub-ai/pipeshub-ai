@@ -1,5 +1,6 @@
 import os
-from typing import Optional
+from collections.abc import Callable, Coroutine
+from typing import Any, Optional
 
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
@@ -211,14 +212,14 @@ async def authMiddleware(request: Request) -> Request:
     return request
 
 
-def require_scopes(*required_scopes: str):
+def require_scopes(*required_scopes: str) -> Callable[..., Coroutine[Any, Any, None]]:
     """
     FastAPI dependency factory that enforces OAuth scope validation.
     Args:
         *required_scopes: One or more scope strings. The token must have
                         at least one of them (OR logic).
     """
-    async def _check_scopes(request: Request):
+    async def _check_scopes(request: Request) -> None:
         user = getattr(request.state, "user", None)
         if user is None:
             raise HTTPException(
