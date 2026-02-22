@@ -86,8 +86,8 @@ export class OAuthAuthMiddleware {
       // Attach OAuth info to request
       req.oauth = {
         clientId: payload.client_id,
-        userId: payload.token_type === 'access' ? payload.sub : undefined,
-        orgId: payload.org_id,
+        userId: payload.userId,
+        orgId: payload.orgId,
         scopes: payload.scope.split(' '),
         payload,
       }
@@ -315,8 +315,8 @@ export function scopeCheck(
           // Attach OAuth info
           req.oauth = {
             clientId: payload.client_id,
-            userId: payload.sub,
-            orgId: payload.org_id,
+            userId: payload.userId,
+            orgId: payload.orgId,
             scopes: tokenScopes,
             payload,
           }

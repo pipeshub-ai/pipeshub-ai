@@ -1,6 +1,7 @@
 // Token Payload
 export interface OAuthTokenPayload {
-  sub: string
+  userId: string
+  orgId: string
   iss: string
   aud: string
   exp: number
@@ -8,8 +9,10 @@ export interface OAuthTokenPayload {
   jti: string
   scope: string
   client_id: string
-  org_id: string
-  token_type: 'access' | 'refresh'
+  tokenType: 'oauth'
+  isRefreshToken?: true
+  fullName?: string
+  accountType?: string
 }
 
 // Generated Tokens Response
@@ -82,7 +85,7 @@ export interface IntrospectResponse {
   exp?: number
   iat?: number
   nbf?: number
-  sub?: string
+  user_id?: string
   aud?: string
   iss?: string
   jti?: string
@@ -90,7 +93,7 @@ export interface IntrospectResponse {
 
 // UserInfo Response (OIDC)
 export interface UserInfoResponse {
-  sub: string
+  user_id: string
   name?: string
   given_name?: string
   family_name?: string

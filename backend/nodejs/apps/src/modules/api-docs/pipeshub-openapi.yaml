@@ -85,7 +85,7 @@ tags:
       - `/oauth/userinfo` - Get authenticated user's profile information
 
       **Supported Claims:**
-      - `sub` - User identifier
+      - `user_id` - User identifier
       - `email`, `email_verified` - Email information
       - `name`, `given_name`, `family_name` - Name information
 
@@ -1030,9 +1030,9 @@ components:
         nbf:
           type: integer
           description: Token not-before timestamp (Unix epoch)
-        sub:
+        user_id:
           type: string
-          description: Subject (user ID)
+          description: User ID
         aud:
           type: string
           description: Audience (client ID)
@@ -1090,9 +1090,9 @@ components:
         OpenID Connect UserInfo Response.
         Contains claims about the authenticated user.
       properties:
-        sub:
+        user_id:
           type: string
-          description: Subject identifier (user ID)
+          description: User ID
         name:
           type: string
           description: Full name
@@ -1117,7 +1117,7 @@ components:
           type: integer
           description: Last profile update timestamp (Unix epoch)
       required:
-        - sub
+        - user_id
 
     OpenIDConfiguration:
       type: object
@@ -1194,7 +1194,7 @@ components:
           items:
             type: string
           description: Supported claims in ID tokens/UserInfo
-          example: ["sub", "iss", "aud", "exp", "iat", "email", "name"]
+          example: ["user_id", "iss", "aud", "exp", "iat", "email", "name"]
         code_challenge_methods_supported:
           type: array
           items:
@@ -5393,7 +5393,7 @@ paths:
                     token_type: "Bearer"
                     exp: 1735686000
                     iat: 1735682400
-                    sub: "user-id-123"
+                    user_id: "user-id-123"
                     iss: "https://api.pipeshub.com"
                 inactive:
                   summary: Inactive/invalid token
@@ -5418,7 +5418,7 @@ paths:
         with the `openid` scope.
         <br><br>
         <b>Available Claims:</b><br>
-        - `sub` - Subject identifier (user ID)<br>
+        - `user_id` - User identifier<br>
         - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)<br>
         - `email`, `email_verified` - Email claims (with `email` scope)
         <br><br>
@@ -5435,7 +5435,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthUserInfoResponse'
               example:
-                sub: "user-id-123"
+                user_id: "user-id-123"
                 name: "John Doe"
                 given_name: "John"
                 family_name: "Doe"

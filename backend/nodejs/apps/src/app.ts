@@ -12,6 +12,8 @@ import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { createUserRouter } from './modules/user_management/routes/users.routes';
 import { createUserGroupRouter } from './modules/user_management/routes/userGroups.routes';
 import { createOrgRouter } from './modules/user_management/routes/org.routes';
+import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
+import { AuthMiddleware } from './libs/middlewares/auth.middleware';
 import {
   createConversationalRouter,
   createSemanticSearchRouter,
@@ -163,9 +165,13 @@ export class Application {
         appConfig,
       );
 
+
       this.toolsetsContainer = await ToolsetsContainer.initialize(
         configurationManagerConfig,
       );
+
+      await this.addOAuthServicesToAuthMiddleware();
+
 
       // binding prometheus to all services routes
       this.logger.debug('Binding Prometheus Service with other services');
@@ -586,4 +592,17 @@ export class Application {
       logger.info('KV store migration not needed (already completed or etcd not available)');
     }
   }
+
+  async addOAuthServicesToAuthMiddleware(): Promise<void> {
+    try {
+      const oauthTokenService = this.oauthProviderContainer.get<OAuthTokenService>('OAuthTokenService');
+      AuthMiddleware.setOAuthServices(oauthTokenService);
+      this.logger.info('OAuth services added to AuthMiddleware');
+    } catch (error) {
+      this.logger.warn('Failed to add OAuth services to AuthMiddleware', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }
+

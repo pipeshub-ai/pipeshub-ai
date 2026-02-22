@@ -1320,7 +1320,7 @@ export class UserAccountController {
       }
 
       // Verify email matches
-      const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
+      const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.user_id;
       if (!providerEmail) {
         throw new BadRequestError('No email found in OAuth provider response');
       }
@@ -1490,7 +1490,7 @@ export class UserAccountController {
               throw new BadRequestError('Cannot verify user information: missing user info endpoint or access token');
             }
 
-            const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.sub;
+            const providerEmail = userInfo.email || userInfo.preferred_username || userInfo.user_id;
             if (providerEmail?.toLowerCase() !== sessionInfo.email?.toLowerCase()) {
               throw new BadRequestError('Email mismatch: OAuth provider email does not match session email.');
             }
