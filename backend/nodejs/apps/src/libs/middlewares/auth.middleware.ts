@@ -221,16 +221,11 @@ export class AuthMiddleware {
       oauthScopes: tokenScopes,
     };
 
-    // replace the oauth token in the authorization header with a regular token
-    // so downstream Python services (which only understand regular/scoped JWTs) can validate it
-    const downstreamToken = this.tokenService.generateToken({
-      userId,
-      orgId,
-      email,
-      fullName,
-      accountType,
-    });
-    req.headers.authorization = `Bearer ${downstreamToken}`;
+    // for client_credentials grants, the token's userId is the client_id (not a real user).
+    // pass the resolved app owner userId via header so Python services can use it.
+    if (isClientCredentials) {
+      req.headers['x-oauth-user-id'] = userId;
+    }
 
     this.logger.debug('OAuth user authenticated', {
       userId,

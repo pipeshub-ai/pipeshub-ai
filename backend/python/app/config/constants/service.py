@@ -20,7 +20,7 @@ class config_node_constants(Enum):
     # LOG_LEVEL = "/logLevel"
 
 class TokenScopes(Enum):
-    """Constants for token scopes"""
+    """Constants for internal scoped token scopes"""
 
     SEND_MAIL = "mail:send"
     FETCH_CONFIG = "fetch:config"
@@ -28,6 +28,40 @@ class TokenScopes(Enum):
     USER_LOOKUP = "user:lookup"
     TOKEN_REFRESH = "token:refresh"
     STORAGE_TOKEN = "storage:token"
+
+
+class OAuthScopes(str, Enum):
+    """OAuth scopes for external API access control"""
+
+    # Search
+    SEARCH_QUERY = "search:query"
+    SEARCH_SEMANTIC = "search:semantic"
+
+    # Conversations
+    CONVERSATION_READ = "conversation:read"
+    CONVERSATION_WRITE = "conversation:write"
+    CONVERSATION_CHAT = "conversation:chat"
+
+    # Agents
+    AGENT_READ = "agent:read"
+    AGENT_WRITE = "agent:write"
+    AGENT_EXECUTE = "agent:execute"
+
+    # Knowledge Base
+    KB_READ = "kb:read"
+    KB_WRITE = "kb:write"
+    KB_DELETE = "kb:delete"
+    KB_UPLOAD = "kb:upload"
+
+    # Connectors
+    CONNECTOR_READ = "connector:read"
+    CONNECTOR_WRITE = "connector:write"
+    CONNECTOR_SYNC = "connector:sync"
+    CONNECTOR_DELETE = "connector:delete"
+
+    # Teams
+    TEAM_READ = "team:read"
+    TEAM_WRITE = "team:write"
 
 
 class DefaultEndpoints(Enum):

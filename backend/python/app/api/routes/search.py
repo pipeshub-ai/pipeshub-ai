@@ -6,7 +6,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.service import OAuthScopes
 from app.containers.query import QueryAppContainer
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -51,7 +53,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return config_service
 
 
-@router.post("/search")
+@router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEARCH_QUERY, OAuthScopes.SEARCH_SEMANTIC))])
 @inject
 async def search(
     request: Request,

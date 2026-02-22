@@ -8,15 +8,16 @@ import uuid
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel
 
+from app.api.middlewares.auth import require_scopes
 from app.api.routes.chatbot import get_llm_for_chat
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import OAuthScopes, config_node_constants
 from app.modules.agents.qna.cache_manager import get_cache_manager
 from app.modules.agents.qna.chat_state import build_initial_state
 from app.modules.agents.qna.graph import agent_graph
@@ -624,7 +625,7 @@ def _parse_request_body(body: bytes) -> Dict[str, Any]:
 # Chat Endpoints
 # ============================================================================
 
-@router.post("/agent-chat")
+@router.post("/agent-chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def askAI(request: Request, query_info: ChatQuery) -> JSONResponse:
     """Process chat query using LangGraph agent with optimizations"""
     try:
@@ -759,7 +760,7 @@ async def stream_response(
     logger.info(f"Streaming completed. Total chunks: {chunk_count}")
 
 
-@router.post("/agent-chat-stream")
+@router.post("/agent-chat-stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingResponse:
     """Process chat query with streaming"""
     try:
@@ -793,7 +794,7 @@ async def askAIStream(request: Request, query_info: ChatQuery) -> StreamingRespo
 # Agent Template Endpoints
 # ============================================================================
 
-@router.post("/template/create")
+@router.post("/template/create", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def create_agent_template(request: Request) -> JSONResponse:
     """Create a new agent template"""
     try:
@@ -857,7 +858,7 @@ async def create_agent_template(request: Request) -> JSONResponse:
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/template/list")
+@router.get("/template/list", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_templates(request: Request) -> JSONResponse:
     """Get all agent templates"""
     try:
@@ -882,7 +883,7 @@ async def get_agent_templates(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/template/{template_id}")
+@router.get("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Get an agent template by ID"""
     try:
@@ -910,7 +911,7 @@ async def get_agent_template(request: Request, template_id: str) -> JSONResponse
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/share-template/{template_id}")
+@router.post("/share-template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def share_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Share an agent template"""
     try:
@@ -942,7 +943,7 @@ async def share_agent_template(request: Request, template_id: str) -> JSONRespon
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/template/{template_id}/clone")
+@router.post("/template/{template_id}/clone", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def clone_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Clone an agent template"""
     try:
@@ -967,7 +968,7 @@ async def clone_agent_template(request: Request, template_id: str) -> JSONRespon
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.delete("/template/{template_id}")
+@router.delete("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Delete an agent template"""
     try:
@@ -991,7 +992,7 @@ async def delete_agent_template(request: Request, template_id: str) -> JSONRespo
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/template/{template_id}")
+@router.put("/template/{template_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent_template(request: Request, template_id: str) -> JSONResponse:
     """Update an agent template"""
     try:
@@ -1020,7 +1021,7 @@ async def update_agent_template(request: Request, template_id: str) -> JSONRespo
 # Agent CRUD Endpoints
 # ============================================================================
 
-@router.post("/create")
+@router.post("/create", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def create_agent(request: Request) -> JSONResponse:
     """Create a new agent using graph-based architecture"""
     try:
@@ -1328,7 +1329,7 @@ async def create_agent(request: Request) -> JSONResponse:
         logger.error(f"Error creating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.get("/{agent_id}")
+@router.get("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     """Get an agent by ID with enriched data"""
     try:
@@ -1360,7 +1361,7 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/")
+@router.get("/", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agents(request: Request) -> JSONResponse:
     """Get all agents"""
     try:
@@ -1388,7 +1389,7 @@ async def get_agents(request: Request) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/{agent_id}")
+@router.put("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent(request: Request, agent_id: str) -> JSONResponse:
     """Update an agent using graph-based architecture"""
     try:
@@ -1711,7 +1712,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         logger.error(f"Error updating agent: {e}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 
-@router.delete("/{agent_id}")
+@router.delete("/{agent_id}", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
     """Delete an agent"""
     try:
@@ -1746,7 +1747,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 # Agent Sharing & Permissions
 # ============================================================================
 
-@router.post("/{agent_id}/share")
+@router.post("/{agent_id}/share", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def share_agent(request: Request, agent_id: str) -> JSONResponse:
     """Share an agent"""
     try:
@@ -1781,7 +1782,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{agent_id}/unshare")
+@router.post("/{agent_id}/unshare", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
     """Unshare an agent"""
     try:
@@ -1816,7 +1817,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.get("/{agent_id}/permissions")
+@router.get("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_READ))])
 async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse:
     """Get all permissions for an agent"""
     try:
@@ -1844,7 +1845,7 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.put("/{agent_id}/permissions")
+@router.put("/{agent_id}/permissions", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_WRITE))])
 async def update_agent_permission(request: Request, agent_id: str) -> JSONResponse:
     """Update permission role for a user on an agent"""
     try:
@@ -1880,7 +1881,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
 # Agent Chat Endpoints
 # ============================================================================
 
-@router.post("/{agent_id}/chat")
+@router.post("/{agent_id}/chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONResponse:
     """Chat with an agent"""
     try:
@@ -2004,7 +2005,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@router.post("/{agent_id}/chat/stream")
+@router.post("/{agent_id}/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
     """Chat with an agent using streaming response"""
     try:

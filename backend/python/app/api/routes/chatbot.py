@@ -8,9 +8,10 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
+from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType
-from app.config.constants.service import config_node_constants
+from app.config.constants.service import OAuthScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -481,7 +482,7 @@ async def resolve_tools_then_answer(llm, messages, tools, tool_runtime_kwargs, m
 
 
 
-@router.post("/chat/stream")
+@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAIStream(
     request: Request,
@@ -709,7 +710,7 @@ async def askAIStream(
     )
 
 
-@router.post("/chat")
+@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
 @inject
 async def askAI(
     request: Request,
