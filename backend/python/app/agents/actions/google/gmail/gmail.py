@@ -1,6 +1,7 @@
+import asyncio
 import json
 import logging
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -392,13 +393,59 @@ class Gmail:
         """
         try:
             # Use GoogleGmailDataSource method
-            messages = await self.client.users_messages_list(
+            result = await self.client.users_messages_list(
                 userId="me",
                 q=query,
                 maxResults=max_results,
                 pageToken=page_token,
             )
-            return True, json.dumps(messages)
+
+            messages = result.get("messages", [])
+            next_page_token = result.get("nextPageToken")
+            result_size_estimate = result.get("resultSizeEstimate", 0)
+
+            # Enrich each message with metadata (subject, from, date, snippet)
+            async def fetch_metadata(msg: Dict[str, Any]) -> Dict[str, Any]:
+                try:
+                    meta = await self.client.users_messages_get(
+                        userId="me",
+                        id=msg["id"],
+                        format="metadata",
+                        metadataHeaders=["Subject", "From", "To", "Date"],
+                    )
+                    headers = {
+                        h["name"].lower(): h["value"]
+                        for h in meta.get("payload", {}).get("headers", [])
+                    }
+                    return {
+                        "id": msg["id"],
+                        "threadId": msg.get("threadId", ""),
+                        "subject": headers.get("subject", "(no subject)"),
+                        "from": headers.get("from", ""),
+                        "to": headers.get("to", ""),
+                        "date": headers.get("date", ""),
+                        "snippet": meta.get("snippet", ""),
+                        "labelIds": meta.get("labelIds", []),
+                    }
+                except Exception:
+                    return {
+                        "id": msg["id"],
+                        "threadId": msg.get("threadId", ""),
+                        "subject": "(no subject)",
+                        "from": "",
+                        "to": "",
+                        "date": "",
+                        "snippet": "",
+                        "labelIds": [],
+                    }
+
+            enriched = await asyncio.gather(*[fetch_metadata(m) for m in messages])
+
+            return True, json.dumps({
+                "messages": list(enriched),
+                "nextPageToken": next_page_token,
+                "resultSizeEstimate": result_size_estimate,
+            })
         except Exception as e:
             logger.error(f"Failed to search emails: {e}")
             return False, json.dumps({"error": str(e)})

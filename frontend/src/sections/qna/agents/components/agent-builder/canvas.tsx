@@ -239,8 +239,19 @@ const AgentBuilderCanvas: React.FC<FlowBuilderCanvasProps> = ({
     isDark,
   }), [isDark, theme]);
 
-  // Create stable nodeTypes object - use useState with initializer to ensure it's only created once
-  const [nodeTypes] = useState<NodeTypes>(() => createNodeTypes(onNodeDelete));
+  // Use a ref to always hold the latest onNodeDelete callback, avoiding stale closures
+  const onNodeDeleteRef = useRef(onNodeDelete);
+  useEffect(() => {
+    onNodeDeleteRef.current = onNodeDelete;
+  }, [onNodeDelete]);
+
+  // Create stable nodeTypes using a stable wrapper that reads from the ref
+  const stableOnDelete = useCallback((nodeId: string) => {
+    onNodeDeleteRef.current?.(nodeId);
+  }, []);
+
+  // Create stable nodeTypes object - only created once, uses stable callback via ref
+  const [nodeTypes] = useState<NodeTypes>(() => createNodeTypes(stableOnDelete));
 
   const handleDrop = useCallback(
     (event: React.DragEvent) => {

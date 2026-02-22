@@ -946,10 +946,10 @@ const ToolsetsPage: React.FC = () => {
 
       {/* Configuration Dialog - handled by ToolsetRegistryCard */}
 
-      {/* Snackbar - Don't auto-close for success messages (user might need to authenticate) */}
+      {/* Page-level Snackbar (errors, refresh failures, deletes — no dialog conflict) */}
       <Snackbar
         open={snackbar.open}
-        autoHideDuration={snackbar.severity === 'success' ? null : 4000}
+        autoHideDuration={4000}
         onClose={handleCloseSnackbar}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
         sx={{ mt: 8 }}

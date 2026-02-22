@@ -58,6 +58,9 @@ class ChatState(TypedDict):
 
     # Enhanced features
     system_prompt: Optional[str]  # User-defined system prompt
+    instructions: Optional[str]  # Agent-specific instructions for the LLM
+    timezone: Optional[str]  # User's timezone (e.g., "America/New_York")
+    current_time: Optional[str]  # Current time in user's timezone (ISO 8601)
     apps: Optional[List[str]]  # List of app IDs to search in (extracted from knowledge array)
     kb: Optional[List[str]]  # List of KB record group IDs to search in (extracted from knowledge array filters)
     # connector_instances: Deprecated - use toolsets instead
@@ -342,6 +345,9 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
     # Get user-defined system prompt or use default
     system_prompt = chat_query.get("systemPrompt", "You are an enterprise questions answering expert")
+    instructions = chat_query.get("instructions", None)
+    timezone = chat_query.get("timezone", None)
+    current_time = chat_query.get("currentTime", None)
     output_file_path = chat_query.get("outputFilePath", None)
 
     # Get toolsets and knowledge from the new graph-based format
@@ -413,6 +419,9 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
 
         # Enhanced features - using new graph-based format
         "system_prompt": system_prompt,
+        "instructions": instructions,
+        "timezone": timezone,
+        "current_time": current_time,
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
         # connector_instances: Deprecated - use toolsets instead

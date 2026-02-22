@@ -17991,7 +17991,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]
@@ -18042,8 +18042,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     update_data["models"] = []
 
             # Update the agent using update_node method
-            agent_path = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            result = await self.update_node(agent_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                key=agent_id,
+                collection=CollectionNames.AGENT_INSTANCES.value,
+                updates=update_data,
+                transaction=transaction
+            )
 
             if not result:
                 self.logger.error(f"Failed to update agent {agent_id}")
@@ -18084,8 +18088,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
 
             # Soft delete the agent using update_node
-            agent_path = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}"
-            result = await self.update_node(agent_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                key=agent_id,
+                collection=CollectionNames.AGENT_INSTANCES.value,
+                updates=update_data,
+                transaction=transaction
+            )
 
             if not result:
                 self.logger.error(f"Failed to delete agent {agent_id}")
@@ -18696,8 +18704,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     update_data[field] = template_updates[field]
 
             # Update the template using update_node
-            template_path = f"{CollectionNames.AGENT_TEMPLATES.value}/{template_id}"
-            result = await self.update_node(template_path, update_data, transaction=transaction)
+            result = await self.update_node(
+                key=template_id,
+                collection=CollectionNames.AGENT_TEMPLATES.value,
+                updates=update_data,
+                transaction=transaction
+            )
 
             if not result:
                 self.logger.error(f"Failed to update template {template_id}")

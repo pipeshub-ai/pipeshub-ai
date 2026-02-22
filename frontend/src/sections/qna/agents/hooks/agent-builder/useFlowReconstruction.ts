@@ -340,7 +340,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
             type: 'flowNode',
             position: calculateOptimalPosition('llm', index, counts.llm),
             data: {
-              id: `llm-${nodeCounter - 1}`,
+              id: nodeId,
               type: `llm-${matchingModel?.modelKey || modelConfigObj?.modelName?.replace(/[^a-zA-Z0-9]/g, '-') || modelConfigString?.replace(/[^a-zA-Z0-9]/g, '-') || 'default'}`,
               label: displayName.trim(),
               description: `${formattedProvider(modelConfigObj?.provider || 'AI')} language model`,
@@ -373,7 +373,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           type: 'flowNode',
           position: calculateOptimalPosition('llm', 0, 1),
           data: {
-            id: `llm-${nodeCounter - 1}`,
+            id: nodeId,
             type: `llm-${defaultModel.modelKey || 'default'}`,
             label: displayName.trim(),
             description: `${formattedProvider(defaultModel.provider || 'AI')} language model`,
@@ -546,6 +546,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           icon: sparklesIcon,
           config: {
             systemPrompt: agent.systemPrompt || 'You are a helpful assistant.',
+            instructions: agent.instructions || '',
             startMessage:
               agent.startMessage || 'Hello! I am ready to assist you. How can I help you today?',
             routing: 'auto',

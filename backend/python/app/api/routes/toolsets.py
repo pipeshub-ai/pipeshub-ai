@@ -1255,18 +1255,81 @@ async def update_toolset_config(
     return {"status": "success", "message": "Configuration updated successfully"}
 
 
+@router.post("/{toolset_type}/reauthenticate")
+@inject
+async def reauthenticate_toolset(
+    toolset_type: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
+) -> Dict[str, Any]:
+    """Clear toolset authentication and credentials, requiring re-authentication via OAuth flow"""
+    user_context = _get_user_context(request)
+    toolset_type = toolset_type.lower()
+    user_id = user_context["user_id"]
+
+    registry = _get_registry(request)
+    _get_toolset_metadata(registry, toolset_type)
+
+    config_path = _get_config_path(user_id, toolset_type)
+
+    try:
+        config = await config_service.get_config(config_path)
+    except Exception as e:
+        logger.error(f"Failed to get config for {toolset_type}: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail=f"Failed to retrieve configuration for toolset '{toolset_type}'"
+        )
+
+    if not config:
+        raise ToolsetConfigNotFoundError(toolset_type)
+
+    auth_type = config.get("auth", {}).get("type", "").upper()
+    if auth_type != "OAUTH":
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"Reauthentication is only applicable to OAuth-configured toolsets. Current auth type: {auth_type or 'NONE'}"
+        )
+
+    # Clear credentials and mark as unauthenticated
+    updated_config = {
+        **config,
+        "isAuthenticated": False,
+        "updatedAt": get_epoch_timestamp_in_ms(),
+        "updatedBy": user_id
+    }
+    updated_config.pop("credentials", None)
+
+    try:
+        await config_service.set_config(config_path, updated_config)
+        logger.info(f"Cleared authentication for toolset {toolset_type}, user {user_id}")
+    except Exception as e:
+        logger.error(f"Failed to clear toolset authentication: {e}")
+        raise HTTPException(
+            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+            detail="Failed to clear toolset authentication"
+        )
+
+    return {
+        "status": "success",
+        "message": "Toolset authentication cleared. Please re-authenticate to restore access."
+    }
+
+
 @router.delete("/{toolset_type}/config")
 @inject
 async def delete_toolset_config(
     toolset_type: str,
     request: Request,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
-    graph_provider: IGraphDBProvider = Depends(Provide[ConnectorAppContainer.graph_provider])
 ) -> Dict[str, Any]:
     """Delete toolset configuration"""
     user_context = _get_user_context(request)
     toolset_type = toolset_type.lower()
     user_id = user_context["user_id"]
+
+    # Get graph_provider from app.state to avoid coroutine-reuse errors with the DI container
+    graph_provider: IGraphDBProvider = request.app.state.graph_provider
 
     # Safety check: verify no agents are using this toolset
     from app.agents.constants.toolset_constants import normalize_app_name

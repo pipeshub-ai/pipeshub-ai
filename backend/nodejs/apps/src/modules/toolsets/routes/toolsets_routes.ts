@@ -25,6 +25,7 @@ import {
   saveToolsetConfig,
   updateToolsetConfig,
   deleteToolsetConfig,
+  reauthenticateToolset,
   getOAuthAuthorizationUrl,
   handleOAuthCallback,
 } from '../controller/toolsets_controller';
@@ -263,6 +264,18 @@ export function createToolsetsRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(toolsetIdParamSchema),
     deleteToolsetConfig(config)
+  );
+
+  /**
+   * POST /:toolsetId/reauthenticate
+   * Clear toolset OAuth credentials and mark as unauthenticated, requiring re-authentication
+   */
+  router.post(
+    '/:toolsetId/reauthenticate',
+    authMiddleware.authenticate,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(toolsetIdParamSchema),
+    reauthenticateToolset(config)
   );
 
   // ============================================================================

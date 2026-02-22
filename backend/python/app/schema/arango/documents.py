@@ -558,6 +558,7 @@ agent_schema = {
             "description": {"type": "string", "minLength": 1},
             "startMessage": {"type": "string", "minLength": 1},
             "systemPrompt": {"type": "string", "minLength": 1},
+            "instructions": {"type": ["string", "null"]},
             "models": {
                 "type": "array",
                 "items": {"type": "string"},  # Array of modelKey_modelName (e.g., ["uuid_gpt-4", "uuid_claude-3"])

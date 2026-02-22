@@ -34,6 +34,7 @@ import { NodeHandles, NodeIcon } from './nodes';
 import { ToolsetNode } from './nodes/ToolsetNode';
 
 interface FlowNodeProps {
+  id?: string; // ReactFlow passes the actual node ID as a prop automatically
   data: NodeData;
   selected: boolean;
   onDelete?: (nodeId: string) => void;
@@ -47,7 +48,7 @@ const getModelDisplayName = (config: { modelName?: string; modelFriendlyName?: s
   return (config.modelFriendlyName && config.modelFriendlyName.trim()) || (config.modelName && config.modelName.trim()) || '';
 };
 
-const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
+const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, onDelete }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const storeNodes = useStore((s) => s.nodes);
@@ -1604,7 +1605,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 e.preventDefault();
                 e.stopPropagation();
                 e.nativeEvent.stopImmediatePropagation();
-                onDelete(data.id);
+                // Use the ReactFlow node id (reactFlowId) which is the authoritative node identifier,
+                // falling back to data.id for backward compatibility
+                onDelete(reactFlowId || data.id);
               }}
               sx={{
                 width: 30,

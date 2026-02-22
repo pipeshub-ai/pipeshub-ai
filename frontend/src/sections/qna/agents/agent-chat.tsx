@@ -1226,6 +1226,10 @@ const AgentChat = () => {
           : undefined,
         chatMode: chatMode || currentMode?.id,
 
+        // Timezone and current time for LLM context
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        currentTime: new Date().toISOString(),
+
         // Tools: List of tool full names to enable (filters agent's toolsets)
         // Empty means use all tools from agent's toolsets
         tools: getEnabledTools(),

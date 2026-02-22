@@ -51,6 +51,7 @@ import infoIcon from '@iconify-icons/eva/info-outline';
 import copyIcon from '@iconify-icons/mdi/content-copy';
 import checkIcon from '@iconify-icons/mdi/check';
 import chevronDownIcon from '@iconify-icons/mdi/chevron-down';
+import refreshIcon from '@iconify-icons/mdi/refresh';
 
 interface ToolsetConfigDialogProps {
   toolset: RegistryToolset | Partial<RegistryToolset>; // Can be RegistryToolset or Toolset (configured instance)
@@ -112,6 +113,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [authenticating, setAuthenticating] = useState(false);
+  const [reauthenticating, setReauthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -488,6 +490,34 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
     }
   };
 
+  const handleReauthenticate = async () => {
+    const currentToolsetId = toolsetId || (toolset as any)._id;
+    if (!currentToolsetId) {
+      setError('Toolset ID is required');
+      return;
+    }
+
+    try {
+      setReauthenticating(true);
+      setError(null);
+      setSuccess(null);
+
+      await ToolsetApiService.reauthenticateToolset(currentToolsetId);
+
+      setIsAuthenticated(false);
+      setSuccess('Authentication cleared. Click "Authenticate" to complete the OAuth flow again.');
+
+      if (onShowToast) {
+        onShowToast('Authentication cleared. Please re-authenticate.', 'info');
+      }
+    } catch (err: any) {
+      console.error('Failed to reauthenticate toolset:', err);
+      setError(err.response?.data?.detail || err.response?.data?.message || 'Failed to clear authentication');
+    } finally {
+      setReauthenticating(false);
+    }
+  };
+
   const handleAuthenticate = async () => {
     // Validate prerequisites
     const currentToolsetId = toolsetId || (toolset as any)._id;
@@ -599,6 +629,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
   };
 
   const isOAuth = selectedAuthType === 'OAUTH';
+  const isAnyActionInProgress = saving || authenticating || deleting || reauthenticating;
   const hasRequiredFields = currentAuthSchema.fields?.some((f: any) => f.required) || false;
 
   // Loading state with skeleton loader
@@ -1185,12 +1216,12 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
           justifyContent: 'space-between',
         }}
       >
-        <Box>
+        <Box sx={{ display: 'flex', gap: 1.5 }}>
           {/* Delete Button - Only show when editing existing toolset */}
           {toolsetId && (
             <Button
               onClick={handleDelete}
-              disabled={deleting || saving || authenticating}
+              disabled={isAnyActionInProgress}
               variant="outlined"
               color="error"
               startIcon={
@@ -1217,12 +1248,44 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
               {deleting ? 'Deleting...' : 'Delete'}
             </Button>
           )}
+
+          {/* Reauthenticate Button - Show when editing OAuth toolset that is already authenticated */}
+          {toolsetId && isOAuth && isAuthenticated && (
+            <Button
+              onClick={handleReauthenticate}
+              disabled={isAnyActionInProgress}
+              variant="outlined"
+              color="warning"
+              startIcon={
+                reauthenticating ? (
+                  <CircularProgress size={16} />
+                ) : (
+                  <Iconify icon={refreshIcon} width={16} height={16} />
+                )
+              }
+              sx={{
+                textTransform: 'none',
+                borderRadius: 1,
+                px: 2.5,
+                borderColor: isDark
+                  ? alpha(theme.palette.warning.main, 0.3)
+                  : alpha(theme.palette.warning.main, 0.5),
+                color: theme.palette.warning.main,
+                '&:hover': {
+                  borderColor: theme.palette.warning.main,
+                  backgroundColor: alpha(theme.palette.warning.main, 0.08),
+                },
+              }}
+            >
+              {reauthenticating ? 'Clearing...' : 'Reauthenticate'}
+            </Button>
+          )}
         </Box>
 
         <Box sx={{ display: 'flex', gap: 1.5 }}>
           <Button 
             onClick={onClose} 
-            disabled={saving || authenticating || deleting}
+            disabled={isAnyActionInProgress}
             variant="outlined"
             sx={{
               textTransform: 'none',

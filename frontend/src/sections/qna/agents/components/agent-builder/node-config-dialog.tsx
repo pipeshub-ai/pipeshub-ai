@@ -136,6 +136,36 @@ const NodeConfigDialog: React.FC<NodeConfigDialogProps> = memo(
               </Grid>
             );
           }
+          if (key === 'instructions') {
+            return (
+              <Grid item xs={12} key={key}>
+                <Typography variant="body2" color="text.secondary" sx={{ mb: 1, fontWeight: 500 }}>
+                  Instructions
+                </Typography>
+                <TextField
+                  fullWidth
+                  multiline
+                  rows={3}
+                  value={value || ''}
+                  onChange={(e) => setConfig((prev) => ({ ...prev, [key]: e.target.value }))}
+                  placeholder="Optional additional instructions for the agent (e.g. always respond in French, use bullet points)..."
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      borderRadius: 1,
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: isDark
+                          ? theme.palette.primary.main
+                          : theme.palette.primary.main,
+                      },
+                      '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                        borderWidth: 1,
+                      },
+                    },
+                  }}
+                />
+              </Grid>
+            );
+          }
           if (key === 'startMessage') {
             return (
               <Grid item xs={12} key={key}>

@@ -571,6 +571,14 @@ def build_response_prompt(state, max_iterations=30) -> str:
     )
 
     base_prompt = state.get("system_prompt", "")
+    instructions = state.get("instructions", "")
+
+    # Use provided current_time/timezone if available, else fall back to server UTC
+    provided_current_time = state.get("current_time")
+    provided_timezone = state.get("timezone")
+    if provided_current_time:
+        current_datetime = provided_current_time
+    # current_datetime already set above as fallback
 
     complete_prompt = response_system_prompt
     complete_prompt = complete_prompt.replace("{internal_context}", internal_context)
@@ -578,8 +586,15 @@ def build_response_prompt(state, max_iterations=30) -> str:
     complete_prompt = complete_prompt.replace("{conversation_history}", conversation_history)
     complete_prompt = complete_prompt.replace("{current_datetime}", current_datetime)
 
+    # Add timezone context if provided
+    if provided_timezone:
+        complete_prompt += f"\n\n**User Timezone**: {provided_timezone}"
+
     if base_prompt and base_prompt not in ["You are an enterprise questions answering expert", ""]:
         complete_prompt = f"{base_prompt}\n\n{complete_prompt}"
+
+    if instructions and instructions.strip():
+        complete_prompt = f"## Agent Instructions\n{instructions.strip()}\n\n{complete_prompt}"
 
     return complete_prompt
 

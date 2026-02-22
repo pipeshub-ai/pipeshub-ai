@@ -79,6 +79,7 @@ export const useAgentBuilderNodeTemplates = (
         icon: sparklesIcon,
         defaultConfig: {
           systemPrompt: 'You are a helpful assistant.',
+          instructions: '',
           startMessage: 'Hello! I am ready to assist you. How can I help you today?',
           routing: 'auto',
           allowMultipleLLMs: true,

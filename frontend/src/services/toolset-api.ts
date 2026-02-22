@@ -394,6 +394,21 @@ class ToolsetApiService {
   }
 
   /**
+   * Reauthenticate toolset - clears OAuth credentials and marks as unauthenticated.
+   * The user must then go through the OAuth flow again.
+   * Only applicable to OAuth-configured toolsets.
+   */
+  static async reauthenticateToolset(toolsetId: string): Promise<void> {
+    try {
+      const toolsetType = this.extractToolsetType(toolsetId);
+      await axios.post(`/api/v1/toolsets/${toolsetType}/reauthenticate`);
+    } catch (error) {
+      console.error('Failed to reauthenticate toolset:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Get OAuth authorization URL for toolset
    */
   static async getOAuthAuthorizationUrl(

@@ -296,6 +296,39 @@ class ToolResultExtractor:
                                     continue
                             except (ValueError, TypeError):
                                 pass
+                    # Generic "data" prefix skip: if the LLM used "data" as a wrapper
+                    # but the actual API response doesn't have a "data" key (e.g., Google APIs
+                    # return top-level keys directly), skip "data" and continue navigating
+                    # the current dict with the remaining path.
+                    # Special case: if the NEXT field after "data" is a numeric index (e.g.,
+                    # {{tool.data[0].id}} instead of {{tool.data.items[0].id}}), find the
+                    # first list in the current dict (items, results, records, ...) and index into it.
+                    elif field == "data":
+                        if i + 1 < len(field_path):
+                            try:
+                                next_idx = int(field_path[i + 1])
+                                # Next field is numeric — LLM wrote data[N] instead of data.items[N]
+                                # Search for a list value in the current dict (priority order)
+                                list_data = None
+                                for list_key in ("items", "results", "records", "values", "data"):
+                                    candidate = current.get(list_key)
+                                    if isinstance(candidate, list):
+                                        list_data = candidate
+                                        break
+                                if list_data is None:
+                                    # Fall back to any list value in the dict
+                                    for v in current.values():
+                                        if isinstance(v, list):
+                                            list_data = v
+                                            break
+                                if list_data is not None and 0 <= next_idx < len(list_data):
+                                    current = list_data[next_idx]
+                                    i += 2  # consume 'data' and the numeric index
+                                    continue
+                            except (ValueError, TypeError):
+                                pass
+                        i += 1
+                        continue
                     # Bidirectional alias fallback: content ↔ body (common in Confluence/API responses)
                     # Try the alias if the requested field doesn't exist
                     elif field == "content" and "body" in current:
@@ -466,6 +499,47 @@ class PlaceholderResolver:
         """Check if args contain any placeholders"""
         args_str = json.dumps(args, default=str)
         return bool(cls.PLACEHOLDER_PATTERN.search(args_str))
+
+    @classmethod
+    def strip_unresolved(
+        cls,
+        args: Dict[str, Any]
+    ) -> Tuple[Dict[str, Any], List[str]]:
+        """
+        Replace any remaining unresolved {{...}} placeholders with None.
+
+        This allows tool calls to proceed when only *optional* fields have
+        unresolved placeholders.  Required fields that are None will be caught
+        by Pydantic validation in _validate_and_normalize_args.
+
+        Returns:
+            (cleaned_args, list_of_placeholder_names_that_were_stripped)
+        """
+        stripped: List[str] = []
+
+        def clean_value(value: Any) -> Any:
+            if isinstance(value, str):
+                matches = cls.PLACEHOLDER_PATTERN.findall(value)
+                if not matches:
+                    return value
+                # If the whole value is exactly one placeholder, replace with None
+                if value.strip() == f"{{{{{matches[0]}}}}}":
+                    stripped.extend(matches)
+                    return None
+                # Partial placeholder inside a longer string – remove the token
+                result = value
+                for match in matches:
+                    stripped.append(match)
+                    result = result.replace(f"{{{{{match}}}}}", "")
+                return result.strip() or None
+            elif isinstance(value, dict):
+                return {k: clean_value(v) for k, v in value.items()}
+            elif isinstance(value, list):
+                return [clean_value(item) for item in value]
+            return value
+
+        cleaned = {k: clean_value(v) for k, v in args.items()}
+        return cleaned, stripped
 
     @classmethod
     def resolve_all(
@@ -769,33 +843,43 @@ class ToolExecutor:
             # Check for unresolved placeholders
             if PlaceholderResolver.has_placeholders(resolved_args):
                 unresolved = PlaceholderResolver.PLACEHOLDER_PATTERN.findall(json.dumps(resolved_args))
-                log.error(f"❌ Unresolved placeholders in {actual_tool_name}: {unresolved}")
+                log.warning(f"⚠️ Unresolved placeholders in {actual_tool_name}: {unresolved} — stripping to None and proceeding (Pydantic will catch required fields)")
 
-                # Check if this is due to empty search results - provide helpful error
-                error_msg = f"Error: Unresolved placeholders: {', '.join(set(unresolved))}"
-                for placeholder in unresolved:
-                    # Check if placeholder references a search that returned empty
-                    if "search" in placeholder.lower() and "results[0]" in placeholder:
-                        # Extract tool name from placeholder (handle dots in tool names like "confluence.search_pages")
-                        # Try to find matching tool in results_by_tool
-                        for tool_name in results_by_tool:
-                            if tool_name in placeholder or placeholder.startswith(tool_name.split('.')[-1]):
-                                tool_data = results_by_tool[tool_name]
-                                if isinstance(tool_data, dict) and "data" in tool_data:
-                                    data = tool_data["data"]
-                                    if isinstance(data, dict) and "results" in data:
-                                        results = data["results"]
-                                        if isinstance(results, list) and len(results) == 0:
-                                            error_msg += f" (Search '{tool_name}' returned empty results - check conversation history for page_id instead)"
-                                            break
+                # Strip unresolved placeholders to None so optional fields are
+                # simply omitted and the tool can still run.  Required fields
+                # that end up as None will be rejected by Pydantic validation.
+                resolved_args, stripped_placeholders = PlaceholderResolver.strip_unresolved(resolved_args)
+                log.debug(f"  Stripped {len(stripped_placeholders)} placeholder(s): {stripped_placeholders}")
 
-                tool_results.append({
-                    "tool_name": actual_tool_name,
-                    "result": error_msg,
-                    "status": "error",
-                    "tool_id": f"call_{i}_{actual_tool_name}"
-                })
-                continue
+                # If placeholders still remain after stripping (shouldn't happen),
+                # something is structurally wrong – fail the tool call.
+                if PlaceholderResolver.has_placeholders(resolved_args):
+                    still_unresolved = PlaceholderResolver.PLACEHOLDER_PATTERN.findall(json.dumps(resolved_args))
+                    log.error(f"❌ Could not strip all placeholders in {actual_tool_name}: {still_unresolved}")
+
+                    # Check if this is due to empty search results - provide helpful error
+                    error_msg = f"Error: Unresolved placeholders: {', '.join(set(still_unresolved))}"
+                    for placeholder in still_unresolved:
+                        # Check if placeholder references a search that returned empty
+                        if "search" in placeholder.lower() and "results[0]" in placeholder:
+                            for tn in results_by_tool:
+                                if tn in placeholder or placeholder.startswith(tn.split('.')[-1]):
+                                    tool_data = results_by_tool[tn]
+                                    if isinstance(tool_data, dict) and "data" in tool_data:
+                                        data = tool_data["data"]
+                                        if isinstance(data, dict) and "results" in data:
+                                            results = data["results"]
+                                            if isinstance(results, list) and len(results) == 0:
+                                                error_msg += f" (Search '{tn}' returned empty results - check conversation history for page_id instead)"
+                                                break
+
+                    tool_results.append({
+                        "tool_name": actual_tool_name,
+                        "result": error_msg,
+                        "status": "error",
+                        "tool_id": f"call_{i}_{actual_tool_name}"
+                    })
+                    continue
 
             # Stream detailed status with context
             tool_display_name = actual_tool_name.replace("_", " ").title()
@@ -2231,6 +2315,58 @@ async def planner_node(
         slack_guidance=slack_guidance
     )
 
+    # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
+    agent_knowledge = state.get("agent_knowledge", [])
+    agent_tools = state.get("tools", []) or []
+    has_user_tools = bool(agent_tools)
+    has_knowledge = bool(agent_knowledge)
+
+    if not has_knowledge:
+        if not has_user_tools:
+            # Agent has NEITHER tools NOR knowledge — fully unconfigured for data retrieval
+            no_retrieval_note = (
+                "\n\n## ⚠️ CRITICAL: This Agent Has No Knowledge Base and No Service Tools Configured\n"
+                "- `retrieval.search_internal_knowledge` is NOT available (no knowledge sources configured).\n"
+                "- There are also NO connected service tools available beyond the built-in calculator.\n"
+                "- ❌ NEVER plan `retrieval.search_internal_knowledge` or any service tool calls.\n"
+                "- ❌ NEVER set `needs_clarification: true` for questions about org-specific topics — instead, answer directly and guide the user.\n"
+                "- ✅ For conversational or general questions answerable from your training knowledge: set `can_answer_directly: true` and answer.\n"
+                "- ✅ For questions about org-specific content (documents, policies, licenses, people, data): set `can_answer_directly: true` and tell the user:\n"
+                "  1. This agent currently has no knowledge sources configured.\n"
+                "  2. To answer questions from org documents/wikis, the agent admin must add knowledge sources to this agent.\n"
+                "  3. To take actions (calendar, email, tickets, etc.), the agent admin must connect service toolsets.\n"
+                "- ✅ You may still answer general factual questions from your own training knowledge.\n"
+            )
+        else:
+            # Has service tools but no knowledge base
+            no_retrieval_note = (
+                "\n\n## ⚠️ CRITICAL: No Knowledge Base Configured\n"
+                "`retrieval.search_internal_knowledge` is **NOT available** in this agent — no knowledge sources have been configured.\n"
+                "- ❌ NEVER plan `retrieval.search_internal_knowledge` — it does not exist and will cause an error.\n"
+                "- ✅ Use only the service tools listed under `## AVAILABLE TOOLS`.\n"
+                "- ✅ If the user asks a general question with no applicable service tool, set `can_answer_directly: true` and answer from your own knowledge.\n"
+                "- ✅ If the user asks about org-specific documents/policies not served by any available tool: set `can_answer_directly: true` and inform the user that no knowledge base is configured — they should add knowledge sources to this agent to enable knowledge-based answers.\n"
+                "- ❌ NEVER set `needs_clarification: true` for org-knowledge questions — instead answer directly and explain the limitation.\n"
+            )
+        system_prompt += no_retrieval_note
+
+    # Prepend agent instructions if provided
+    instructions = state.get("instructions")
+    if instructions and instructions.strip():
+        system_prompt = f"## Agent Instructions\n{instructions.strip()}\n\n{system_prompt}"
+
+    # Add timezone / current time context if provided
+    timezone = state.get("timezone")
+    current_time = state.get("current_time")
+    if timezone or current_time:
+        time_context_parts = []
+        if current_time:
+            time_context_parts.append(f"Current time: {current_time}")
+        if timezone:
+            time_context_parts.append(f"User timezone: {timezone}")
+        time_context = "\n".join(time_context_parts)
+        system_prompt = f"{system_prompt}\n\n## Temporal Context\n{time_context}"
+
     # Build messages with conversation context (using LangChain message format for better context awareness)
     messages = _build_planner_messages(state, query, log)
 
@@ -2287,6 +2423,19 @@ async def planner_node(
     plan = await _plan_with_validation_retry(
         llm, system_prompt, messages, state, log, query, writer, config
     )
+
+    # Post-processing: if the agent has NO user tools AND NO knowledge:
+    # 1. If the plan still set needs_clarification (despite the prompt), override it.
+    # 2. Always set agent_not_configured_hint so _generate_direct_response knows to guide
+    #    the user to configure the agent when they ask org-specific questions.
+    if not has_user_tools and not has_knowledge:
+        if plan.get("needs_clarification") and not plan.get("can_answer_directly") and not plan.get("tools"):
+            log.info("🔧 No tools/knowledge configured — overriding clarification with agent setup guidance")
+            plan["needs_clarification"] = False
+            plan["can_answer_directly"] = True
+            plan["tools"] = []
+        # Always signal the respond_node to include knowledge-configuration guidance
+        state["agent_not_configured_hint"] = True
 
     # Store plan in state
     state["execution_plan"] = plan
@@ -2819,13 +2968,36 @@ Choose tools ONLY from the available list above.
 
         except asyncio.TimeoutError:
             log.warning("⏱️ Planner timeout")
-            return _create_fallback_plan(query)
+            fallback = _create_fallback_plan(query)
+            fallback_tools = fallback.get('tools', [])
+            is_valid, invalid_tools, _ = _validate_planned_tools(fallback_tools, state, log)
+            if not is_valid:
+                log.warning(f"⚠️ Fallback tools unavailable: {invalid_tools}. Switching to direct answer.")
+                fallback['tools'] = [t for t in fallback_tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
+                if not fallback['tools']:
+                    fallback['can_answer_directly'] = True
+            return fallback
         except Exception as e:
             log.error(f"💥 Planner error: {e}")
-            return _create_fallback_plan(query)
+            fallback = _create_fallback_plan(query)
+            fallback_tools = fallback.get('tools', [])
+            is_valid, invalid_tools, _ = _validate_planned_tools(fallback_tools, state, log)
+            if not is_valid:
+                log.warning(f"⚠️ Fallback tools unavailable: {invalid_tools}. Switching to direct answer.")
+                fallback['tools'] = [t for t in fallback_tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
+                if not fallback['tools']:
+                    fallback['can_answer_directly'] = True
+            return fallback
 
     # Should never reach here
-    return _create_fallback_plan(query)
+    fallback = _create_fallback_plan(query)
+    fallback_tools = fallback.get('tools', [])
+    is_valid, invalid_tools, _ = _validate_planned_tools(fallback_tools, state, log)
+    if not is_valid:
+        fallback['tools'] = [t for t in fallback_tools if isinstance(t, dict) and t.get('name', '') not in invalid_tools]
+        if not fallback['tools']:
+            fallback['can_answer_directly'] = True
+    return fallback
 
 
 def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]:
@@ -4398,9 +4570,34 @@ async def _generate_direct_response(
 
     # System message
     user_context = _format_user_context(state)
-    system_content = "You are a helpful, friendly AI assistant. Respond naturally and concisely."
-    if user_context:
-        system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
+
+    # If the agent has no knowledge and no tools, use a specialized system prompt that
+    # always steers the LLM to guide the user to configure the agent for org-specific queries.
+    if state.get("agent_not_configured_hint"):
+        system_content = (
+            "You are a helpful, friendly AI assistant.\n\n"
+            "## ⚠️ IMPORTANT: This Agent Is Not Configured\n"
+            "This agent has **no knowledge sources** and **no service tools** connected.\n\n"
+            "### How to respond:\n"
+            "1. **NEVER leak internal terms** like `can_answer_directly`, `needs_clarification`, JSON keys, or planning details into your response. Write naturally.\n"
+            "2. **For greetings, math, or clearly general questions**: answer normally and briefly.\n"
+            "3. **For ANY question about org-specific data** (licenses, documents, policies, project details, account info, internal systems, product-specific questions, etc.):\n"
+            "   - Do NOT speculate, fabricate, or invent org-specific details.\n"
+            "   - Do NOT make up license details, account information, or product internals you have no real knowledge of.\n"
+            "   - Clearly tell the user: **this agent has no knowledge sources configured**, so you cannot look up their specific information.\n"
+            "   - Then guide them: to get accurate answers about their org's data, the agent admin needs to:\n"
+            "     * **Add Knowledge Sources** — upload documents, wikis, or connect data sources to this agent.\n"
+            "     * **Connect Service Toolsets** — link apps (Google Workspace, Jira, Confluence, Slack, etc.) to enable live actions.\n"
+            "   - You may add a brief general explanation from your training knowledge if helpful, but **always make clear it is general knowledge, not their specific data**.\n"
+            "4. **Keep responses concise and user-friendly** — the user may not know the agent needs to be set up."
+        )
+        if user_context:
+            system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
+    else:
+        system_content = "You are a helpful, friendly AI assistant. Respond naturally and concisely."
+        if user_context:
+            system_content += "\n\nIMPORTANT: When user asks about themselves, use provided info DIRECTLY."
+
     messages.append(SystemMessage(content=system_content))
 
     # Add conversation history as LangChain messages (with sliding window)
@@ -4890,7 +5087,13 @@ async def react_agent_node(
 
 def _build_react_system_prompt(state: ChatState, log: logging.Logger) -> str:
     """Build system prompt for ReAct agent with citation support"""
-    base_prompt = """You are an intelligent AI assistant that can use tools to help users.
+    # Start with agent instructions if provided
+    agent_instructions = state.get("instructions")
+    instructions_prefix = ""
+    if agent_instructions and agent_instructions.strip():
+        instructions_prefix = f"## Agent Instructions\n{agent_instructions.strip()}\n\n"
+
+    base_prompt = instructions_prefix + """You are an intelligent AI assistant that can use tools to help users.
 
 ## Tool Usage Guidelines
 
@@ -4937,6 +5140,17 @@ When you have internal knowledge from retrieval tools:
 
     if _has_confluence_tools(state):
         base_prompt += "\n" + CONFLUENCE_GUIDANCE
+
+    # Add timezone / current time context if provided
+    timezone = state.get("timezone")
+    current_time = state.get("current_time")
+    if timezone or current_time:
+        time_parts = []
+        if current_time:
+            time_parts.append(f"Current time: {current_time}")
+        if timezone:
+            time_parts.append(f"User timezone: {timezone}")
+        base_prompt += "\n\n## Temporal Context\n" + "\n".join(time_parts)
 
     # Add user context
     user_context = _format_user_context(state)

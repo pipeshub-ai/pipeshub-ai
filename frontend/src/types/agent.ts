@@ -29,6 +29,7 @@ export interface Agent {
   description: string;
   startMessage: string;
   systemPrompt: string;
+  instructions?: string;
   // Legacy fields (deprecated)
   tools?: string[];
   kb?: string[];
@@ -118,6 +119,7 @@ export interface AgentTemplateFormData {
   category: string;
   startMessage: string;
   systemPrompt: string;
+  instructions?: string;
   tags: string[];
   isDeleted?: boolean;
 }
@@ -294,6 +296,7 @@ export interface AgentFormData {
   description: string;
   startMessage: string;
   systemPrompt: string;
+  instructions?: string;
   // Models as array of model objects or keys
   models: (string | { provider: string; modelName: string; isReasoning: boolean; modelKey: string })[];
   // Legacy support (deprecated)

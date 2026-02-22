@@ -470,6 +470,52 @@ export const deleteToolsetConfig =
     }
   };
 
+/**
+ * Reauthenticate toolset - clears credentials and marks as unauthenticated.
+ * Only applicable to OAuth-configured toolsets.
+ */
+export const reauthenticateToolset =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction
+  ): Promise<void> => {
+    try {
+      const { toolsetId } = req.params;
+
+      if (!toolsetId) {
+        throw new BadRequestError('toolsetId is required');
+      }
+
+      logger.info(`Reauthenticating toolset ${toolsetId}`);
+
+      const headers: Record<string, string> = {
+        ...(req.headers as Record<string, string>),
+      };
+
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/${toolsetId}/reauthenticate`,
+        HttpMethod.POST,
+        headers
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Reauthenticating toolset',
+        'Failed to reauthenticate toolset'
+      );
+    } catch (error: any) {
+      logger.error('Error reauthenticating toolset:', {
+        error: error.message,
+        toolsetId: req.params.toolsetId,
+      });
+      const handledError = handleBackendError(error, 'reauthenticate toolset');
+      next(handledError);
+    }
+  };
+
 // ============================================================================
 // OAuth Controllers
 // ============================================================================

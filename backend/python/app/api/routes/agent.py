@@ -47,10 +47,13 @@ class ChatQuery(BaseModel):
     filters: Optional[Dict[str, Any]] = None
     retrievalMode: Optional[str] = "HYBRID"
     systemPrompt: Optional[str] = None
+    instructions: Optional[str] = None
     tools: Optional[List[str]] = None
     chatMode: Optional[str] = "quick"
     modelKey: Optional[str] = None
     modelName: Optional[str] = None
+    timezone: Optional[str] = None
+    currentTime: Optional[str] = None
 
 
 # ============================================================================
@@ -1036,7 +1039,12 @@ async def create_agent(request: Request) -> JSONResponse:
         raw_models = body.get("models", [])
         model_entries, has_reasoning_model = _parse_models(raw_models, logger)
 
-        if model_entries and not has_reasoning_model:
+        if not model_entries:
+            raise InvalidRequestError(
+                "At least one AI model is required. Please add a model to your configuration."
+            )
+
+        if not has_reasoning_model:
             raise InvalidRequestError(
                 "At least one reasoning model is required. Please add a reasoning model to your configuration."
             )
@@ -1053,6 +1061,7 @@ async def create_agent(request: Request) -> JSONResponse:
             "description": body.get("description", "").strip() or "AI agent for task automation",
             "startMessage": body.get("startMessage", "").strip() or "Hello! How can I help you today?",
             "systemPrompt": body.get("systemPrompt", "").strip() or "You are a helpful assistant.",
+            "instructions": body.get("instructions", "").strip() or None,
             "models": model_entries,
             "tags": body.get("tags", []) or [],
             "isActive": True,
@@ -1390,6 +1399,21 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         body = _parse_request_body(await request.body())
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
+
+        # Validate models if provided in update body
+        if "models" in body:
+            raw_models = body.get("models", [])
+            model_entries, has_reasoning_model = _parse_models(raw_models, logger)
+
+            if not model_entries:
+                raise InvalidRequestError(
+                    "At least one AI model is required. Please add a model to your configuration."
+                )
+
+            if not has_reasoning_model:
+                raise InvalidRequestError(
+                    "At least one reasoning model is required. Please add a reasoning model to your configuration."
+                )
 
         # Check permissions
         agent = await services["graph_provider"].get_agent(agent_id, user_key)
@@ -1937,6 +1961,9 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
             "filters": filters,
             "tools": chat_query.tools if chat_query.tools is not None else agent.get("tools"),
             "systemPrompt": agent.get("systemPrompt"),
+            "instructions": agent.get("instructions"),
+            "timezone": chat_query.timezone,
+            "currentTime": chat_query.currentTime,
         }
 
         # Execute graph
@@ -2096,6 +2123,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             "retrievalMode": chat_query.retrievalMode,
             "filters": filters,
             "systemPrompt": agent.get("systemPrompt"),
+            "instructions": agent.get("instructions"),
+            "timezone": chat_query.timezone,
+            "currentTime": chat_query.currentTime,
             "toolsets": agent_toolsets,
             "knowledge": agent_knowledge,
             "toolsetConfigs": toolset_configs,

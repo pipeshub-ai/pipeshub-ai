@@ -1,5 +1,6 @@
 import json
 import logging
+import uuid
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
@@ -76,6 +77,17 @@ class GetCalendarListByIdInput(BaseModel):
     calendar_id: Optional[str] = Field(default=None, description="The ID of the calendar to get (default: 'primary')")
 
 
+class CreateMeetLinkInput(BaseModel):
+    """Schema for creating a Google Meet link and attaching it to a calendar event"""
+    event_start_time: str = Field(description="The start time of the event (ISO format or timestamp)")
+    event_end_time: str = Field(description="The end time of the event (ISO format or timestamp)")
+    event_title: Optional[str] = Field(default=None, description="The title/summary of the event")
+    event_description: Optional[str] = Field(default=None, description="The description of the event")
+    event_location: Optional[str] = Field(default=None, description="The location of the event")
+    event_attendees_emails: Optional[List[str]] = Field(default=None, description="List of email addresses for event attendees")
+    event_timezone: Optional[str] = Field(default="UTC", description="The timezone for the event")
+
+
 # Register Google Calendar toolset
 @ToolsetBuilder("Calendar")\
     .in_group("Google Workspace")\
@@ -92,7 +104,8 @@ class GetCalendarListByIdInput(BaseModel):
                 team_sync=[],
                 agent=[
                     "https://www.googleapis.com/auth/calendar",
-                    "https://www.googleapis.com/auth/calendar.events"
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/gmail.send"
                 ]
             ),
             token_access_type="offline",
@@ -187,6 +200,14 @@ class GoogleCalendar:
                 showDeleted=show_deleted,
                 timeZone=time_zone,
             )
+
+            # Normalize events to ensure location field is always present
+            # This prevents placeholder resolution errors when location is missing
+            if isinstance(events, dict) and "items" in events:
+                for item in events.get("items", []):
+                    # Ensure location field is always present (empty string if not set)
+                    if "location" not in item:
+                        item["location"] = ""
 
             return True, json.dumps(events)
         except Exception as e:
@@ -286,9 +307,11 @@ class GoogleCalendar:
                 event_config["end"] = {"date": event_end_time_iso.split("T")[0]}
 
             # Use GoogleCalendarDataSource method
+            # sendUpdates="all" ensures Google sends invite emails to all attendees
             event = await self.client.events_insert(
                 calendarId="primary",
-                body=event_config
+                body=event_config,
+                sendUpdates="all"
             )
 
             return True, json.dumps({
@@ -401,10 +424,12 @@ class GoogleCalendar:
                     event["end"] = {"dateTime": event_end_time_iso}
 
             # Use GoogleCalendarDataSource method to update event
+            # sendUpdates="all" ensures Google sends update notification emails to all attendees
             updated_event = await self.client.events_update(
                 calendarId="primary",
                 eventId=event_id,
-                body=event
+                body=event,
+                sendUpdates="all"
             )
 
             return True, json.dumps({
@@ -423,6 +448,124 @@ class GoogleCalendar:
             })
         except Exception as e:
             logger.error(f"Failed to update calendar event: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="calendar",
+        tool_name="create_meet_link",
+        description="Create a Google Meet link and attach it to a new calendar event",
+        args_schema=CreateMeetLinkInput,
+        when_to_use=[
+            "User wants to create a Google Meet / video meeting link",
+            "User wants to schedule a meeting with a video conference link",
+            "User asks to generate a Meet link for an event",
+            "User wants a meeting link attached to a calendar invite"
+        ],
+        when_not_to_use=[
+            "User wants a calendar event without a Meet link (use create_calendar_event)",
+            "User wants to update an existing event (use update_calendar_event)",
+            "No meeting/video link needed"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a Meet link for tomorrow's standup",
+            "Schedule a meeting with a Google Meet link",
+            "Generate a video meeting link and add it to my calendar"
+        ],
+        category=ToolCategory.CALENDAR
+    )
+    async def create_meet_link(
+        self,
+        event_start_time: str,
+        event_end_time: str,
+        event_title: Optional[str] = None,
+        event_description: Optional[str] = None,
+        event_location: Optional[str] = None,
+        event_attendees_emails: Optional[List[str]] = None,
+        event_timezone: Optional[str] = "UTC",
+    ) -> tuple[bool, str]:
+        """Create a Google Meet link and attach it to a new calendar event.
+
+        Uses the Google Calendar API conference data feature (conferenceDataVersion=1)
+        to auto-generate a Google Meet room and return the link along with event details.
+
+        Args:
+            event_start_time: The start time of the event
+            event_end_time: The end time of the event
+            event_title: The title of the event
+            event_description: The description of the event
+            event_location: The location of the event
+            event_attendees_emails: The attendees of the event
+            event_timezone: The timezone of the event
+        Returns:
+            tuple[bool, str]: True if the event and Meet link were created, False otherwise
+        """
+        try:
+            if not event_start_time:
+                return False, json.dumps({"error": "Event start time is required"})
+            if not event_end_time:
+                return False, json.dumps({"error": "Event end time is required"})
+
+            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
+
+            event_config = {
+                "summary": event_title or "Meeting",
+                "description": event_description,
+                "start": {
+                    "dateTime": event_start_time_iso,
+                    "timeZone": event_timezone or "UTC",
+                },
+                "end": {
+                    "dateTime": event_end_time_iso,
+                    "timeZone": event_timezone or "UTC",
+                },
+                "location": event_location,
+                "attendees": [{"email": email} for email in event_attendees_emails] if event_attendees_emails else [],
+                # conferenceData.createRequest tells the Calendar API to auto-generate a Meet room
+                "conferenceData": {
+                    "createRequest": {
+                        "requestId": str(uuid.uuid4()),
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet"
+                        }
+                    }
+                }
+            }
+
+            # conferenceDataVersion=1 is required for the Calendar API to create the Meet room
+            # sendUpdates="all" ensures Google sends invite emails to all attendees
+            event = await self.client.events_insert(
+                calendarId="primary",
+                body=event_config,
+                conferenceDataVersion=1,
+                sendUpdates="all"
+            )
+
+            # Extract the Meet link from the response
+            meet_link = ""
+            conference_data = event.get("conferenceData", {})
+            entry_points = conference_data.get("entryPoints", [])
+            for ep in entry_points:
+                if ep.get("entryPointType") == "video":
+                    meet_link = ep.get("uri", "")
+                    break
+            # Fallback: check hangoutLink field (older API responses)
+            if not meet_link:
+                meet_link = event.get("hangoutLink", "")
+
+            return True, json.dumps({
+                "success": True,
+                "event_id": event.get("id", ""),
+                "event_title": event.get("summary", ""),
+                "event_start_time": event.get("start", {}).get("dateTime", ""),
+                "event_end_time": event.get("end", {}).get("dateTime", ""),
+                "event_location": event.get("location", ""),
+                "meet_link": meet_link,
+                "event_attendees": event.get("attendees", []),
+                "message": f"Google Meet link created and attached to calendar event. Meet link: {meet_link}"
+            })
+        except Exception as e:
+            logger.error(f"Failed to create Meet link: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(

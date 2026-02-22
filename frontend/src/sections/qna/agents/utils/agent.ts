@@ -865,6 +865,10 @@ export const extractAgentConfigFromFlow = (
       agentCoreNode?.data.config?.systemPrompt ||
       currentAgent?.systemPrompt ||
       'You are a sophisticated flow-based AI agent that processes information through a visual workflow.',
+    instructions:
+      agentCoreNode?.data.config?.instructions ||
+      currentAgent?.instructions ||
+      undefined,
     toolsets, // ToolsetReference[] with id
     knowledge, // KnowledgeReference[] with id (includes both apps and KBs)
     models,

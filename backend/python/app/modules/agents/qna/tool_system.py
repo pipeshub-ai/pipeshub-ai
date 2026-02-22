@@ -201,6 +201,10 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
     internal_tools = []
     user_tools = []
 
+    # Check if knowledge is configured - retrieval tool is only loaded when knowledge exists
+    agent_knowledge = state.get("agent_knowledge", [])
+    has_knowledge = bool(agent_knowledge)
+
     for full_name, registry_tool in registry_tools.items():
         try:
             app_name, tool_name = _parse_tool_name(full_name)
@@ -211,8 +215,19 @@ def _load_all_tools(state: ChatState, blocked_tools: Dict[str, int]) -> List[Reg
                     state_logger.warning(f"Blocking {full_name} (failed {blocked_tools[full_name]} times)")
                 continue
 
+            # Skip retrieval tools when no knowledge is configured
+            is_retrieval = _is_retrieval_tool(full_name, registry_tool)
+            if is_retrieval and not has_knowledge:
+                if state_logger:
+                    state_logger.debug(f"Skipping retrieval tool {full_name} - no knowledge configured")
+                continue
+
             # Check if internal (always included)
             is_internal = _is_internal_tool(full_name, registry_tool)
+
+            # Retrieval tools are internal when knowledge is available
+            if is_retrieval and has_knowledge:
+                is_internal = True
 
             # Check if user-enabled - ONLY exact matches, no toolset-level matching
             is_user_enabled = False
@@ -294,11 +309,27 @@ def _extract_tool_names_from_toolsets(agent_toolsets: List[Dict]) -> Optional[Se
     return tool_names if tool_names else None
 
 
+def _is_retrieval_tool(full_name: str, registry_tool: 'Tool') -> bool:
+    """
+    Check if a tool is a retrieval/RAG tool.
+
+    Retrieval tools should only be included when knowledge is configured.
+    """
+    if hasattr(registry_tool, 'app_name'):
+        app_name = str(registry_tool.app_name).lower()
+        if app_name == 'retrieval':
+            return True
+
+    retrieval_patterns = ["retrieval."]
+    return any(p in full_name.lower() for p in retrieval_patterns)
+
+
 def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
     """
     Check if tool is internal (always included).
 
     Internal tools are marked in registry with isInternal=True.
+    Note: Retrieval tools are handled separately via _is_retrieval_tool.
     """
     # Check registry metadata
     if hasattr(registry_tool, 'metadata'):
@@ -310,15 +341,14 @@ def _is_internal_tool(full_name: str, registry_tool: 'Tool') -> bool:
         if hasattr(metadata, 'is_internal') and metadata.is_internal:
             return True
 
-    # Check app name
+    # Check app name (retrieval is NOT always internal - depends on knowledge config)
     if hasattr(registry_tool, 'app_name'):
         app_name = str(registry_tool.app_name).lower()
-        if app_name in ['retrieval', 'calculator', 'datetime', 'utility']:
+        if app_name in ['calculator', 'datetime', 'utility']:
             return True
 
-    # Fallback patterns
+    # Fallback patterns (retrieval excluded - handled separately based on knowledge)
     internal_patterns = [
-        "retrieval.",
         "calculator.",
         "web_search",
         "get_current_datetime",
