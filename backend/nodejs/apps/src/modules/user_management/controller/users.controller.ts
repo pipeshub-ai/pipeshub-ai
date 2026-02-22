@@ -99,7 +99,7 @@ export class UserController {
       res.status(200).json(blockedUsers);
       return;
     }
-    
+
     const users = await Users.find({
       orgId: req.user?.orgId,
       isDeleted: false,
@@ -203,66 +203,6 @@ export class UserController {
       res.json(user);
     } catch (error) {
       next(error);
-    }
-  }
-
-  async getBlockedUsers(
-    req: AuthenticatedUserRequest,
-    res: Response,
-  ): Promise<Response> {
-
-    try {
-      // 1. Use the ID as a STRING, not an ObjectId, to match your DB sample
-
-      const orgId = req.user?.orgId;
-      const blockedUsers = await UserCredentials.aggregate([
-        {
-          $match: {
-            orgId: orgId, // Matching the String in your screenshot
-            isBlocked: true,
-            isDeleted: false,
-          },
-        },
-        {
-          $lookup: {
-            from: 'users', // Check if your collection is 'users' or 'appusers'
-            let: { credUserId: '$userId' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    // Converting the String userId from Credentials 
-                    // to an ObjectId to match the Users collection _id
-                    $eq: ['$_id', { $toObjectId: '$$credUserId' }]
-                  }
-                }
-              }
-            ],
-            as: 'userProfile',
-          },
-        },
-        { $unwind: '$userProfile' },
-
-        {
-          $project: {
-            _id: '$userProfile._id',
-            email: '$userProfile.email',
-            orgId: '$userProfile.orgId',
-            fullName: '$userProfile.fullName',
-            hasLoggedIn: '$userProfile.hasLoggedIn',
-            slug: '$userProfile.slug',
-            createdAt: '$userProfile.createdAt',
-            updatedAt: '$userProfile.updatedAt',
-          },
-        },
-      ]);
-
-      return res.status(200).json(blockedUsers);
-    }
-    catch (error) {
-      return res.status(500).json({
-        message: "Failed to fetch blocked users",
-      });
     }
   }
 
