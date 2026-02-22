@@ -217,6 +217,21 @@ export function createUserRouter(container: Container) {
     },
   );
 
+  router.put(
+    '/:id/unblock',
+    authMiddleware.authenticate,
+    userAdminCheck,
+
+    async (req: Request, res: Response, next: NextFunction) => {
+      try {
+        const userController = container.get<UserController>('UserController');
+        await userController.unblockUser(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.get(
     '/:id',
     authMiddleware.authenticate,

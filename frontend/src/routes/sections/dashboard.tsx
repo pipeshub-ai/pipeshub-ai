@@ -34,6 +34,9 @@ const PersonalProfile = lazy(() => import('src/pages/dashboard/account/personal-
 const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
+const MailSettings = lazy(
+  () => import('src/pages/dashboard/account/mail-settings')
+);
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
@@ -341,6 +344,10 @@ export const dashboardRoutes = [
                 path: 'invites',
                 element: <AdminProtectedRoute component={UsersAndGroups} />,
               },
+              {
+                path: 'blocked-users',
+                element: <AdminProtectedRoute component={UsersAndGroups} />,
+              },
               // Business Admin Settings
               {
                 path: 'settings',
@@ -362,6 +369,15 @@ export const dashboardRoutes = [
                       {
                         path: 'saml',
                         element: <AdminProtectedRoute component={SamlSsoConfigPage} />,
+                      },
+                    ],
+                  },
+                  {
+                    path: 'mail',
+                    children: [
+                      {
+                        index: true,
+                        element: <AdminProtectedRoute component={MailSettings} />,
                       },
                     ],
                   },

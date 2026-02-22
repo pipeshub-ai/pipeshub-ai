@@ -68,6 +68,7 @@ import {
   addUsersToGroups,
   getUserIdFromToken,
   getAllUsersWithGroups,
+  allblockedUsers,
 } from '../utils';
 
 import type { SnackbarState } from '../types/organization-data';
@@ -137,6 +138,8 @@ const Users = () => {
         setUserId(orgId);
         const response = await getAllUsersWithGroups();
         const groupsData = await allGroups();
+        const blockedUsers = await allblockedUsers();
+
         const loggedInUsers = response.filter(
           (user) => user?.email !== null && user.fullName && user.hasLoggedIn === true
         );
@@ -147,6 +150,8 @@ const Users = () => {
             usersCount: loggedInUsers.length,
             groupsCount: groupsData.length,
             invitesCount: pendingUsers.length,
+            blockedUsersCount: blockedUsers?.length || 0,
+
           })
         );
         setUsers(loggedInUsers);

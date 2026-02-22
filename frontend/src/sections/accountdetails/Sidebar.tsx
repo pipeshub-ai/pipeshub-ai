@@ -11,6 +11,8 @@ import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
 import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
+import emailIcon from '@iconify-icons/mdi/email';
+
 
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
@@ -65,6 +67,11 @@ export default function Sidebar() {
       name: 'Authentication',
       icon: shieldLockIcon,
       path: `${baseUrl}/settings/authentication`,
+    },
+    {
+      name: 'Mail',
+      icon: emailIcon,
+      path: `${baseUrl}/settings/mail`,
     },
     {
       name: 'Connectors',
