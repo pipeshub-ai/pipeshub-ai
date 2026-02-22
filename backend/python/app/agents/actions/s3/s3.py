@@ -1,19 +1,118 @@
-
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
 from app.agents.actions.utils import run_async
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.s3.s3 import S3Client
 from app.sources.external.s3.s3 import S3DataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="list_buckets",
+        description="List all S3 buckets",
+        parameters=[],
+        tags=["buckets", "list"]
+    ),
+    ToolDefinition(
+        name="create_bucket",
+        description="Create a new S3 bucket",
+        parameters=[
+            {"name": "bucket_name", "type": "string", "description": "Bucket name", "required": True},
+            {"name": "region", "type": "string", "description": "AWS region", "required": False}
+        ],
+        tags=["buckets", "create"]
+    ),
+    ToolDefinition(
+        name="delete_bucket",
+        description="Delete an S3 bucket",
+        parameters=[
+            {"name": "bucket_name", "type": "string", "description": "Bucket name", "required": True}
+        ],
+        tags=["buckets", "delete"]
+    ),
+    ToolDefinition(
+        name="list_objects",
+        description="List objects in a bucket",
+        parameters=[
+            {"name": "bucket_name", "type": "string", "description": "Bucket name", "required": True},
+            {"name": "prefix", "type": "string", "description": "Object prefix", "required": False}
+        ],
+        tags=["objects", "list"]
+    ),
+    ToolDefinition(
+        name="get_object",
+        description="Get an object from S3",
+        parameters=[
+            {"name": "bucket_name", "type": "string", "description": "Bucket name", "required": True},
+            {"name": "object_key", "type": "string", "description": "Object key", "required": True}
+        ],
+        tags=["objects", "read"]
+    ),
+    ToolDefinition(
+        name="put_object",
+        description="Upload an object to S3",
+        parameters=[
+            {"name": "bucket_name", "type": "string", "description": "Bucket name", "required": True},
+            {"name": "object_key", "type": "string", "description": "Object key", "required": True},
+            {"name": "content", "type": "string", "description": "Object content", "required": True}
+        ],
+        tags=["objects", "upload"]
+    ),
+    ToolDefinition(
+        name="delete_object",
+        description="Delete an object from S3",
+        parameters=[
+            {"name": "bucket_name", "type": "string", "description": "Bucket name", "required": True},
+            {"name": "object_key", "type": "string", "description": "Object key", "required": True}
+        ],
+        tags=["objects", "delete"]
+    ),
+    ToolDefinition(
+        name="copy_object",
+        description="Copy an object in S3",
+        parameters=[
+            {"name": "source_bucket", "type": "string", "description": "Source bucket", "required": True},
+            {"name": "source_key", "type": "string", "description": "Source key", "required": True},
+            {"name": "dest_bucket", "type": "string", "description": "Destination bucket", "required": True},
+            {"name": "dest_key", "type": "string", "description": "Destination key", "required": True}
+        ],
+        tags=["objects", "copy"]
+    ),
+]
 
+
+# Register S3 toolset
+@ToolsetBuilder("AWS S3")\
+    .in_group("Storage")\
+    .with_description("AWS S3 integration for object storage and bucket management")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.API_TOKEN).fields([
+            CommonFields.api_token("AWS Access Key ID", "your-access-key-id", field_name="accessKeyId"),
+            CommonFields.api_token("AWS Secret Access Key", "your-secret-key", field_name="secretAccessKey"),
+            CommonFields.api_token("AWS Region", "us-east-1", field_name="region", required=False)
+        ])
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/s3.svg"))\
+    .build_decorator()
 class S3:
     """S3 tool exposed to the agents"""
     def __init__(self, client: S3Client) -> None:

@@ -6,19 +6,135 @@ from typing import List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.sheets.sheets import GoogleSheetsDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="create_spreadsheet",
+        description="Create a new Google Sheet",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Spreadsheet title", "required": False}
+        ],
+        tags=["spreadsheets", "create"]
+    ),
+    ToolDefinition(
+        name="get_spreadsheet",
+        description="Get spreadsheet details",
+        parameters=[
+            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True}
+        ],
+        tags=["spreadsheets", "read"]
+    ),
+    ToolDefinition(
+        name="get_values",
+        description="Get values from a range",
+        parameters=[
+            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
+            {"name": "range", "type": "string", "description": "Range (e.g., A1:B10)", "required": True}
+        ],
+        tags=["spreadsheets", "read"]
+    ),
+    ToolDefinition(
+        name="update_values",
+        description="Update values in a range",
+        parameters=[
+            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
+            {"name": "range", "type": "string", "description": "Range", "required": True},
+            {"name": "values", "type": "array", "description": "Values to update", "required": True}
+        ],
+        tags=["spreadsheets", "update"]
+    ),
+    ToolDefinition(
+        name="append_values",
+        description="Append values to a range",
+        parameters=[
+            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
+            {"name": "range", "type": "string", "description": "Range", "required": True},
+            {"name": "values", "type": "array", "description": "Values to append", "required": True}
+        ],
+        tags=["spreadsheets", "append"]
+    ),
+    ToolDefinition(
+        name="clear_values",
+        description="Clear values from a range",
+        parameters=[
+            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
+            {"name": "range", "type": "string", "description": "Range", "required": True}
+        ],
+        tags=["spreadsheets", "clear"]
+    ),
+    ToolDefinition(
+        name="batch_get_values",
+        description="Batch get values from multiple ranges",
+        parameters=[
+            {"name": "spreadsheet_id", "type": "string", "description": "Spreadsheet ID", "required": True},
+            {"name": "ranges", "type": "array", "description": "List of ranges", "required": True}
+        ],
+        tags=["spreadsheets", "read"]
+    ),
+]
+
+
+# Register Google Sheets toolset
+@ToolsetBuilder("Sheets")\
+    .in_group("Google Workspace")\
+    .with_description("Google Sheets integration for spreadsheet management and data operations")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Sheets",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/sheets",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive.file"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/sheets.svg",
+            app_group="Google Workspace",
+            app_description="Sheets OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/sheets.svg"))\
+    .build_decorator()
 class GoogleSheets:
-    """Google Sheets tool exposed to the agents using GoogleSheetsDataSource"""
+    """Sheets tool exposed to the agents using SheetsDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Sheets tool"""
         """
         Args:
-            client: Google Sheets client
+            client: Sheets client
         Returns:
             None
         """

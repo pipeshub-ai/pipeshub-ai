@@ -6,19 +6,115 @@ from typing import Any, Dict, List, Optional
 from app.agents.tools.decorator import tool
 from app.agents.tools.enums import ParameterType
 from app.agents.tools.models import ToolParameter
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolCategory,
+    ToolDefinition,
+    ToolsetBuilder,
+)
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.docs.docs import GoogleDocsDataSource
 
 logger = logging.getLogger(__name__)
 
+# Define tools
+tools: List[ToolDefinition] = [
+    ToolDefinition(
+        name="get_document",
+        description="Get a Google Doc",
+        parameters=[
+            {"name": "document_id", "type": "string", "description": "Document ID", "required": True}
+        ],
+        tags=["documents", "read"]
+    ),
+    ToolDefinition(
+        name="create_document",
+        description="Create a new Google Doc",
+        parameters=[
+            {"name": "title", "type": "string", "description": "Document title", "required": False}
+        ],
+        tags=["documents", "create"]
+    ),
+    ToolDefinition(
+        name="batch_update_document",
+        description="Batch update document",
+        parameters=[
+            {"name": "document_id", "type": "string", "description": "Document ID", "required": True}
+        ],
+        tags=["documents", "update"]
+    ),
+    ToolDefinition(
+        name="insert_text",
+        description="Insert text into document",
+        parameters=[
+            {"name": "document_id", "type": "string", "description": "Document ID", "required": True},
+            {"name": "text", "type": "string", "description": "Text to insert", "required": True}
+        ],
+        tags=["documents", "edit"]
+    ),
+    ToolDefinition(
+        name="replace_text",
+        description="Replace text in document",
+        parameters=[
+            {"name": "document_id", "type": "string", "description": "Document ID", "required": True},
+            {"name": "old_text", "type": "string", "description": "Text to replace", "required": True},
+            {"name": "new_text", "type": "string", "description": "New text", "required": True}
+        ],
+        tags=["documents", "edit"]
+    ),
+]
+
+
+# Register Google Docs toolset
+@ToolsetBuilder("Docs")\
+    .in_group("Google Workspace")\
+    .with_description("Google Docs integration for document creation and editing")\
+    .with_category(ToolCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Docs",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/docs",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/documents",
+                    "https://www.googleapis.com/auth/drive.file"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/docs.svg",
+            app_group="Google Workspace",
+            app_description="Docs OAuth application for agent integration"
+        )
+    ])\
+    .with_tools(tools)\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/docs.svg"))\
+    .build_decorator()
 class GoogleDocs:
-    """Google Docs tool exposed to the agents using GoogleDocsDataSource"""
+    """Docs tool exposed to the agents using DocsDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Docs tool"""
         """
         Args:
-            client: Google Docs client
+            client: Docs client
         Returns:
             None
         """

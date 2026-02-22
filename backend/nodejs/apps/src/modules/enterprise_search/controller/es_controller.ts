@@ -4660,6 +4660,8 @@ export const unshareAgent =
         modelKey: req.body.modelKey || null,
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       logger.info('aiPayload', aiPayload);
@@ -4950,6 +4952,8 @@ export const createAgentConversation =
           modelName: req.body.modelName || null,
           modelFriendlyName: req.body.modelFriendlyName || null,
           chatMode: req.body.chatMode || 'quick',
+          timezone: req.body.timezone || null,
+          currentTime: req.body.currentTime || null,
         },
       };
 
@@ -5236,6 +5240,8 @@ export const createAgentConversation =
             modelKey: req.body.modelKey || null,
             modelName: req.body.modelName || null,
             chatMode: req.body.chatMode || 'quick',
+            timezone: req.body.timezone || null,
+            currentTime: req.body.currentTime || null,
           },
         };
         try {
@@ -5573,6 +5579,8 @@ export const addMessageStreamToAgentConversation =
         modelName: req.body.modelName || null,
         modelFriendlyName: req.body.modelFriendlyName || null,
         chatMode: req.body.chatMode || 'quick',
+        timezone: req.body.timezone || null,
+        currentTime: req.body.currentTime || null,
       };
 
       const aiCommandOptions: AICommandOptions = {

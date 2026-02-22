@@ -5,7 +5,17 @@ Tool Builder and Registry
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Type, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Type,
+    Union,
+)
+
+from pydantic import BaseModel
 
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -20,16 +30,21 @@ from app.connectors.core.registry.oauth_config_registry import get_oauth_config_
 from app.connectors.core.registry.types import AuthField, DocumentationLink
 
 
-class ToolCategory(str, Enum):
+class ToolsetCategory(str, Enum):
     """Categories for toolsets"""
-    APP = "app"  # Application-specific tools (Jira, Slack, etc.)
-    FILE = "file"  # File-related tools
-    WEB_SEARCH = "web_search"  # Web search tools
-    RESEARCH = "research"  # Research-related tools
-    UTILITY = "utility"  # Utility tools
-    COMMUNICATION = "communication"  # Communication tools
-    PRODUCTIVITY = "productivity"  # Productivity tools
-    DATABASE = "database"  # Database tools
+    APP = "app"  # Application-specific toolsets (Jira, Slack, etc.)
+    FILE = "file"  # File-related toolsets
+    FILE_STORAGE = "file_storage"  # File storage toolsets (Drive, Dropbox, etc.)
+    WEB_SEARCH = "web_search"  # Web search toolsets
+    SEARCH = "search"  # Search toolsets (internal knowledge, etc.)
+    RESEARCH = "research"  # Research-related toolsets
+    UTILITY = "utility"  # Utility toolsets
+    COMMUNICATION = "communication"  # Communication toolsets (Slack, Gmail, etc.)
+    PRODUCTIVITY = "productivity"  # Productivity toolsets
+    DATABASE = "database"  # Database toolsets
+    CALENDAR = "calendar"  # Calendar toolsets
+    PROJECT_MANAGEMENT = "project_management"  # Project management toolsets (Jira, etc.)
+    DOCUMENTATION = "documentation"  # Documentation toolsets (Confluence, etc.)
 
 
 @dataclass
@@ -38,10 +53,85 @@ class ToolDefinition:
     name: str
     description: str
     function: Optional[Callable] = None
-    parameters: List[Dict[str, Any]] = field(default_factory=list)
+    args_schema: Optional[Type[BaseModel]] = None  # NEW: Pydantic schema for validation
+    parameters: List[Dict[str, Any]] = field(default_factory=list)  # DEPRECATED: Use args_schema instead
     returns: Optional[str] = None
     examples: List[Dict] = field(default_factory=list)
     tags: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dict, converting schema to parameters for frontend compatibility"""
+        result = {
+            "name": self.name,
+            "description": self.description,
+            "parameters": self._schema_to_parameters() if self.args_schema else self.parameters,
+            "returns": self.returns,
+            "examples": self.examples,
+            "tags": self.tags
+        }
+        return result
+
+    def _schema_to_parameters(self) -> List[Dict[str, Any]]:
+        """Convert Pydantic schema to parameter dict format for frontend API compatibility"""
+        if not self.args_schema:
+            return self.parameters
+
+        try:
+            from typing import get_args, get_origin
+
+            parameters = []
+            schema_fields = self.args_schema.model_fields
+
+            for field_name, field_info in schema_fields.items():
+                # Get field description
+                description = field_info.description or f"Parameter {field_name}"
+
+                # Determine type - handle Optional, Union, etc.
+                field_type = field_info.annotation
+                param_type = "string"  # default
+
+                # Handle Optional types (Union[T, None])
+                origin = get_origin(field_type) if hasattr(field_type, '__origin__') or hasattr(field_type, '__args__') else None
+                if origin is Union:
+                    args = get_args(field_type)
+                    # Filter out None type
+                    non_none_args = [arg for arg in args if arg is not type(None)]
+                    if non_none_args:
+                        field_type = non_none_args[0]
+                        origin = get_origin(field_type) if hasattr(field_type, '__origin__') else None
+
+                # Determine base type
+                if field_type is int:
+                    param_type = "integer"
+                elif field_type is float:
+                    param_type = "number"
+                elif field_type is bool:
+                    param_type = "boolean"
+                elif origin is list:
+                    param_type = "array"
+                elif origin is dict:
+                    param_type = "object"
+
+                # Check if required (not Optional and no default)
+                required = field_info.is_required() and field_info.default is ...
+
+                param_dict = {
+                    "name": field_name,
+                    "type": param_type,
+                    "description": description,
+                    "required": required
+                }
+
+                # Add default if present
+                if field_info.default is not ...:
+                    param_dict["default"] = field_info.default
+
+                parameters.append(param_dict)
+
+            return parameters
+        except Exception:
+            # Fallback to legacy parameters if conversion fails
+            return self.parameters
 
 
 class ToolsetConfigBuilder:
@@ -254,10 +344,11 @@ class ToolsetBuilder:
         self.app_group = ""
         self.supported_auth_types: List[str] = ["API_TOKEN"]  # Supported auth types (user selects one during creation)
         self.description = ""
-        self.category = ToolCategory.APP
+        self.category = ToolsetCategory.APP
         self.config_builder = ToolsetConfigBuilder()
         self.tools: List[ToolDefinition] = []
         self._oauth_configs: Dict[str, OAuthConfig] = {}  # Store OAuth configs for auto-registration
+        self.is_internal: bool = False  # Internal toolsets are backend-only, not sent to frontend
 
     def in_group(self, app_group: str) -> 'ToolsetBuilder':
         """Set the app group"""
@@ -337,9 +428,14 @@ class ToolsetBuilder:
         self.description = description
         return self
 
-    def with_category(self, category: ToolCategory) -> 'ToolsetBuilder':
+    def with_category(self, category: ToolsetCategory) -> 'ToolsetBuilder':
         """Set the toolset category"""
         self.category = category
+        return self
+
+    def as_internal(self) -> 'ToolsetBuilder':
+        """Mark this toolset as internal (backend-only, not sent to frontend)"""
+        self.is_internal = True
         return self
 
     def configure(
@@ -351,10 +447,17 @@ class ToolsetBuilder:
         return self
 
     def with_tools(self, tools: List[ToolDefinition]) -> 'ToolsetBuilder':
-        """Set the tools for this toolset"""
+        """
+        Set the tools for this toolset (optional).
+
+        DEPRECATED: Tools will be auto-discovered from @tool decorators if not provided.
+        This method is kept for backward compatibility during migration.
+        """
         self.tools = tools
-        for tool in tools:
-            self.config_builder.add_tool(tool)
+        # Only add to config if provided (for backward compat)
+        if tools:
+            for tool in tools:
+                self.config_builder.add_tool(tool)
         return self
 
     def with_oauth_config(
@@ -388,7 +491,7 @@ class ToolsetBuilder:
 
     def build_decorator(self) -> Callable[[Type], Type]:
         """Build the final toolset decorator"""
-        from app.connectors.core.registry.tool_registry import Toolset
+        from app.agents.registry.toolset_registry import Toolset
 
         config = self.config_builder.build()
 
@@ -452,7 +555,8 @@ class ToolsetBuilder:
             description=self.description,
             category=self.category,
             config=config,
-            tools=self.tools
+            tools=self.tools,
+            internal=self.is_internal
         )
 
     def _validate_oauth_requirements(self, config: Dict[str, Any], auth_type: str = "OAUTH") -> None:
@@ -467,17 +571,19 @@ class ToolsetBuilder:
             for url_key in required_urls:
                 if not oauth_config.get(url_key):
                     missing_items.append(f"{auth_type}.{url_key}")
+            # Scopes are optional - some OAuth providers (like Notion) don't use explicit scopes
             scopes = oauth_config.get("scopes", [])
-            if not isinstance(scopes, list) or not scopes:
-                missing_items.append(f"{auth_type}.scopes")
+            if scopes is not None and not isinstance(scopes, list):
+                missing_items.append(f"{auth_type}.scopes (must be a list)")
         else:
             required_urls = ["authorizeUrl", "tokenUrl"]
             for url_key in required_urls:
                 if not auth_config.get(url_key):
                     missing_items.append(url_key)
+            # Scopes are optional - some OAuth providers (like Notion) don't use explicit scopes
             scopes = auth_config.get("scopes")
-            if not isinstance(scopes, list) or not scopes:
-                missing_items.append("scopes")
+            if scopes is not None and not isinstance(scopes, list):
+                missing_items.append("scopes (must be a list)")
 
         redirect_uri = auth_config.get("redirectUri")
         if not redirect_uri:
@@ -496,6 +602,10 @@ class ToolsetBuilder:
         default_schema = auth_config.get("schema", {})
 
         for auth_type in self.supported_auth_types:
+            # Skip validation for "NONE" auth type (internal toolsets don't need auth fields)
+            if auth_type.upper() == "NONE":
+                continue
+
             if auth_type in schemas:
                 schema_fields = schemas[auth_type].get("fields", [])
             else:
@@ -515,9 +625,15 @@ class ToolsetCommonFields:
     """Reusable field definitions for toolsets"""
 
     @staticmethod
-    def api_token(token_name: str = "API Token", placeholder: str = "") -> AuthField:
-        """Standard API token field"""
-        return CommonFields.api_token(token_name, placeholder)
+    def api_token(token_name: str = "API Token", placeholder: str = "", field_name: Optional[str] = None) -> AuthField:
+        """Standard API token field
+
+        Args:
+            token_name: Display name for the token field
+            placeholder: Placeholder text for the input field
+            field_name: Optional custom field name (defaults to "apiToken")
+        """
+        return CommonFields.api_token(token_name, placeholder, field_name)
 
     @staticmethod
     def bearer_token(token_name: str = "Bearer Token", placeholder: str = "") -> AuthField:

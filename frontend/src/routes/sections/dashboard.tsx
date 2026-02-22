@@ -55,6 +55,10 @@ const ConnectorOAuthCallback = lazy(
   () => import('src/pages/dashboard/account/connectors/oauth-callback')
 );
 
+// Toolsets Pages
+const ToolsetsSettingsPage = lazy(() => import('src/pages/dashboard/account/toolsets'));
+const ToolsetOAuthCallback = lazy(() => import('src/pages/dashboard/account/toolsets/oauth-callback'));
+
 // Knowledge Base Pages
 const Collections = lazy(() => import('src/pages/dashboard/knowledgebase/collections'));
 const RecordDetails = lazy(() => import('src/pages/dashboard/knowledgebase/record-details'));
@@ -249,6 +253,18 @@ export const dashboardRoutes = [
     element: CONFIG.auth.skip ? <>{layoutContent}</> : <AuthGuard>{layoutContent}</AuthGuard>,
     children: [
       // ----------------------------------------------------------------------
+      // OAuth Callback Routes (must be before catch-all routes)
+      // ----------------------------------------------------------------------
+      {
+        path: 'connectors/oauth/callback/:connectorId',
+        element: <ConnectorOAuthCallback />,
+      },
+      {
+        path: 'toolsets/oauth/callback/:toolsetType',
+        element: <ToolsetOAuthCallback />,
+      },
+      
+      // ----------------------------------------------------------------------
       // QNA Routes
       // ----------------------------------------------------------------------
       { element: <ChatBotPage key="home" />, index: true },
@@ -285,10 +301,6 @@ export const dashboardRoutes = [
       {
         path: 'connectors',
         element: <Navigate to="/account/individual/settings/connector" replace />,
-      },
-      {
-        path: 'connectors/oauth/callback/:connectorId',
-        element: <ConnectorOAuthCallback />,
       },
       // ----------------------------------------------------------------------
       // Account Routes
@@ -405,6 +417,12 @@ export const dashboardRoutes = [
                     ],
                   },
 
+                  // Toolsets Settings
+                  {
+                    path: 'toolsets',
+                    element: <BusinessOnlyRoute component={ToolsetsSettingsPage} />,
+                  },
+
                   // OAuth Configuration
                   {
                     path: 'oauth-config',
@@ -496,6 +514,12 @@ export const dashboardRoutes = [
                         element: <IndividualOnlyRoute component={ConnectorManagementPage} />,
                       },
                     ],
+                  },
+
+                  // Toolsets Settings
+                  {
+                    path: 'toolsets',
+                    element: <IndividualOnlyRoute component={ToolsetsSettingsPage} />,
                   },
 
                   // OAuth Configuration

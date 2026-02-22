@@ -1,16 +1,22 @@
 """
-Response Synthesis Prompt System
-Enterprise-grade response formatting with citation support
+Response Synthesis Prompt System — OPTION B IMPLEMENTATION
 
-This module is used ONLY for synthesizing final responses from tool results.
-Planning and tool selection is handled by the planner node in nodes.py.
+Uses get_message_content() - the EXACT same function the chatbot uses - to format
+blocks with R-markers. This ensures identical formatting and block numbering between
+chatbot and agent.
 
-The prompts here are designed to match the quality of the chatbot prompts
-while also supporting tool execution results.
+Flow:
+1. Multiple parallel retrieval calls return raw results (no formatting)
+2. Results are merged and deduplicated in nodes.py (merge_and_number_retrieval_results)
+3. get_message_content() formats blocks and assigns block numbers (same as chatbot)
+4. Block numbers are synced back to results for citation processing
+5. Formatted content is included in the system prompt
+
+This approach ensures the agent sees the exact same block format as the chatbot.
 """
 
 from datetime import datetime
-from typing import Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 # Constants
 CONTENT_PREVIEW_LENGTH = 250
@@ -26,7 +32,7 @@ response_system_prompt = """You are an expert AI assistant within an enterprise 
 You are responsible for:
 - **Synthesizing** data from internal knowledge blocks and tool execution results into coherent, comprehensive answers
 - **Formatting** responses professionally with proper Markdown
-- **Citing** internal knowledge sources accurately with inline citations [R1-1][R2-3]
+- **Citing** internal knowledge sources accurately with inline citations [R1-0][R2-3]
 - **Presenting** information in a user-friendly, scannable format
 - **Answering directly** without describing your process or tools used
 </core_role>
@@ -63,7 +69,6 @@ You are responsible for:
    - Generate answers in fully valid markdown format with proper headings
    - Use tables, lists, bold, italic, sub-sections as appropriate
    - Ensure citations don't break the markdown format
-   - Generate rich markdown: headers (##, ###), bullet points, numbered lists, tables, code blocks
 
 3. **Source Integration**:
    - For user-specific queries (identity, role, workplace), use the User Information section
@@ -75,7 +80,12 @@ You are responsible for:
    - Identify and address each distinct question in the user's query
    - Ensure all questions receive equal attention with proper citations
    - For questions that cannot be answered: explain what is missing, don't skip them
-   - Structure response with clear sections for each sub-question when appropriate
+
+5. **Relevance Check (IMPORTANT)**:
+   - **ONLY reference blocks that are directly relevant to the user's query.**
+   - The retrieval system may return documents from different topics — verify each block is actually about what the user asked before citing it.
+   - If a block appears off-topic (e.g., a security policy when the user asked about product editions), skip it.
+   - Do NOT use a block simply because it was returned; use it only if its content directly supports the answer.
 </answer_guidelines>
 
 <citation_rules>
@@ -85,59 +95,31 @@ You are responsible for:
 
 ### Citation Format Rules:
 
-1. **Inline After Each Claim**: Put [R1-1] IMMEDIATELY after the specific fact it supports
-   - ✅ CORRECT: "Revenue grew 29% [R1-1]. The company has 500 employees [R2-3]."
-   - ❌ WRONG: "Revenue grew 29%. The company has 500 employees. [R1-1][R2-3]"
-   - ❌ WRONG: "Revenue grew 29% and the company has 500 employees [R1-1][R2-3]." (citations at end of sentence)
+1. **Use EXACT Block Numbers**: Each knowledge block has a label like R1-0, R1-2, R2-3.
+   Use these EXACT labels in square brackets as citations.
+   - ✅ CORRECT: [R1-0], [R2-3]
+   - ❌ WRONG: [ceb988e7-c37c-4a5a-b8ef-59f37bbde594] (never use UUIDs)
+   - ❌ WRONG: [R?-?] (never use placeholder markers)
 
-2. **One Citation Per Bracket**: Use [R1-1][R2-3] NOT [R1-1, R2-3]
-   - ✅ CORRECT: [R1-1][R2-3]
-   - ❌ WRONG: [R1-1, R2-3]
+2. **Inline After Each Claim**: Put [R1-0] IMMEDIATELY after the specific fact it supports
+   - ✅ "Revenue grew 29% [R1-0]. The company has 500 employees [R2-3]."
+   - ❌ "Revenue grew 29%. The company has 500 employees. [R1-0][R2-3]"
 
-3. **Top 4-5 Most Relevant**: Don't cite every block for the same claim - use most relevant ones
+3. **One Citation Per Bracket**: [R1-0][R2-3] NOT [R1-0, R2-3]
 
-4. **Block Numbers Must Match**: Use the EXACT block numbers from the context (R1-1, R1-2, R2-3, etc.)
-   - Look at the Block Numbers shown in the knowledge context
-   - These block numbers MUST appear in your blockNumbers array
+4. **DIFFERENT Citations for DIFFERENT Facts**: Each block covers specific content.
+   Cite the SPECIFIC block that contains each fact.
+   - ✅ "Governance primitives are needed [R1-0]. Coherence maintenance is a gap [R1-2]. Retention boundaries define storage [R1-4]."
+   - ❌ "Governance, coherence, and retention are gaps [R1-0][R1-0][R1-0]."
 
-5. **Code Block Citations**: When a code block ends, put citations on the NEXT line after ```, never on the same line
-   ```python
-   code here
-   ```
-   [R1-1]
+5. **Top 4-5 Most Relevant**: Don't cite every block — use the most relevant ones
 
-6. **Include blockNumbers Array**: List ALL cited block numbers as strings
-   - ✅ CORRECT: "blockNumbers": ["R1-1", "R1-2", "R2-3"]
-   - ❌ WRONG: Missing blockNumbers or empty array when you used citations
+6. **Code Block Citations**: Put citations on the NEXT line after ```, never on the same line
 
-7. **MANDATORY for Internal Knowledge**: If you use internal knowledge, you MUST cite sources
-   - Every fact, number, claim from retrieved blocks MUST have a citation
-   - No exceptions - this is for source traceability
+7. **Include blockNumbers Array**: List ALL cited block numbers as strings
+   - ✅ "blockNumbers": ["R1-0", "R1-2", "R2-3"]
 
-### Citation Examples:
-
-**Example 1 - Correct inline citations:**
-```markdown
-# Asana Q4 FY2024 Financial Results
-
-## Overview
-Asana announced strong fourth quarter results on March 11, 2024 [R1-1]. The company achieved a $142 million improvement in cash flows from operating activities year over year [R1-1]. Annual revenues from customers spending $100,000 or more grew 29% year over year [R1-2].
-
-## Key Metrics
-
-| Metric | Value | Source |
-|--------|-------|--------|
-| Cash Flow Improvement | $142M YoY | [R1-1] |
-| Enterprise Growth | 29% | [R1-2] |
-```
-
-**Example 2 - Code with citation:**
-```python
-def deploy():
-    # Blue-green deployment
-    switch_traffic()
-```
-[R1-3]
+8. **MANDATORY**: Every fact from internal knowledge MUST have a citation. No exceptions.
 </citation_rules>
 
 <output_format_rules>
@@ -145,358 +127,73 @@ def deploy():
 
 ### MODE 1: Structured JSON with Citations (When Internal Knowledge is Available)
 
-**When to use:**
-- **ALWAYS** when internal knowledge sources are available in the context
-- You retrieved and referenced internal company documents
-- You used information from knowledge bases
-- You need to cite sources for traceability
+**When to use:** ALWAYS when internal knowledge sources are in the context
 
-**Format:**
 ```json
 {{
-  "answer": "Your professionally formatted answer in Markdown here [R1-1][R2-3]. Use **bold**, *italic*, clear hierarchical headers, lists, and tables. Include citation markers [R1-1][R2-3] where you reference internal knowledge.",
-  "reason": "Explain how the answer was derived using blocks/user information and your reasoning process",
+  "answer": "Your answer in markdown with citations [R1-0][R2-3] after each fact.",
+  "reason": "How you derived the answer from blocks",
   "confidence": "Very High | High | Medium | Low",
   "answerMatchType": "Exact Match | Derived From Blocks | Derived From User Info | Enhanced With Full Record",
-  "blockNumbers": ["R1-1", "R1-2", "R2-3"]
-}}
-```
-
-**Example:**
-```json
-{{
-  "answer": "# Deployment Process\\n\\n## Overview\\n\\nOur deployment follows a blue-green strategy [R1-1] with automated rollback [R1-2].\\n\\n## Key Metrics\\n\\n| Metric | Value |\\n|--------|-------|\\n| Deployment Time | 12 min [R1-1] |\\n| Success Rate | 99.8% [R1-1] |",
-  "reason": "Derived from blocks R1-1 and R1-2 which describe deployment process and metrics",
-  "confidence": "Very High",
-  "answerMatchType": "Derived From Blocks",
-  "blockNumbers": ["R1-1", "R1-2"]
+  "blockNumbers": ["R1-0", "R1-2", "R2-3"]
 }}
 ```
 
 ### MODE 2: Structured JSON for Tool Results (When NO Internal Knowledge)
 
-**When to use:**
-- You only used external tools (Jira, Drive, Calendar, Slack, etc.)
-- You only used general knowledge
-- No internal document citations needed
+**When to use:** Only external tools used, no internal document citations needed
 
-**Format:**
 ```json
 {{
-  "answer": "# Title\\n\\nUser-friendly markdown content WITHOUT technical IDs.",
+  "answer": "# Title\\n\\nUser-friendly markdown content.",
   "confidence": "High",
   "answerMatchType": "Derived From Tool Execution",
   "referenceData": [
-    {{"name": "Display Name", "id": "technical_id", "key": "PROJECT_KEY", "type": "jira_project"}},
-    {{"name": "User Name", "id": "user_id", "accountId": "jira_account_id", "type": "jira_user"}}
+    {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}},
+    {{"name": "API Docs", "id": "12345", "type": "confluence_page", "url": "https://org.atlassian.net/wiki/spaces/ENG/pages/12345"}},
+    {{"name": "Design Brief.pdf", "id": "1abc", "type": "drive_file", "url": "https://drive.google.com/file/d/1abc/view"}}
   ]
 }}
 ```
 
-**IMPORTANT for Tool Results - What to Show vs Hide:**
+**Tool Results — Show vs Hide:**
+- ✅ SHOW: Jira ticket keys (PA-123), project keys, names, statuses, dates
+- ❌ HIDE: Internal numeric IDs, UUIDs, database hashes
 
-**✅ ALWAYS SHOW (User-Facing Identifiers):**
-- **Jira ticket keys** (e.g., `PA-123`, `ESP-456`) - users need these to reference tickets!
-- **Jira project keys** (e.g., `PA`, `ESP`) - short, memorable identifiers users work with
-- Names, titles, summaries, descriptions
-- Status, priority, assignee names, dates
-- Any identifier the user would naturally use to reference an item
-
-**❌ NEVER SHOW (Internal Technical IDs):**
-- Internal numeric IDs (e.g., `10039`, `16446`) - meaningless to users
-- UUIDs/GUIDs (e.g., `712020:2c136d9b-19dd-472b-ba99-091bec4a987b`)
-- Database hashes or internal identifiers
-- File IDs from Drive/storage systems
-
-**For Jira Issues (CRITICAL):**
-- ✅ ALWAYS show the ticket key: `PA-123` - this is how users identify tickets!
-- ✅ Show: Summary, Status, Assignee, Priority, Created/Updated dates
-- ❌ Hide: Internal issue ID (numeric), accountIds, internal field IDs
-
-**For Jira Projects:**
-- ✅ Show: Project Name AND Key (e.g., "PipesHub AI (PA)")
-- ❌ Hide: Internal project ID (numeric)
-
-**Store in referenceData for follow-ups:**
-- **For Jira projects**: Include `id`, `key` (e.g., "PA"), and `name`
-- **For Jira issues**: Include `id`, `key` (e.g., "PA-123"), `summary`
-- **For Jira users**: Include `accountId`, `displayName`
+**🔗 Links — MANDATORY for External Service Items:**
+- **Jira issue**: Always format as a clickable link `[KEY-123](url)` using the `url` field.
+  If no URL is present, write `KEY-123` so the user can search for it.
+- **Confluence page/space**: Format as `[Page Title](url)` using the `url` field.
+- **Google Drive file**: Format as `[filename](url)` using the `webViewLink` / `url` field.
+- **Gmail message**: Format as `[subject](url)` using the Gmail URL.
+- **Slack channel/message**: Include `#channel-name` and link if a URL is available.
+- Include every item's `url` in the `referenceData` array so the frontend can render it.
 </output_format_rules>
 
-<professional_markdown_guidelines>
-## Creating Professional, Enterprise-Grade Markdown
-
-### Core Formatting Principles:
-
-1. **Clear Visual Hierarchy**
-   - Use headers (H1-H4) to create clear sections
-   - Don't skip header levels (H1 → H2 → H3, not H1 → H3)
-   - Use # for main title, ## for sections, ### for subsections
-
-2. **Scannable Content**
-   - Use lists for multiple items (bullet points or numbered)
-   - Use tables for structured/tabular data
-   - Keep paragraphs concise (3-5 sentences max)
-
-3. **Professional Emphasis**
-   - **Bold** for key terms, metrics, and important points
-   - *Italic* sparingly for subtle emphasis
-   - `Code formatting` for technical terms, IDs, commands
-
-4. **Minimal Decoration**
-   - Use emojis/icons VERY sparingly (only status indicators if needed)
-   - Let content hierarchy speak for itself
-   - Focus on clarity over visual flair
-
-### Table Formatting (CRITICAL):
-```markdown
-| Header 1 | Header 2 | Header 3 |
-|----------|----------|----------|
-| Data 1   | Data 2   | Data 3   |
-| Data 4   | Data 5   | Data 6   |
-```
-**IMPORTANT**: Each row must have the SAME number of | separators. No extra | at the end.
-
-### Professional Response Template:
-
-```markdown
-# [Clear Title]
-
-## Summary
-[2-3 sentences summarizing key points]
-
-## [Main Section]
-[Content with clear paragraphs and proper structure]
-
-### Key Points
-- **Point 1**: Detailed explanation [R1-1]
-- **Point 2**: Detailed explanation [R1-2]
-
-## Data Overview
-| Metric | Value | Notes |
-|--------|-------|-------|
-| Item 1 | 100   | Description [R1-1] |
-
----
-*[Optional footer with date or reference]*
-```
-
-### Transform Raw Data - Professional Examples:
-
-**Tool Output:**
-```json
-{{"channels": [{{"id": "C123", "name": "general", "members": 10}}]}}
-```
-
-**Your Professional Output:**
-```markdown
-# Slack Channels Overview
-
-## Communication Channels
-
-### Primary Channels
-- **#general** (10 members) - Team-wide announcements and discussions
-- **#random** (8 members) - Casual conversations and team building
-
-## Channel Statistics
-| Metric | Value |
-|--------|-------|
-| Total Channels | 15 |
-| Average Members | 6.7 |
-| Most Active | #general |
-
----
-*Retrieved: {{date}}*
-```
-</professional_markdown_guidelines>
-
 <tool_output_transformation>
-## Tool Output Transformation Philosophy
-
-**Tools are means to an end, not the end itself.**
-
-### After Using Tools - **CRITICAL**:
-
-1. **NEVER return raw tool output**
-   - Tool responses are data FOR YOU to process
-   - Users should NEVER see raw JSON or API responses
-
-2. **Parse and Extract**
-   - Extract meaningful information
-   - Identify key data points
-   - Understand relationships between items
-
-3. **Transform Professionally**
-   - Create clean, hierarchical structure
-   - Use appropriate formatting (tables, lists, headers)
-   - Make it scannable and readable
-
-4. **Hide Technical Details**
-   - Don't show internal IDs, keys, or hashes
-   - Focus on human-readable names and descriptions
-   - Store technical data in referenceData for follow-ups
-
-### Transformation Examples:
-
-**Raw JIRA Response:**
-```json
-{{"issues": [{{"id": "16446", "key": "PA-123", "fields": {{"summary": "Fix login bug on mobile", "status": {{"name": "In Progress"}}, "priority": {{"name": "High"}}, "assignee": {{"displayName": "John Smith"}}, "created": "2024-01-15T10:30:00"}}}}]}}
-```
-
-**Your Professional Output:**
-```markdown
-# Jira Tickets
-
-## Overview
-- **Total tickets found:** 3
-- **Project:** PipesHub AI (PA)
-
-## Open Tickets
-
-| Ticket | Summary | Status | Priority | Assignee |
-|--------|---------|--------|----------|----------|
-| PA-123 | Fix login bug on mobile | In Progress | High | John Smith |
-| PA-124 | Add dark mode support | Open | Medium | Jane Doe |
-| PA-125 | Performance optimization | To Do | Low | Unassigned |
-
----
-*3 tickets retrieved • Last updated: Jan 15, 2024*
-```
-
-**CRITICAL for Jira Tickets:**
-- ✅ ALWAYS show the ticket key (PA-123) - users click/reference these!
-- ✅ Show status, priority, assignee, summary
-- ❌ NEVER show internal numeric IDs (16446)
-- ❌ NEVER show accountIds in the answer text
-
-**Raw Calendar Response:**
-```json
-{{"items": [{{"summary": "Team Standup", "start": {{"dateTime": "2024-01-15T09:00:00"}}, "attendees": [...]}}]}}
-```
-
-**Your Professional Output:**
-```markdown
-# Upcoming Meetings
-
-## Today
-- **09:00 AM** - Team Standup (30 min)
-
----
-*Next meeting in 2 hours*
-```
+## Tool Output Transformation
+1. **NEVER return raw tool output** — parse and extract meaningful info
+2. **Transform Professionally** — clean hierarchy, scannable structure
+3. **Hide Technical Details** — show meaningful names, not internal IDs
 </tool_output_transformation>
 
 <source_prioritization>
 ## Source Priority Rules
-
-1. **User-Specific Questions** (identity, role, workplace):
-   - Use User Information section when relevant
-   - No block citations needed for pure user info
-   - Mark as "Derived From User Info"
-
-2. **Company Knowledge Questions**:
-   - Use internal knowledge blocks
-   - Cite all relevant blocks [R1-1][R2-3]
-   - Mark as "Derived From Blocks"
-
-3. **Tool/API Data Questions**:
-   - Use tool results
-   - Format professionally (no raw data)
-   - No citations needed
-   - Mark as "Derived From Tool Execution"
-
-4. **Combined Sources**:
-   - Can combine user info + blocks + tools
-   - Cite only internal knowledge portions
-   - Integrate information coherently
+1. **User-Specific Questions**: Use User Information, no citations needed
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks
+3. **Tool/API Data Questions**: Use tool results, format professionally, no citations needed
+4. **Combined Sources**: Cite only internal knowledge portions
 </source_prioritization>
-
-<quality_checklist>
-## Quality Control Checklist
-
-Before finalizing your response:
-
-1. ✓ **Citation Check**: Every fact from internal knowledge cited inline? Block numbers in array?
-2. ✓ **Format Check**: Professional, clean markdown with proper hierarchy?
-3. ✓ **Completeness Check**: All questions answered? All relevant info included?
-4. ✓ **Mode Check**: Correct output format (JSON with citations vs tool results)?
-5. ✓ **Table Check**: All tables have consistent | separators?
-6. ✓ **No Raw Data**: Technical IDs hidden, user-friendly content shown?
-7. ✓ **No Process Description**: Answer directly without saying "I searched" or "I found"?
-8. ✓ **Code Block Citations**: Citations after closing ``` on new line?
-</quality_checklist>
-
-<error_handling>
-## Error Handling
-
-Handle errors professionally without exposing technical details:
-
-**For Partial Information:**
-```json
-{{
-  "answer": "# [Topic]\\n\\n## Available Information\\n[What you found]\\n\\n## Note\\nSome information could not be retrieved. Please specify [what's needed] for a more complete answer.",
-  "confidence": "Medium",
-  "answerMatchType": "Derived From Blocks",
-  "blockNumbers": [...]
-}}
-```
-
-**For No Results:**
-```json
-{{
-  "answer": "I couldn't find specific information about [topic] in the available knowledge sources.\\n\\n## Suggestions\\n- Try rephrasing your question\\n- Specify a different time period\\n- Check if the document exists in your connected apps",
-  "confidence": "Low",
-  "answerMatchType": "Derived From Blocks",
-  "blockNumbers": []
-}}
-```
-
-**For Tool Failures (handled by system, but for context):**
-- The system handles tool failures gracefully
-- You'll receive error information in the context
-- Provide helpful next steps to the user
-</error_handling>
-
-Current date and time (UTC): {current_datetime}
 
 <critical_reminders>
 **MOST CRITICAL RULES:**
 
-1. **ANSWER DIRECTLY - NO PROCESS DESCRIPTIONS**
-   - ❌ DON'T say: "I searched for X and found Y"
-   - ❌ DON'T say: "The tool returned these results"
-   - ❌ DON'T say: "Based on the retrieval results..."
-   - ❌ DON'T say: "Let me analyze the documents"
-   - ✅ DO say: Direct answer with inline citations [R1-1]
-   - Users care about ANSWERS, not your process
-
-2. **CITE IMMEDIATELY AFTER EACH CLAIM** (when using internal knowledge)
-   - ✅ "Revenue grew 29% [R1-1]. Cash improved $142M [R1-2]."
-   - ❌ "Revenue grew 29%. Cash improved $142M. [R1-1][R1-2]"
-   - Put [R1-1] right after the specific fact it supports
-   - Include ALL cited blocks in blockNumbers array
-
-3. **BE COMPREHENSIVE AND DETAILED**
-   - Provide thorough, complete answers (not brief summaries)
-   - Include all relevant information from retrieved knowledge
-   - Use rich markdown formatting (headers, lists, tables, bold)
-   - Make answers self-contained and complete
-
-4. **Choose Right Output Format**:
-   - **Internal knowledge available? → MANDATORY: Structured JSON with citations**
-   - Only tool results (API data)? → JSON with referenceData
-   - Both? → Structured JSON with citations + referenceData
-
-5. **Format Professionally**
-   - Clean hierarchy with headers
-   - Minimal decoration
-   - Scannable structure
-   - No mention of internal tools or processes
-
-6. **Transform All Data**
-   - Never show raw API responses to users
-   - Always create professional, user-friendly formatting
-   - Hide technical IDs, show meaningful names
+1. **ANSWER DIRECTLY** — No "I searched for X" or "The tool returned Y"
+2. **CITE AFTER EACH CLAIM** — [R1-0] right after the fact it supports
+3. **DIFFERENT CITATIONS FOR DIFFERENT FACTS** — don't repeat same citation
+4. **BE COMPREHENSIVE** — thorough, complete answers
+5. **Format Professionally** — clean markdown hierarchy
+6. **INCLUDE LINKS**
 </critical_reminders>
 
 ***Your entire response/output is going to consist of a single JSON, and you will NOT wrap it within JSON md markers***
@@ -507,49 +204,87 @@ Current date and time (UTC): {current_datetime}
 # CONTEXT BUILDERS
 # ============================================================================
 
-def build_internal_context_for_response(final_results, virtual_record_id_to_result=None, include_full_content=True) -> str:
+def build_internal_context_for_response(
+    final_results,
+    virtual_record_id_to_result=None,
+    include_full_content=True,
+) -> str:
     """
     Build internal knowledge context formatted for response synthesis.
-    Ensures proper citation format with block numbers (R1-1, R1-2, etc.)
 
-    This matches the format used by chatbot's get_message_content including
-    semantic metadata for each record.
+    This is the agent's clean context format — it does NOT embed the chatbot's
+    qna_prompt_instructions_1 / qna_prompt_instructions_2 instruction wrappers.
+    Those wrappers create duplicate / conflicting instructions when embedded
+    inside the agent's system prompt (which already has its own tool usage and
+    citation rules in response_system_prompt).
+
+    What this function provides:
+    - context_metadata per record (same rich format as get_message_content):
+        File: X | Type: Y | URL: Z  — lets the LLM distinguish documents
+    - Block numbers (R1-0, R2-3 …) consistent with build_record_label_mapping
+      and _sync_block_numbers_from_get_message_content
+    - Block content
+
+    Block numbers must be pre-assigned on each result dict via
+    _sync_block_numbers_from_get_message_content() before this function is
+    called.  That is done by build_response_prompt() below.
     """
     if not final_results:
         return "No internal knowledge sources available.\n\nOutput Format: Use Clean Professional Markdown"
 
     from app.models.blocks import BlockType, GroupType
 
+    # ── Pre-scan: identify records that have ONLY image blocks ──────────────────
+    # For such records (e.g. JPEG files) we will emit a synthetic summary block so
+    # the LLM has a citable block number instead of seeing an empty block section.
+    _vid_non_image_count: dict = {}  # virtual_record_id -> count of non-image blocks
+    _vid_first_block: dict = {}       # virtual_record_id -> first result dict (for block_number)
+    _vid_summary: dict = {}           # virtual_record_id -> summary text to use as fallback
+
+    for _r in final_results:
+        _vid = _r.get("virtual_record_id") or _r.get("metadata", {}).get("virtualRecordId")
+        if not _vid:
+            continue
+        if _vid not in _vid_non_image_count:
+            _vid_non_image_count[_vid] = 0
+            _vid_first_block[_vid] = _r
+        if _r.get("block_type") != BlockType.IMAGE.value:
+            _vid_non_image_count[_vid] += 1
+
+    # For image-only records, extract summary text from semantic_metadata
+    if virtual_record_id_to_result:
+        for _vid, _count in _vid_non_image_count.items():
+            if _count == 0:
+                _rec = virtual_record_id_to_result.get(_vid)
+                if _rec:
+                    _sm = _rec.get("semantic_metadata")
+                    # semantic_metadata can be a dict OR a SemanticMetadata dataclass object
+                    if hasattr(_sm, "summary"):
+                        _summary = getattr(_sm, "summary", "") or ""
+                    elif isinstance(_sm, dict):
+                        _summary = _sm.get("summary", "") or ""
+                    else:
+                        _summary = ""
+                    _vid_summary[_vid] = _summary or _rec.get("record_name", "")
+
+    # ────────────────────────────────────────────────────────────────────────────
+
     context_parts = [
         "<context>",
         "## Internal Knowledge Sources Available",
         "",
-        "⚠️ **CRITICAL OUTPUT REQUIREMENT**:",
-        "Internal knowledge sources are provided below. You MUST respond in Structured JSON with citations.",
+        "⚠️ **CRITICAL**: You MUST respond in Structured JSON with citations.",
+        "Use the EXACT Block Numbers shown below (e.g., [R1-0], [R2-3]) as citations.",
         "",
-        "**Required Format:**",
-        "```json",
-        "{",
-        '  "answer": "Your answer in markdown with citations like [R1-1][R2-3]",',
-        '  "reason": "How you derived the answer from the blocks",',
-        '  "confidence": "Very High | High | Medium | Low",',
-        '  "answerMatchType": "Derived From Blocks",',
-        '  "blockNumbers": ["R1-1", "R1-2", "R2-3"]',
-        "}",
-        "```",
-        "",
-        "**Citation Rules:**",
-        "- Use EXACT block numbers shown below: [R1-1][R2-3]",
-        "- Include citations IMMEDIATELY after each claim (not at end of paragraph)",
-        "- One citation per bracket: [R1-1][R2-3] NOT [R1-1, R2-3]",
-        "- Include ALL cited block numbers in the blockNumbers array",
-        ""
     ]
 
-    # Group results by virtual_record_id (like chatbot does)
-    seen_virtual_record_ids = set()
-    seen_blocks = set()
-    record_number = 1
+    seen_virtual_record_ids: set = set()
+    seen_blocks: set = set()
+    # fallback_record_number is ONLY used when block_number is NOT pre-assigned
+    fallback_record_number = 0
+    # Track whether we have emitted at least one visible block for the current record
+    current_record_had_visible_block = False
+    current_record_virtual_id = None
 
     for result in final_results:
         virtual_record_id = result.get("virtual_record_id")
@@ -561,42 +296,55 @@ def build_internal_context_for_response(final_results, virtual_record_id_to_resu
             continue
 
         if virtual_record_id not in seen_virtual_record_ids:
-            if record_number > 1:
+            # ── Close previous record ────────────────────────────────────────
+            if seen_virtual_record_ids:
+                # If the previous record had no visible blocks (image-only),
+                # emit a synthetic summary block so the LLM has something to cite.
+                if not current_record_had_visible_block and current_record_virtual_id:
+                    _syn_num = _vid_first_block.get(current_record_virtual_id, {}).get("block_number")
+                    if not _syn_num:
+                        _syn_num = f"R{fallback_record_number}-0"
+                    _syn_summary = _vid_summary.get(current_record_virtual_id, "")
+                    if _syn_summary:
+                        context_parts.append(f"* Block Number: {_syn_num}")
+                        context_parts.append("* Block Type: summary")
+                        context_parts.append(f"* Block Content: {_syn_summary}")
+                        context_parts.append("")
                 context_parts.append("</record>")
 
             seen_virtual_record_ids.add(virtual_record_id)
+            fallback_record_number += 1
+            current_record_virtual_id = virtual_record_id
+            current_record_had_visible_block = False
+
             record = None
             if virtual_record_id_to_result and virtual_record_id in virtual_record_id_to_result:
                 record = virtual_record_id_to_result[virtual_record_id]
 
-            # Get record metadata
             metadata = result.get("metadata", {})
-            record_id = record.get("id", "N/A") if record else metadata.get("recordId", "N/A")
-            record_name = record.get("record_name", "N/A") if record else metadata.get("recordName", metadata.get("origin", "Unknown"))
 
             context_parts.append("<record>")
-            context_parts.append(f"      - Record Id: {record_id}")
-            context_parts.append(f"      - Record Name: {record_name}")
 
-            # Add semantic metadata if available (exactly like chatbot's qna_prompt_context)
-            semantic_metadata = None
-            if record and record.get("semantic_metadata"):
-                semantic_metadata = record.get("semantic_metadata")
-            elif metadata.get("semantic_metadata"):
-                semantic_metadata = metadata.get("semantic_metadata")
+            # ── context_metadata (rich format: "File: X | Type: Y | URL: Z") ──
+            # This is the SAME metadata the chatbot shows via qna_prompt_context.
+            # It tells the LLM exactly what document the blocks come from so it
+            # can correctly decide which record to cite or fetch_full_record.
+            context_metadata = ""
+            if record:
+                context_metadata = record.get("context_metadata", "")
+            if context_metadata:
+                context_parts.append(context_metadata)
+            else:
+                # Fallback: at least show record name so the LLM isn't blind
+                record_name = (
+                    (record.get("record_name") if record else None)
+                    or metadata.get("recordName")
+                    or metadata.get("origin")
+                    or "Unknown"
+                )
+                context_parts.append(f"File: {record_name}")
 
-            if semantic_metadata:
-                context_parts.append("      - Record Summary with metadata:")
-                context_parts.append(f"        * Summary: {semantic_metadata.get('summary', 'N/A')}")
-                context_parts.append(f"        * Category: {semantic_metadata.get('categories', 'N/A')}")
-                context_parts.append("        * Sub-categories:")
-                context_parts.append(f"          - Level 1: {semantic_metadata.get('sub_category_level_1', 'N/A')}")
-                context_parts.append(f"          - Level 2: {semantic_metadata.get('sub_category_level_2', 'N/A')}")
-                context_parts.append(f"          - Level 3: {semantic_metadata.get('sub_category_level_3', 'N/A')}")
-                context_parts.append(f"        * Topics: {semantic_metadata.get('topics', 'N/A')}")
-
-            context_parts.append("      - Record blocks (sorted):")
-            record_number += 1
+            context_parts.append("Record blocks (sorted):")
 
         result_id = f"{virtual_record_id}_{result.get('block_index', 0)}"
         if result_id in seen_blocks:
@@ -605,48 +353,57 @@ def build_internal_context_for_response(final_results, virtual_record_id_to_resu
 
         block_type = result.get("block_type")
         block_index = result.get("block_index", 0)
-        block_number = f"R{record_number - 1}-{block_index}"
-        result["block_number"] = block_number
+
+        # Use pre-assigned block_number (set by _sync_block_numbers_from_get_message_content).
+        # Fall back to a computed value only when not present.
+        block_number = result.get("block_number")
+        if not block_number:
+            block_number = f"R{fallback_record_number}-{block_index}"
+            result["block_number"] = block_number
+
         content = result.get("content", "")
 
-        # Skip images unless multimodal
         if block_type == BlockType.IMAGE.value:
             continue
 
-        # Format block with proper structure (like chatbot)
+        current_record_had_visible_block = True
+
         if block_type == GroupType.TABLE.value:
             table_summary, child_results = result.get("content", ("", []))
-            context_parts.append(f"        * Block Group Number: {block_number}")
-            context_parts.append("        * Block Group Type: table")
-            context_parts.append(f"        * Table Summary: {table_summary}")
-            context_parts.append("        * Table Rows/Blocks:")
-            for child in child_results[:5]:
-                child_block_number = f"R{record_number - 1}-{child.get('block_index', 0)}"
-                context_parts.append(f"          - Block Number: {child_block_number}")
-                context_parts.append(f"          - Block Content: {child.get('content', '')}")
+            context_parts.append(f"* Block Group Number: {block_number}")
+            context_parts.append("* Block Group Type: table")
+            context_parts.append(f"* Table Summary: {table_summary}")
+            context_parts.append("* Table Rows/Blocks:")
+            if isinstance(child_results, list):
+                for child in child_results[:5]:
+                    child_block_number = child.get("block_number")
+                    if not child_block_number:
+                        child_block_number = f"R{fallback_record_number}-{child.get('block_index', 0)}"
+                        child["block_number"] = child_block_number
+                    context_parts.append(f"  - Block Number: {child_block_number}")
+                    context_parts.append(f"  - Block Content: {child.get('content', '')}")
         else:
-            context_parts.append(f"        * Block Number: {block_number}")
-            context_parts.append(f"        * Block Type: {block_type}")
-            context_parts.append(f"        * Block Content: {content}")
+            context_parts.append(f"* Block Number: {block_number}")
+            context_parts.append(f"* Block Type: {block_type}")
+            context_parts.append(f"* Block Content: {content}")
 
         context_parts.append("")
 
+    # ── Close the last record ────────────────────────────────────────────────
     if seen_virtual_record_ids:
+        if not current_record_had_visible_block and current_record_virtual_id:
+            _syn_num = _vid_first_block.get(current_record_virtual_id, {}).get("block_number")
+            if not _syn_num:
+                _syn_num = f"R{fallback_record_number}-0"
+            _syn_summary = _vid_summary.get(current_record_virtual_id, "")
+            if _syn_summary:
+                context_parts.append(f"* Block Number: {_syn_num}")
+                context_parts.append("* Block Type: summary")
+                context_parts.append(f"* Block Content: {_syn_summary}")
+                context_parts.append("")
         context_parts.append("</record>")
 
     context_parts.append("</context>")
-    context_parts.append("")
-    context_parts.append("## Instructions for Using Knowledge Sources")
-    context_parts.append("")
-    context_parts.append("**CRITICAL - READ CAREFULLY:**")
-    context_parts.append("1. Each block above has a Block Number (e.g., R1-1, R1-2, R2-3)")
-    context_parts.append("2. When you use information from a block, cite it using its Block Number: [R1-1]")
-    context_parts.append("3. Put the citation IMMEDIATELY after the fact it supports, not at the end of the paragraph")
-    context_parts.append("4. You MUST respond in Structured JSON format with citations")
-    context_parts.append("5. Include a blockNumbers array with ALL block numbers you cited")
-    context_parts.append("")
-    context_parts.append("**Example Response:**")
-    context_parts.append('{"answer": "The company achieved 99.8% uptime [R1-1] with 12 min deployments [R1-2].", "reason": "Derived from blocks R1-1 and R1-2", "confidence": "High", "answerMatchType": "Derived From Blocks", "blockNumbers": ["R1-1", "R1-2"]}')
 
     return "\n".join(context_parts)
 
@@ -657,21 +414,93 @@ def build_conversation_history_context(previous_conversations, max_history=5) ->
         return "This is the start of our conversation."
 
     recent = previous_conversations[-max_history:]
-
     history_parts = ["## Recent Conversation History\n"]
     for idx, conv in enumerate(recent, 1):
         role = conv.get("role")
         content = conv.get("content", "")
-
         if role == "user_query":
             history_parts.append(f"\nUser (Turn {idx}): {content}")
         elif role == "bot_response":
             abbreviated = content[:CONVERSATION_PREVIEW_LENGTH] + "..." if len(content) > CONVERSATION_PREVIEW_LENGTH else content
             history_parts.append(f"Assistant (Turn {idx}): {abbreviated}")
-
     history_parts.append("\nUse this history to understand context and handle follow-up questions naturally.")
-
     return "\n".join(history_parts)
+
+
+def _sync_block_numbers_from_get_message_content(final_results: List[Dict[str, Any]]) -> None:
+    """
+    Sync block_number on each result to match what get_message_content() assigned.
+
+    get_message_content() assigns block numbers internally as it formats blocks.
+    This function replicates that numbering logic to ensure result["block_number"]
+    matches the R-markers in the formatted text.
+
+    Logic (from chat_helpers.py get_message_content()):
+        seen_virtual_record_ids = set()
+        record_number = 1
+        for i, result in enumerate(flattened_results):
+            virtual_record_id = result.get("virtual_record_id")
+            if virtual_record_id not in seen_virtual_record_ids:
+                if i > 0:
+                    record_number += 1
+                seen_virtual_record_ids.add(virtual_record_id)
+            block_number = f"R{record_number}-{block_index}"
+    """
+    seen_virtual_record_ids = set()
+    record_number = 1
+
+    for i, result in enumerate(final_results):
+        virtual_record_id = result.get("virtual_record_id")
+        if not virtual_record_id:
+            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
+
+        if virtual_record_id and virtual_record_id not in seen_virtual_record_ids:
+            if i > 0:
+                record_number += 1
+            seen_virtual_record_ids.add(virtual_record_id)
+
+        block_index = result.get("block_index", 0)
+        result["block_number"] = f"R{record_number}-{block_index}"
+        BLOCK_GROUP_CONTENT_LENGTH = 2
+        # Also sync child results in table blocks
+        from app.models.blocks import GroupType
+        block_type = result.get("block_type", "")
+        if block_type == GroupType.TABLE.value:
+            content = result.get("content", ("", []))
+            if isinstance(content, tuple) and len(content) == BLOCK_GROUP_CONTENT_LENGTH:
+                table_summary, child_results = content
+                if isinstance(child_results, list):
+                    for child in child_results:
+                        child_block_index = child.get("block_index", 0)
+                        child["block_number"] = f"R{record_number}-{child_block_index}"
+
+
+def build_record_label_mapping(final_results: List[Dict[str, Any]]) -> Dict[str, str]:
+    """
+    Build a mapping from R-labels (e.g. "R1", "R2") to actual virtual_record_ids.
+
+    The numbering mirrors the logic in get_message_content() so labels are consistent
+    with what the LLM sees in the context blocks.
+
+    Returns:
+        {"R1": "uuid-for-first-record", "R2": "uuid-for-second-record", ...}
+    """
+    label_to_vid: Dict[str, str] = {}
+    seen: set = set()
+    record_number = 1
+
+    for i, result in enumerate(final_results):
+        virtual_record_id = result.get("virtual_record_id")
+        if not virtual_record_id:
+            virtual_record_id = result.get("metadata", {}).get("virtualRecordId")
+
+        if virtual_record_id and virtual_record_id not in seen:
+            if i > 0:
+                record_number += 1
+            seen.add(virtual_record_id)
+            label_to_vid[f"R{record_number}"] = virtual_record_id
+
+    return label_to_vid
 
 
 def build_user_context(user_info, org_info) -> str:
@@ -680,26 +509,17 @@ def build_user_context(user_info, org_info) -> str:
         return "No user context available."
 
     parts = ["## User Information\n"]
-    parts.append("**IMPORTANT**: You have access to the following user information. Use your judgment to determine when this information is relevant for personalization, user-specific queries, and context-aware responses.\n")
-
+    parts.append("**IMPORTANT**: Use your judgment to determine when this information is relevant.\n")
     if user_info.get("userEmail"):
         parts.append(f"- **User Email**: {user_info['userEmail']}")
     if user_info.get("fullName"):
         parts.append(f"- **Name**: {user_info['fullName']}")
     if user_info.get("designation"):
         parts.append(f"- **Role**: {user_info['designation']}")
-
     if org_info.get("name"):
         parts.append(f"- **Organization**: {org_info['name']}")
     if org_info.get("accountType"):
         parts.append(f"- **Account Type**: {org_info['accountType']}")
-
-    parts.append("\n**Usage Guidelines**:")
-    parts.append("- For user-specific queries (identity, role, workplace), use this information")
-    parts.append("- Personalize responses when appropriate (e.g., 'Based on your role as...')")
-    parts.append("- User info answers don't require block citations")
-    parts.append("- Integrate user context with knowledge blocks when it adds value")
-
     return "\n".join(parts)
 
 
@@ -708,52 +528,37 @@ def build_user_context(user_info, org_info) -> str:
 # ============================================================================
 
 def build_response_prompt(state, max_iterations=30) -> str:
-    """Build the response synthesis prompt"""
+    """Build the response synthesis system prompt.
+
+    Internal knowledge context is NO LONGER embedded here.  It is placed in the
+    user message by respond_node via get_message_content() — the exact same
+    function the chatbot uses.  This eliminates the duplicate / conflicting
+    instructions that the old approach (build_internal_context_for_response in
+    the system prompt) caused and aligns agent behaviour with the chatbot.
+    """
     current_datetime = datetime.utcnow().isoformat() + "Z"
 
-    # Check for internal knowledge
-    has_knowledge_tool_result = False
-    if state.get("all_tool_results"):
-        for tool_result in state["all_tool_results"]:
-            if tool_result.get("tool_name") == "internal_knowledge_retrieval":
-                has_knowledge_tool_result = True
-                break
-
-    # Build internal context based on what's available
     final_results = state.get("final_results", [])
-    virtual_record_map = state.get("virtual_record_id_to_result", {})
 
-    if final_results:
-        # Use the comprehensive context builder that includes semantic metadata
-        internal_context = build_internal_context_for_response(
-            final_results,
-            virtual_record_map,
-            include_full_content=True
-        )
-    elif has_knowledge_tool_result:
-        # Knowledge was retrieved but no final_results yet
+    # Brief status line for the system prompt so the LLM knows whether knowledge
+    # is available without duplicating the full context.
+    if state.get("qna_message_content"):
         internal_context = (
-            "## ⚠️ Internal Knowledge Available - MANDATORY CITATION RULES\n\n"
-            "Internal knowledge blocks have been retrieved. You MUST:\n\n"
-            "1. **Answer directly** - No process descriptions ('I searched', 'I found', etc.)\n"
-            "2. **Cite sources inline** - Use [R1-1][R2-3] format IMMEDIATELY after each claim\n"
-            "3. **Be comprehensive** - Provide detailed, thorough answers with all relevant info\n"
-            "4. **Format properly** - Use markdown headers, lists, tables, bold as needed\n"
-            "5. **Include blockNumbers** - List ALL cited block numbers in the blockNumbers array\n\n"
-            "**Required JSON Format:**\n"
-            "```json\n"
-            "{\n"
-            "  \"answer\": \"Direct answer with inline citations [R1-1] after each fact.\",\n"
-            "  \"reason\": \"Brief reasoning\",\n"
-            "  \"confidence\": \"High\",\n"
-            "  \"answerMatchType\": \"Derived From Blocks\",\n"
-            "  \"blockNumbers\": [\"R1-1\", \"R1-2\"]\n"
-            "}\n"
-            "```\n\n"
-            "⚠️ CRITICAL: Every factual claim from internal knowledge MUST have a citation [R1-1] immediately after it."
+            "Internal knowledge (records, block numbers, and content) has been "
+            "retrieved and is provided in the user message using the standard "
+            "R-label format (e.g. R1-0, R2-3). "
+            "Cite facts using these EXACT block numbers immediately after each claim."
+        )
+    elif final_results:
+        internal_context = (
+            f"{len(final_results)} knowledge blocks are available. "
+            "Cite each fact with its EXACT block number [R1-0][R2-3] immediately after the claim."
         )
     else:
-        internal_context = "No internal knowledge sources loaded.\n\nOutput Format: Use Structured JSON with referenceData for tool results"
+        internal_context = (
+            "No internal knowledge sources available for this query. "
+            "Use tool results or user context to answer, or explain that information is unavailable."
+        )
 
     user_context = ""
     if state.get("user_info") and state.get("org_info"):
@@ -766,16 +571,30 @@ def build_response_prompt(state, max_iterations=30) -> str:
     )
 
     base_prompt = state.get("system_prompt", "")
+    instructions = state.get("instructions", "")
 
-    # Build complete prompt
+    # Use provided current_time/timezone if available, else fall back to server UTC
+    provided_current_time = state.get("current_time")
+    provided_timezone = state.get("timezone")
+    if provided_current_time:
+        current_datetime = provided_current_time
+    # current_datetime already set above as fallback
+
     complete_prompt = response_system_prompt
     complete_prompt = complete_prompt.replace("{internal_context}", internal_context)
     complete_prompt = complete_prompt.replace("{user_context}", user_context)
     complete_prompt = complete_prompt.replace("{conversation_history}", conversation_history)
     complete_prompt = complete_prompt.replace("{current_datetime}", current_datetime)
 
+    # Add timezone context if provided
+    if provided_timezone:
+        complete_prompt += f"\n\n**User Timezone**: {provided_timezone}"
+
     if base_prompt and base_prompt not in ["You are an enterprise questions answering expert", ""]:
         complete_prompt = f"{base_prompt}\n\n{complete_prompt}"
+
+    if instructions and instructions.strip():
+        complete_prompt = f"## Agent Instructions\n{instructions.strip()}\n\n{complete_prompt}"
 
     return complete_prompt
 
@@ -784,8 +603,8 @@ def create_response_messages(state) -> List[Any]:
     """
     Create messages for response synthesis.
 
-    This is called by respond_node to build the messages for the LLM
-    that will synthesize the final response from tool results.
+    FIX: Reduced citation instruction duplication in the user query suffix.
+    The system prompt already has complete rules — no need for 20 more lines here.
     """
     from langchain_core.messages import (
         AIMessage,
@@ -796,11 +615,11 @@ def create_response_messages(state) -> List[Any]:
 
     messages = []
 
-    # 1. System prompt for response synthesis
+    # 1. System prompt
     system_prompt = build_response_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
 
-    # 2. Add knowledge retrieval tool call and result if it exists
+    # 2. Knowledge retrieval tool messages (if present)
     existing_messages = state.get("messages", [])
     knowledge_ai_msg = None
     knowledge_tool_msg = None
@@ -823,24 +642,39 @@ def create_response_messages(state) -> List[Any]:
 
     # 3. Conversation history
     previous_conversations = state.get("previous_conversations", [])
-    max_history = 5
-    recent_convs = previous_conversations[-max_history:] if len(previous_conversations) > max_history else previous_conversations
 
-    # Extract conversation memory for context enrichment
     from app.modules.agents.qna.conversation_memory import ConversationMemory
     memory = ConversationMemory.extract_tool_context_from_history(previous_conversations)
     state["conversation_memory"] = memory
 
-    for conv in recent_convs:
+    all_reference_data = []
+    for conv in previous_conversations:
         role = conv.get("role")
         content = conv.get("content", "")
-
         if role == "user_query":
             messages.append(HumanMessage(content=content))
         elif role == "bot_response":
             messages.append(AIMessage(content=content))
+            ref_data = conv.get("referenceData", [])
+            if ref_data:
+                all_reference_data.extend(ref_data)
 
-    # 4. Current query with context enrichment
+    if all_reference_data:
+        ref_data_text = _format_reference_data_for_response(all_reference_data)
+        if messages and isinstance(messages[-1], AIMessage):
+            messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
+
+    # 4. Current user message
+    #
+    # PREFERRED PATH: respond_node pre-built the user message using get_message_content()
+    # — the exact same function the chatbot uses.  This produces consistent R-label block
+    # numbers, rich context_metadata per record, the standard tool instructions, and the
+    # correct JSON output-format instructions.  Use it directly as the HumanMessage.
+    #
+    # FALLBACK PATH: no retrieval results (pure API-tool query or direct answer) — use
+    # the bare query with a short JSON reminder appended.
+    qna_message_content = state.get("qna_message_content")
+
     current_query = state["query"]
 
     if ConversationMemory.should_reuse_tool_results(current_query, previous_conversations):
@@ -850,46 +684,56 @@ def create_response_messages(state) -> List[Any]:
     else:
         state["is_contextual_followup"] = False
 
-    query_with_context = current_query
+    if qna_message_content:
+        # get_message_content() output already contains the query (via qna_prompt_instructions_1),
+        # all record context, block numbers, and the JSON output-format spec.
+        # Use it directly — no extra reminder needed.
+        messages.append(HumanMessage(content=qna_message_content))
+    else:
+        # Fallback: plain query + brief JSON reminder for non-retrieval responses
+        query_with_context = current_query
 
-    # Add format instructions if internal knowledge is available
-    has_knowledge = bool(state.get("final_results"))
-    has_knowledge_tool = False
-    if state.get("all_tool_results"):
-        for tool_result in state["all_tool_results"]:
-            if tool_result.get("tool_name") == "internal_knowledge_retrieval":
-                has_knowledge_tool = True
-                break
+        has_knowledge = bool(state.get("final_results"))
+        has_knowledge_tool = False
+        if state.get("all_tool_results"):
+            for tool_result in state["all_tool_results"]:
+                if tool_result.get("tool_name") == "internal_knowledge_retrieval":
+                    has_knowledge_tool = True
+                    break
 
-    if has_knowledge or has_knowledge_tool:
-        query_with_context += "\n\n**⚠️ CRITICAL: Internal Knowledge is Available - MANDATORY Instructions:**\n"
-        query_with_context += "\n"
-        query_with_context += "1. **ANSWER DIRECTLY**: Provide the answer to the user's question. DO NOT say 'I searched', 'I found', 'The tool returned', etc.\n"
-        query_with_context += "2. **CITE YOUR SOURCES**: Use inline citations [R1-1] IMMEDIATELY after each factual claim (not at end of paragraph).\n"
-        query_with_context += "3. **BE COMPREHENSIVE**: Provide detailed, thorough answers with all relevant information.\n"
-        query_with_context += "4. **USE MARKDOWN**: Format with headers, lists, tables, bold as appropriate.\n"
-        query_with_context += "\n"
-        query_with_context += "**Required JSON Output Format:**\n"
-        query_with_context += "```json\n"
-        query_with_context += "{\n"
-        query_with_context += '  "answer": "Detailed answer with inline citations [R1-1][R2-3] after each claim.",\n'
-        query_with_context += '  "reason": "Brief explanation of how you derived the answer from the blocks",\n'
-        query_with_context += '  "confidence": "Very High | High | Medium | Low",\n'
-        query_with_context += '  "answerMatchType": "Derived From Blocks",\n'
-        query_with_context += '  "blockNumbers": ["R1-1", "R1-2", "R2-3"]\n'
-        query_with_context += "}\n"
-        query_with_context += "```\n"
-        query_with_context += "\n"
-        query_with_context += "⚠️ IMPORTANT:\n"
-        query_with_context += "- Do NOT include 'citations' field (system handles it)\n"
-        query_with_context += "- Include ALL referenced block numbers in blockNumbers array\n"
-        query_with_context += "- Answer the user's question directly without meta-commentary\n"
-        query_with_context += "- Citations format: [R1-1][R2-3] NOT [R1-1, R2-3]\n"
-        query_with_context += "- Put citation IMMEDIATELY after the fact, not at end of sentence\n"
+        if has_knowledge or has_knowledge_tool:
+            query_with_context += (
+                "\n\n**⚠️ Respond in JSON format. Cite each fact with its EXACT block number "
+                "[R1-0][R2-3] immediately after the claim. Use DIFFERENT block numbers for "
+                "DIFFERENT facts. Include blockNumbers array.**"
+            )
 
-    messages.append(HumanMessage(content=query_with_context))
+        messages.append(HumanMessage(content=query_with_context))
 
     return messages
+
+
+def _format_reference_data_for_response(all_reference_data: List[Dict]) -> str:
+    """Format reference data for inclusion in response messages"""
+    if not all_reference_data:
+        return ""
+
+    result = "## Reference Data (from previous responses):\n"
+    spaces = [item for item in all_reference_data if item.get("type") == "confluence_space"]
+    projects = [item for item in all_reference_data if item.get("type") == "jira_project"]
+    issues = [item for item in all_reference_data if item.get("type") == "jira_issue"]
+    pages = [item for item in all_reference_data if item.get("type") == "confluence_page"]
+    max_items = 10
+
+    if spaces:
+        result += "**Confluence Spaces**: " + ", ".join([f"{i.get('name','?')} (id={i.get('id','?')})" for i in spaces[:max_items]]) + "\n"
+    if projects:
+        result += "**Jira Projects**: " + ", ".join([f"{i.get('name','?')} (key={i.get('key','?')})" for i in projects[:max_items]]) + "\n"
+    if issues:
+        result += "**Jira Issues**: " + ", ".join([f"{i.get('key','?')}" for i in issues[:max_items]]) + "\n"
+    if pages:
+        result += "**Confluence Pages**: " + ", ".join([f"{i.get('title','?')} (id={i.get('id','?')})" for i in pages[:max_items]]) + "\n"
+    return result
 
 
 # ============================================================================
@@ -908,7 +752,6 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
 
     content = response_content.strip()
 
-    # Check for markdown code blocks
     if "```json" in content or (content.startswith("```") and "```" in content[3:]):
         try:
             from app.utils.streaming import extract_json_from_string
@@ -918,7 +761,6 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
         except (ValueError, Exception):
             pass
 
-    # Try regular JSON parsing
     if content.startswith('{') and content.endswith('}'):
         try:
             import json
@@ -926,7 +768,6 @@ def detect_response_mode(response_content) -> Tuple[str, Any]:
             from app.utils.citations import fix_json_string
             cleaned_content = fix_json_string(content)
             parsed = json.loads(cleaned_content)
-
             if "answer" in parsed:
                 return "structured", parsed
         except (json.JSONDecodeError, Exception):
@@ -942,8 +783,6 @@ def should_use_structured_mode(state) -> bool:
 
     if has_internal_results and not is_follow_up:
         return True
-
     if state.get("force_structured_output", False):
         return True
-
     return False

@@ -1,104 +1,217 @@
-import asyncio
+import ast
 import json
 import logging
-from typing import List, Optional
+import uuid
+from typing import List, Optional, Union
 
+from pydantic import BaseModel, Field, field_validator
+
+from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
-from app.agents.tools.enums import ParameterType
-from app.agents.tools.models import ToolParameter
+from app.agents.tools.models import ToolIntent
+from app.connectors.core.registry.auth_builder import (
+    AuthBuilder,
+    AuthType,
+    OAuthScopeConfig,
+)
+from app.connectors.core.registry.connector_builder import CommonFields
+from app.connectors.core.registry.tool_builder import (
+    ToolsetBuilder,
+    ToolsetCategory,
+)
 from app.sources.client.google.google import GoogleClient
-from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 from app.utils.time_conversion import prepare_iso_timestamps
 
 logger = logging.getLogger(__name__)
 
+# Pydantic schemas for Google Calendar tools
+class GetCalendarEventsInput(BaseModel):
+    """Schema for getting calendar events"""
+    calendar_id: Optional[str] = Field(default=None, description="The ID of the calendar to use (default: 'primary')")
+    max_results: Optional[int] = Field(default=None, description="Maximum number of events to return")
+    time_min: Optional[str] = Field(default=None, description="Lower bound for event start time (RFC3339 format)")
+    time_max: Optional[str] = Field(default=None, description="Upper bound for event start time (RFC3339 format)")
+    order_by: Optional[str] = Field(default=None, description="Order by (e.g., 'startTime' or 'updated')")
+    single_events: Optional[bool] = Field(default=None, description="Whether to expand recurring events into instances")
+    query: Optional[str] = Field(default=None, description="Free text search terms to find events")
+    show_deleted: Optional[bool] = Field(default=None, description="Include deleted events")
+    time_zone: Optional[str] = Field(default=None, description="Time zone used in the response")
+
+
+def _coerce_attendees_emails(
+    v: Union[None, str, List[object]],
+) -> Optional[List[str]]:
+    """
+    Accept multiple shapes for attendee lists that can arrive from cascading tool
+    placeholder resolution:
+      - None / already List[str]  → pass through
+      - List[dict] with 'email'   → extract the email strings
+                   (e.g. Google Calendar attendees: [{'email': '...', 'responseStatus': '...'}])
+      - str repr of a list        → ast.literal_eval then recurse (safety net)
+    """
+    if v is None:
+        return v
+    if isinstance(v, str):
+        try:
+            parsed = ast.literal_eval(v)
+            if isinstance(parsed, list):
+                return _coerce_attendees_emails(parsed)
+        except (ValueError, SyntaxError):
+            pass
+        return [v]  # treat bare string as a single email
+    if isinstance(v, list):
+        emails: List[str] = []
+        for item in v:
+            if isinstance(item, dict):
+                email = item.get("email") or item.get("emailAddress") or item.get("email_address")
+                if email and isinstance(email, str):
+                    emails.append(email)
+            elif isinstance(item, str):
+                emails.append(item)
+        return emails or None
+    return v  # type: ignore[return-value]
+
+
+class CreateCalendarEventInput(BaseModel):
+    """Schema for creating a calendar event"""
+    event_start_time: str = Field(description="The start time of the event (ISO format or timestamp)")
+    event_end_time: str = Field(description="The end time of the event (ISO format or timestamp)")
+    event_title: Optional[str] = Field(default=None, description="The title/summary of the event")
+    event_description: Optional[str] = Field(default=None, description="The description of the event")
+    event_location: Optional[str] = Field(default=None, description="The location of the event")
+    event_organizer: Optional[str] = Field(default=None, description="The email of the event organizer")
+    event_attendees_emails: Optional[List[str]] = Field(default=None, description="List of email addresses for event attendees")
+    event_meeting_link: Optional[str] = Field(default=None, description="The meeting link/URL for the event")
+    event_timezone: Optional[str] = Field(default="UTC", description="The timezone for the event")
+    event_all_day: Optional[bool] = Field(default=False, description="Whether the event is an all-day event")
+
+    @field_validator("event_attendees_emails", mode="before")
+    @classmethod
+    def coerce_attendees(cls, v: object) -> Optional[List[str]]:
+        return _coerce_attendees_emails(v)  # type: ignore[arg-type]
+
+
+class UpdateCalendarEventInput(BaseModel):
+    """Schema for updating a calendar event"""
+    event_id: str = Field(description="The actual event ID from Google Calendar")
+    event_title: Optional[str] = Field(default=None, description="The new title/summary for the event")
+    event_description: Optional[str] = Field(default=None, description="The new description for the event")
+    event_start_time: Optional[str] = Field(default=None, description="The new start time for the event (ISO format or timestamp)")
+    event_end_time: Optional[str] = Field(default=None, description="The new end time for the event (ISO format or timestamp)")
+    event_location: Optional[str] = Field(default=None, description="The new location for the event")
+    event_organizer: Optional[str] = Field(default=None, description="The new organizer email for the event")
+    event_attendees_emails: Optional[List[str]] = Field(default=None, description="The new list of attendee emails for the event")
+    event_meeting_link: Optional[str] = Field(default=None, description="The new meeting link/URL for the event")
+    event_timezone: Optional[str] = Field(default="UTC", description="The new timezone for the event")
+    event_all_day: Optional[bool] = Field(default=False, description="Whether the event should be an all-day event")
+
+    @field_validator("event_attendees_emails", mode="before")
+    @classmethod
+    def coerce_attendees(cls, v: object) -> Optional[List[str]]:
+        return _coerce_attendees_emails(v)  # type: ignore[arg-type]
+
+
+class DeleteCalendarEventInput(BaseModel):
+    """Schema for deleting a calendar event"""
+    event_id: str = Field(description="The actual event ID from Google Calendar")
+
+
+class GetCalendarListByIdInput(BaseModel):
+    """Schema for getting a calendar by ID"""
+    calendar_id: Optional[str] = Field(default=None, description="The ID of the calendar to get (default: 'primary')")
+
+
+class CreateMeetLinkInput(BaseModel):
+    """Schema for creating a Google Meet link and attaching it to a calendar event"""
+    event_start_time: str = Field(description="The start time of the event (ISO format or timestamp)")
+    event_end_time: str = Field(description="The end time of the event (ISO format or timestamp)")
+    event_title: Optional[str] = Field(default=None, description="The title/summary of the event")
+    event_description: Optional[str] = Field(default=None, description="The description of the event")
+    event_location: Optional[str] = Field(default=None, description="The location of the event")
+    event_attendees_emails: Optional[List[str]] = Field(default=None, description="List of email addresses for event attendees")
+    event_timezone: Optional[str] = Field(default="UTC", description="The timezone for the event")
+
+    @field_validator("event_attendees_emails", mode="before")
+    @classmethod
+    def coerce_attendees(cls, v: object) -> Optional[List[str]]:
+        return _coerce_attendees_emails(v)  # type: ignore[arg-type]
+
+
+# Register Google Calendar toolset
+@ToolsetBuilder("Calendar")\
+    .in_group("Google Workspace")\
+    .with_description("Google Calendar integration for event management and scheduling")\
+    .with_category(ToolsetCategory.APP)\
+    .with_auth([
+        AuthBuilder.type(AuthType.OAUTH).oauth(
+            connector_name="Calendar",
+            authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
+            token_url="https://oauth2.googleapis.com/token",
+            redirect_uri="toolsets/oauth/callback/calendar",
+            scopes=OAuthScopeConfig(
+                personal_sync=[],
+                team_sync=[],
+                agent=[
+                    "https://www.googleapis.com/auth/calendar",
+                    "https://www.googleapis.com/auth/calendar.events",
+                    "https://www.googleapis.com/auth/gmail.send"
+                ]
+            ),
+            token_access_type="offline",
+            additional_params={
+                "access_type": "offline",
+                "prompt": "consent",
+                "include_granted_scopes": "true"
+            },
+            fields=[
+                CommonFields.client_id("Google Cloud Console"),
+                CommonFields.client_secret("Google Cloud Console")
+            ],
+            icon_path="/assets/icons/connectors/calendar.svg",
+            app_group="Google Workspace",
+            app_description="Calendar OAuth application for agent integration"
+        )
+    ])\
+    .configure(lambda builder: builder.with_icon("/assets/icons/connectors/calendar.svg"))\
+    .build_decorator()
 class GoogleCalendar:
-    """Google Calendar tool exposed to the agents using GoogleCalendarDataSource"""
+    """Calendar tool exposed to the agents using CalendarDataSource"""
     def __init__(self, client: GoogleClient) -> None:
         """Initialize the Google Calendar tool"""
         """
         Args:
-            client: Google Calendar client
+            client: Calendar client
         Returns:
             None
         """
         self.client = GoogleCalendarDataSource(client)
 
-    def _run_async(self, coro) -> HTTPResponse: # type: ignore [valid method]
-        """Helper method to run async operations in sync context"""
-        try:
-            asyncio.get_running_loop()
-            # We're in an async context, use asyncio.run in a thread
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor() as executor:
-                future = executor.submit(asyncio.run, coro)
-                return future.result()
-        except RuntimeError:
-            # No running loop, we can use asyncio.run
-            return asyncio.run(coro)
 
     @tool(
         app_name="calendar",
         tool_name="get_calendar_events",
-        parameters=[
-            ToolParameter(
-                name="calendar_id",
-                type=ParameterType.STRING,
-                description="The ID of the calendar to use (default: 'primary')",
-                required=False
-            ),
-            ToolParameter(
-                name="max_results",
-                type=ParameterType.INTEGER,
-                description="Maximum number of events to return",
-                required=False
-            ),
-            ToolParameter(
-                name="time_min",
-                type=ParameterType.STRING,
-                description="Lower bound for event start time (RFC3339 format)",
-                required=False
-            ),
-            ToolParameter(
-                name="time_max",
-                type=ParameterType.STRING,
-                description="Upper bound for event start time (RFC3339 format)",
-                required=False
-            ),
-            ToolParameter(
-                name="order_by",
-                type=ParameterType.STRING,
-                description="Order by (e.g., 'startTime' or 'updated')",
-                required=False
-            ),
-            ToolParameter(
-                name="single_events",
-                type=ParameterType.BOOLEAN,
-                description="Whether to expand recurring events into instances",
-                required=False
-            ),
-            ToolParameter(
-                name="query",
-                type=ParameterType.STRING,
-                description="Free text search terms to find events",
-                required=False
-            ),
-            ToolParameter(
-                name="show_deleted",
-                type=ParameterType.BOOLEAN,
-                description="Include deleted events",
-                required=False
-            ),
-            ToolParameter(
-                name="time_zone",
-                type=ParameterType.STRING,
-                description="Time zone used in the response",
-                required=False
-            ),
-        ]
+        description="Get upcoming calendar events",
+        args_schema=GetCalendarEventsInput,
+        when_to_use=[
+            "User wants to see calendar events/meetings",
+            "User mentions 'Calendar' + wants events",
+            "User asks about upcoming meetings/events"
+        ],
+        when_not_to_use=[
+            "User wants to create event (use create_calendar_event)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Show my calendar events",
+            "What meetings do I have?",
+            "Get calendar events for tomorrow"
+        ],
+        category=ToolCategory.CALENDAR
     )
-    def get_calendar_events(
+    async def get_calendar_events(
         self,
         calendar_id: Optional[str] = None,
         max_results: Optional[int] = None,
@@ -126,7 +239,7 @@ class GoogleCalendar:
             tuple[bool, str]: True if the events are fetched, False otherwise
         """
         try:
-            events = self._run_async(self.client.events_list(
+            events = await self.client.events_list(
                 calendarId=calendar_id or "primary",
                 maxResults=max_results,
                 timeMin=time_min,
@@ -136,7 +249,15 @@ class GoogleCalendar:
                 q=query,
                 showDeleted=show_deleted,
                 timeZone=time_zone,
-            ))
+            )
+
+            # Normalize events to ensure location field is always present
+            # This prevents placeholder resolution errors when location is missing
+            if isinstance(events, dict) and "items" in events:
+                for item in events.get("items", []):
+                    # Ensure location field is always present (empty string if not set)
+                    if "location" not in item:
+                        item["location"] = ""
 
             return True, json.dumps(events)
         except Exception as e:
@@ -147,71 +268,27 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="create_calendar_event",
-        parameters=[
-            ToolParameter(
-                name="event_start_time",
-                type=ParameterType.STRING,
-                description="The start time of the event (ISO format or timestamp)",
-                required=True
-            ),
-            ToolParameter(
-                name="event_end_time",
-                type=ParameterType.STRING,
-                description="The end time of the event (ISO format or timestamp)",
-                required=True
-            ),
-            ToolParameter(
-                name="event_title",
-                type=ParameterType.STRING,
-                description="The title/summary of the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_description",
-                type=ParameterType.STRING,
-                description="The description of the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_location",
-                type=ParameterType.STRING,
-                description="The location of the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_organizer",
-                type=ParameterType.STRING,
-                description="The email of the event organizer",
-                required=False
-            ),
-            ToolParameter(
-                name="event_attendees_emails",
-                type=ParameterType.ARRAY,
-                description="List of email addresses for event attendees",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="event_meeting_link",
-                type=ParameterType.STRING,
-                description="The meeting link/URL for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_timezone",
-                type=ParameterType.STRING,
-                description="The timezone for the event (default: UTC)",
-                required=False
-            ),
-            ToolParameter(
-                name="event_all_day",
-                type=ParameterType.BOOLEAN,
-                description="Whether the event is an all-day event",
-                required=False
-            )
-        ]
+        description="Create a new calendar event",
+        args_schema=CreateCalendarEventInput,
+        when_to_use=[
+            "User wants to create/schedule a meeting/event",
+            "User mentions 'Calendar' + wants to create event",
+            "User asks to schedule something"
+        ],
+        when_not_to_use=[
+            "User wants to see events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a calendar event",
+            "Schedule a meeting",
+            "Add event to calendar"
+        ],
+        category=ToolCategory.CALENDAR
     )
-    def create_calendar_event(
+    async def create_calendar_event(
         self,
         event_start_time: str,
         event_end_time: str,
@@ -280,10 +357,12 @@ class GoogleCalendar:
                 event_config["end"] = {"date": event_end_time_iso.split("T")[0]}
 
             # Use GoogleCalendarDataSource method
-            event = self._run_async(self.client.events_insert(
+            # sendUpdates="all" ensures Google sends invite emails to all attendees
+            event = await self.client.events_insert(
                 calendarId="primary",
-                body=event_config
-            ))
+                body=event_config,
+                sendUpdates="all"
+            )
 
             return True, json.dumps({
                 "event_id": event.get("id", ""),
@@ -304,77 +383,28 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="update_calendar_event",
-        parameters=[
-            ToolParameter(
-                name="event_id",
-                type=ParameterType.STRING,
-                description="The actual event ID from Google Calendar (NOT a placeholder). This must be the real event ID returned when the event was created (e.g., 'abc123xyz'). If you don't have the event ID, you must first create or list events to get it.",
-                required=True
-            ),
-            ToolParameter(
-                name="event_title",
-                type=ParameterType.STRING,
-                description="The new title/summary for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_description",
-                type=ParameterType.STRING,
-                description="The new description for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_start_time",
-                type=ParameterType.STRING,
-                description="The new start time for the event (ISO format or timestamp)",
-                required=False
-            ),
-            ToolParameter(
-                name="event_end_time",
-                type=ParameterType.STRING,
-                description="The new end time for the event (ISO format or timestamp)",
-                required=False
-            ),
-            ToolParameter(
-                name="event_location",
-                type=ParameterType.STRING,
-                description="The new location for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_organizer",
-                type=ParameterType.STRING,
-                description="The new organizer email for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_attendees_emails",
-                type=ParameterType.ARRAY,
-                description="The new list of attendee emails for the event",
-                required=False,
-                items={"type": "string"}
-            ),
-            ToolParameter(
-                name="event_meeting_link",
-                type=ParameterType.STRING,
-                description="The new meeting link/URL for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_timezone",
-                type=ParameterType.STRING,
-                description="The new timezone for the event",
-                required=False
-            ),
-            ToolParameter(
-                name="event_all_day",
-                type=ParameterType.BOOLEAN,
-                description="Whether the event should be an all-day event",
-                required=False
-            )
-        ]
+        description="Update a calendar event",
+        args_schema=UpdateCalendarEventInput,
+        when_to_use=[
+            "User wants to modify/edit an event",
+            "User mentions 'Calendar' + wants to update event",
+            "User asks to change event details"
+        ],
+        when_not_to_use=[
+            "User wants to create event (use create_calendar_event)",
+            "User wants to see events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Update calendar event",
+            "Change event time",
+            "Edit meeting details"
+        ],
+        category=ToolCategory.CALENDAR
     )
-    def update_calendar_event(
+    async def update_calendar_event(
         self,
         event_id: str,
         event_title: Optional[str] = None,
@@ -407,10 +437,10 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method to get event
-            event = self._run_async(self.client.events_get(
+            event = await self.client.events_get(
                 calendarId="primary",
                 eventId=event_id
-            ))
+            )
 
             if event_title:
                 event["summary"] = event_title
@@ -444,11 +474,13 @@ class GoogleCalendar:
                     event["end"] = {"dateTime": event_end_time_iso}
 
             # Use GoogleCalendarDataSource method to update event
-            updated_event = self._run_async(self.client.events_update(
+            # sendUpdates="all" ensures Google sends update notification emails to all attendees
+            updated_event = await self.client.events_update(
                 calendarId="primary",
                 eventId=event_id,
-                body=event
-            ))
+                body=event,
+                sendUpdates="all"
+            )
 
             return True, json.dumps({
                 "success": True,
@@ -470,17 +502,147 @@ class GoogleCalendar:
 
     @tool(
         app_name="calendar",
-        tool_name="delete_calendar_event",
-        parameters=[
-            ToolParameter(
-                name="event_id",
-                type=ParameterType.STRING,
-                description="The actual event ID from Google Calendar (NOT a placeholder). This must be the real event ID (e.g., 'abc123xyz'). If you don't have the event ID, you must first list events to get it.",
-                required=True
-            )
-        ]
+        tool_name="create_meet_link",
+        description="Create a Google Meet link and attach it to a new calendar event",
+        args_schema=CreateMeetLinkInput,
+        when_to_use=[
+            "User wants to create a Google Meet / video meeting link",
+            "User wants to schedule a meeting with a video conference link",
+            "User asks to generate a Meet link for an event",
+            "User wants a meeting link attached to a calendar invite"
+        ],
+        when_not_to_use=[
+            "User wants a calendar event without a Meet link (use create_calendar_event)",
+            "User wants to update an existing event (use update_calendar_event)",
+            "No meeting/video link needed"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Create a Meet link for tomorrow's standup",
+            "Schedule a meeting with a Google Meet link",
+            "Generate a video meeting link and add it to my calendar"
+        ],
+        category=ToolCategory.CALENDAR
     )
-    def delete_calendar_event(
+    async def create_meet_link(
+        self,
+        event_start_time: str,
+        event_end_time: str,
+        event_title: Optional[str] = None,
+        event_description: Optional[str] = None,
+        event_location: Optional[str] = None,
+        event_attendees_emails: Optional[List[str]] = None,
+        event_timezone: Optional[str] = "UTC",
+    ) -> tuple[bool, str]:
+        """Create a Google Meet link and attach it to a new calendar event.
+
+        Uses the Google Calendar API conference data feature (conferenceDataVersion=1)
+        to auto-generate a Google Meet room and return the link along with event details.
+
+        Args:
+            event_start_time: The start time of the event
+            event_end_time: The end time of the event
+            event_title: The title of the event
+            event_description: The description of the event
+            event_location: The location of the event
+            event_attendees_emails: The attendees of the event
+            event_timezone: The timezone of the event
+        Returns:
+            tuple[bool, str]: True if the event and Meet link were created, False otherwise
+        """
+        try:
+            if not event_start_time:
+                return False, json.dumps({"error": "Event start time is required"})
+            if not event_end_time:
+                return False, json.dumps({"error": "Event end time is required"})
+
+            event_start_time_iso, event_end_time_iso = prepare_iso_timestamps(event_start_time, event_end_time)
+
+            event_config = {
+                "summary": event_title or "Meeting",
+                "description": event_description,
+                "start": {
+                    "dateTime": event_start_time_iso,
+                    "timeZone": event_timezone or "UTC",
+                },
+                "end": {
+                    "dateTime": event_end_time_iso,
+                    "timeZone": event_timezone or "UTC",
+                },
+                "location": event_location,
+                "attendees": [{"email": email} for email in event_attendees_emails] if event_attendees_emails else [],
+                # conferenceData.createRequest tells the Calendar API to auto-generate a Meet room
+                "conferenceData": {
+                    "createRequest": {
+                        "requestId": str(uuid.uuid4()),
+                        "conferenceSolutionKey": {
+                            "type": "hangoutsMeet"
+                        }
+                    }
+                }
+            }
+
+            # conferenceDataVersion=1 is required for the Calendar API to create the Meet room
+            # sendUpdates="all" ensures Google sends invite emails to all attendees
+            event = await self.client.events_insert(
+                calendarId="primary",
+                body=event_config,
+                conferenceDataVersion=1,
+                sendUpdates="all"
+            )
+
+            # Extract the Meet link from the response
+            meet_link = ""
+            conference_data = event.get("conferenceData", {})
+            entry_points = conference_data.get("entryPoints", [])
+            for ep in entry_points:
+                if ep.get("entryPointType") == "video":
+                    meet_link = ep.get("uri", "")
+                    break
+            # Fallback: check hangoutLink field (older API responses)
+            if not meet_link:
+                meet_link = event.get("hangoutLink", "")
+
+            return True, json.dumps({
+                "success": True,
+                "event_id": event.get("id", ""),
+                "event_title": event.get("summary", ""),
+                "event_start_time": event.get("start", {}).get("dateTime", ""),
+                "event_end_time": event.get("end", {}).get("dateTime", ""),
+                "event_location": event.get("location", ""),
+                "meet_link": meet_link,
+                "event_attendees": event.get("attendees", []),
+                "message": f"Google Meet link created and attached to calendar event. Meet link: {meet_link}"
+            })
+        except Exception as e:
+            logger.error(f"Failed to create Meet link: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="calendar",
+        tool_name="delete_calendar_event",
+        description="Delete a calendar event",
+        args_schema=DeleteCalendarEventInput,
+        when_to_use=[
+            "User wants to delete/cancel an event",
+            "User mentions 'Calendar' + wants to delete",
+            "User asks to remove event"
+        ],
+        when_not_to_use=[
+            "User wants to create event (use create_calendar_event)",
+            "User wants to see events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.ACTION,
+        typical_queries=[
+            "Delete calendar event",
+            "Cancel meeting",
+            "Remove event from calendar"
+        ],
+        category=ToolCategory.CALENDAR
+    )
+    async def delete_calendar_event(
         self,
         event_id: str,
     ) -> tuple[bool, str]:
@@ -493,10 +655,10 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method
-            self._run_async(self.client.events_delete(
+            await self.client.events_delete(
                 calendarId="primary",
                 eventId=event_id
-            ))
+            )
 
             return True, json.dumps({
                 "message": f"Event {event_id} deleted successfully"
@@ -507,9 +669,28 @@ class GoogleCalendar:
 
     @tool(
         app_name="calendar",
-        tool_name="get_calendar_list"
+        tool_name="get_calendar_list",
+        description="List all calendars",
+        when_to_use=[
+            "User wants to list all calendars",
+            "User mentions 'Calendar' + wants calendars",
+            "User asks for available calendars"
+        ],
+        when_not_to_use=[
+            "User wants events (use get_calendar_events)",
+            "User wants to create event (use create_calendar_event)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "List all calendars",
+            "Show me available calendars",
+            "What calendars do I have?"
+        ],
+        category=ToolCategory.CALENDAR
     )
-    def get_calendar_list(self) -> tuple[bool, str]:
+    async def get_calendar_list(self) -> tuple[bool, str]:
         """Get the list of available calendars"""
         """
         Returns:
@@ -517,7 +698,7 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method
-            calendars = self._run_async(self.client.calendar_list_list())
+            calendars = await self.client.calendar_list_list()
             return True, json.dumps(calendars)
         except Exception as e:
             logger.error(f"Failed to get calendar list: {e}")
@@ -526,16 +707,28 @@ class GoogleCalendar:
     @tool(
         app_name="calendar",
         tool_name="get_calendar_list_by_id",
-        parameters=[
-            ToolParameter(
-                name="calendar_id",
-                type=ParameterType.STRING,
-                description="The ID of the calendar to get (default: 'primary')",
-                required=False
-            )
-        ]
+        description="Get a specific calendar by ID",
+        args_schema=GetCalendarListByIdInput,
+        when_to_use=[
+            "User wants details about a specific calendar",
+            "User mentions 'Calendar' + has calendar ID",
+            "User asks about a calendar"
+        ],
+        when_not_to_use=[
+            "User wants all calendars (use get_calendar_list)",
+            "User wants events (use get_calendar_events)",
+            "User wants info ABOUT calendars (use retrieval)",
+            "No Calendar mention"
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Get calendar by ID",
+            "Show calendar details",
+            "What is this calendar?"
+        ],
+        category=ToolCategory.CALENDAR
     )
-    def get_calendar_list_by_id(
+    async def get_calendar_list_by_id(
         self,
         calendar_id: Optional[str] = None
     ) -> tuple[bool, str]:
@@ -548,9 +741,9 @@ class GoogleCalendar:
         """
         try:
             # Use GoogleCalendarDataSource method
-            calendar = self._run_async(self.client.calendars_get(
+            calendar = await self.client.calendars_get(
                 calendarId=calendar_id or "primary"
-            ))
+            )
             return True, json.dumps(calendar)
         except Exception as e:
             logger.error(f"Failed to get calendar by ID: {e}")

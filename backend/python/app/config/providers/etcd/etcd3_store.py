@@ -212,7 +212,6 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("🔄 Executing get_all operation")
             keys = await asyncio.to_thread(lambda: list(client.get_all()))
             decoded_keys = [key[1].key.decode("utf-8") for key in keys]
-            logger.debug("✅ Found %d keys: %s", len(decoded_keys), decoded_keys)
             return decoded_keys
         except Exception as e:
             logger.error("❌ Failed to get all keys: %s", str(e))
@@ -266,7 +265,7 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             # Ensure directory ends with '/' for proper prefix matching
             prefix = directory if directory.endswith("/") else f"{directory}/"
-            return [key.decode("utf-8") for key, _ in await client.get_prefix(prefix)]
+            return [key.decode("utf-8") for key, _ in client.get_prefix(prefix)]
         except Exception as e:
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 

@@ -2,8 +2,7 @@
 Client factories for GitHub.
 """
 
-
-from typing import Optional
+from typing import Any, Dict
 
 from app.agents.tools.factories.base import ClientFactory
 from app.sources.client.github.github import GitHubClient
@@ -13,13 +12,30 @@ from app.sources.client.github.github import GitHubClient
 # ============================================================================
 
 class GitHubClientFactory(ClientFactory):
-    """Factory for creating GitHub clients"""
+    """
+    Factory for creating GitHub clients.
+    """
 
-    async def create_client(self, config_service, logger, state=None, connector_instance_id: Optional[str] = None) -> GitHubClient:
-        """Create GitHub client instance"""
+    async def create_client(
+        self,
+        config_service,
+        logger,
+        toolset_config: Dict[str, Any],
+        state=None
+    ) -> GitHubClient:
+        """
+        Create GitHub client instance from toolset configuration.
 
-        return await GitHubClient.build_from_services(
+        Args:
+            config_service: Configuration service instance
+            logger: Logger instance
+            state: Chat state (optional)
+            toolset_config: Toolset configuration from etcd (REQUIRED)
+
+        Returns:
+            GitHubClient instance
+        """
+        return await GitHubClient.build_from_toolset(
+            toolset_config=toolset_config,
             logger=logger,
-            config_service=config_service,
-            connector_instance_id=connector_instance_id
         )

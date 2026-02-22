@@ -27,13 +27,14 @@ import informationIcon from '@iconify-icons/mdi/information';
 import packageIcon from '@iconify-icons/mdi/package-variant';
 import cogIcon from '@iconify-icons/mdi/cog';
 import cloudIcon from '@iconify-icons/mdi/cloud-outline';
-import tuneIcon from '@iconify-icons/mdi/tune';
 import deleteIcon from '@iconify-icons/mdi/delete-outline';
 import { formattedProvider, normalizeDisplayName } from '../../utils/agent';
 import { NodeData } from '../../types/agent';
 import { NodeHandles, NodeIcon } from './nodes';
+import { ToolsetNode } from './nodes/ToolsetNode';
 
 interface FlowNodeProps {
+  id?: string; // ReactFlow passes the actual node ID as a prop automatically
   data: NodeData;
   selected: boolean;
   onDelete?: (nodeId: string) => void;
@@ -47,7 +48,7 @@ const getModelDisplayName = (config: { modelName?: string; modelFriendlyName?: s
   return (config.modelFriendlyName && config.modelFriendlyName.trim()) || (config.modelName && config.modelName.trim()) || '';
 };
 
-const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
+const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, onDelete }) => {
   const theme = useTheme();
   const isDark = theme.palette.mode === 'dark';
   const storeNodes = useStore((s) => s.nodes);
@@ -126,7 +127,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
   const connectedNodesByHandle = React.useMemo(() => {
     if (data.type !== 'agent-core') return {} as Record<string, any[]>;
     const incoming = storeEdges.filter((e) => e.target === data.id);
-    const map: Record<string, any[]> = { input: [], actions: [], knowledge: [], llms: [] };
+    const map: Record<string, any[]> = { input: [], toolsets: [], knowledge: [], llms: [] };
     incoming.forEach((e: any) => {
       const sourceNode = storeNodes.find((n) => n.id === e.source) as any;
       if (sourceNode) {
@@ -895,7 +896,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 letterSpacing: '0.05em',
               }}
             >
-              Actions
+              Toolsets
             </Typography>
             <Box
               sx={{
@@ -914,7 +915,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
               <Handle
                 type="target"
                 position={Position.Left}
-                id="actions"
+                id="toolsets"
                 style={{
                   top: '50%',
                   left: -9,
@@ -928,9 +929,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                   transformOrigin: 'center',
                 }}
               />
-              {connectedNodesByHandle.actions?.length > 0 ? (
+              {connectedNodesByHandle.toolsets?.length > 0 ? (
                 <Box>
-                  {connectedNodesByHandle.actions.slice(0, 2).map((actionNode, index) => (
+                  {connectedNodesByHandle.toolsets.slice(0, 2).map((toolsetNode: any, index: number) => (
                     <Box
                       key={index}
                       sx={{
@@ -951,9 +952,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                           boxShadow: `0 2px 4px ${alpha(colors.info, 0.3)}`,
                         }}
                       >
-                        {actionNode.config?.iconPath ? (
+                        {toolsetNode.config?.iconPath ? (
                           <img
-                            src={actionNode.config.iconPath}
+                            src={toolsetNode.config.iconPath}
                             alt=""
                             style={{
                               width: 14,
@@ -975,7 +976,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                           height={12} // Keep comfortable size
                           style={{
                             color: '#ffffff',
-                            display: actionNode.config?.iconPath ? 'none' : 'block',
+                            display: toolsetNode.config?.iconPath ? 'none' : 'block',
                           }}
                         />
                       </Box>
@@ -983,9 +984,10 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                         <Typography
                           sx={{ fontSize: '0.85rem', fontWeight: 600, color: colors.text.primary }} // Keep comfortable size
                         >
-                          {actionNode.config?.name ||
-                            actionNode.config?.appName ||
-                            actionNode.label}
+                          {toolsetNode.config?.displayName ||
+                            toolsetNode.config?.name ||
+                            toolsetNode.config?.appName ||
+                            toolsetNode.label}
                         </Typography>
                         <Typography
                           sx={{
@@ -994,20 +996,22 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                             fontWeight: 500,
                           }}
                         >
-                          {actionNode.type.startsWith('tool-group-')
-                            ? 'Tool Group'
-                            : actionNode.type.startsWith('tool-individual-')
-                              ? 'Individual Tool'
-                              : actionNode.type.startsWith('connector-group-')
-                                ? 'Connector Group'
-                                : 'Action'}
+                          {toolsetNode.type.startsWith('toolset-')
+                            ? 'Toolset'
+                            : toolsetNode.type.startsWith('tool-group-')
+                              ? 'Tool Group'
+                              : toolsetNode.type.startsWith('tool-individual-')
+                                ? 'Individual Tool'
+                                : toolsetNode.type.startsWith('connector-group-')
+                                  ? 'Connector Group'
+                                  : 'Toolset'}
                         </Typography>
                       </Box>
                     </Box>
                   ))}
-                  {connectedNodesByHandle.actions.length > 2 && (
+                  {connectedNodesByHandle.toolsets.length > 2 && (
                     <Chip
-                      label={`+${connectedNodesByHandle.actions.length - 2} more`}
+                      label={`+${connectedNodesByHandle.toolsets.length - 2} more`}
                       size="small"
                       sx={{
                         height: 22, // Keep comfortable size
@@ -1038,7 +1042,7 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 <Typography
                   sx={{ fontSize: '0.85rem', color: colors.text.muted, fontStyle: 'italic' }} // Keep comfortable size
                 >
-                  No actions connected
+                  No toolsets connected
                 </Typography>
               )}
             </Box>
@@ -1525,6 +1529,12 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
 
   const { width, minHeight } = getNodeDimensions();
 
+  // Use specialized ToolsetNode for toolset nodes
+  // Check both category and type to ensure toolset nodes are always rendered correctly
+  if (data.type.startsWith('toolset-') || data.category === 'toolset') {
+    return <ToolsetNode data={data} selected={selected} onDelete={onDelete} />;
+  }
+
   return (
     <Card
       sx={{
@@ -1588,14 +1598,16 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
                 : normalizeDisplayName(data.label)}
             </Typography>
           </Box>
-          {onDelete && (
+          {onDelete && !data?.type?.startsWith('user-input') && !data?.type?.startsWith('chat-response') && (
             <IconButton
               size="small"
               onClick={(e) => {
                 e.preventDefault();
                 e.stopPropagation();
                 e.nativeEvent.stopImmediatePropagation();
-                onDelete(data.id);
+                // Use the ReactFlow node id (reactFlowId) which is the authoritative node identifier,
+                // falling back to data.id for backward compatibility
+                onDelete(reactFlowId || data.id);
               }}
               sx={{
                 width: 30,
@@ -2304,36 +2316,6 @@ const FlowNode: React.FC<FlowNodeProps> = ({ data, selected, onDelete }) => {
           </Box>
         )}
 
-        {/* Toolset Badge */}
-        <Box sx={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Box
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 0.5,
-              px: 1.5,
-              py: 0.75,
-              background: `linear-gradient(135deg, ${alpha(colors.info, 0.1)} 0%, ${alpha(colors.primary, 0.1)} 100%)`,
-              border: `1px solid ${alpha(colors.info, 0.2)}`,
-              borderRadius: 2,
-              fontSize: '0.7rem',
-              fontWeight: 700,
-              color: colors.info,
-              textTransform: 'uppercase',
-              letterSpacing: '0.05em',
-              transition: 'all 0.2s ease',
-              '&:hover': {
-                background: `linear-gradient(135deg, ${alpha(colors.info, 0.2)} 0%, ${alpha(colors.primary, 0.2)} 100%)`,
-                borderColor: colors.info,
-                transform: 'scale(1.05)',
-                boxShadow: `0 2px 8px ${alpha(colors.info, 0.3)}`,
-              },
-            }}
-          >
-            Toolset
-            <Icon icon={tuneIcon} width={12} height={12} />
-          </Box>
-        </Box>
       </Box>
 
       {/* Handles - uses modular NodeHandles component */}
