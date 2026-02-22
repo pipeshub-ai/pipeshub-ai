@@ -21,6 +21,7 @@ import {
   FormControl,
   InputLabel,
   Alert,
+  Snackbar,
   Stack,
   Typography,
   Box,
@@ -120,6 +121,24 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
   const [configSaved, setConfigSaved] = useState(false);
   const [saveAttempted, setSaveAttempted] = useState(false);
   const [deleting, setDeleting] = useState(false);
+
+  // Local toast — rendered inside this component so it always floats above the dialog
+  const [localToast, setLocalToast] = useState<{
+    open: boolean;
+    message: string;
+    severity: 'success' | 'error' | 'info' | 'warning';
+  }>({ open: false, message: '', severity: 'success' });
+
+  const showLocalToast = useCallback(
+    (message: string, severity: 'success' | 'error' | 'info' | 'warning' = 'success') => {
+      setLocalToast({ open: true, message, severity });
+    },
+    []
+  );
+
+  const hideLocalToast = useCallback(() => {
+    setLocalToast((prev) => ({ ...prev, open: false }));
+  }, []);
 
   // Load toolset schema and configuration (only once, cached)
   useEffect(() => {
@@ -428,11 +447,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
           : 'Configuration saved! Now click "Authenticate" to complete the OAuth flow.';
         setSuccess(message);
         setIsAuthenticated(false); // OAuth updates require re-authentication
-        
-        // Show toast notification (don't auto-close so user can authenticate)
-        if (onShowToast) {
-          onShowToast(message, 'success');
-        }
+        showLocalToast(message, 'success');
         // Don't auto-close dialog - user needs to authenticate
       } else {
         // For non-OAuth auth types, show success message
@@ -440,11 +455,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
           ? 'Configuration updated successfully!' 
           : 'Configuration saved successfully!';
         setSuccess(message);
-        
-        // Show toast notification
-        if (onShowToast) {
-          onShowToast(message, 'success');
-        }
+        showLocalToast(message, 'success');
         
         // Auto-close after short delay for non-OAuth (no further action needed)
         setTimeout(() => {
@@ -506,10 +517,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
 
       setIsAuthenticated(false);
       setSuccess('Authentication cleared. Click "Authenticate" to complete the OAuth flow again.');
-
-      if (onShowToast) {
-        onShowToast('Authentication cleared. Please re-authenticate.', 'info');
-      }
+      showLocalToast('Authentication cleared. Please re-authenticate.', 'info');
     } catch (err: any) {
       console.error('Failed to reauthenticate toolset:', err);
       setError(err.response?.data?.detail || err.response?.data?.message || 'Failed to clear authentication');
@@ -589,10 +597,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
               setIsAuthenticated(true);
               setSuccess('Authentication successful!');
               
-              // Show toast notification
-              if (onShowToast) {
-                onShowToast('Authentication successful!', 'success');
-              }
+              showLocalToast('Authentication successful!', 'success');
               
               // Auto-close after short delay
               setTimeout(() => {
@@ -600,9 +605,7 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
               }, 1500);
             } else {
               setError('Authentication failed or was cancelled');
-              if (onShowToast) {
-                onShowToast('Authentication failed or was cancelled', 'error');
-              }
+              showLocalToast('Authentication failed or was cancelled', 'error');
             }
           } catch (err) {
             console.error('Failed to verify auth status:', err);
@@ -1216,17 +1219,17 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
           justifyContent: 'space-between',
         }}
       >
-        <Box sx={{ display: 'flex', gap: 1.5 }}>
-          {/* Delete Button - Only show when editing existing toolset */}
+        {/* Left: Destructive actions only */}
+        <Box>
           {toolsetId && (
             <Button
               onClick={handleDelete}
               disabled={isAnyActionInProgress}
-              variant="outlined"
+              variant="text"
               color="error"
               startIcon={
                 deleting ? (
-                  <CircularProgress size={16} />
+                  <CircularProgress size={14} color="error" />
                 ) : (
                   <Iconify icon={deleteIcon} width={16} height={16} />
                 )
@@ -1234,94 +1237,100 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
               sx={{
                 textTransform: 'none',
                 borderRadius: 1,
-                px: 2.5,
-                borderColor: isDark
-                  ? alpha(theme.palette.error.main, 0.3)
-                  : alpha(theme.palette.error.main, 0.5),
-                color: theme.palette.error.main,
+                px: 2,
+                color: isDark
+                  ? alpha(theme.palette.error.main, 0.85)
+                  : theme.palette.error.main,
                 '&:hover': {
-                  borderColor: theme.palette.error.main,
                   backgroundColor: alpha(theme.palette.error.main, 0.08),
+                  color: theme.palette.error.main,
                 },
               }}
             >
               {deleting ? 'Deleting...' : 'Delete'}
             </Button>
           )}
-
-          {/* Reauthenticate Button - Show when editing OAuth toolset that is already authenticated */}
-          {toolsetId && isOAuth && isAuthenticated && (
-            <Button
-              onClick={handleReauthenticate}
-              disabled={isAnyActionInProgress}
-              variant="outlined"
-              color="warning"
-              startIcon={
-                reauthenticating ? (
-                  <CircularProgress size={16} />
-                ) : (
-                  <Iconify icon={refreshIcon} width={16} height={16} />
-                )
-              }
-              sx={{
-                textTransform: 'none',
-                borderRadius: 1,
-                px: 2.5,
-                borderColor: isDark
-                  ? alpha(theme.palette.warning.main, 0.3)
-                  : alpha(theme.palette.warning.main, 0.5),
-                color: theme.palette.warning.main,
-                '&:hover': {
-                  borderColor: theme.palette.warning.main,
-                  backgroundColor: alpha(theme.palette.warning.main, 0.08),
-                },
-              }}
-            >
-              {reauthenticating ? 'Clearing...' : 'Reauthenticate'}
-            </Button>
-          )}
         </Box>
 
-        <Box sx={{ display: 'flex', gap: 1.5 }}>
-          <Button 
-            onClick={onClose} 
+        {/* Right: Primary actions */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          {/* Cancel / Close */}
+          <Button
+            onClick={onClose}
             disabled={isAnyActionInProgress}
-            variant="outlined"
+            variant="text"
             sx={{
               textTransform: 'none',
               borderRadius: 1,
-              px: 2.5,
-              borderColor: isDark
-                ? alpha(theme.palette.divider, 0.3)
-                : alpha(theme.palette.divider, 0.2),
+              px: 2,
               color: isDark
                 ? alpha(theme.palette.text.secondary, 0.9)
                 : theme.palette.text.secondary,
               '&:hover': {
-                borderColor: isDark
-                  ? alpha(theme.palette.text.secondary, 0.5)
-                  : alpha(theme.palette.text.secondary, 0.4),
                 backgroundColor: isDark
-                  ? alpha(theme.palette.common.white, 0.08)
-                  : alpha(theme.palette.text.secondary, 0.04),
+                  ? alpha(theme.palette.common.white, 0.06)
+                  : alpha(theme.palette.text.secondary, 0.06),
               },
-              transition: 'all 0.2s ease',
             }}
           >
             {isAuthenticated ? 'Close' : 'Cancel'}
           </Button>
 
-          {/* When editing existing toolset: Always show Update button, then Authenticate if OAuth */}
+          {/* Divider before primary actions */}
+          <Box
+            sx={{
+              width: '1px',
+              height: 20,
+              bgcolor: isDark
+                ? alpha(theme.palette.divider, 0.2)
+                : alpha(theme.palette.divider, 0.4),
+              mx: 0.5,
+            }}
+          />
+
           {toolsetId ? (
+            /* ── Editing existing toolset ── */
             <>
-              {/* Update Configuration Button - Always show when editing */}
+              {/* Reauthenticate — only when OAuth + currently authenticated */}
+              {isOAuth && isAuthenticated && (
+                <Button
+                  onClick={handleReauthenticate}
+                  disabled={isAnyActionInProgress}
+                  variant="outlined"
+                  startIcon={
+                    reauthenticating ? (
+                      <CircularProgress size={14} sx={{ color: theme.palette.warning.main }} />
+                    ) : (
+                      <Iconify icon={refreshIcon} width={15} height={15} />
+                    )
+                  }
+                  sx={{
+                    textTransform: 'none',
+                    borderRadius: 1,
+                    px: 2,
+                    fontSize: '0.8125rem',
+                    borderColor: isDark
+                      ? alpha(theme.palette.warning.main, 0.35)
+                      : alpha(theme.palette.warning.main, 0.5),
+                    color: theme.palette.warning.main,
+                    '&:hover': {
+                      borderColor: theme.palette.warning.main,
+                      backgroundColor: alpha(theme.palette.warning.main, 0.07),
+                    },
+                  }}
+                >
+                  {reauthenticating ? 'Clearing...' : 'Reauthenticate'}
+                </Button>
+              )}
+
+              {/* Update Configuration — always visible when editing */}
               <Button
                 onClick={handleSaveConfig}
                 variant="contained"
-                disabled={saving}
+                disabled={isAnyActionInProgress}
                 startIcon={
                   saving ? (
-                    <CircularProgress size={16} />
+                    <CircularProgress size={14} sx={{ color: 'inherit' }} />
                   ) : (
                     <Iconify icon={saveIcon} width={16} height={16} />
                   )
@@ -1330,46 +1339,33 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                   textTransform: 'none',
                   borderRadius: 1,
                   px: 2.5,
-                  boxShadow: isDark ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}` : 'none',
-                  '&:hover': {
-                    boxShadow: isDark
-                      ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`
-                      : `0 2px 8px ${alpha(theme.palette.primary.main, 0.2)}`,
-                  },
-                  '&:active': {
-                    boxShadow: 'none',
-                  },
-                  transition: 'all 0.2s ease',
+                  boxShadow: 'none',
+                  '&:hover': { boxShadow: 'none' },
                 }}
               >
                 {saving ? 'Updating...' : 'Update Configuration'}
               </Button>
 
-              {/* Authenticate Button - Show for OAuth after config is saved and not authenticated */}
+              {/* Authenticate — OAuth only, after credentials saved, not yet authenticated */}
               {isOAuth && configSaved && !isAuthenticated && (
                 <Button
                   onClick={handleAuthenticate}
-                  variant="outlined"
-                  disabled={authenticating}
+                  variant="contained"
+                  disabled={isAnyActionInProgress}
                   startIcon={
                     authenticating ? (
-                      <CircularProgress size={16} />
+                      <CircularProgress size={14} sx={{ color: 'inherit' }} />
                     ) : (
                       <Iconify icon={lockIcon} width={16} height={16} />
                     )
                   }
+                  color="primary"
                   sx={{
                     textTransform: 'none',
                     borderRadius: 1,
                     px: 2.5,
-                    borderColor: isDark
-                      ? alpha(theme.palette.primary.main, 0.3)
-                      : alpha(theme.palette.primary.main, 0.5),
-                    color: theme.palette.primary.main,
-                    '&:hover': {
-                      borderColor: theme.palette.primary.main,
-                      backgroundColor: alpha(theme.palette.primary.main, 0.08),
-                    },
+                    boxShadow: 'none',
+                    '&:hover': { boxShadow: 'none' },
                   }}
                 >
                   {authenticating ? 'Authenticating...' : 'Authenticate'}
@@ -1377,16 +1373,17 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
               )}
             </>
           ) : (
+            /* ── Creating new toolset ── */
             <>
-              {/* Creating new toolset: Show Save first, then Authenticate for OAuth */}
+              {/* OAuth step 1: Save credentials first */}
               {isOAuth && !configSaved && (
                 <Button
                   onClick={handleSaveConfig}
-                  variant="outlined"
-                  disabled={saving}
+                  variant="contained"
+                  disabled={isAnyActionInProgress}
                   startIcon={
                     saving ? (
-                      <CircularProgress size={16} />
+                      <CircularProgress size={14} sx={{ color: 'inherit' }} />
                     ) : (
                       <Iconify icon={saveIcon} width={16} height={16} />
                     )
@@ -1395,21 +1392,23 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                     textTransform: 'none',
                     borderRadius: 1,
                     px: 2.5,
+                    boxShadow: 'none',
+                    '&:hover': { boxShadow: 'none' },
                   }}
                 >
                   {saving ? 'Saving...' : 'Save Configuration'}
                 </Button>
               )}
 
-              {/* Authenticate Button (OAuth only, after config saved for new toolset) */}
+              {/* OAuth step 2: Authenticate after credentials saved */}
               {isOAuth && configSaved && !isAuthenticated && (
                 <Button
                   onClick={handleAuthenticate}
                   variant="contained"
-                  disabled={authenticating}
+                  disabled={isAnyActionInProgress}
                   startIcon={
                     authenticating ? (
-                      <CircularProgress size={16} />
+                      <CircularProgress size={14} sx={{ color: 'inherit' }} />
                     ) : (
                       <Iconify icon={lockIcon} width={16} height={16} />
                     )
@@ -1418,21 +1417,23 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                     textTransform: 'none',
                     borderRadius: 1,
                     px: 2.5,
+                    boxShadow: 'none',
+                    '&:hover': { boxShadow: 'none' },
                   }}
                 >
                   {authenticating ? 'Authenticating...' : 'Authenticate'}
                 </Button>
               )}
 
-              {/* Save Button (Non-OAuth for new toolset) */}
+              {/* Non-OAuth: single save action */}
               {!isOAuth && (
                 <Button
                   onClick={handleSaveConfig}
                   variant="contained"
-                  disabled={saving}
+                  disabled={isAnyActionInProgress}
                   startIcon={
                     saving ? (
-                      <CircularProgress size={16} />
+                      <CircularProgress size={14} sx={{ color: 'inherit' }} />
                     ) : (
                       <Iconify icon={saveIcon} width={16} height={16} />
                     )
@@ -1441,16 +1442,8 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
                     textTransform: 'none',
                     borderRadius: 1,
                     px: 2.5,
-                    boxShadow: isDark ? `0 2px 8px ${alpha(theme.palette.primary.main, 0.3)}` : 'none',
-                    '&:hover': {
-                      boxShadow: isDark
-                        ? `0 4px 12px ${alpha(theme.palette.primary.main, 0.4)}`
-                        : `0 2px 8px ${alpha(theme.palette.primary.main, 0.2)}`,
-                    },
-                    '&:active': {
-                      boxShadow: 'none',
-                    },
-                    transition: 'all 0.2s ease',
+                    boxShadow: 'none',
+                    '&:hover': { boxShadow: 'none' },
                   }}
                 >
                   {saving ? 'Saving...' : 'Save Configuration'}
@@ -1460,6 +1453,24 @@ const ToolsetConfigDialog: React.FC<ToolsetConfigDialogProps> = ({
           )}
         </Box>
       </DialogActions>
+
+      {/* Local toast — rendered inside the Dialog so it always floats above the dialog content */}
+      <Snackbar
+        open={localToast.open}
+        autoHideDuration={4000}
+        onClose={hideLocalToast}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        sx={{ zIndex: (t) => t.zIndex.snackbar }}
+      >
+        <Alert
+          onClose={hideLocalToast}
+          severity={localToast.severity}
+          variant="filled"
+          sx={{ borderRadius: 1.5, fontWeight: 600, minWidth: 320 }}
+        >
+          {localToast.message}
+        </Alert>
+      </Snackbar>
     </Dialog>
   );
 };

@@ -517,7 +517,7 @@ class PlaceholderResolver:
         """
         stripped: List[str] = []
 
-        def clean_value(value: Any) -> Any:
+        def clean_value(value: object) -> object:
             if isinstance(value, str):
                 matches = cls.PLACEHOLDER_PATTERN.findall(value)
                 if not matches:
@@ -558,7 +558,15 @@ class PlaceholderResolver:
 
         for key, value in args.items():
             if isinstance(value, str) and '{{' in value:
-                resolved[key] = cls._resolve_string_value(value, results_by_tool, log)
+                matches = cls.PLACEHOLDER_PATTERN.findall(value)
+                # If the entire value is exactly one placeholder, preserve the native
+                # type of the resolved data (list, dict, int, etc.) instead of
+                # coercing it to str via str(replacement).
+                if len(matches) == 1 and value.strip() == f"{{{{{matches[0]}}}}}":
+                    raw = cls._resolve_single_placeholder(matches[0], results_by_tool, log)
+                    resolved[key] = raw if raw is not None else value
+                else:
+                    resolved[key] = cls._resolve_string_value(value, results_by_tool, log)
             elif isinstance(value, dict):
                 resolved[key] = cls.resolve_all(value, results_by_tool, log)
             elif isinstance(value, list):

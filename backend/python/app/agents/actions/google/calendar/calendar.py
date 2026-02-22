@@ -1,9 +1,10 @@
+import ast
 import json
 import logging
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.tools.config import ToolCategory
 from app.agents.tools.decorator import tool
@@ -38,6 +39,40 @@ class GetCalendarEventsInput(BaseModel):
     time_zone: Optional[str] = Field(default=None, description="Time zone used in the response")
 
 
+def _coerce_attendees_emails(
+    v: Union[None, str, List[object]],
+) -> Optional[List[str]]:
+    """
+    Accept multiple shapes for attendee lists that can arrive from cascading tool
+    placeholder resolution:
+      - None / already List[str]  → pass through
+      - List[dict] with 'email'   → extract the email strings
+                   (e.g. Google Calendar attendees: [{'email': '...', 'responseStatus': '...'}])
+      - str repr of a list        → ast.literal_eval then recurse (safety net)
+    """
+    if v is None:
+        return v
+    if isinstance(v, str):
+        try:
+            parsed = ast.literal_eval(v)
+            if isinstance(parsed, list):
+                return _coerce_attendees_emails(parsed)
+        except (ValueError, SyntaxError):
+            pass
+        return [v]  # treat bare string as a single email
+    if isinstance(v, list):
+        emails: List[str] = []
+        for item in v:
+            if isinstance(item, dict):
+                email = item.get("email") or item.get("emailAddress") or item.get("email_address")
+                if email and isinstance(email, str):
+                    emails.append(email)
+            elif isinstance(item, str):
+                emails.append(item)
+        return emails or None
+    return v  # type: ignore[return-value]
+
+
 class CreateCalendarEventInput(BaseModel):
     """Schema for creating a calendar event"""
     event_start_time: str = Field(description="The start time of the event (ISO format or timestamp)")
@@ -50,6 +85,11 @@ class CreateCalendarEventInput(BaseModel):
     event_meeting_link: Optional[str] = Field(default=None, description="The meeting link/URL for the event")
     event_timezone: Optional[str] = Field(default="UTC", description="The timezone for the event")
     event_all_day: Optional[bool] = Field(default=False, description="Whether the event is an all-day event")
+
+    @field_validator("event_attendees_emails", mode="before")
+    @classmethod
+    def coerce_attendees(cls, v: object) -> Optional[List[str]]:
+        return _coerce_attendees_emails(v)  # type: ignore[arg-type]
 
 
 class UpdateCalendarEventInput(BaseModel):
@@ -65,6 +105,11 @@ class UpdateCalendarEventInput(BaseModel):
     event_meeting_link: Optional[str] = Field(default=None, description="The new meeting link/URL for the event")
     event_timezone: Optional[str] = Field(default="UTC", description="The new timezone for the event")
     event_all_day: Optional[bool] = Field(default=False, description="Whether the event should be an all-day event")
+
+    @field_validator("event_attendees_emails", mode="before")
+    @classmethod
+    def coerce_attendees(cls, v: object) -> Optional[List[str]]:
+        return _coerce_attendees_emails(v)  # type: ignore[arg-type]
 
 
 class DeleteCalendarEventInput(BaseModel):
@@ -86,6 +131,11 @@ class CreateMeetLinkInput(BaseModel):
     event_location: Optional[str] = Field(default=None, description="The location of the event")
     event_attendees_emails: Optional[List[str]] = Field(default=None, description="List of email addresses for event attendees")
     event_timezone: Optional[str] = Field(default="UTC", description="The timezone for the event")
+
+    @field_validator("event_attendees_emails", mode="before")
+    @classmethod
+    def coerce_attendees(cls, v: object) -> Optional[List[str]]:
+        return _coerce_attendees_emails(v)  # type: ignore[arg-type]
 
 
 # Register Google Calendar toolset
