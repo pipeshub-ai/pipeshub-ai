@@ -132,10 +132,10 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
                             # Update status to CONNECTOR_DISABLED
                             await graph_provider.update_node(
                                 record_id,
+                                CollectionNames.RECORDS.value,
                                 {
                                     "indexingStatus": ProgressStatus.CONNECTOR_DISABLED.value,
                                 },
-                                CollectionNames.RECORDS.value
                             )
                             results["skipped"] += 1
                             return
