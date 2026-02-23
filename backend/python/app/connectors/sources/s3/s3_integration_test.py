@@ -114,8 +114,11 @@ _TESTS_ROOT = Path(__file__).resolve().parents[4] / "tests"
 SAMPLE_DATA_ROOT = _TESTS_ROOT / "sample-data" / "entities"
 SETS_ROOT = SAMPLE_DATA_ROOT / "files" / "sets"
 
+# ── Key-index constants ────────────────────────────────────────────────────────
+_MOVE_KEY_INDEX = 2
 
-def _load_json(path: Path) -> Any:
+
+def _load_json(path: Path) -> dict[str, Any] | list[Any]:
     """Load and return parsed JSON from *path*."""
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
@@ -1147,7 +1150,7 @@ async def run_all() -> None:
         # Use the third key to avoid colliding with content_change_key (index 1)
         # or rename_src_key (index 0).
         move_src_key = (
-            sample1_keys[2] if len(sample1_keys) > 2
+            sample1_keys[_MOVE_KEY_INDEX] if len(sample1_keys) > _MOVE_KEY_INDEX
             else sample1_keys[1] if len(sample1_keys) > 1
             else "data.xlsx"
         )
