@@ -12,6 +12,11 @@ export const userAdminCheck = async (
   next: NextFunction,
 ): Promise<void> => {
   try {
+    // OAuth tokens that passed scope validation are already authorized
+    if (req.user?.isOAuth) {
+      return next();
+    }
+
     const userId = req.user?.userId;
     const orgId = req.user?.orgId;
     if (!userId || !orgId) {
