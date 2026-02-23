@@ -70,7 +70,6 @@ export class OAuthTokenService {
       userId: userId || app.clientId,
       orgId,
       iss: this.issuer,
-      aud: app.clientId,
       exp: now + app.accessTokenLifetime,
       iat: now,
       jti,
@@ -112,7 +111,6 @@ export class OAuthTokenService {
         userId: userId,
         orgId,
         iss: this.issuer,
-        aud: app.clientId,
         exp: now + app.refreshTokenLifetime,
         iat: now,
         jti: refreshJti,
@@ -415,7 +413,6 @@ export class OAuthTokenService {
         exp: payload.exp,
         iat: payload.iat,
         user_id: payload.userId,
-        aud: payload.aud,
         iss: payload.iss,
         jti: payload.jti,
       }
