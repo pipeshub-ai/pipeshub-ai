@@ -118,6 +118,16 @@ class ToolInstanceCreator:
                     f"Failed to create client for {app_name}: {e}",
                     exc_info=True
                 )
+            # Check if this is an authentication error
+            error_msg = str(e).lower()
+            if "not authenticated" in error_msg or "oauth" in error_msg or "authentication" in error_msg:
+                # Re-raise authentication errors with user-friendly message
+                toolset_name = app_name.capitalize() if app_name else "Toolset"
+                raise ValueError(
+                    f"{toolset_name} toolset is not authenticated. Please complete the OAuth flow first. "
+                    f"Go to Settings > Toolsets to authenticate your {toolset_name} account."
+                ) from e
+            # For other errors, fall back to legacy creation
             return self._fallback_creation(action_class)
 
     def _get_toolset_config(self, tool_full_name: str) -> Optional[Dict]:

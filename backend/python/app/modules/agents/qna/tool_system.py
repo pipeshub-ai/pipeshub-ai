@@ -103,7 +103,7 @@ class ToolLoader:
         """
         state_logger = state.get("logger")
 
-        has_knowledge = bool((state.get("kb") or state.get("apps")) or state.get("agent_knowledge"))
+        has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
 
         # Check cache validity
         cached_tools = state.get("_cached_agent_tools")

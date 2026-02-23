@@ -77,7 +77,7 @@ class NodeConfig:
     MAX_PARALLEL_TOOLS: int = 10
     TOOL_TIMEOUT_SECONDS: float = 60.0
     RETRIEVAL_TIMEOUT_SECONDS: float = 60.0  # Faster timeout for retrieval
-    PLANNER_TIMEOUT_SECONDS: float = 20.0
+    PLANNER_TIMEOUT_SECONDS: float = 45.0
     REFLECTION_TIMEOUT_SECONDS: float = 8.0
 
     # Retry & iteration limits
@@ -628,15 +628,17 @@ class PlaceholderResolver:
 
         tool_data = results_by_tool[tool_name]
 
-        # ✅ SPECIAL CASE: Retrieval tool returns string directly
+        # ✅ SPECIAL CASE: Retrieval tool returns a plain-text string (not JSON).
+        # No matter what field path the LLM tried to access (e.g. .data.results[0].title),
+        # we always return the full retrieved text.  This prevents None-substitution which
+        # would strip the field from the downstream tool call and cause the LLM to
+        # hallucinate content instead of using the actually-retrieved knowledge.
         if "retrieval" in tool_name.lower() and isinstance(tool_data, str):
-            # If placeholder is just the tool name (no field path), return the string
-            if not field_path or field_path == ['data']:
-                log.info(f"✅ Resolved {{{{{placeholder}}}}} → [retrieval content string]")
-                return tool_data
-            # If they're trying to access a field, we can't (it's a string)
-            log.warning(f"❌ Retrieval tool returns string, cannot access field: {field_path}")
-            return None
+            log.info(
+                f"✅ Resolved {{{{{placeholder}}}}} → [full retrieval text, {len(tool_data)} chars]"
+                + (f" (field path '{field_path}' ignored — retrieval is plain text)" if field_path and field_path != ['data'] else "")
+            )
+            return tool_data
 
         # Extract data using field path (for structured results)
         extracted = ToolResultExtractor.extract_field_from_data(tool_data, field_path)
@@ -1715,30 +1717,53 @@ START
   → YES: can_answer_directly: true, tools: []   ◄ STOP
   → NO: continue ↓
 
-[Node 2] Is this a WRITE action (create/update/delete/send/post/assign)?
+[Node 2] Is this a WRITE action (create/update/delete/send/post/assign/comment)?
   → YES: Is a REQUIRED parameter missing that only the user can supply?
       → YES: needs_clarification: true, tools: []   ◄ STOP
-      → NO: continue to Node 3 (select service write tool) ↓
+      → NO: Does the content of this write action need knowledge from internal KB
+            (e.g. "send a report about X", "write a summary of our policy on Y",
+             "update ticket with info about Z", "email detailed info about W")?
+          → YES: Plan retrieval tools ONLY in this cycle. The system will automatically
+                 continue to Phase 2 where you will receive the actual retrieved content
+                 in your context and can write the email/comment/page body inline using
+                 that real data. Do NOT include write tools in this Phase 1 plan.   ◄ STOP
+          → NO: continue to select write tool directly ↓
 
-[Node 3] Does the request explicitly ask for LIVE/REAL-TIME data from a NAMED service?
-  Signals: "list my Jira issues", "get Confluence pages", "show Slack messages",
-           "my tickets", "my PRs", "my calendar", mentions a service + live data pattern
-  → YES: Use the matching service tool (Jira/Confluence/Slack/etc.)   ◄ STOP
+[Node 3] Does the query want to FIND/SEARCH content BY TOPIC, KEYWORD, or MEANING?
+  (not by an exact ID/key, not asking for current live status)
+  Signals: "find tickets about X", "search for issues related to X",
+           "show me anything about X", "what are the errors/bugs/issues about X",
+           "find documents/pages about X", "anything about X", topical/semantic searches
+  ── CRITICAL: Check the 🧠 KNOWLEDGE & DATA SOURCES section above ──
+  → If the relevant app IS INDEXED (listed under 📚 INDEXED KNOWLEDGE):
+      → Use `retrieval.search_internal_knowledge` with a descriptive query   ◄ STOP
+        (Retrieval semantically searches ALL indexed sources at once — better for topic discovery)
+  → If the relevant app is NOT indexed but HAS live API tools:
+      → Use the matching service API tool   ◄ STOP
+  → If BOTH indexed AND live API would help (e.g. "find X then do Y"):
+      → Plan retrieval first, then service tool   ◄ STOP
+  → NO match (no relevant indexed source, no API): continue ↓
+
+[Node 4] Does the request explicitly ask for CURRENT/LIVE data by a specific filter?
+  Signals: "list MY issues", "get issues ASSIGNED to me", "show THIS WEEK's tickets",
+           "current sprint", "open PRs", "today's calendar", "unread emails",
+           "get issue PA-123" (exact key/ID), live status/metrics/counts
+  → YES: Use the matching live API service tool   ◄ STOP
   → NO: continue ↓
 
-[Node 4] Is this an information/knowledge/explanation query?
+[Node 5] Is this an information/knowledge/explanation query about a topic or concept?
   Signals: "what is X", "tell me about X", "explain X", "who is X",
            "how does X work", "our policy on X", "find document about X",
            "what are best practices for X", any vague or ambiguous query
   → YES: Use retrieval.search_internal_knowledge   ◄ STOP
   → NO: continue ↓
 
-[Node 5] Does the query require BOTH knowledge AND a live service action?
+[Node 6] Does the query require BOTH knowledge AND a live service action?
   (Hybrid case — e.g. "find the SOP and create a Confluence page from it")
   → YES: Plan retrieval FIRST, then service tool   ◄ STOP
   → NO: continue ↓
 
-[Node 6] DEFAULT — When in doubt: Use retrieval.search_internal_knowledge
+[Node 7] DEFAULT — When in doubt: Use retrieval.search_internal_knowledge
   Never leave tools: [] unless can_answer_directly or needs_clarification is true.
   ◄ STOP
 ```
@@ -1765,12 +1790,14 @@ Retrieval handles ALL of these (not just the obvious ones):
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ### Category A — Internal Knowledge: `retrieval.search_internal_knowledge`
-Searches indexed org documents, SOPs, policies, wiki pages, HR records, project notes.
+Performs SEMANTIC SEARCH across ALL indexed sources simultaneously — KB documents, app connector snapshots (Jira, Confluence, Slack, Drive, etc.), SOPs, policies, wiki pages, and more.
 
 **USE retrieval when:**
+- User wants to FIND or DISCOVER content BY TOPIC, KEYWORD, or MEANING (not by ID)
 - User asks "what is X", "tell me about X", "explain X", "who is W", "how does Z work"
 - User asks about a topic, policy, process, person, or document
-- No service tool directly serves the information need
+- The relevant app IS LISTED in the 📚 INDEXED KNOWLEDGE section above (check it!)
+- Query is about finding/searching across indexed app content (e.g., "find Jira tickets about upload errors" — if Jira is indexed)
 - Query is ambiguous — search first, clarify later only if search fails
 - You need org context alongside a service action
 
@@ -1780,24 +1807,33 @@ Searches indexed org documents, SOPs, policies, wiki pages, HR records, project 
 Live API integrations: Jira, Confluence, Slack, Gmail, Google Drive, etc.
 
 **USE service tools when:**
-- User asks for **live/current data** from a named service ("list my Jira issues", "get pages from Confluence", "show Slack messages")
-- User wants to **take an action** (create, update, delete, send, post, assign)
-- User references service-specific entities (tickets, pages, channels, spaces, issues)
+- User asks for **live/current data** that must reflect the latest state ("list my open Jira issues", "get current sprint tickets", "show unread emails")
+- User needs to filter by live/real-time fields (assignee, status, priority, date, current sprint)
+- User wants to get a specific item by its ID/key (e.g., "get issue PA-123")
+- User wants to **take an action** (create, update, delete, send, post, assign, comment)
+
+**⚠️ Even if a service (e.g. Jira) is INDEXED, use the LIVE API when:**
+- The user needs the current/up-to-date state of tickets (not a snapshot)
+- The user is filtering by live fields (open issues, assigned to me, this sprint)
+- The user wants to perform a write action
 
 **Key distinction — apply this before every tool selection:**
 | Query pattern | Tool |
 |---|---|
 | "what is X / tell me about X / explain X / who is X" | retrieval |
-| "list / get / fetch / show [items] from [Jira/Confluence/Slack]" | service tool |
-| "create / update / delete / send [something] on [service]" | service write tool |
-| "find X" where X could be a doc/topic | retrieval |
-| "find X" where X is clearly a Jira ticket/page | service tool |
+| "find/search [app content] related to [topic]" AND app is indexed | retrieval |
+| "list MY / current / open / this-week's [items]" | live API service tool |
+| "get [item] by key/ID" (e.g., PA-123) | live API service tool |
+| "create / update / delete / send / comment [something]" | live API service write tool |
+| "find X" where X is a topic/concept AND the app is indexed | retrieval |
+| "find X" where X is a live status/filter (open, urgent, today) | live API service tool |
 | Ambiguous — could be knowledge or service | retrieval (default) |
 
 ### Hybrid — Use Both When Genuinely Required
-- "Find deployment SOP (retrieval) and create a Confluence page from it (service)"
-- "Fetch sprint issues (service) and summarize our sprint policy (retrieval)"
-- Order: retrieval first when you need knowledge to inform a service action
+- "Find upload failure tickets (retrieval for semantic search if Jira indexed) and add a comment to each (Jira API write)"
+- "Find deployment SOP (retrieval) and create a Confluence page from it (API)"
+- "Summarize our sprint policy (retrieval) and fetch current sprint tickets (Jira API)"
+- Order: retrieval FIRST when you need knowledge to inform a service action or write
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ## REFERENCE DATA PRE-CHECK (Run Before Any Tool Selection)
@@ -1833,20 +1869,37 @@ Read the full tool list under `## AVAILABLE TOOLS`. Select the tool whose descri
 ## ABSOLUTE RULES (Inviolable — Apply to Every Plan)
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-**R1 — Service tools win for live service data.**
-If a service tool can directly fetch/act on the requested data, use it. NEVER substitute retrieval for a service tool that directly matches.
+**R1 — Service tools win for LIVE/CURRENT data and WRITE actions.**
+Use service tools when the user needs real-time data (current state, live filters) or to take a write action. Do NOT substitute retrieval for live data needs.
 - ❌ Do NOT use retrieval to list Confluence spaces → use `confluence.get_spaces`
-- ❌ Do NOT use retrieval to fetch Slack messages → use `slack.get_channel_history`
-- ❌ Do NOT use retrieval to get Jira issues → use `jira.search_issues`
+- ❌ Do NOT use retrieval to fetch unread Slack messages → use `slack.get_channel_history`
+- ❌ Do NOT use retrieval to get an issue by exact key (PA-123) → use `jira.get_issue`
+- ❌ Do NOT use retrieval to list MY open Jira issues by assignee/status → use `jira.search_issues`
+- ✅ DO use retrieval to FIND Jira/Confluence/Slack content BY TOPIC when the app IS INDEXED
+  (Check the 📚 INDEXED KNOWLEDGE section — if Jira is listed there, retrieval can semantically
+   search indexed Jira ticket content, which is often more accurate for topical discovery)
+
+**R1a — Indexed app connector exception:**
+When an app (e.g. Jira, Confluence, Slack) appears in the 📚 INDEXED KNOWLEDGE section:
+- "find tickets/pages/messages ABOUT [topic]" → `retrieval.search_internal_knowledge`
+- "search for [app] content related to [topic or error or concept]" → `retrieval`
+- "get CURRENT/LIVE/OPEN [items] from [app]" → live API service tool
+- "get [item] by specific ID/key" → live API service tool
+- "create/update/delete [item] in [app]" → live API write tool
 
 **R2 — Retrieval wins for organizational knowledge and information queries.**
 If the request is about a topic, concept, policy, process, document, or person — always use retrieval. Never skip retrieval for these just because service tools exist.
 - ❌ Do NOT call `jira.search_users` to answer "who is John?" → use retrieval
 - ❌ Do NOT skip retrieval for "what is our leave policy?" just because Jira/Confluence tools exist
 - ✅ When uncertain whether something is in the knowledge base → search first
+- ✅ When the query is topical/semantic and the relevant app is indexed → use retrieval
 
-**R3 — Never use retrieval to extract structured values.**
-Retrieval returns text. Never cascade retrieval output into a service tool needing a structured field (ID, accountId, page_id, space_id).
+**R3 — Never use retrieval placeholders with field paths.**
+Retrieval returns a plain text string — NOT structured JSON. Never use `{{{{retrieval.xxx.data.results[0].field}}}}` or any field path against a retrieval result.
+- ✅ `{{{{retrieval.search_internal_knowledge}}}}` — valid, returns the full text string
+- ❌ `{{{{retrieval.search_internal_knowledge.data.results[0].id}}}}` — INVALID, no `.data` object exists
+- ❌ `{{{{retrieval.search_internal_knowledge.data.anything}}}}` — INVALID
+- For structured IDs (page_id, space_id, accountId) — use the appropriate service tool, never retrieval.
 
 **R4 — Never fabricate structured values.**
 If you need an accountId, page_id, space_id, channel ID — read from Reference Data, conversation history, OR call the appropriate lookup service tool. Never invent values.
@@ -1931,8 +1984,28 @@ Set `needs_clarification: true` ONLY if ALL of these are simultaneously true:
 **Do NOT cascade when:**
 - ❌ Value already exists in Reference Data or conversation history → use directly
 - ❌ Only one tool is being called → use actual values, not placeholders
-- ❌ Retrieval result feeds a service tool → retrieval returns text, not structured JSON
 - ❌ Upstream search might return empty → check conversation history first
+
+**⚠️ RETRIEVAL + WRITE ACTION — TWO-PHASE MANDATORY RULE:**
+
+When a write action (email, comment, page, etc.) needs content from internal KB retrieval:
+- **Phase 1 (THIS cycle)**: Plan retrieval tools ONLY. Do NOT include write tools.
+- **Phase 2 (next cycle)**: You will receive the actual retrieved knowledge in your context.
+  Write the email/comment/page content inline using that real KB data — factual, grounded content.
+
+The system automatically continues to Phase 2 after retrieval completes.
+
+- ❌ NEVER write email/comment bodies inline at planning time — you don't have the retrieved content yet, so anything you write will be **hallucinated**
+- ❌ NEVER put retrieval + write tools in the same plan when write content depends on retrieval
+- ✅ Plan retrieval ONLY → system continues → write content inline from actual KB results
+
+**⚠️ RETRIEVAL CASCADING — FIELD PATH RULES:**
+
+Retrieval (`retrieval.search_internal_knowledge`) returns a **plain text string**, NOT structured JSON.
+- ❌ NEVER use `{{{{retrieval.search_internal_knowledge.data.results[0].title}}}}` — field paths DO NOT work on retrieval
+- ❌ NEVER use `{{{{retrieval.search_internal_knowledge.data.anything}}}}` — there is no `.data` object
+- ✅ If you MUST cascade retrieval text into a write tool: `{{{{retrieval.search_internal_knowledge}}}}` (no field path — inserts full retrieved text)
+- ✅ PREFERRED: Use two-phase planning (Phase 1: retrieval; Phase 2: write with inline content)
 
 **Example — Single tool (NO placeholders):**
 ```json
@@ -1990,11 +2063,54 @@ When calling `retrieval.search_internal_knowledge`:
 ## CONTENT GENERATION FOR WRITE ACTIONS
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-When a write tool needs text content:
-1. **Extract from conversation history** — find actual content in prior messages
-2. **Summarize upstream tool data** — READ and SUMMARIZE; do NOT pass raw output through
-3. **Generate inline** — write full, complete, final text in the plan
-4. **Format correctly for the target tool:**
+When a write tool needs text content, the correct approach depends on **where the content comes from**:
+
+**CASE 1 — Content from conversation history (prior messages):**
+→ Extract and write INLINE. The content is already known.
+
+**CASE 2 — Content from retrieval that ALREADY ran (continue/second cycle, context shows retrieved knowledge):**
+→ Write INLINE using the ACTUAL knowledge in context. You have real data now — synthesize and compose it fully.
+
+**CASE 3 — Content from retrieval that has NOT yet run (THIS is Phase 1):**
+→ ⚠️ MANDATORY: Plan retrieval tools ONLY. Do NOT include write tools in this plan.
+→ The system will automatically execute retrieval and continue to Phase 2.
+→ In Phase 2 you will have the actual KB content in context and can write inline.
+→ Writing inline NOW = hallucination = WRONG because retrieval has not run yet.
+
+**CASE 4 — Content from an upstream service tool (Jira, Confluence, etc.):**
+→ Summarize/translate the upstream data; NEVER pipe raw tool output through as-is.
+
+**⚠️ CRITICAL — RETRIEVAL → WRITE ACTION RULES:**
+- ❌ WRONG: `"mail_body": "Here is the licensing info: [anything you write inline]"` — retrieval hasn't run yet, this is HALLUCINATION
+- ❌ WRONG: mixing retrieval + write tools in the same plan when write content depends on KB data
+- ❌ WRONG: `"mail_body": "{{{{retrieval.search_internal_knowledge.data.results[0].content}}}}"` — invalid field path
+- ✅ CORRECT (Phase 1): Plan ONLY retrieval tools. System continues to Phase 2 automatically.
+- ✅ CORRECT (Phase 2): Write the full content inline using the actual KB text now in your context.
+
+**Example — email that needs KB content (TWO-PHASE, CORRECT):**
+
+Phase 1 plan (retrieval only):
+```json
+{{
+  "tools": [
+    {{"name": "retrieval.search_internal_knowledge", "args": {{"query": "PipesHub license Community Enterprise"}}}}
+  ]
+}}
+```
+Phase 2 plan (write with actual content from context):
+```json
+{{
+  "tools": [
+    {{"name": "gmail.send_email", "args": {{
+      "mail_to": ["user@example.com"],
+      "mail_subject": "PipesHub Licensing Report",
+      "mail_body": "Hi,\n\nHere is the licensing information from our knowledge base:\n\n[write actual content from KB results visible in your context here]\n\nRegards"
+    }}}}
+  ]
+}}
+```
+
+5. **Format correctly for the target tool:**
    - Confluence: `<h1>`, `<h2>`, `<p>`, `<ul><li>`, `<pre><code>`, `<table>`
    - Slack: **plain text or Slack mrkdwn only** — `*bold*`, `_italic_`, `` `code` ``, `• bullets`, `\n`
    - Never write instruction text or "fill in X" as a content value
@@ -2370,7 +2486,7 @@ async def planner_node(
     # If no knowledge sources are configured, explicitly tell the LLM not to use retrieval
     agent_tools = state.get("tools", []) or []
     has_user_tools = bool(agent_tools)
-    has_knowledge = bool((state.get("kb") or state.get("apps") or state.get("agent_knowledge")))
+    has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
 
     if not has_knowledge:
         if not has_user_tools:
@@ -2400,6 +2516,11 @@ async def planner_node(
                 "- ❌ NEVER set `needs_clarification: true` for org-knowledge questions — instead answer directly and explain the limitation.\n"
             )
         system_prompt += no_retrieval_note
+
+    # Inject knowledge context so the LLM knows what is indexed vs. what is live API
+    knowledge_context = _build_knowledge_context(state, log)
+    if knowledge_context:
+        system_prompt = system_prompt + knowledge_context
 
     # Prepend agent instructions if provided
     instructions = state.get("instructions")
@@ -2497,6 +2618,52 @@ async def planner_node(
         "reasoning": plan.get("reasoning", ""),
         "can_answer_directly": plan.get("can_answer_directly", False),
     }
+
+    # ── TWO-PHASE ENFORCEMENT ──────────────────────────────────────────────────
+    # If the plan has BOTH retrieval.search_internal_knowledge AND write tools,
+    # strip the write tools from this cycle. Let retrieval run first; in the
+    # continue cycle the planner will see the actual KB content in context and
+    # can write grounded email/comment/page content inline — no hallucination.
+    #
+    # Skip this enforcement if retrieval has already run in a previous iteration
+    # (meaning we're in Phase 2 and the planner should proceed with write tools).
+    plan_tools = plan.get("tools", [])
+    executed_tool_names = state.get("executed_tool_names", [])
+
+    def _is_retrieval_tool(name: str) -> bool:
+        n = name.lower()
+        return "retrieval" in n or "search_internal_knowledge" in n
+
+    retrieval_already_run = any(_is_retrieval_tool(t) for t in executed_tool_names)
+    has_retrieval_in_plan = any(
+        _is_retrieval_tool(t.get("name", ""))
+        for t in plan_tools if isinstance(t, dict)
+    )
+    has_write_in_plan = any(
+        _is_write_tool(t.get("name", ""))
+        for t in plan_tools if isinstance(t, dict)
+    )
+
+    if has_retrieval_in_plan and has_write_in_plan and not retrieval_already_run:
+        retrieval_tools = [
+            t for t in plan_tools
+            if isinstance(t, dict) and _is_retrieval_tool(t.get("name", ""))
+        ]
+        write_tools = [
+            t for t in plan_tools
+            if isinstance(t, dict) and _is_write_tool(t.get("name", ""))
+        ]
+        log.info(
+            f"⚡ TWO-PHASE PLAN: {len(plan_tools)} total tools detected. "
+            f"Deferring {len(write_tools)} write tool(s) to Phase 2 so LLM "
+            f"generates content from actual retrieval results (not hallucination). "
+            f"Running {len(retrieval_tools)} retrieval tool(s) in Phase 1."
+        )
+        plan["tools"] = retrieval_tools
+        state["execution_plan"] = plan
+        state["planned_tool_calls"] = retrieval_tools
+        state["pending_tool_calls"] = bool(retrieval_tools)
+    # ─────────────────────────────────────────────────────────────────────────
 
     # Handle clarification request
     if plan.get("needs_clarification"):
@@ -2834,66 +3001,149 @@ def _build_continue_context(state: ChatState, log: logging.Logger) -> str:
     Build the context injected into the planner prompt when re-planning after a
     partial iteration (continue_with_more_tools).
 
-    Key design goals:
-    - Surface ALL previous tool results (not just the last N) so the planner can
-      reference any value from any prior step.
-    - Clearly flag write/action tools that already succeeded so the planner does
-      NOT repeat them and create duplicates.
-    - Include enough data per result for the planner to extract IDs and content.
+    Design principles:
+    - Generic: works for any tool combination, not Jira/email specific.
+    - No truncation: every tool result is emitted in full so the planner has
+      complete information to chain calls and generate write content.
+    - Retrieval knowledge is surfaced from state["final_results"] (the
+      deduplicated merged blocks) AND from the raw tool result string so
+      nothing is lost.
+    - Completed write/action tools are flagged to prevent accidental repeats.
     """
     tool_results = state.get("all_tool_results", [])
     if not tool_results:
         return ""
 
-    # ── Format ALL tool results (cap individual payloads, not the list) ──────
-    result_parts = []
-    for result in tool_results:          # ← ALL results, not just last 5
-        tool_name   = result.get("tool_name", "unknown")
-        status      = result.get("status", "unknown")
-        result_data = result.get("result", "")
+    # ── Classify results: retrieval vs everything else ────────────────────────
+    def _is_retrieval(tool_name: str) -> bool:
+        name = tool_name.lower()
+        return "retrieval" in name or "search_internal_knowledge" in name
 
-        if status == "success":
+    retrieval_results = [r for r in tool_results if _is_retrieval(r.get("tool_name", ""))]
+    api_results       = [r for r in tool_results if not _is_retrieval(r.get("tool_name", ""))]
+
+    parts = []
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Section 1 — Retrieved knowledge
+    # Prefer state["final_results"] (merged/deduplicated blocks) but also
+    # include the raw tool result text so nothing is omitted.
+    # ══════════════════════════════════════════════════════════════════════════
+    final_results = state.get("final_results", []) or []
+
+    if retrieval_results or final_results:
+        parts.append("## 📚 RETRIEVED KNOWLEDGE")
+        parts.append(
+            "Use this as the authoritative source when generating content for "
+            "any write action (create, update, send, post, comment, etc.). "
+            "Write the full content inline — do NOT summarise or reduce to bullet points."
+        )
+        parts.append("")
+
+        knowledge_written = False
+
+        # 1a. Emit every block from final_results (no limit, no truncation)
+        if final_results:
+            knowledge_lines = []
+            for i, block in enumerate(final_results):
+                text = ""
+                if isinstance(block, dict):
+                    text = (
+                        block.get("text", "")
+                        or block.get("content", "")
+                        or block.get("chunk", "")
+                        or ""
+                    )
+                    if not text and "blocks" in block:
+                        # Nested block list (e.g. Confluence page structure)
+                        text = "\n".join(
+                            b.get("text", "") for b in block["blocks"] if isinstance(b, dict)
+                        )
+                text = str(text).strip()
+                if text:
+                    knowledge_lines.append(f"[KB-{i+1}]\n{text}")
+            if knowledge_lines:
+                parts.append("\n\n".join(knowledge_lines))
+                knowledge_written = True
+
+        # 1b. Always also emit the full raw retrieval result strings so
+        #     nothing is lost if final_results was populated differently.
+        for r in retrieval_results:
+            if r.get("status") == "success":
+                raw = str(r.get("result", "")).strip()
+                if raw:
+                    parts.append(f"\n[Raw retrieval output from {r.get('tool_name', 'retrieval')}]\n{raw}")
+                    knowledge_written = True
+
+        if not knowledge_written:
+            parts.append("(No knowledge content retrieved yet.)")
+
+        parts.append("")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Section 2 — All other tool results (full, untruncated)
+    # ══════════════════════════════════════════════════════════════════════════
+    if api_results:
+        parts.append("## 🔧 TOOL RESULTS")
+        parts.append(
+            "Extract any IDs, keys, references, or values you need for the next steps "
+            "directly from the results below."
+        )
+        parts.append("")
+        for result in api_results:
+            tool_name   = result.get("tool_name", "unknown")
+            status      = result.get("status", "unknown")
+            result_data = result.get("result", "")
+
+            # Emit in full — no character cap
             if isinstance(result_data, dict):
-                # Pretty-print structured data; cap at 3 000 chars per result
-                result_str = json.dumps(result_data, default=str, indent=2)[:3000]
+                result_str = json.dumps(result_data, default=str, indent=2)
             else:
-                result_str = str(result_data)[:3000]
-        else:
-            result_str = str(result_data)[:500]
+                result_str = str(result_data)
 
-        result_parts.append(f"- **{tool_name}** ({status}):\n{result_str}")
+            parts.append(f"### {tool_name} ({status})\n{result_str}")
+        parts.append("")
 
-    # ── Detect completed write/action tools using the same helper used in
-    #    reflect_node so the definition is consistent (prefix-based, not ad-hoc). ──
+    # ══════════════════════════════════════════════════════════════════════════
+    # Section 3 — Duplicate-prevention guard for write/action tools
+    # ══════════════════════════════════════════════════════════════════════════
     completed_writes = [
         r.get("tool_name", "unknown")
         for r in tool_results
         if r.get("status") == "success" and _is_write_tool(r.get("tool_name", ""))
     ]
-
-    completed_warning = ""
     if completed_writes:
-        completed_warning = (
-            "\n\n⚠️ **ALREADY COMPLETED — DO NOT REPEAT**: The following write/action "
-            "tools already succeeded. Calling them again will create duplicates:\n" +
-            "\n".join(f"  - ✅ {t}" for t in completed_writes) +
-            "\nOnly plan tools needed for **remaining** incomplete steps."
+        parts.append(
+            "⚠️ ALREADY COMPLETED — DO NOT REPEAT: The following tools already "
+            "succeeded. Planning them again will create duplicates:\n" +
+            "\n".join(f"  ✅ {t}" for t in completed_writes) +
+            "\nOnly plan the remaining incomplete steps."
         )
+        parts.append("")
 
-    result_block = "\n".join(result_parts)
+    # ══════════════════════════════════════════════════════════════════════════
+    # Section 4 — Generic planning instructions (tool-agnostic)
+    # ══════════════════════════════════════════════════════════════════════════
+    parts.append("## 📋 PLANNING INSTRUCTIONS FOR THIS CYCLE")
+    parts.append(
+        "1. Use the TOOL RESULTS above to extract any identifiers (IDs, keys, URLs, "
+        "addresses, timestamps, etc.) needed for subsequent tool calls.\n"
+        "2. When a write tool needs content (email body, Jira comment, Confluence page, "
+        "Slack message, etc.), write the FULL content INLINE in the tool arguments. "
+        "Draw from the RETRIEVED KNOWLEDGE shown above — use it verbatim or synthesize "
+        "it into well-structured prose. Do NOT summarize to bullet points or leave "
+        "placeholders. The retrieved text above IS the authoritative source — use it.\n"
+        "3. ⚠️ CRITICAL: Do NOT hallucinate or generate content from your own training "
+        "knowledge for write actions. ONLY use content from the RETRIEVED KNOWLEDGE "
+        "section above. If information is not in the retrieved knowledge, say so.\n"
+        "4. Use `{{tool_name.data.field[0].subfield}}` placeholder syntax ONLY for "
+        "referencing identifiers/keys (IDs, issue keys, thread IDs, etc.) from previous "
+        "tool results, NEVER for content fields.\n"
+        "5. Do NOT re-fetch or re-retrieve data that is already present above.\n"
+        "6. Do NOT repeat any tool listed in the ALREADY COMPLETED section."
+    )
 
-    context = f"""## 📋 PREVIOUS TOOL RESULTS (all steps so far — use this data for next steps)
-
-{result_block}{completed_warning}
-
-**Planning instructions for this continue cycle**:
-- Use the tool results above to determine what has already been done.
-- Extract IDs, keys, timestamps, and other values directly from the results above.
-- Use `{{{{tool_name.data.field[0].subfield}}}}` placeholders (simple numeric indices only) when passing values from one tool to the next.
-- For content-generation tools (e.g. confluence.create_page, confluence.update_page), produce FULL, complete content in the required format (Confluence HTML storage format, etc.).
-- Do NOT re-fetch data that is already present in the results above."""
-
-    return context
+    return "\n".join(parts)
 
 
 async def _plan_with_validation_retry(
@@ -3019,7 +3269,7 @@ Choose tools ONLY from the available list above.
 
         except asyncio.TimeoutError:
             log.warning("⏱️ Planner timeout")
-            fallback = _create_fallback_plan(query)
+            fallback = _create_fallback_plan(query, state)
             fallback_tools = fallback.get('tools', [])
             is_valid, invalid_tools, _ = _validate_planned_tools(fallback_tools, state, log)
             if not is_valid:
@@ -3030,7 +3280,7 @@ Choose tools ONLY from the available list above.
             return fallback
         except Exception as e:
             log.error(f"💥 Planner error: {e}")
-            fallback = _create_fallback_plan(query)
+            fallback = _create_fallback_plan(query, state)
             fallback_tools = fallback.get('tools', [])
             is_valid, invalid_tools, _ = _validate_planned_tools(fallback_tools, state, log)
             if not is_valid:
@@ -3041,7 +3291,7 @@ Choose tools ONLY from the available list above.
             return fallback
 
     # Should never reach here
-    fallback = _create_fallback_plan(query)
+    fallback = _create_fallback_plan(query, state)
     fallback_tools = fallback.get('tools', [])
     is_valid, invalid_tools, _ = _validate_planned_tools(fallback_tools, state, log)
     if not is_valid:
@@ -3144,15 +3394,116 @@ def _parse_planner_response(content: str, log: logging.Logger) -> Dict[str, Any]
     return _create_fallback_plan("")
 
 
-def _create_fallback_plan(query: str) -> Dict[str, Any]:
-    """Create fallback plan when parsing fails"""
+def _create_fallback_plan(query: str, state: "ChatState | None" = None) -> Dict[str, Any]:
+    """Create a context-aware fallback plan when the planner times out or fails.
+
+    Decision tree:
+    1. If retrieval was already executed this turn AND action tools are available
+       → plan those action tools (don't repeat retrieval endlessly).
+    2. If retrieval was already executed but no action tools match the query intent
+       → can_answer_directly so the LLM at least responds with retrieved knowledge.
+    3. If retrieval has NOT been executed yet and knowledge is configured
+       → default to retrieval (original behaviour).
+    4. No knowledge, no state → can_answer_directly.
+    """
+    # ── 1. Identify what was already executed this turn ──────────────────────
+    all_tool_results = []
+    has_knowledge = False
+    if state:
+        all_tool_results = state.get("all_tool_results", []) or []
+        has_knowledge = bool(
+            state.get("agent_knowledge")
+            or state.get("kb")
+            or state.get("apps")
+        )
+
+    executed_names = {
+        r.get("tool_name", "") for r in all_tool_results if isinstance(r, dict)
+    }
+    retrieval_done = any(
+        "retrieval" in name or "search_internal_knowledge" in name
+        for name in executed_names
+    )
+
+    # ── 2. After retrieval: try to plan action tools ──────────────────────────
+    if retrieval_done and state:
+        try:
+            from app.modules.agents.qna.tool_system import get_agent_tools_with_schemas
+            available = {getattr(t, "name", "") for t in get_agent_tools_with_schemas(state)}
+        except Exception:
+            available = set()
+
+        query_lower = (query or "").lower()
+        fallback_tools = []
+
+        # Email intent
+        wants_email = any(w in query_lower for w in ["email", "mail", "send", "reply"])
+        if wants_email:
+            for candidate in ["gmail.reply", "gmail.send_email", "gmail.draft_email"]:
+                if candidate in available:
+                    fallback_tools.append({
+                        "name": candidate,
+                        "args": {
+                            "to": "{{previous_email_sender}}",
+                            "subject": "Re: {{previous_email_subject}}",
+                            "body": "{{detailed_content_from_knowledge}}"
+                        }
+                    })
+                    break
+
+        # Ticket/Jira intent
+        wants_ticket = any(w in query_lower for w in ["ticket", "jira", "issue", "update", "comment"])
+        if wants_ticket:
+            for candidate in ["jira.update_issue", "jira.add_comment"]:
+                if candidate in available:
+                    fallback_tools.append({
+                        "name": candidate,
+                        "args": {
+                            "issue_key": "{{jira_issue_key_from_context}}",
+                            "description": "{{detailed_content_from_knowledge}}"
+                        }
+                    })
+                    break
+
+        if fallback_tools:
+            return {
+                "intent": "Fallback: Execute action after retrieval",
+                "reasoning": "Retrieval complete; timeout fallback proceeding with write actions",
+                "can_answer_directly": False,
+                "needs_clarification": False,
+                "clarifying_question": "",
+                "tools": fallback_tools,
+            }
+
+        # Retrieval done but no matching action tools found → respond with knowledge
+        return {
+            "intent": "Fallback: Respond with retrieved knowledge",
+            "reasoning": "Retrieval complete; planner timeout — responding directly",
+            "can_answer_directly": True,
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "tools": [],
+        }
+
+    # ── 3. Retrieval not yet done — use it if knowledge is configured ─────────
+    if has_knowledge:
+        return {
+            "intent": "Fallback: Search internal knowledge",
+            "reasoning": "Planner failed; searching knowledge base",
+            "can_answer_directly": False,
+            "needs_clarification": False,
+            "clarifying_question": "",
+            "tools": [{"name": "retrieval.search_internal_knowledge", "args": {"query": query}}],
+        }
+
+    # ── 4. No knowledge, no context — answer directly ────────────────────────
     return {
-        "intent": "Fallback: Search internal knowledge",
-        "reasoning": "Planner failed, using fallback",
-        "can_answer_directly": False,
+        "intent": "Fallback: Direct answer",
+        "reasoning": "Planner failed; no knowledge configured",
+        "can_answer_directly": True,
         "needs_clarification": False,
         "clarifying_question": "",
-        "tools": [{"name": "retrieval.search_internal_knowledge", "args": {"query": query}}]
+        "tools": [],
     }
 
 
@@ -3215,6 +3566,188 @@ def _has_slack_tools(state: ChatState) -> bool:
     return any(isinstance(ts, dict) and "slack" in ts.get("name", "").lower() for ts in agent_toolsets)
 
 
+def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
+    """
+    Build a detailed knowledge-context block injected into the planner system prompt.
+
+    Tells the LLM:
+      1. Which KB documents are indexed (name, type=KB)  → retrieval
+      2. Which app connectors are indexed (Jira, Confluence, Slack …) → retrieval
+         - With specific descriptions of what content is indexed per app type
+      3. Which of those apps also have live API toolsets              → API tools
+      4. A precise decision guide: when to use retrieval vs. live API vs. BOTH
+
+    Returns an empty string if no knowledge is configured (so the prompt is
+    unaffected for agents with toolsets only).
+    """
+    # ── App-type → indexed content description ────────────────────────────────
+    _APP_INDEXED_CONTENT: dict[str, str] = {
+        "jira":           "Jira ticket titles, descriptions, comments, labels, sprint info (indexed snapshot)",
+        "confluence":     "Confluence page titles, body content, space descriptions (indexed snapshot)",
+        "slack":          "Slack messages, threads, channel conversations (indexed snapshot)",
+        "drive":          "Google Drive files, document text, spreadsheet content (indexed snapshot)",
+        "gmail":          "Gmail email bodies, subjects, sender/recipient info (indexed snapshot)",
+        "notion":         "Notion pages, databases, wiki content (indexed snapshot)",
+        "onedrive":       "OneDrive files and document text (indexed snapshot)",
+        "sharepoint":     "SharePoint pages and document content (indexed snapshot)",
+        "teams":          "Microsoft Teams messages and meeting notes (indexed snapshot)",
+        "servicenow":     "ServiceNow incidents, requests, knowledge articles (indexed snapshot)",
+        "linear":         "Linear issues, projects, cycle data (indexed snapshot)",
+        "zammad":         "Zammad tickets and help-desk content (indexed snapshot)",
+        "bookstack":      "BookStack books, chapters, pages (indexed snapshot)",
+        "nextcloud":      "Nextcloud files and document content (indexed snapshot)",
+        "box":            "Box files and document content (indexed snapshot)",
+        "dropbox":        "Dropbox files and document content (indexed snapshot)",
+        "s3":             "S3 object content and metadata (indexed snapshot)",
+        "web":            "Web page text content (indexed snapshot)",
+        "rss":            "RSS feed articles and summaries (indexed snapshot)",
+    }
+
+    agent_knowledge: list = state.get("agent_knowledge", []) or []
+    agent_toolsets: list = state.get("agent_toolsets", []) or []
+
+    if not agent_knowledge:
+        return ""
+
+    # ── Classify knowledge items ──────────────────────────────────────────────
+    kb_sources: list[str] = []          # KB documents (type == "KB")
+    # For indexed apps: list of (label, content_description) tuples
+    indexed_apps: list[tuple[str, str]] = []
+    indexed_app_types: set[str] = set() # Lowercase type names for overlap detection
+
+    for k in agent_knowledge:
+        if not isinstance(k, dict):
+            continue
+        name = k.get("displayName") or k.get("name") or ""
+        ktype = (k.get("type") or "").upper()
+
+        if ktype == "KB":
+            label = name if name else "Knowledge Base"
+            kb_sources.append(label)
+        else:
+            # App connector — use friendly type name if available
+            type_lower = (k.get("type") or "").lower().strip()
+            # Handle multi-word types like "DRIVE WORKSPACE" → "drive"
+            type_key = type_lower.split()[0] if type_lower else ""
+            friendly = type_lower if type_lower else (name.lower() if name else "unknown")
+            label = name if name else (type_key.capitalize() if type_key else "App Connector")
+            # Get content description
+            content_desc = _APP_INDEXED_CONTENT.get(type_key, f"{label} content (indexed snapshot)")
+            indexed_apps.append((label, content_desc))
+            if type_key:
+                indexed_app_types.add(type_key)
+            elif friendly and friendly != "unknown":
+                # Also try full friendly name (e.g. "drive workspace")
+                indexed_app_types.add(friendly.split()[0] if " " in friendly else friendly)
+
+    # ── Live API toolsets ─────────────────────────────────────────────────────
+    live_api_apps: list[str] = []
+    live_api_names: set[str] = set()
+    for ts in agent_toolsets:
+        if not isinstance(ts, dict):
+            continue
+        ts_name = (ts.get("name") or "").lower()
+        # Skip retrieval / internal tools
+        if "retrieval" in ts_name or "calculator" in ts_name:
+            continue
+        display = ts.get("displayName") or ts.get("name") or ts_name
+        tools = ts.get("tools", [])
+        tool_count = len(tools) if tools else 0
+        live_api_apps.append(f"{display} ({tool_count} tools)")
+        live_api_names.add(ts_name)
+
+    # ── Build context block ───────────────────────────────────────────────────
+    lines: list[str] = [
+        "",
+        "## 🧠 KNOWLEDGE & DATA SOURCES — Read This Before Selecting Any Tool",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    # Section A — Indexed knowledge (retrieval)
+    if kb_sources or indexed_apps:
+        lines.append(
+            "\n### 📚 INDEXED KNOWLEDGE — searchable via `retrieval.search_internal_knowledge`"
+        )
+        lines.append(
+            "The retrieval tool performs SEMANTIC / FULL-TEXT SEARCH over ALL indexed sources at once. "
+            "Use it when the user wants to FIND or DISCOVER content by topic, keyword, or meaning "
+            "rather than by an exact ID/key."
+        )
+        if kb_sources:
+            lines.append("\n**Knowledge Bases (documents, SOPs, policies, wikis):**")
+            for kb in kb_sources:
+                lines.append(f"  - 📄 {kb}")
+        if indexed_apps:
+            lines.append(
+                "\n**Indexed App Connectors** — the following apps have had their content "
+                "crawled and indexed. The retrieval tool can semantically search this content:"
+            )
+            for label, desc in indexed_apps:
+                lines.append(f"  - 🔗 **{label}**: {desc}")
+
+    # Section B — Live API toolsets
+    if live_api_apps:
+        lines.append(
+            "\n### ⚡ LIVE API TOOLS — real-time data & write actions"
+        )
+        lines.append(
+            "Use live API tools when you need CURRENT data (not indexed snapshots), "
+            "need to filter by live fields (assignee, status, date), or need to TAKE AN ACTION."
+        )
+        for app in live_api_apps:
+            lines.append(f"  - 🛠️ {app}")
+
+    # Section C — Detailed decision guide (show when BOTH retrieval and API are available)
+    has_retrieval_knowledge = bool(kb_sources or indexed_apps)
+    has_live_api = bool(live_api_apps)
+
+    # Find overlapping apps (indexed AND has live API)
+    overlapping_apps: list[tuple[str, str]] = []  # (display_name, type_key)
+    for ts in agent_toolsets:
+        if not isinstance(ts, dict):
+            continue
+        ts_name_lower = (ts.get("name") or "").lower()
+        ts_name_key = ts_name_lower.split()[0] if " " in ts_name_lower else ts_name_lower
+        if ts_name_key in indexed_app_types or ts_name_lower in indexed_app_types:
+            display = ts.get("displayName") or ts.get("name") or ts_name_lower
+            overlapping_apps.append((display, ts_name_key))
+
+    if has_retrieval_knowledge and has_live_api:
+        lines.append("\n### 🎯 DECISION GUIDE — Which Source to Use")
+        lines.append(
+            "\n| Query intent | Preferred source |"
+            "\n|---|---|"
+            "\n| Find/search/discover content BY TOPIC across indexed sources | `retrieval.search_internal_knowledge` |"
+            "\n| Show historical/past data, patterns, or snapshots | `retrieval.search_internal_knowledge` |"
+            "\n| Get current/live data by ID, key, status, assignee, date | Live API tool |"
+            "\n| Take an action (create, update, delete, comment, send) | Live API tool |"
+            "\n| Info from KB docs (policies, SOPs, internal docs) | `retrieval.search_internal_knowledge` |"
+            "\n| Need BOTH: search indexed content + perform live action | BOTH: retrieval first, then API |"
+        )
+
+        if overlapping_apps:
+            lines.append("\n**⚠️ IMPORTANT — Apps with BOTH indexed content AND live API tools:**")
+            for app_display, app_key in overlapping_apps:
+                content_desc = _APP_INDEXED_CONTENT.get(app_key, f"{app_display} content")
+                lines.append(f"\n  **{app_display}** is BOTH indexed AND has live API tools:")
+                lines.append(f"  - Use `retrieval` to: semantically search indexed {app_display} content ({content_desc})")
+                lines.append(f"  - Use `{app_key}.*` API tools to: get current/live data, filter by live fields, perform write actions")
+                lines.append(
+                    f"  - Use BOTH when: user wants to find {app_display} content by topic/meaning "
+                    f"AND also perform a live action on the results"
+                )
+
+        lines.append(
+            "\n**Retrieval search query tip:** Write the query as a natural-language description "
+            "of the information you want (e.g., 'upload failure errors', 'sprint planning process', "
+            "'leave policy'). The retrieval tool will find the most semantically relevant content "
+            "across ALL indexed sources."
+        )
+
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(lines)
+
+
 # Tool description caching
 _tool_description_cache: Dict[str, str] = {}
 
@@ -3225,7 +3758,7 @@ def _get_cached_tool_descriptions(state: ChatState, log: logging.Logger) -> str:
     agent_toolsets = state.get("agent_toolsets", [])
     llm = state.get("llm")
 
-    has_knowledge = bool((state.get("kb") or state.get("apps")) or state.get("agent_knowledge"))
+    has_knowledge = bool(state.get("kb") or state.get("apps") or state.get("agent_knowledge"))
 
     from app.modules.agents.qna.tool_system import (
         _requires_sanitized_tool_names,
@@ -3536,8 +4069,11 @@ async def execute_node(
             ))
 
     # Update state
+    # IMPORTANT: accumulate across iterations so that retrieval results from
+    # iteration 1 remain visible to the planner in iterations 2, 3, ...
     state["tool_results"] = tool_results
-    state["all_tool_results"] = tool_results
+    existing_results = state.get("all_tool_results", []) or []
+    state["all_tool_results"] = existing_results + tool_results
 
     # Track executed tool names for continue mode status messages
     executed_tool_names = [r.get("tool_name", "") for r in tool_results if r.get("tool_name")]

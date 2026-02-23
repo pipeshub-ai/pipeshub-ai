@@ -373,7 +373,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     kb = _extract_kb_record_groups(knowledge) if knowledge else filters.get("kb", None)
     # Store the original knowledge array in state so tool_system and nodes can check it
     agent_knowledge = knowledge if knowledge else []
-    
+
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
     logger.debug(f"apps (from knowledge): {apps}")

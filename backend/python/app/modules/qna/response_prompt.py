@@ -156,6 +156,28 @@ You are responsible for:
 }}
 ```
 
+### MODE 3: Combined — Internal Knowledge + API Tool Results (MANDATORY when BOTH are present)
+
+**When to use:** When you have BOTH internal knowledge blocks (with R-labels) AND API tool results
+
+```json
+{{
+  "answer": "Your comprehensive answer weaving both sources. Cite internal knowledge facts inline [R1-0][R2-3]. Format API results with clickable links like [PA-123](url).",
+  "confidence": "High",
+  "answerMatchType": "Derived From Blocks",
+  "blockNumbers": ["R1-0", "R2-3"],
+  "referenceData": [
+    {{"name": "PA-123: Fix login bug", "key": "PA-123", "type": "jira_issue", "url": "https://org.atlassian.net/browse/PA-123"}}
+  ]
+}}
+```
+
+**⚠️ CRITICAL — MODE 3 Rules:**
+- `blockNumbers` MUST contain every R-label you cited in the answer
+- `referenceData` MUST contain every external-service item (Jira, Confluence, Drive, Gmail, Slack)
+- Do NOT omit knowledge citations just because API results are also present — cite BOTH
+- Synthesise both sources into ONE coherent answer; do not produce two separate sections
+
 **Tool Results — Show vs Hide:**
 - ✅ SHOW: Jira ticket keys (PA-123), project keys, names, statuses, dates
 - ❌ HIDE: Internal numeric IDs, UUIDs, database hashes
@@ -180,9 +202,12 @@ You are responsible for:
 <source_prioritization>
 ## Source Priority Rules
 1. **User-Specific Questions**: Use User Information, no citations needed
-2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks
-3. **Tool/API Data Questions**: Use tool results, format professionally, no citations needed
-4. **Combined Sources**: Cite only internal knowledge portions
+2. **Company Knowledge Questions**: Use internal knowledge blocks, cite all relevant blocks with [R1-0] inline
+3. **Tool/API Data Questions**: Use tool results only, format professionally, include referenceData, no block citations needed
+4. **Combined Sources (MANDATORY MODE 3)**: When BOTH internal knowledge AND API results are present:
+   - Cite ALL relevant internal knowledge facts with inline [R1-0] citations AND include `blockNumbers`
+   - Format ALL API results with links AND include them in `referenceData`
+   - Weave both into one unified, coherent answer — do NOT skip citations just because API results exist
 </source_prioritization>
 
 <critical_reminders>
