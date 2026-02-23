@@ -1,0 +1,14 @@
+{
+  "set_id": "incremental",
+  "description": "Incremental file set — uploaded only during TC-INCR-001 incremental sync test",
+  "fixture_folder": "incremental_sample",
+  "bucket_suffix": "sample1",
+  "key_prefix": "incremental/",
+  "owner": "alice@s3test.pipeshub.test",
+  "group": "group-engineering",
+  "files": [
+    "new_report.pdf",
+    "new_data.csv",
+    "new_script.py"
+  ]
+}
