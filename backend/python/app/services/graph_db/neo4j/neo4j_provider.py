@@ -6917,6 +6917,14 @@ class Neo4jProvider(IGraphDBProvider):
                  nested_record_group_permission, direct_user_record_group_permission,
                  head(collect(inherited_perm.role)) AS inherited_record_group_permission
 
+            // 2.8b Check inherited ancestor Record permissions (record -> parent record chain)
+            OPTIONAL MATCH (record)-[:INHERIT_PERMISSIONS*1..20]->(ancestorRecord:Record)
+            OPTIONAL MATCH (user)-[ancestor_perm:PERMISSION {type: "USER"}]->(ancestorRecord)
+            WITH user, record, direct_permission, group_permission, record_group_permission,
+                 nested_record_group_permission, direct_user_record_group_permission,
+                 inherited_record_group_permission,
+                 head(collect(ancestor_perm.role)) AS inherited_record_permission
+
             // 2.9 Check group -> inherited recordGroup permission
             OPTIONAL MATCH path4 = (record)-[:INHERIT_PERMISSIONS*0..5]->(inheritedRg2:RecordGroup)
             OPTIONAL MATCH (user)-[u_to_g:PERMISSION {type: "USER"}]->(groupInherited)
@@ -6925,7 +6933,7 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE g_to_inherited.type IN ["GROUP", "ROLE"]
             WITH user, record, direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
-                 inherited_record_group_permission,
+                 inherited_record_group_permission, inherited_record_permission,
                  head(collect(g_to_inherited.role)) AS group_inherited_record_group_permission
 
             // 3. Check domain/organization permissions
@@ -6934,7 +6942,8 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE domain_perm.type IN ["DOMAIN", "ORG"]
             WITH user, record, direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
-                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 inherited_record_group_permission, inherited_record_permission,
+                 group_inherited_record_group_permission,
                  head(collect(domain_perm.role)) AS domain_permission,
                  head(collect(org.id)) AS user_org_id
 
@@ -6942,7 +6951,8 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (anyone:Anyone {file_key: $record_id, organization: user_org_id, active: true})
             WITH user, record, direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
-                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 inherited_record_group_permission, inherited_record_permission,
+                 group_inherited_record_group_permission,
                  domain_permission, anyone.role AS anyone_permission
 
             // 4.5 Check org -> recordGroup -> record permissions (with nesting 0-2 levels)
@@ -6951,7 +6961,8 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH path5 = (record)-[:INHERIT_PERMISSIONS*0..2]->(rgOrg)
             WITH direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
-                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 inherited_record_group_permission, inherited_record_permission,
+                 group_inherited_record_group_permission,
                  domain_permission, anyone_permission, record,
                  head(collect(org_to_rg.role)) AS org_record_group_permission,
                  $check_drive_inheritance AS check_drive_inheritance,
@@ -6964,7 +6975,8 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE drive.id = file.driveId OR drive.driveId = file.driveId
             WITH direct_permission, group_permission, record_group_permission,
                  nested_record_group_permission, direct_user_record_group_permission,
-                 inherited_record_group_permission, group_inherited_record_group_permission,
+                 inherited_record_group_permission, inherited_record_permission,
+                 group_inherited_record_group_permission,
                  domain_permission, anyone_permission, org_record_group_permission,
                  CASE drive_rel.access_level
                      WHEN "owner" THEN "OWNER"
@@ -6978,6 +6990,7 @@ class Neo4jProvider(IGraphDBProvider):
             // Return the highest permission level found (in order of precedence)
             WITH CASE
                 WHEN direct_permission IS NOT NULL THEN direct_permission
+                WHEN inherited_record_permission IS NOT NULL THEN inherited_record_permission
                 WHEN inherited_record_group_permission IS NOT NULL THEN inherited_record_group_permission
                 WHEN group_inherited_record_group_permission IS NOT NULL THEN group_inherited_record_group_permission
                 WHEN group_permission IS NOT NULL THEN group_permission
@@ -6992,6 +7005,7 @@ class Neo4jProvider(IGraphDBProvider):
             END AS final_permission,
             CASE
                 WHEN direct_permission IS NOT NULL THEN "DIRECT"
+                WHEN inherited_record_permission IS NOT NULL THEN "INHERITED_RECORD"
                 WHEN inherited_record_group_permission IS NOT NULL THEN "INHERITED_RECORD_GROUP"
                 WHEN group_inherited_record_group_permission IS NOT NULL THEN "GROUP_INHERITED_RECORD_GROUP"
                 WHEN group_permission IS NOT NULL THEN "GROUP"
