@@ -10,8 +10,8 @@ Run from backend/python/ directory:
     python -m app.connectors.sources.s3.s3_integration_test
 
 Required env vars (backend/python/.env):
-    s3_access_Key       — AWS access key ID
-    s3_secret_Key       — AWS secret access key
+    S3_ACCESS_KEY       — AWS access key ID
+    S3_SECRET_KEY       — AWS secret access key
     NEO4J_URI           — Neo4j bolt URI (default: bolt://localhost:7687)
     NEO4J_USERNAME      — Neo4j username (default: neo4j)
     NEO4J_PASSWORD      — Neo4j password (required)
@@ -77,6 +77,7 @@ import json
 import logging
 import os
 import sys
+import time as _time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -106,8 +107,8 @@ logging.basicConfig(
 logger = create_logger("s3-lifecycle-test")
 
 # ── Credentials ───────────────────────────────────────────────────────────────
-ACCESS_KEY: str = os.getenv("s3_access_Key", "")
-SECRET_KEY: str = os.getenv("s3_secret_Key", "")
+ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "")
+SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "")
 
 # ── Sample-data roots ─────────────────────────────────────────────────────────
 _TESTS_ROOT = Path(__file__).resolve().parents[4] / "tests"
@@ -479,8 +480,6 @@ async def setup_neo4j(
       - All groups from entities/groups/groups.json
       - App doc (connector instance node) + ORG_APP_RELATION edge
     """
-    import time as _time
-
     ts = int(_time.time() * 1000)
 
     # ── Org ───────────────────────────────────────────────────────────────────
@@ -1149,11 +1148,12 @@ async def run_all() -> None:
         # Move a file within sample1 bucket to a different folder (intra-bucket move).
         # Use the third key to avoid colliding with content_change_key (index 1)
         # or rename_src_key (index 0).
-        move_src_key = (
-            sample1_keys[_MOVE_KEY_INDEX] if len(sample1_keys) > _MOVE_KEY_INDEX
-            else sample1_keys[1] if len(sample1_keys) > 1
-            else "data.xlsx"
-        )
+        if len(sample1_keys) > _MOVE_KEY_INDEX:
+            move_src_key = sample1_keys[_MOVE_KEY_INDEX]
+        elif len(sample1_keys) > 1:
+            move_src_key = sample1_keys[1]
+        else:
+            move_src_key = "data.xlsx"
         move_dst_key = f"moved/{move_src_key.split('/')[-1]}"
         await test_move(
             connector, graph_provider, ds,
