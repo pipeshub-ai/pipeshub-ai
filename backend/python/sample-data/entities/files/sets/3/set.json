@@ -1,0 +1,15 @@
+{
+  "set_id": "3",
+  "description": "Nested file set — root doc + nested subfolder structure",
+  "fixture_folder": "sample3",
+  "bucket_suffix": "sample3",
+  "owner": "alice@s3test.pipeshub.test",
+  "group": "group-engineering",
+  "files": [
+    "root_doc.pdf",
+    "nested/nested_report.pdf",
+    "nested/nested_data.csv",
+    "nested/deep/archive.xlsx",
+    "nested/deep/deep_file.docx"
+  ]
+}

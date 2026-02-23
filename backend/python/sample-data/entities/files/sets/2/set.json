@@ -1,0 +1,17 @@
+{
+  "set_id": "2",
+  "description": "Secondary file set — analysis PDFs, transactions CSV, JS, Python",
+  "fixture_folder": "sample2",
+  "bucket_suffix": "sample2",
+  "owner": "bob@s3test.pipeshub.test",
+  "group": "group-analysts",
+  "files": [
+    "analysis.pdf",
+    "transactions.csv",
+    "app.js",
+    "models.py",
+    "budget.xlsx",
+    "contract.doc",
+    "spec.docx"
+  ]
+}
