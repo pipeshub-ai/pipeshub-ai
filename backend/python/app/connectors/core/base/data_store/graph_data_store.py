@@ -114,7 +114,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_nodes(self, keys: List[str], collection: str) -> None:
         return await self.graph_provider.delete_nodes(keys, collection, transaction=self.txn)
 
-    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
+    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_from(from_id, from_collection, collection, transaction=self.txn)
 
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
@@ -438,7 +438,7 @@ class GraphTransactionStore(TransactionStore):
                     "from_id": child_record_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": parent_record_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.RECORDS.value,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }

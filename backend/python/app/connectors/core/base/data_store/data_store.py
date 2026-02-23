@@ -254,6 +254,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
+        """Delete all outbound edges from a node in the given edge collection. Returns number deleted."""
+        pass
+
+    @abstractmethod
     async def delete_edges_by_relationship_types(
         self,
         from_id: str,

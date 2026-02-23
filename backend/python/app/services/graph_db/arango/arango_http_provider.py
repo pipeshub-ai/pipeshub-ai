@@ -1165,6 +1165,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN perm.role
             )
 
+            // 2.6b Check inherited ancestor Record permissions (record -> parent record chain)
+            LET inherited_record_permission = FIRST(
+                FOR ancestorRecord, inheritEdge, path IN 1..20 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("records", ancestorRecord)
+                    FOR perm IN @@permission
+                        FILTER perm._from == user_from AND perm._to == ancestorRecord._id AND perm.type == "USER"
+                        RETURN perm.role
+            )
+
             // 2.7 Check group -> inherited recordGroup permission
             LET group_inherited_record_group_permission = FIRST(
                 // Traverse up the recordGroup hierarchy from record
@@ -1262,6 +1271,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // Return the highest permission level found (in order of precedence)
             LET final_permission = (
                 direct_permission ? direct_permission :
+                inherited_record_permission ? inherited_record_permission :
                 inherited_record_group_permission ? inherited_record_group_permission :
                 group_inherited_record_group_permission ? group_inherited_record_group_permission :
                 group_permission ? group_permission :
@@ -1278,6 +1288,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 permission: final_permission,
                 source: (
                     direct_permission ? "DIRECT" :
+                    inherited_record_permission ? "INHERITED_RECORD" :
                     inherited_record_group_permission ? "INHERITED_RECORD_GROUP" :
                     group_inherited_record_group_permission ? "GROUP_INHERITED_RECORD_GROUP" :
                     group_permission ? "GROUP" :
