@@ -1500,7 +1500,7 @@ class JiraConnector(BaseConnector):
             app_users.append(app_user)
 
         if app_users:
-            self.logger.info(f"👥 Synced {len(app_users)} Jira users")
+            self.logger.info("👥 Synced %s Jira users", len(app_users))
             await self.data_entities_processor.on_new_app_users(app_users)
             # Migrate pseudo-group permissions to real users (for users now with emails)
             for user in app_users:
@@ -1511,9 +1511,11 @@ class JiraConnector(BaseConnector):
                             user_email=user.email,
                             connector_id=self.connector_id
                         )
-                    except Exception as e:
+                    except Exception:
                         self.logger.warning(
-                            f"Failed to migrate pseudo-group permissions for user {user.email}: {e}"
+                            "Failed to migrate pseudo-group permissions for user %s",
+                            user.email,
+                            exc_info=True
                         )
                         continue
 
@@ -2100,8 +2102,8 @@ class JiraConnector(BaseConnector):
             )
             return permissions
 
-        except Exception as e:
-            self.logger.error(f"Error fetching security level {security_level_id}: {e}")
+        except Exception:
+            self.logger.error("Error fetching security level %s", security_level_id, exc_info=True)
             return []
 
     async def _get_user_email_by_account_id(self, account_id: str) -> Optional[str]:
@@ -2119,8 +2121,8 @@ class JiraConnector(BaseConnector):
             data = response.json()
             email = data.get("emailAddress") or data.get("email")
             return email if email else None
-        except Exception as e:
-            self.logger.debug("Could not fetch user for accountId %s: %s", account_id, e)
+        except Exception:
+            self.logger.debug("Could not fetch user for accountId %s", account_id, exc_info=True)
             return None
 
     async def _get_or_create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
@@ -2147,8 +2149,8 @@ class JiraConnector(BaseConnector):
             await self.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
             self.logger.info(f"Created pseudo-group for user without email: {account_id}")
             return pseudo_group
-        except Exception as e:
-            self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
+        except Exception:
+            self.logger.error("Failed to create pseudo-group for %s", account_id, exc_info=True)
             return None
 
     async def _parse_security_level_members(
