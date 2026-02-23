@@ -3247,7 +3247,7 @@ class JiraConnector(BaseConnector):
                 created_at=created_at,
                 updated_at=updated_at,
                 inherit_permissions=True,
-                preview_renderable=True,
+                preview_renderable=False,
                 is_dependent_node=False,  # Tickets are not dependent
                 parent_node_id=None,  # Tickets have no parent node
             )
