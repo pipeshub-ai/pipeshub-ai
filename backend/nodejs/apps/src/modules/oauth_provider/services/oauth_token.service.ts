@@ -78,6 +78,7 @@ export class OAuthTokenService {
       tokenType: 'oauth',
       fullName,
       accountType,
+      createdBy: app.createdBy?.toString(),
     }
 
     const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
@@ -120,6 +121,7 @@ export class OAuthTokenService {
         isRefreshToken: true,
         fullName,
         accountType,
+        createdBy: app.createdBy?.toString(),
       }
 
       const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)

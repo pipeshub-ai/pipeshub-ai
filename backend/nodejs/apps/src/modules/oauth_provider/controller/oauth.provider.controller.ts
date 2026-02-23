@@ -503,6 +503,34 @@ export class OAuthProviderController {
         !['openid', 'profile', 'email', 'offline_access'].includes(s),
     )
 
+    let fullName: string | undefined
+    let accountType: string | undefined
+
+    if (app.createdBy) {
+      const user = await Users.findOne({
+        _id: app.createdBy,
+        orgId: app.orgId,
+        isDeleted: false,
+      })
+        .select('fullName')
+        .lean()
+        .exec()
+      if (user) {
+        fullName = user.fullName
+      }
+    }
+
+    const org = await Org.findOne({
+      _id: app.orgId,
+      isDeleted: false,
+    })
+      .select('accountType')
+      .lean()
+      .exec()
+    if (org) {
+      accountType = (org as any).accountType
+    }
+
     // Generate tokens (no refresh token for client_credentials)
     const tokens = await this.oauthTokenService.generateTokens(
       app,
@@ -510,6 +538,8 @@ export class OAuthProviderController {
       app.orgId.toString(),
       filteredScopes,
       false, // No refresh token
+      fullName,
+      accountType,
     )
 
     this.logger.info('Client credentials grant completed', { clientId })

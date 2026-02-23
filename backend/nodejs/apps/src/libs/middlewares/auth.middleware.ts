@@ -13,6 +13,9 @@ import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_t
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
+
+export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
 const { LOGOUT, PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
@@ -20,17 +23,12 @@ const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
 
 @injectable()
 export class AuthMiddleware {
-  private static oauthTokenService: OAuthTokenService | null = null;
-
   constructor(
     @inject('Logger') private logger: Logger,
     @inject('AuthTokenService') private tokenService: AuthTokenService,
+    private oauthTokenServiceFactory: OAuthTokenServiceFactory = resolveOAuthTokenService,
   ) {
     this.authenticate = this.authenticate.bind(this);
-  }
-
-  static setOAuthServices(oauthTokenService: OAuthTokenService): void {
-    AuthMiddleware.oauthTokenService = oauthTokenService;
   }
 
   private isOAuthToken(
@@ -60,7 +58,7 @@ export class AuthMiddleware {
         // authenticate regular token
         await this.authenticateRegularToken(token, req);
       } else {
-        if (!AuthMiddleware.oauthTokenService) {
+        if (!this.oauthTokenServiceFactory()) {
           throw new UnauthorizedError('OAuth authentication is not configured');
         }
         // authenticate oauth token
@@ -124,43 +122,46 @@ export class AuthMiddleware {
     token: string,
     req: AuthenticatedUserRequest,
   ): Promise<void> {
-    const oauthTokenService = AuthMiddleware.oauthTokenService!;
+    const oauthTokenService = this.oauthTokenServiceFactory()!;
 
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
     const tokenScopes = payload.scope.split(' ');
 
-    // build req.user in the format controllers expect
     let userId = payload.userId;
     const orgId = payload.orgId;
     let { fullName, accountType } = payload;
 
-    let email: string | undefined;
-
     // for client_credentials tokens (userId === client_id), resolve the app owner
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
-      try {
-        const app = await OAuthApp.findOne({
-          clientId: payload.client_id,
-          isDeleted: false,
-        })
-          .select('createdBy')
-          .lean()
-          .exec();
-        if (app) {
-          userId = app.createdBy.toString();
-        } else {
-          throw new UnauthorizedError('OAuth app not found or revoked');
+      // prefer createdBy from JWT payload (embedded at token generation time)
+      if (payload.createdBy) {
+        userId = payload.createdBy;
+      } else {
+        // fallback for tokens generated before createdBy was embedded
+        try {
+          const app = await OAuthApp.findOne({
+            clientId: payload.client_id,
+            isDeleted: false,
+          })
+            .select('createdBy')
+            .lean()
+            .exec();
+          if (app) {
+            userId = app.createdBy.toString();
+          } else {
+            throw new UnauthorizedError('OAuth app not found or revoked');
+          }
+        } catch (err) {
+          this.logger.error('Failed to look up OAuth app owner', err);
+          throw new UnauthorizedError('Failed to look up OAuth app owner');
         }
-      } catch (err) {
-        this.logger.error('Failed to look up OAuth app owner', err);
-        throw new UnauthorizedError('Failed to look up OAuth app owner');
       }
     }
 
-    // look up email (not stored in token)
+    let email: string | undefined;
     if (userId) {
       try {
         const user = await Users.findOne({
@@ -174,31 +175,30 @@ export class AuthMiddleware {
 
         if (user) {
           email = user.email;
-          // for client_credentials tokens, fullName/accountType come from DB
-          if (isClientCredentials) {
+          if (!fullName) {
             fullName = user.fullName;
           }
         }
       } catch (err) {
-        this.logger.error('Failed to look up OAuth user details', err);
+        this.logger.error('Failed to look up OAuth user email', err);
       }
+    }
 
-      if (isClientCredentials) {
-        try {
-          const org = await Org.findOne({
-            _id: orgId,
-            isDeleted: false,
-          })
-            .select('accountType')
-            .lean()
-            .exec();
-          if (org) {
-            accountType = org.accountType;
-          }
-        } catch (err) {
-          this.logger.error('Failed to look up org for OAuth token', err);
-          throw new UnauthorizedError('Failed to look up org for OAuth token');
+    if (!accountType && isClientCredentials) {
+      try {
+        const org = await Org.findOne({
+          _id: orgId,
+          isDeleted: false,
+        })
+          .select('accountType')
+          .lean()
+          .exec();
+        if (org) {
+          accountType = org.accountType;
         }
+      } catch (err) {
+        this.logger.error('Failed to look up org for OAuth token', err);
+        throw new UnauthorizedError('Failed to look up org for OAuth token');
       }
     }
 

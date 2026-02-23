@@ -12,6 +12,7 @@ export interface OAuthTokenPayload {
   isRefreshToken?: true
   fullName?: string
   accountType?: string
+  createdBy?: string
 }
 
 // Generated Tokens Response
