@@ -85,7 +85,7 @@ tags:
       - `/oauth/userinfo` - Get authenticated user's profile information
 
       **Supported Claims:**
-      - `sub` - User identifier
+      - `user_id` - User identifier
       - `email`, `email_verified` - Email information
       - `name`, `given_name`, `family_name` - Name information
 
@@ -398,6 +398,97 @@ components:
         Scoped JWT token for service-to-service authentication.
         Format: "Bearer {scoped_token}"
         Required scopes vary by endpoint.
+    oauth2:
+      type: oauth2
+      description: |
+        OAuth 2.0 authentication with fine-grained scopes.
+        Supports authorization_code (with PKCE) and client_credentials flows.
+        OAuth tokens are Bearer JWTs — use the same Authorization header as regular tokens.
+      flows:
+        authorizationCode:
+          authorizationUrl: /api/v1/oauth/authorize
+          tokenUrl: /api/v1/oauth/token
+          refreshUrl: /api/v1/oauth/token
+          scopes:
+            openid: OpenID Connect authentication
+            profile: User profile information
+            email: User email address
+            offline_access: Offline access (refresh tokens)
+            org:read: Read organization information
+            org:write: Update organization settings
+            org:admin: Full organization administration
+            user:read: Read user profiles
+            user:write: Update user profiles
+            user:invite: Invite new users
+            user:delete: Delete users
+            usergroup:read: Read user groups
+            usergroup:write: Create and manage user groups
+            team:read: Read team information
+            team:write: Create and manage teams
+            kb:read: Read knowledge bases and records
+            kb:write: Create and update knowledge bases
+            kb:delete: Delete knowledge bases and records
+            kb:upload: Upload files to knowledge bases
+            search:query: Execute search queries
+            search:semantic: Execute semantic search
+            conversation:read: Read conversations
+            conversation:write: Create and manage conversations
+            conversation:chat: Send messages in conversations
+            agent:read: Read AI agents
+            agent:write: Create and manage AI agents
+            agent:execute: Execute AI agents
+            connector:read: Read connector configurations
+            connector:write: Create and update connectors
+            connector:sync: Trigger connector synchronization
+            connector:delete: Delete connectors
+            config:read: Read system configuration
+            config:write: Update system configuration
+            document:read: Read documents
+            document:write: Upload and update documents
+            document:delete: Delete documents
+            crawl:read: Read crawling jobs
+            crawl:write: Create and manage crawling jobs
+        clientCredentials:
+          tokenUrl: /api/v1/oauth/token
+          scopes:
+            openid: OpenID Connect authentication
+            profile: User profile information
+            email: User email address
+            offline_access: Offline access (refresh tokens)
+            org:read: Read organization information
+            org:write: Update organization settings
+            org:admin: Full organization administration
+            user:read: Read user profiles
+            user:write: Update user profiles
+            user:invite: Invite new users
+            user:delete: Delete users
+            usergroup:read: Read user groups
+            usergroup:write: Create and manage user groups
+            team:read: Read team information
+            team:write: Create and manage teams
+            kb:read: Read knowledge bases and records
+            kb:write: Create and update knowledge bases
+            kb:delete: Delete knowledge bases and records
+            kb:upload: Upload files to knowledge bases
+            search:query: Execute search queries
+            search:semantic: Execute semantic search
+            conversation:read: Read conversations
+            conversation:write: Create and manage conversations
+            conversation:chat: Send messages in conversations
+            agent:read: Read AI agents
+            agent:write: Create and manage AI agents
+            agent:execute: Execute AI agents
+            connector:read: Read connector configurations
+            connector:write: Create and update connectors
+            connector:sync: Trigger connector synchronization
+            connector:delete: Delete connectors
+            config:read: Read system configuration
+            config:write: Update system configuration
+            document:read: Read documents
+            document:write: Upload and update documents
+            document:delete: Delete documents
+            crawl:read: Read crawling jobs
+            crawl:write: Create and manage crawling jobs
 
   schemas:
     # ==================== COMMON SCHEMAS ====================
@@ -1030,9 +1121,9 @@ components:
         nbf:
           type: integer
           description: Token not-before timestamp (Unix epoch)
-        sub:
+        user_id:
           type: string
-          description: Subject (user ID)
+          description: User ID
         aud:
           type: string
           description: Audience (client ID)
@@ -1090,9 +1181,9 @@ components:
         OpenID Connect UserInfo Response.
         Contains claims about the authenticated user.
       properties:
-        sub:
+        user_id:
           type: string
-          description: Subject identifier (user ID)
+          description: User ID
         name:
           type: string
           description: Full name
@@ -1117,7 +1208,7 @@ components:
           type: integer
           description: Last profile update timestamp (Unix epoch)
       required:
-        - sub
+        - user_id
 
     OpenIDConfiguration:
       type: object
@@ -1194,7 +1285,7 @@ components:
           items:
             type: string
           description: Supported claims in ID tokens/UserInfo
-          example: ["sub", "iss", "aud", "exp", "iat", "email", "name"]
+          example: ["user_id", "iss", "aud", "exp", "iat", "email", "name"]
         code_challenge_methods_supported:
           type: array
           items:
@@ -5393,7 +5484,7 @@ paths:
                     token_type: "Bearer"
                     exp: 1735686000
                     iat: 1735682400
-                    sub: "user-id-123"
+                    user_id: "user-id-123"
                     iss: "https://api.pipeshub.com"
                 inactive:
                   summary: Inactive/invalid token
@@ -5418,7 +5509,7 @@ paths:
         with the `openid` scope.
         <br><br>
         <b>Available Claims:</b><br>
-        - `sub` - Subject identifier (user ID)<br>
+        - `user_id` - User identifier<br>
         - `name`, `given_name`, `family_name` - Name claims (with `profile` scope)<br>
         - `email`, `email_verified` - Email claims (with `email` scope)
         <br><br>
@@ -5435,7 +5526,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/OAuthUserInfoResponse'
               example:
-                sub: "user-id-123"
+                user_id: "user-id-123"
                 name: "John Doe"
                 given_name: "John"
                 family_name: "Doe"
@@ -6437,6 +6528,7 @@ paths:
       operationId: getAllUsers
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: page
           in: query
@@ -6624,6 +6716,7 @@ paths:
       operationId: getUserById
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: id
           in: path
@@ -6692,6 +6785,7 @@ paths:
       operationId: updateUser
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -6810,6 +6904,7 @@ paths:
       operationId: deleteUser
       security:
         - bearerAuth: []
+        - oauth2: [user:delete]
       parameters:
         - name: id
           in: path
@@ -6899,6 +6994,7 @@ paths:
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: includeDeleted
           in: query
@@ -7044,6 +7140,7 @@ paths:
       operationId: getUsersByIds
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       requestBody:
         required: true
         description: "Request payload"
@@ -7265,6 +7362,7 @@ paths:
       operationId: updateUserFullName
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -7319,6 +7417,7 @@ paths:
       operationId: updateUserFirstName
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -7384,6 +7483,7 @@ paths:
       operationId: updateUserLastName
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -7457,6 +7557,7 @@ paths:
       operationId: updateUserDesignation
       security:
         - bearerAuth: []
+        - oauth2: [user:write]
       parameters:
         - name: id
           in: path
@@ -7751,6 +7852,7 @@ paths:
       operationId: bulkInviteUsers
       security:
         - bearerAuth: []
+        - oauth2: [user:invite]
       requestBody:
         required: true
         description: "Request payload"
@@ -7946,6 +8048,7 @@ paths:
       operationId: listUsersGraph
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: page
           in: query
@@ -8031,6 +8134,7 @@ paths:
       operationId: getCurrentUserTeams
       security:
         - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: page
           in: query
@@ -8151,6 +8255,7 @@ paths:
       operationId: createTeam
       security:
         - bearerAuth: []
+        - oauth2: [team:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -8231,6 +8336,7 @@ paths:
       operationId: listTeams
       security:
         - bearerAuth: []
+        - oauth2: [team:read]
       parameters:
         - name: search
           in: query
@@ -8307,6 +8413,7 @@ paths:
       operationId: getTeamById
       security:
         - bearerAuth: []
+        - oauth2: [team:read]
       parameters:
         - name: teamId
           in: path
@@ -8364,6 +8471,7 @@ paths:
       operationId: updateTeam
       security:
         - bearerAuth: []
+        - oauth2: [team:write]
       parameters:
         - name: teamId
           in: path
@@ -8442,6 +8550,7 @@ paths:
       operationId: deleteTeam
       security:
         - bearerAuth: []
+        - oauth2: [team:write]
       parameters:
         - name: teamId
           in: path
@@ -8495,6 +8604,7 @@ paths:
       operationId: getTeamUsers
       security:
         - bearerAuth: []
+        - oauth2: [team:read]
       parameters:
         - name: teamId
           in: path
@@ -8587,6 +8697,7 @@ paths:
       operationId: addUsersToTeam
       security:
         - bearerAuth: []
+        - oauth2: [team:write]
       parameters:
         - name: teamId
           in: path
@@ -8683,6 +8794,7 @@ paths:
       operationId: removeUsersFromTeam
       security:
         - bearerAuth: []
+        - oauth2: [team:write]
       parameters:
         - name: teamId
           in: path
@@ -8763,6 +8875,7 @@ paths:
       operationId: updateTeamUserPermissions
       security:
         - bearerAuth: []
+        - oauth2: [team:write]
       parameters:
         - name: teamId
           in: path
@@ -8855,6 +8968,7 @@ paths:
       operationId: getUserTeams
       security:
         - bearerAuth: []
+        - oauth2: [team:read]
       parameters:
         - name: page
           in: query
@@ -8928,6 +9042,7 @@ paths:
       operationId: getUserCreatedTeams
       security:
         - bearerAuth: []
+        - oauth2: [team:read]
       parameters:
         - name: page
           in: query
@@ -9169,6 +9284,7 @@ paths:
       operationId: getCurrentOrganization
       security:
         - bearerAuth: []
+        - oauth2: [org:read]
       responses:
         '200':
           description: Organization details retrieved successfully
@@ -9223,6 +9339,7 @@ paths:
       operationId: updateOrganization
       security:
         - bearerAuth: []
+        - oauth2: [org:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -9300,6 +9417,7 @@ paths:
       operationId: deleteOrganization
       security:
         - bearerAuth: []
+        - oauth2: [org:admin]
       parameters:
         - name: confirm
           in: query
@@ -9362,6 +9480,7 @@ paths:
       operationId: uploadOrganizationLogo
       security:
         - bearerAuth: []
+        - oauth2: [org:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -9425,6 +9544,7 @@ paths:
       operationId: getOrganizationLogo
       security:
         - bearerAuth: []
+        - oauth2: [org:read]
       responses:
         '200':
           description: Logo URL retrieved successfully
@@ -9464,6 +9584,7 @@ paths:
       operationId: deleteOrganizationLogo
       security:
         - bearerAuth: []
+        - oauth2: [org:admin]
       responses:
         '200':
           description: Logo deleted successfully
@@ -10302,6 +10423,7 @@ paths:
       operationId: uploadDocument
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -10416,6 +10538,7 @@ paths:
       operationId: createDocumentPlaceholder
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -10495,6 +10618,7 @@ paths:
       operationId: getDocumentById
       security:
         - bearerAuth: []
+        - oauth2: [document:read]
       parameters:
         - name: documentId
           in: path
@@ -10549,6 +10673,7 @@ paths:
       operationId: deleteDocumentById
       security:
         - bearerAuth: []
+        - oauth2: [document:delete]
       parameters:
         - name: documentId
           in: path
@@ -10614,6 +10739,7 @@ paths:
       operationId: downloadDocument
       security:
         - bearerAuth: []
+        - oauth2: [document:read]
       parameters:
         - name: documentId
           in: path
@@ -10700,6 +10826,7 @@ paths:
       operationId: getDocumentBuffer
       security:
         - bearerAuth: []
+        - oauth2: [document:read]
       parameters:
         - name: documentId
           in: path
@@ -10851,6 +10978,7 @@ paths:
       operationId: uploadNextVersion
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       parameters:
         - name: documentId
           in: path
@@ -10952,6 +11080,7 @@ paths:
       operationId: rollBackToPreviousVersion
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       parameters:
         - name: documentId
           in: path
@@ -11040,6 +11169,7 @@ paths:
       operationId: getDirectUploadUrl
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       parameters:
         - name: documentId
           in: path
@@ -11104,6 +11234,7 @@ paths:
       operationId: checkDocumentModified
       security:
         - bearerAuth: []
+        - oauth2: [document:read]
       parameters:
         - name: documentId
           in: path
@@ -11164,6 +11295,7 @@ paths:
       operationId: createKnowledgeBase
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -11222,6 +11354,7 @@ paths:
       operationId: listKnowledgeBases
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: page
           in: query
@@ -11297,6 +11430,7 @@ paths:
       operationId: getKnowledgeBase
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: kbId
           in: path
@@ -11334,6 +11468,7 @@ paths:
       operationId: updateKnowledgeBase
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: kbId
           in: path
@@ -11389,6 +11524,7 @@ paths:
       operationId: deleteKnowledgeBase
       security:
         - bearerAuth: []
+        - oauth2: [kb:delete]
       parameters:
         - name: kbId
           in: path
@@ -11445,6 +11581,7 @@ paths:
       operationId: getAllRecords
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: page
           in: query
@@ -11544,6 +11681,7 @@ paths:
       operationId: getKBRecords
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: kbId
           in: path
@@ -11644,6 +11782,7 @@ paths:
       operationId: getKBChildren
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: kbId
           in: path
@@ -11736,6 +11875,7 @@ paths:
       operationId: getRecordById
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: recordId
           in: path
@@ -11843,6 +11983,7 @@ paths:
       operationId: deleteRecord
       security:
         - bearerAuth: []
+        - oauth2: [kb:delete]
       parameters:
         - name: recordId
           in: path
@@ -11880,6 +12021,7 @@ paths:
       operationId: streamRecordBuffer
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: recordId
           in: path
@@ -11929,6 +12071,7 @@ paths:
       operationId: createRootFolder
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: kbId
           in: path
@@ -11982,6 +12125,7 @@ paths:
       operationId: getFolderContents
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: kbId
           in: path
@@ -12043,6 +12187,7 @@ paths:
       operationId: updateFolder
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: kbId
           in: path
@@ -12097,6 +12242,7 @@ paths:
       operationId: deleteFolder
       security:
         - bearerAuth: []
+        - oauth2: [kb:delete]
       parameters:
         - name: kbId
           in: path
@@ -12132,6 +12278,7 @@ paths:
       operationId: getFolderChildren
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: kbId
           in: path
@@ -12196,6 +12343,7 @@ paths:
       operationId: createSubfolder
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: kbId
           in: path
@@ -12263,6 +12411,7 @@ paths:
       operationId: uploadRecordsToKB
       security:
         - bearerAuth: []
+        - oauth2: [kb:upload]
       parameters:
         - name: kbId
           in: path
@@ -12327,6 +12476,7 @@ paths:
       operationId: uploadRecordsToFolder
       security:
         - bearerAuth: []
+        - oauth2: [kb:upload]
       parameters:
         - name: kbId
           in: path
@@ -12388,6 +12538,7 @@ paths:
       operationId: getUploadLimits
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       responses:
         '200':
           description: Upload limits retrieved
@@ -12422,6 +12573,7 @@ paths:
       operationId: reindexRecord
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: recordId
           in: path
@@ -12461,6 +12613,7 @@ paths:
       operationId: reindexRecordGroup
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: recordGroupId
           in: path
@@ -12504,6 +12657,7 @@ paths:
       operationId: reindexFailedConnectorRecords
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       requestBody:
         required: true
         description: "Request body for reindexing connector records by status"
@@ -12549,6 +12703,7 @@ paths:
       operationId: resyncConnector
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       requestBody:
         required: true
         description: "Request body for Resync connector"
@@ -12585,6 +12740,7 @@ paths:
       operationId: getConnectorStats
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: connectorId
           in: path
@@ -12691,6 +12847,7 @@ paths:
       operationId: listKBPermissions
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: kbId
           in: path
@@ -12730,6 +12887,7 @@ paths:
       operationId: updateKBPermissions
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: kbId
           in: path
@@ -12824,6 +12982,7 @@ paths:
       operationId: moveRecord
       security:
         - bearerAuth: []
+        - oauth2: [kb:write]
       parameters:
         - name: kbId
           in: path
@@ -12892,6 +13051,7 @@ paths:
       operationId: getKnowledgeHubRootNodes
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: view
           in: query
@@ -12943,6 +13103,7 @@ paths:
       operationId: getKnowledgeHubChildNodes
       security:
         - bearerAuth: []
+        - oauth2: [kb:read]
       parameters:
         - name: parentType
           in: path
@@ -13022,6 +13183,7 @@ paths:
       operationId: createConversation
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -13095,6 +13257,7 @@ paths:
       operationId: streamChat
       security:
         - bearerAuth: []
+        - oauth2: [conversation:chat]
       requestBody:
         required: true
         description: "Request payload"
@@ -13136,6 +13299,7 @@ paths:
       operationId: getAllConversations
       security:
         - bearerAuth: []
+        - oauth2: [conversation:read]
       responses:
         '200':
           description: List of conversations
@@ -13164,6 +13328,7 @@ paths:
       operationId: getArchivedConversations
       security:
         - bearerAuth: []
+        - oauth2: [conversation:read]
       responses:
         '200':
           description: List of archived conversations
@@ -13199,6 +13364,7 @@ paths:
       operationId: getConversationById
       security:
         - bearerAuth: []
+        - oauth2: [conversation:read]
       parameters:
         - name: conversationId
           in: path
@@ -13279,6 +13445,7 @@ paths:
       operationId: deleteConversationById
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13373,6 +13540,7 @@ paths:
       operationId: addMessageStream
       security:
         - bearerAuth: []
+        - oauth2: [conversation:chat]
       parameters:
         - name: conversationId
           in: path
@@ -13420,6 +13588,7 @@ paths:
       operationId: shareConversation
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13465,6 +13634,7 @@ paths:
       operationId: unshareConversation
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13521,6 +13691,7 @@ paths:
       operationId: updateConversationTitle
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13573,6 +13744,7 @@ paths:
       operationId: archiveConversation
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13604,6 +13776,7 @@ paths:
       operationId: unarchiveConversation
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13645,6 +13818,7 @@ paths:
       operationId: regenerateAnswer
       security:
         - bearerAuth: []
+        - oauth2: [conversation:chat]
       parameters:
         - name: conversationId
           in: path
@@ -13713,6 +13887,7 @@ paths:
       operationId: updateMessageFeedback
       security:
         - bearerAuth: []
+        - oauth2: [conversation:write]
       parameters:
         - name: conversationId
           in: path
@@ -13789,6 +13964,7 @@ paths:
       operationId: search
       security:
         - bearerAuth: []
+        - oauth2: [search:query, search:semantic]
       requestBody:
         required: true
         description: "Request payload"
@@ -13913,6 +14089,7 @@ paths:
       operationId: getSearchById
       security:
         - bearerAuth: []
+        - oauth2: [search:query]
       parameters:
         - name: searchId
           in: path
@@ -13972,6 +14149,7 @@ paths:
       operationId: shareSearch
       security:
         - bearerAuth: []
+        - oauth2: [search:query]
       parameters:
         - name: searchId
           in: path
@@ -14007,6 +14185,7 @@ paths:
       operationId: unshareSearch
       security:
         - bearerAuth: []
+        - oauth2: [search:query]
       parameters:
         - name: searchId
           in: path
@@ -14051,6 +14230,7 @@ paths:
       operationId: archiveSearch
       security:
         - bearerAuth: []
+        - oauth2: [search:query]
       parameters:
         - name: searchId
           in: path
@@ -14079,6 +14259,7 @@ paths:
       operationId: unarchiveSearch
       security:
         - bearerAuth: []
+        - oauth2: [search:query]
       parameters:
         - name: searchId
           in: path
@@ -14118,6 +14299,7 @@ paths:
       operationId: listAgentTemplates
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       responses:
         '200':
           description: List of agent templates
@@ -14205,6 +14387,7 @@ paths:
       operationId: getAgentTemplate
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: templateId
           in: path
@@ -14235,6 +14418,7 @@ paths:
       operationId: updateAgentTemplate
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: templateId
           in: path
@@ -14290,6 +14474,7 @@ paths:
       operationId: deleteAgentTemplate
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: templateId
           in: path
@@ -14320,6 +14505,7 @@ paths:
       operationId: listAgents
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       responses:
         '200':
           description: List of agents
@@ -14359,6 +14545,7 @@ paths:
       operationId: createAgent
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -14437,6 +14624,7 @@ paths:
       operationId: listAgentTools
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       responses:
         '200':
           description: List of available tools
@@ -14458,6 +14646,7 @@ paths:
       operationId: getAgent
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -14489,6 +14678,7 @@ paths:
       operationId: updateAgent
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -14547,6 +14737,7 @@ paths:
       operationId: deleteAgent
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -14572,6 +14763,7 @@ paths:
       operationId: getAgentPermissions
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -14611,6 +14803,7 @@ paths:
       operationId: updateAgentPermissions
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -14657,6 +14850,7 @@ paths:
       operationId: shareAgent
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -14693,6 +14887,7 @@ paths:
       operationId: unshareAgent
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -14743,6 +14938,7 @@ paths:
       operationId: listAgentConversations
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -14776,6 +14972,7 @@ paths:
       operationId: createAgentConversation
       security:
         - bearerAuth: []
+        - oauth2: [agent:execute]
       parameters:
         - name: agentKey
           in: path
@@ -14815,6 +15012,7 @@ paths:
       operationId: streamAgentConversation
       security:
         - bearerAuth: []
+        - oauth2: [agent:execute]
       parameters:
         - name: agentKey
           in: path
@@ -14849,6 +15047,7 @@ paths:
       operationId: getAgentConversation
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -14881,6 +15080,7 @@ paths:
       operationId: deleteAgentConversation
       security:
         - bearerAuth: []
+        - oauth2: [agent:write]
       parameters:
         - name: agentKey
           in: path
@@ -14910,6 +15110,7 @@ paths:
       operationId: addAgentMessage
       security:
         - bearerAuth: []
+        - oauth2: [agent:read]
       parameters:
         - name: agentKey
           in: path
@@ -14950,6 +15151,7 @@ paths:
       operationId: streamAgentMessage
       security:
         - bearerAuth: []
+        - oauth2: [agent:execute]
       parameters:
         - name: agentKey
           in: path
@@ -14993,6 +15195,7 @@ paths:
       operationId: regenerateAgentAnswer
       security:
         - bearerAuth: []
+        - oauth2: [agent:execute]
       parameters:
         - name: agentKey
           in: path
@@ -15063,6 +15266,7 @@ paths:
       operationId: getConnectorRegistry
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: scope
           in: query
@@ -15127,6 +15331,7 @@ paths:
       operationId: getConnectorSchema
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: connectorType
           in: path
@@ -15173,6 +15378,7 @@ paths:
       operationId: listConnectorInstances
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: scope
           in: query
@@ -15241,6 +15447,7 @@ paths:
       operationId: createConnectorInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -15301,6 +15508,7 @@ paths:
       operationId: listActiveConnectors
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       responses:
         '200':
           description: Active connectors retrieved
@@ -15327,6 +15535,7 @@ paths:
       operationId: listInactiveConnectors
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       responses:
         '200':
           description: Inactive connectors retrieved
@@ -15357,6 +15566,7 @@ paths:
       operationId: listConfiguredConnectors
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: scope
           in: query
@@ -15411,6 +15621,7 @@ paths:
       operationId: listActiveAgentConnectors
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: scope
           in: query
@@ -15461,6 +15672,7 @@ paths:
       operationId: getConnectorInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -15505,6 +15717,7 @@ paths:
       operationId: deleteConnectorInstance
       security:
         - bearerAuth: []
+        - oauth2: [connector:delete]
       parameters:
         - name: connectorId
           in: path
@@ -15541,6 +15754,7 @@ paths:
       operationId: updateConnectorName
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorId
           in: path
@@ -15588,6 +15802,7 @@ paths:
       operationId: getConnectorConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -15628,6 +15843,7 @@ paths:
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorId
           in: path
@@ -15678,6 +15894,7 @@ paths:
       operationId: updateConnectorAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorId
           in: path
@@ -15723,6 +15940,7 @@ paths:
       operationId: updateConnectorFiltersSyncConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorId
           in: path
@@ -15780,6 +15998,7 @@ paths:
       operationId: toggleConnector
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorId
           in: path
@@ -15845,6 +16064,7 @@ paths:
       operationId: getTokenFromCode
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       requestBody:
         required: true
         description: "Authorization code from Google OAuth consent"
@@ -15901,6 +16121,7 @@ paths:
       operationId: getOAuthAuthorizationUrl
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -16003,6 +16224,7 @@ paths:
       operationId: getConnectorFilters
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -16087,6 +16309,7 @@ paths:
       operationId: getFilterFieldOptions
       security:
         - bearerAuth: []
+        - oauth2: [connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -16940,6 +17163,7 @@ paths:
       operationId: createLocalStorageConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Local Storage"
@@ -16985,6 +17209,7 @@ paths:
       operationId: createS3StorageConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure AWS S3 Storage"
@@ -17043,6 +17268,7 @@ paths:
       operationId: createAzureBlobStorageConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Azure Blob Storage"
@@ -17105,6 +17331,7 @@ paths:
       operationId: getStorageConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Storage configuration retrieved
@@ -17165,6 +17392,7 @@ paths:
       operationId: createSMTPConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Create or update SMTP configuration"
@@ -17223,6 +17451,7 @@ paths:
       operationId: getSMTPConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: SMTP configuration retrieved
@@ -17243,6 +17472,7 @@ paths:
       operationId: setAzureAdAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Azure AD authentication"
@@ -17268,6 +17498,7 @@ paths:
       operationId: getAzureAdAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Azure AD configuration retrieved
@@ -17287,6 +17518,7 @@ paths:
       operationId: setMicrosoftAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Microsoft authentication"
@@ -17312,6 +17544,7 @@ paths:
       operationId: getMicrosoftAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Microsoft auth configuration retrieved
@@ -17331,6 +17564,7 @@ paths:
       operationId: setGoogleAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Google authentication"
@@ -17356,6 +17590,7 @@ paths:
       operationId: getGoogleAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Google auth configuration retrieved
@@ -17375,6 +17610,7 @@ paths:
       operationId: setSsoAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure SAML SSO authentication"
@@ -17400,6 +17636,7 @@ paths:
       operationId: getSsoAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: SSO configuration retrieved
@@ -17419,6 +17656,7 @@ paths:
       operationId: setOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure generic OAuth provider"
@@ -17444,6 +17682,7 @@ paths:
       operationId: getGenericOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -17464,6 +17703,7 @@ paths:
       operationId: createAIModelsConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Bulk create AI models configuration"
@@ -17489,6 +17729,7 @@ paths:
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: AI models configuration retrieved
@@ -17509,6 +17750,7 @@ paths:
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: AI model providers retrieved
@@ -17528,6 +17770,7 @@ paths:
       operationId: getModelsByType
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       parameters:
         - name: modelType
           in: path
@@ -17559,6 +17802,7 @@ paths:
       operationId: getAvailableModelsByType
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       parameters:
         - name: modelType
           in: path
@@ -17598,6 +17842,7 @@ paths:
       operationId: addAIModelProvider
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Add new AI model provider"
@@ -17628,6 +17873,7 @@ paths:
       operationId: updateAIModelProvider
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -17699,6 +17945,7 @@ paths:
       operationId: setDefaultAIModel
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       parameters:
         - name: modelType
           in: path
@@ -17730,6 +17977,7 @@ paths:
       operationId: createGoogleWorkspaceCredentials
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Upload Google Workspace credentials"
@@ -17767,6 +18015,7 @@ paths:
       operationId: getGoogleWorkspaceCredentials
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Credentials status retrieved
@@ -17786,6 +18035,7 @@ paths:
       operationId: setGoogleWorkspaceOauthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Google Workspace OAuth"
@@ -17811,6 +18061,7 @@ paths:
       operationId: getGoogleWorkspaceOauthConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -17830,6 +18081,7 @@ paths:
       operationId: setAtlassianConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure Atlassian OAuth"
@@ -17855,6 +18107,7 @@ paths:
       operationId: getAtlassianConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Atlassian configuration retrieved
@@ -17874,6 +18127,7 @@ paths:
       operationId: setOneDriveConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure OneDrive connector"
@@ -17899,6 +18153,7 @@ paths:
       operationId: getOneDriveConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: OneDrive configuration retrieved
@@ -17918,6 +18173,7 @@ paths:
       operationId: setSharePointConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Configure SharePoint connector"
@@ -17943,6 +18199,7 @@ paths:
       operationId: getSharePointConfig
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: SharePoint configuration retrieved
@@ -17963,6 +18220,7 @@ paths:
       operationId: setFrontendPublicUrl
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Set frontend public URL"
@@ -17988,6 +18246,7 @@ paths:
       operationId: getFrontendPublicUrl
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Frontend URL retrieved
@@ -18007,6 +18266,7 @@ paths:
       operationId: setConnectorPublicUrl
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Set connector public URL"
@@ -18032,6 +18292,7 @@ paths:
       operationId: getConnectorPublicUrl
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Connector URL retrieved
@@ -18060,6 +18321,7 @@ paths:
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Update platform settings"
@@ -18121,6 +18383,7 @@ paths:
       operationId: getPlatformSettings
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Platform settings retrieved
@@ -18145,6 +18408,7 @@ paths:
       operationId: getAvailableFeatureFlags
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Feature flags retrieved
@@ -18169,6 +18433,7 @@ paths:
       operationId: setCustomSystemPrompt
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request body for Update custom system prompt"
@@ -18194,6 +18459,7 @@ paths:
       operationId: getCustomSystemPrompt
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: System prompt retrieved
@@ -18221,6 +18487,7 @@ paths:
       operationId: getMetricsCollection
       security:
         - bearerAuth: []
+        - oauth2: [config:read]
       responses:
         '200':
           description: Metrics configuration retrieved successfully
@@ -18262,6 +18529,7 @@ paths:
       operationId: toggleMetricsCollection
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -18325,6 +18593,7 @@ paths:
       operationId: setMetricsPushInterval
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -18393,6 +18662,7 @@ paths:
       operationId: setMetricsServerUrl
       security:
         - bearerAuth: []
+        - oauth2: [config:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -18482,6 +18752,7 @@ paths:
       operationId: scheduleCrawlingJob
       security:
         - bearerAuth: []
+        - oauth2: [crawl:write]
       parameters:
         - name: connector
           in: path
@@ -18665,6 +18936,7 @@ paths:
       operationId: getCrawlingJobStatus
       security:
         - bearerAuth: []
+        - oauth2: [crawl:read]
       parameters:
         - name: connector
           in: path
@@ -18732,6 +19004,7 @@ paths:
       operationId: removeCrawlingJob
       security:
         - bearerAuth: []
+        - oauth2: [crawl:write]
       parameters:
         - name: connector
           in: path
@@ -18800,6 +19073,7 @@ paths:
       operationId: pauseCrawlingJob
       security:
         - bearerAuth: []
+        - oauth2: [crawl:write]
       parameters:
         - name: connector
           in: path
@@ -18881,6 +19155,7 @@ paths:
       operationId: resumeCrawlingJob
       security:
         - bearerAuth: []
+        - oauth2: [crawl:write]
       parameters:
         - name: connector
           in: path
@@ -18960,6 +19235,7 @@ paths:
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
+        - oauth2: [crawl:read]
       responses:
         '200':
           description: All job statuses retrieved successfully
@@ -19057,6 +19333,7 @@ paths:
       operationId: getQueueStats
       security:
         - bearerAuth: []
+        - oauth2: [crawl:read]
       responses:
         '200':
           description: Queue statistics retrieved successfully

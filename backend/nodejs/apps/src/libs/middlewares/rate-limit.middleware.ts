@@ -29,11 +29,11 @@ function getClientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || 'unknown';
 }
 
-// Single global rate limiter: 10,000 requests per 1 minute
-export function createGlobalRateLimiter(logger: Logger): RequestHandler {
+// Single global rate limiter
+export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: number): RequestHandler {
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
-    max: process.env.MAX_REQUESTS_PER_MINUTE ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10) : 1000,
+    max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
 
@@ -106,10 +106,10 @@ export function createGlobalRateLimiter(logger: Logger): RequestHandler {
  * Stricter limits: 10 requests per minute per user/IP
  * Used for creating, updating, and deleting OAuth applications
  */
-export function createOAuthClientRateLimiter(logger: Logger): RequestHandler {
+export function createOAuthClientRateLimiter(logger: Logger, maxRequestsPerMinute: number): RequestHandler {
   const config: Partial<Options> = {
     windowMs: 60 * 1000, // 1 minute
-    max: 10, // 10 requests per minute
+    max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
 

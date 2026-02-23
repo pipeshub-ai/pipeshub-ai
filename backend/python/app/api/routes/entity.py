@@ -2,10 +2,12 @@ import json
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.auth import require_scopes
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.service import OAuthScopes
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
@@ -127,7 +129,7 @@ async def _validate_and_filter_owner_updates(
     return filtered_updates, total_owner_count
 
 
-@router.post("/team")
+@router.post("/team", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def create_team(request: Request) -> JSONResponse:
     """Create a team"""
     services = await get_services(request)
@@ -239,7 +241,7 @@ async def create_team(request: Request) -> JSONResponse:
         }
     )
 
-@router.get("/team/list")
+@router.get("/team/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
@@ -309,7 +311,7 @@ async def get_teams(
         logger.error(f"Error in get_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch teams")
 
-@router.get("/team/{team_id}")
+@router.get("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_team(request: Request, team_id: str) -> JSONResponse:
     """Get a specific team with its users and permissions"""
     services = await get_services(request)
@@ -343,7 +345,7 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in get_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team")
 
-@router.put("/team/{team_id}")
+@router.put("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def update_team(request: Request, team_id: str) -> JSONResponse:
     """Update a team - OWNER role. Supports updating name, description, and managing members"""
     services = await get_services(request)
@@ -483,7 +485,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in update_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team")
 
-@router.post("/team/{team_id}/users")
+@router.post("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
     """Add users to a team - OWNER role"""
     services = await get_services(request)
@@ -579,7 +581,7 @@ async def add_users_to_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in add_users_to_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to add users to team")
 
-@router.delete("/team/{team_id}/users")
+@router.delete("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
     """Remove a user from a team - OWNER role"""
     services = await get_services(request)
@@ -650,7 +652,7 @@ async def remove_user_from_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in remove_user_from_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to remove user from team")
 
-@router.put("/team/{team_id}/users/permissions")
+@router.put("/team/{team_id}/users/permissions", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def update_user_permissions(request: Request, team_id: str) -> JSONResponse:
     """Update user permissions in a team - requires OWNER role"""
     services = await get_services(request)
@@ -754,7 +756,7 @@ async def update_user_permissions(request: Request, team_id: str) -> JSONRespons
         logger.error(f"Error in update_user_permissions: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update user permissions")
 
-@router.delete("/team/{team_id}")
+@router.delete("/team/{team_id}", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def delete_team(request: Request, team_id: str) -> JSONResponse:
     """Delete a team and all its permissions - requires OWNER role"""
     services = await get_services(request)
@@ -807,7 +809,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in delete_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to delete team")
 
-@router.get("/user/teams")
+@router.get("/user/teams", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
@@ -876,7 +878,7 @@ async def get_user_teams(
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
 
-@router.get("/user/teams/created")
+@router.get("/user/teams/created", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_user_created_teams(
     request: Request,
     search: Optional[str] = Query(None, description="Search teams by name"),
@@ -946,7 +948,7 @@ async def get_user_created_teams(
         logger.error(f"Error in get_user_created_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user created teams")
 
-@router.get("/user/list")
+@router.get("/user/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_users(
     request: Request,
     search: Optional[str] = Query(None, description="Search users by name or email"),
@@ -1010,7 +1012,7 @@ async def get_users(
         logger.error(f"Error in get_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch users")
 
-@router.get("/team/{team_id}/users")
+@router.get("/team/{team_id}/users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_team_users(request: Request, team_id: str) -> JSONResponse:
     """Get all users in a specific team - requires MEMBER role"""
     services = await get_services(request)
@@ -1051,7 +1053,7 @@ async def get_team_users(request: Request, team_id: str) -> JSONResponse:
         logger.error(f"Error in get_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch team users")
 
-@router.post("/team/{team_id}/bulk-users")
+@router.post("/team/{team_id}/bulk-users", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_WRITE))])
 async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse:
     """Bulk add/remove users from a team -OWNER role"""
     services = await get_services(request)
@@ -1132,7 +1134,7 @@ async def bulk_manage_team_users(request: Request, team_id: str) -> JSONResponse
         logger.error(f"Error in bulk_manage_team_users: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to update team users")
 
-@router.get("/team/search")
+@router.get("/team/search", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def search_teams(request: Request) -> JSONResponse:
     """Search teams by name or description"""
     services = await get_services(request)

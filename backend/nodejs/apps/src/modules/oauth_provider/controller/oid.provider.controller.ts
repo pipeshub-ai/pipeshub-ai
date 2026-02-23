@@ -45,7 +45,7 @@ export class OIDCProviderController {
     // OAuth data is attached by OAuthAuthMiddleware
     const { oauth } = req
     const scopes = oauth!.scopes
-    const userId = oauth!.payload.sub
+    const userId = oauth!.payload.userId
 
     // Get user info
     const user = await Users.findById(userId)
@@ -62,7 +62,7 @@ export class OIDCProviderController {
     }
 
     const userInfo: Record<string, unknown> = {
-      sub: (user._id as Types.ObjectId).toString(),
+      user_id: (user._id as Types.ObjectId).toString(),
     }
 
     // Add claims based on scopes
@@ -126,7 +126,7 @@ export class OIDCProviderController {
       subject_types_supported: ['public'],
       id_token_signing_alg_values_supported: [this.oauthTokenService.getAlgorithm()],
       claims_supported: [
-        'sub',
+        'user_id',
         'iss',
         'aud',
         'exp',

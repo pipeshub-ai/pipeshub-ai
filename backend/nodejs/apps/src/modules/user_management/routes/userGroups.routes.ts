@@ -6,6 +6,8 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { userAdminCheck } from '../middlewares/userAdminCheck';
 import { UserGroupController } from '../controller/userGroups.controller';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const UserGroupIdUrlParams = z.object({
   groupId: z.string().min(1, "Group ID is required")
@@ -37,6 +39,7 @@ export function createUserGroupRouter(container: Container) {
   router.post(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     ValidationMiddleware.validate(groupValidationSchema),
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
@@ -54,6 +57,7 @@ export function createUserGroupRouter(container: Container) {
   router.get(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_READ),
     userAdminCheck,
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -70,6 +74,7 @@ export function createUserGroupRouter(container: Container) {
   router.get(
     '/:groupId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_READ),
     ValidationMiddleware.validate(UserGroupIdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -90,6 +95,7 @@ export function createUserGroupRouter(container: Container) {
   router.put(
     '/:groupId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(UserGroupIdValidationSchema),
     async (
@@ -111,6 +117,7 @@ export function createUserGroupRouter(container: Container) {
   router.delete(
     '/:groupId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
     ValidationMiddleware.validate(UserGroupIdValidationSchema),
     async (
@@ -132,6 +139,7 @@ export function createUserGroupRouter(container: Container) {
   router.post(
     '/add-users',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
@@ -152,6 +160,7 @@ export function createUserGroupRouter(container: Container) {
   router.post(
     '/remove-users',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_WRITE),
     userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
@@ -172,6 +181,7 @@ export function createUserGroupRouter(container: Container) {
   router.get(
     '/:groupId/users',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_READ),
     ValidationMiddleware.validate(UserGroupIdValidationSchema),
     async (
       req: AuthenticatedUserRequest,
@@ -192,6 +202,7 @@ export function createUserGroupRouter(container: Container) {
   router.get(
     '/users/:userId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_READ),
     async (
       req: AuthenticatedUserRequest,
       res: Response,
@@ -211,6 +222,7 @@ export function createUserGroupRouter(container: Container) {
   router.get(
     '/stats/list',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USERGROUP_READ),
     async (
       req: AuthenticatedUserRequest,
       res: Response,

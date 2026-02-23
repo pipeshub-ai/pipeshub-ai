@@ -26,6 +26,8 @@ import { MailService } from '../services/mail.service';
 import { AuthService } from '../services/auth.service';
 import { EntitiesEventProducer } from '../services/entity_events.service';
 import { OrgController } from '../controller/org.controller';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 const UserIdUrlParams = z.object({
   id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
@@ -172,6 +174,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -186,6 +189,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/fetch/with-groups',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const userController = container.get<UserController>('UserController');
@@ -199,6 +203,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/:id/email',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     ValidationMiddleware.validate(UserIdValidationSchema),
     metricsMiddleware(container),
     userAdminCheck,
@@ -220,6 +225,7 @@ export function createUserRouter(container: Container) {
   router.put(
     '/:id/unblock',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     userAdminCheck,
 
     async (req: Request, res: Response, next: NextFunction) => {
@@ -235,6 +241,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/:id',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     ValidationMiddleware.validate(UserIdValidationSchema),
     metricsMiddleware(container),
     userExists,
@@ -254,6 +261,7 @@ export function createUserRouter(container: Container) {
   router.post(
     '/by-ids',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     ValidationMiddleware.validate(MultipleUserValidationSchema),
     metricsMiddleware(container),
     async (
@@ -327,6 +335,7 @@ export function createUserRouter(container: Container) {
   router.post(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createUserValidationSchema),
     userAdminCheck,
@@ -347,6 +356,7 @@ export function createUserRouter(container: Container) {
   router.patch(
     '/:id/fullname',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateUserFullNameValidationSchema),
     userAdminOrSelfCheck,
@@ -368,6 +378,7 @@ export function createUserRouter(container: Container) {
   router.patch(
     '/:id/firstName',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateUserFirstNameValidationSchema),
     userAdminOrSelfCheck,
@@ -389,6 +400,7 @@ export function createUserRouter(container: Container) {
   router.patch(
     '/:id/lastName',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateUserLastNameValidationSchema),
     userAdminOrSelfCheck,
@@ -410,6 +422,7 @@ export function createUserRouter(container: Container) {
   router.put(
     '/dp',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: [
@@ -443,6 +456,7 @@ export function createUserRouter(container: Container) {
   router.delete(
     '/dp',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     async (
       req: AuthenticatedUserRequest,
@@ -461,6 +475,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/dp',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
     async (
       req: AuthenticatedUserRequest,
@@ -479,6 +494,7 @@ export function createUserRouter(container: Container) {
   router.patch(
     '/:id/designation',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateUserDesignationValidationSchema),
     userAdminOrSelfCheck,
@@ -500,6 +516,7 @@ export function createUserRouter(container: Container) {
   router.patch(
     '/:id/email',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateUserEmailValidationSchema),
     userAdminOrSelfCheck,
@@ -521,6 +538,7 @@ export function createUserRouter(container: Container) {
   router.put(
     '/:id',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateUserValidationSchema),
     userAdminOrSelfCheck,
@@ -542,6 +560,7 @@ export function createUserRouter(container: Container) {
   router.delete(
     '/:id',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(UserIdValidationSchema),
     userAdminCheck,
@@ -563,6 +582,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/:id/adminCheck',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(UserIdValidationSchema),
     userAdminCheck,
@@ -583,6 +603,7 @@ export function createUserRouter(container: Container) {
   router.post(
     '/bulk/invite',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
     smtpConfigCheck(config.cmBackend),
     userAdminCheck,
@@ -604,6 +625,7 @@ export function createUserRouter(container: Container) {
   router.post(
     '/:id/resend-invite',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_INVITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(UserIdValidationSchema),
     smtpConfigCheck(config.cmBackend),
@@ -691,6 +713,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/graph/list',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
@@ -705,6 +728,7 @@ export function createUserRouter(container: Container) {
   router.get(
     '/teams/list',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.USER_READ),
     metricsMiddleware(container),
     async (req: Request, res: Response, next: NextFunction) => {
       try {

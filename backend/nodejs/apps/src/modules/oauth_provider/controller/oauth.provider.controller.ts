@@ -20,14 +20,16 @@ import {
   ConsentData,
   OAuthErrorResponse,
 } from '../types/oauth.types'
+import { Users } from '../../user_management/schema/users.schema'
+import { Org } from '../../user_management/schema/org.schema'
 
 interface AuthenticatedRequest extends Request {
   user?: {
-    id: string
+    userId: string
     orgId: string
     email: string
-    firstName?: string
-    lastName?: string
+    fullName?: string
+    accountType?: string
   }
 }
 
@@ -127,9 +129,7 @@ export class OAuthProviderController {
         })),
         user: {
           email: user.email,
-          name: user.firstName
-            ? `${user.firstName} ${user.lastName || ''}`.trim()
-            : undefined,
+          name: user.fullName,
         },
         redirectUri: query.redirect_uri,
         state: query.state,
@@ -211,7 +211,7 @@ export class OAuthProviderController {
       const user = req.user!
       const code = await this.authorizationCodeService.generateCode(
         client_id,
-        user.id,
+        user.userId,
         user.orgId,
         redirect_uri,
         requestedScopes,
@@ -226,7 +226,7 @@ export class OAuthProviderController {
 
       this.logger.info('Authorization code issued', {
         clientId: client_id,
-        userId: user.id,
+        userId: user.userId,
         scopes: requestedScopes,
       })
 
@@ -415,6 +415,34 @@ export class OAuthProviderController {
       request.code_verifier,
     )
 
+    // Look up user details to embed in token
+    let fullName: string | undefined
+    let accountType: string | undefined
+    if (codeResult.userId) {
+      const user = await Users.findOne({
+        _id: codeResult.userId,
+        orgId: codeResult.orgId,
+        isDeleted: false,
+      })
+        .select('fullName')
+        .lean()
+        .exec()
+      if (user) {
+        fullName = user.fullName
+      }
+
+      const org = await Org.findOne({
+        _id: codeResult.orgId,
+        isDeleted: false,
+      })
+        .select('accountType')
+        .lean()
+        .exec()
+      if (org) {
+        accountType = (org as any).accountType
+      }
+    }
+
     // Generate tokens
     const tokens = await this.oauthTokenService.generateTokens(
       app,
@@ -422,6 +450,8 @@ export class OAuthProviderController {
       codeResult.orgId,
       codeResult.scopes,
       true,
+      fullName,
+      accountType,
     )
 
     this.logger.info('Authorization code grant completed', {
@@ -473,6 +503,34 @@ export class OAuthProviderController {
         !['openid', 'profile', 'email', 'offline_access'].includes(s),
     )
 
+    let fullName: string | undefined
+    let accountType: string | undefined
+
+    if (app.createdBy) {
+      const user = await Users.findOne({
+        _id: app.createdBy,
+        orgId: app.orgId,
+        isDeleted: false,
+      })
+        .select('fullName')
+        .lean()
+        .exec()
+      if (user) {
+        fullName = user.fullName
+      }
+    }
+
+    const org = await Org.findOne({
+      _id: app.orgId,
+      isDeleted: false,
+    })
+      .select('accountType')
+      .lean()
+      .exec()
+    if (org) {
+      accountType = (org as any).accountType
+    }
+
     // Generate tokens (no refresh token for client_credentials)
     const tokens = await this.oauthTokenService.generateTokens(
       app,
@@ -480,6 +538,8 @@ export class OAuthProviderController {
       app.orgId.toString(),
       filteredScopes,
       false, // No refresh token
+      fullName,
+      accountType,
     )
 
     this.logger.info('Client credentials grant completed', { clientId })

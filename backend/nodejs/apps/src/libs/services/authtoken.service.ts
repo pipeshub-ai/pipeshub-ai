@@ -2,7 +2,7 @@
 import { injectable } from 'inversify';
 import { UnauthorizedError } from '../errors/http.errors';
 import { Logger } from '../services/logger.service';
-import jwt from 'jsonwebtoken';
+import jwt, { SignOptions } from 'jsonwebtoken';
 
 interface TokenPayload extends Record<string, any> {}
 @injectable()
@@ -43,11 +43,11 @@ export class AuthTokenService {
     return decoded;
   }
 
-  generateToken(payload: TokenPayload): string {
-    return jwt.sign(payload, this.jwtSecret, { expiresIn: '7d' });
+  generateToken(payload: TokenPayload, expiresIn: SignOptions['expiresIn'] = '7d'): string {
+    return jwt.sign(payload, this.jwtSecret, { expiresIn } as SignOptions);
   }
 
-  generateScopedToken(payload: TokenPayload): string {
-    return jwt.sign(payload, this.scopedJwtSecret, { expiresIn: '1h' });
+  generateScopedToken(payload: TokenPayload, expiresIn: SignOptions['expiresIn'] = '1h'): string {
+    return jwt.sign(payload, this.scopedJwtSecret, { expiresIn } as SignOptions);
   }
 }

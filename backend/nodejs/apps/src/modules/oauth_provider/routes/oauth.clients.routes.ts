@@ -5,6 +5,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware'
 import { createOAuthClientRateLimiter } from '../../../libs/middlewares/rate-limit.middleware'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthAppController } from '../controller/oauth.app.controller'
+import { AppConfig } from '../../tokens_manager/config/config'
 import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck'
 import {
   appIdParamsSchema,
@@ -18,15 +19,16 @@ export function createOAuthClientsRouter(container: Container): Router {
   const controller = container.get<OAuthAppController>('OAuthAppController')
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware')
   const logger = container.get<Logger>('Logger')
+  const appConfig = container.get<AppConfig>('AppConfig')
 
-  // Rate limiter for OAuth client management (10 requests per minute)
-  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger)
+  // Rate limiter for OAuth client management
+  const oauthClientRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute)
 
   // All routes require authentication
   router.use(authMiddleware.authenticate.bind(authMiddleware))
   // All routes require admin auth
   router.use(userAdminCheck)
-  // All routes must be rate limited
+  // All routes are rate limited
   router.use(oauthClientRateLimiter)
 
   /**

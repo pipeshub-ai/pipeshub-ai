@@ -15,8 +15,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse
 
 from app.agents.registry.toolset_registry import ToolsetRegistry
+from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.constants.service import OAuthScopes
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
@@ -464,7 +466,7 @@ def _parse_request_json(request: Request, data: bytes) -> Dict[str, Any]:
 # Registry Endpoints
 # ============================================================================
 
-@router.get("/registry")
+@router.get("/registry", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_toolset_registry_endpoint(
     request: Request,
     page: int = Query(1, ge=1, description="Page number"),
@@ -522,7 +524,7 @@ async def get_toolset_registry_endpoint(
     }
 
 
-@router.get("/registry/{toolset_type}/schema")
+@router.get("/registry/{toolset_type}/schema", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_toolset_schema(toolset_type: str, request: Request) -> Dict[str, Any]:
     """Get schema/config for a specific toolset"""
     registry = _get_registry(request)
@@ -548,7 +550,7 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> Dict[str, A
     }
 
 
-@router.get("/tools")
+@router.get("/tools", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_all_tools(
     request: Request,
     app_name: Optional[str] = Query(None, description="Filter by app/toolset name"),
@@ -594,7 +596,7 @@ async def get_all_tools(
     return sorted(tools_data, key=lambda x: (x["app_name"], x["tool_name"]))
 
 
-@router.get("/registry/{toolset_name}/tools")
+@router.get("/registry/{toolset_name}/tools", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 async def get_toolset_tools(toolset_name: str, request: Request) -> Dict[str, Any]:
     """Get all tools for a specific toolset"""
     registry = _get_registry(request)
@@ -625,7 +627,7 @@ async def get_toolset_tools(toolset_name: str, request: Request) -> Dict[str, An
 # Toolset Instance Management
 # ============================================================================
 
-@router.get("/configured")
+@router.get("/configured", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_configured_toolsets(
     request: Request,
@@ -687,7 +689,7 @@ async def get_configured_toolsets(
     return {"status": "success", "toolsets": toolsets}
 
 
-@router.get("/{toolset_type}/status")
+@router.get("/{toolset_type}/status", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_toolset_status(
     toolset_type: str,
@@ -729,7 +731,7 @@ async def get_toolset_status(
     }
 
 
-@router.get("/{toolset_type}/config")
+@router.get("/{toolset_type}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_toolset_config(
     toolset_type: str,
@@ -810,7 +812,7 @@ async def get_toolset_config(
 # OAuth Flow
 # ============================================================================
 
-@router.get("/{toolset_type}/oauth/authorize")
+@router.get("/{toolset_type}/oauth/authorize", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def get_oauth_authorization_url(
     toolset_type: str,
@@ -903,7 +905,7 @@ async def get_oauth_authorization_url(
         await oauth_provider.close()
 
 
-@router.get("/oauth/callback", response_model=None)
+@router.get("/oauth/callback", response_model=None, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
 @inject
 async def handle_oauth_callback(
     request: Request,
@@ -1069,7 +1071,7 @@ async def handle_oauth_callback(
 # Configuration Management
 # ============================================================================
 
-@router.post("/")
+@router.post("/", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def create_toolset(
     request: Request,
@@ -1165,7 +1167,7 @@ async def create_toolset(
     }
 
 
-@router.put("/{toolset_type}/config")
+@router.put("/{toolset_type}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def update_toolset_config(
     toolset_type: str,
@@ -1255,7 +1257,7 @@ async def update_toolset_config(
     return {"status": "success", "message": "Configuration updated successfully"}
 
 
-@router.post("/{toolset_type}/reauthenticate")
+@router.post("/{toolset_type}/reauthenticate", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def reauthenticate_toolset(
     toolset_type: str,
@@ -1316,7 +1318,7 @@ async def reauthenticate_toolset(
     }
 
 
-@router.delete("/{toolset_type}/config")
+@router.delete("/{toolset_type}/config", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
 @inject
 async def delete_toolset_config(
     toolset_type: str,

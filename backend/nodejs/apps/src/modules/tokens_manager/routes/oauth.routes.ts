@@ -25,6 +25,8 @@ import {
   updateOAuthConfig,
   deleteOAuthConfig,
 } from '../controllers/oauth.controllers';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 
 // ============================================================================
 // Validation Schemas
@@ -141,6 +143,7 @@ export function createOAuthRouter(container: Container): Router {
   router.get(
     '/registry',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigRegistrySchema),
     getOAuthConfigRegistry(config)
@@ -154,6 +157,7 @@ export function createOAuthRouter(container: Container): Router {
   router.get(
     '/registry/:connectorType',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigRegistrySchema),
     getOAuthConfigRegistryByType(config)
@@ -167,6 +171,7 @@ export function createOAuthRouter(container: Container): Router {
   router.get(
     '/',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(getAllOAuthConfigsSchema),
     getAllOAuthConfigs(config)
@@ -179,6 +184,7 @@ export function createOAuthRouter(container: Container): Router {
   router.get(
     '/:connectorType',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigListSchema),
     listOAuthConfigs(config)
@@ -191,6 +197,7 @@ export function createOAuthRouter(container: Container): Router {
   router.post(
     '/:connectorType',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(createOAuthConfigSchema),
     createOAuthConfig(config)
@@ -203,6 +210,7 @@ export function createOAuthRouter(container: Container): Router {
   router.get(
     '/:connectorType/:configId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigIdSchema),
     getOAuthConfig(config)
@@ -215,6 +223,7 @@ export function createOAuthRouter(container: Container): Router {
   router.put(
     '/:connectorType/:configId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(updateOAuthConfigSchema),
     updateOAuthConfig(config)
@@ -227,6 +236,7 @@ export function createOAuthRouter(container: Container): Router {
   router.delete(
     '/:connectorType/:configId',
     authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(oauthConfigIdSchema),
     deleteOAuthConfig(config)
