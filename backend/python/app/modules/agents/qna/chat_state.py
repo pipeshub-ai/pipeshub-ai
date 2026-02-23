@@ -63,6 +63,7 @@ class ChatState(TypedDict):
     current_time: Optional[str]  # Current time in user's timezone (ISO 8601)
     apps: Optional[List[str]]  # List of app IDs to search in (extracted from knowledge array)
     kb: Optional[List[str]]  # List of KB record group IDs to search in (extracted from knowledge array filters)
+    agent_knowledge: Optional[List[Dict[str, Any]]]
     # connector_instances: Deprecated - use toolsets instead
     tools: Optional[List[str]]  # List of tool names to enable for this agent
     output_file_path: Optional[str]  # Optional file path for saving responses
@@ -370,6 +371,8 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
     apps = _extract_knowledge_connector_ids(knowledge) if knowledge else filters.get("apps", None)
     # Extract KB record groups from knowledge array filters (new format)
     kb = _extract_kb_record_groups(knowledge) if knowledge else filters.get("kb", None)
+    # Store the original knowledge array in state so tool_system and nodes can check it
+    agent_knowledge = knowledge if knowledge else []
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -424,6 +427,7 @@ def build_initial_state(chat_query: Dict[str, Any], user_info: Dict[str, Any], l
         "current_time": current_time,
         "apps": apps,  # Extracted from knowledge connector IDs
         "kb": kb,
+        "agent_knowledge": agent_knowledge,
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
         "output_file_path": output_file_path,

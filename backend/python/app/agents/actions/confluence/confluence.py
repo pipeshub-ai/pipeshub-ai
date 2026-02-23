@@ -75,6 +75,13 @@ class GetPageVersionsInput(BaseModel):
     """Schema for getting page versions"""
     page_id: str = Field(description="The page ID")
 
+class SearchContentInput(BaseModel):
+    """Schema for full-text content search"""
+    query: str = Field(description="Free-text search query — searches across page/blogpost titles, body content, comments, and labels (mirrors the Confluence platform search bar)")
+    space_id: Optional[str] = Field(default=None, description="Optional space key or ID to restrict search to one space")
+    content_types: Optional[list] = Field(default=None, description="Content types to include: 'page', 'blogpost', or both. Defaults to both when omitted.")
+    limit: Optional[int] = Field(default=25, description="Maximum number of results to return (default 25)")
+
 # Register Confluence toolset
 @ToolsetBuilder("Confluence")\
     .in_group("Atlassian")\
@@ -118,6 +125,7 @@ class Confluence:
             client: Confluence client object
         """
         self.client = ConfluenceDataSource(client)
+        self._site_url = None  # Cache for site URL
 
     def _handle_response(
         self,
@@ -154,6 +162,33 @@ class Confluence:
                 "error": f"HTTP {response.status}",
                 "details": error_text
             })
+
+    async def _get_site_url(self) -> Optional[str]:
+        """Get the site URL (web URL) from accessible resources.
+
+        Returns:
+            Site URL (e.g., 'https://example.atlassian.net') or None if unavailable
+        """
+        if self._site_url:
+            return self._site_url
+
+        try:
+            # Get token from client
+            client_obj = self.client._client
+            if hasattr(client_obj, 'get_token'):
+                token = client_obj.get_token()
+                if token:
+                    resources = await ConfluenceClient.get_accessible_resources(token)
+                    if resources and len(resources) > 0:
+                        # Extract base URL from resource URL
+                        resource_url = resources[0].url
+                        # Resource URL is like 'https://example.atlassian.net'
+                        self._site_url = resource_url.rstrip('/')
+                        return self._site_url
+        except Exception as e:
+            logger.warning(f"Could not get site URL: {e}")
+
+        return None
 
     async def _resolve_space_id(self, space_identifier: str) -> str:
         """Helper method to resolve space key to numeric space ID.
@@ -297,7 +332,43 @@ class Confluence:
             }
 
             response = await self.client.create_page(body=body)
-            return self._handle_response(response, "Page created successfully")
+            result = self._handle_response(response, "Page created successfully")
+
+            # Add web URL if successful
+            if result[0] and response.status in [HttpStatusCode.SUCCESS.value, HttpStatusCode.CREATED.value]:
+                try:
+                    data = response.json()
+                    page_id = data.get("id")
+                    space_key = data.get("spaceId") or resolved_space_id
+                    if page_id:
+                        site_url = await self._get_site_url()
+                        if site_url:
+                            # Try to get space key from response or use resolved space ID
+                            # For Confluence, we need space key, not ID for URL
+                            # Try to resolve space key from ID if needed
+                            space_key_for_url = space_key
+                            try:
+                                int(space_key)  # Check if it's numeric
+                                # It's numeric, try to get key from spaces
+                                spaces_response = await self.client.get_spaces()
+                                if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                    spaces_data = spaces_response.json()
+                                    for space in spaces_data.get("results", []):
+                                        if str(space.get("id")) == str(space_key):
+                                            space_key_for_url = space.get("key", space_key)
+                                            break
+                            except ValueError:
+                                pass  # Already a key
+
+                            web_url = f"{site_url}/wiki/spaces/{space_key_for_url}/pages/{page_id}"
+                            result_data = json.loads(result[1])
+                            if "data" in result_data and isinstance(result_data["data"], dict):
+                                result_data["data"]["url"] = web_url
+                            result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URL to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error creating page: {e}")
@@ -348,7 +419,40 @@ class Confluence:
                 id=page_id_int,
                 body_format="storage"
             )
-            return self._handle_response(response, "Page content fetched successfully")
+            result = self._handle_response(response, "Page content fetched successfully")
+
+            # Add web URL if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    data = response.json()
+                    page_id_from_data = data.get("id")
+                    space_id = data.get("spaceId")
+                    if page_id_from_data and space_id:
+                        site_url = await self._get_site_url()
+                        if site_url:
+                            # Get space key from space ID
+                            space_key = space_id
+                            try:
+                                int(space_id)  # Check if it's numeric
+                                spaces_response = await self.client.get_spaces()
+                                if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                    spaces_data = spaces_response.json()
+                                    for space in spaces_data.get("results", []):
+                                        if str(space.get("id")) == str(space_id):
+                                            space_key = space.get("key", space_id)
+                                            break
+                            except ValueError:
+                                pass  # Already a key
+
+                            web_url = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id_from_data}"
+                            result_data = json.loads(result[1])
+                            if "data" in result_data and isinstance(result_data["data"], dict):
+                                result_data["data"]["url"] = web_url
+                            result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URL to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error getting page content: {e}")
@@ -391,7 +495,47 @@ class Confluence:
         try:
             resolved_space_id = await self._resolve_space_id(space_id)
             response = await self.client.get_pages_in_space(id=resolved_space_id)
-            return self._handle_response(response, "Pages fetched successfully")
+            result = self._handle_response(response, "Pages fetched successfully")
+
+            # Add web URLs if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    response.json()
+                    site_url = await self._get_site_url()
+                    if site_url:
+                        # Get space key
+                        space_key = space_id
+                        try:
+                            int(resolved_space_id)  # Check if it's numeric
+                            spaces_response = await self.client.get_spaces()
+                            if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                spaces_data = spaces_response.json()
+                                for space in spaces_data.get("results", []):
+                                    if str(space.get("id")) == str(resolved_space_id):
+                                        space_key = space.get("key", space_id)
+                                        break
+                        except ValueError:
+                            pass  # Already a key
+
+                        # Add URLs to pages
+                        result_data = json.loads(result[1])
+                        if "data" in result_data:
+                            pages = result_data["data"]
+                            if isinstance(pages, dict) and "results" in pages:
+                                for page in pages["results"]:
+                                    page_id = page.get("id")
+                                    if page_id:
+                                        page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+                            elif isinstance(pages, list):
+                                for page in pages:
+                                    page_id = page.get("id")
+                                    if page_id:
+                                        page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+                        result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URLs to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error getting pages: {e}")
@@ -491,7 +635,53 @@ class Confluence:
                 return False, json.dumps({"error": f"Invalid page_id format: '{page_id}' is not a valid integer"})
 
             response = await self.client.get_child_pages(id=page_id_int)
-            return self._handle_response(response, "Child pages fetched successfully")
+            result = self._handle_response(response, "Child pages fetched successfully")
+
+            # Add web URLs if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    response.json()
+                    # Get parent page to find space
+                    parent_response = await self.client.get_page_by_id(id=page_id_int, body_format="storage")
+                    if parent_response.status == HttpStatusCode.SUCCESS.value:
+                        parent_data = parent_response.json()
+                        space_id = parent_data.get("spaceId")
+                        if space_id:
+                            site_url = await self._get_site_url()
+                            if site_url:
+                                # Get space key
+                                space_key = space_id
+                                try:
+                                    int(space_id)
+                                    spaces_response = await self.client.get_spaces()
+                                    if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                        spaces_data = spaces_response.json()
+                                        for space in spaces_data.get("results", []):
+                                            if str(space.get("id")) == str(space_id):
+                                                space_key = space.get("key", space_id)
+                                                break
+                                except ValueError:
+                                    pass
+
+                                # Add URLs to child pages
+                                result_data = json.loads(result[1])
+                                if "data" in result_data:
+                                    pages = result_data["data"]
+                                    if isinstance(pages, dict) and "results" in pages:
+                                        for page in pages["results"]:
+                                            page_id = page.get("id")
+                                            if page_id:
+                                                page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+                                    elif isinstance(pages, list):
+                                        for page in pages:
+                                            page_id = page.get("id")
+                                            if page_id:
+                                                page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+                                result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URLs to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error getting child pages: {e}")
@@ -542,10 +732,201 @@ class Confluence:
                 kwargs["space_id"] = [space_id]
 
             response = await self.client.get_pages(**kwargs)
-            return self._handle_response(response, "Search completed successfully")
+            result = self._handle_response(response, "Search completed successfully")
+
+            # Add web URLs if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    response.json()
+                    site_url = await self._get_site_url()
+                    if site_url:
+                        result_data = json.loads(result[1])
+                        if "data" in result_data:
+                            pages = result_data["data"]
+                            if isinstance(pages, dict) and "results" in pages:
+                                for page in pages["results"]:
+                                    page_id = page.get("id")
+                                    space_id = page.get("spaceId")
+                                    if page_id and space_id:
+                                        # Get space key
+                                        space_key = space_id
+                                        try:
+                                            int(space_id)
+                                            spaces_response = await self.client.get_spaces()
+                                            if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                                spaces_data = spaces_response.json()
+                                                for space in spaces_data.get("results", []):
+                                                    if str(space.get("id")) == str(space_id):
+                                                        space_key = space.get("key", space_id)
+                                                        break
+                                        except ValueError:
+                                            pass
+
+                                        page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+                            elif isinstance(pages, list):
+                                for page in pages:
+                                    page_id = page.get("id")
+                                    space_id = page.get("spaceId")
+                                    if page_id and space_id:
+                                        space_key = space_id
+                                        try:
+                                            int(space_id)
+                                            spaces_response = await self.client.get_spaces()
+                                            if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                                spaces_data = spaces_response.json()
+                                                for space in spaces_data.get("results", []):
+                                                    if str(space.get("id")) == str(space_id):
+                                                        space_key = space.get("key", space_id)
+                                                        break
+                                        except ValueError:
+                                            pass
+
+                                        page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
+                        result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URLs to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error searching pages: {e}")
+            return False, json.dumps({"error": str(e)})
+
+    @tool(
+        app_name="confluence",
+        tool_name="search_content",
+        description="Full-text search across Confluence pages and blog posts (mirrors the Confluence platform search bar)",
+        args_schema=SearchContentInput,
+        returns="JSON with ranked search results including titles, excerpts, and URLs",
+        when_to_use=[
+            "User wants to find content by topic, keyword, or meaning (not just by title)",
+            "User searches for Confluence pages or blog posts matching a theme or concept",
+            "User asks 'find pages about X' or 'search Confluence for Y'",
+            "Title-only search (search_pages) gives poor results — use this for richer search",
+        ],
+        when_not_to_use=[
+            "User wants to create/update a page (use create_page / update_page)",
+            "User already has a page ID and wants its content (use get_page_content)",
+            "User wants to list all pages in a space (use get_pages_in_space)",
+            "No Confluence mention",
+        ],
+        primary_intent=ToolIntent.SEARCH,
+        typical_queries=[
+            "Find Confluence pages about deployment",
+            "Search for anything related to onboarding",
+            "Find documentation about the payment service",
+            "Search Confluence for API guidelines",
+        ],
+        category=ToolCategory.DOCUMENTATION,
+        llm_description=(
+            "Full-text search across Confluence pages and blog posts using the platform search engine. "
+            "Unlike search_pages (title-only), this searches the full body content, comments, and labels — "
+            "exactly like the Confluence search bar. Use this whenever you need to find content by topic or keyword."
+        )
+    )
+    async def search_content(
+        self,
+        query: str,
+        space_id: Optional[str] = None,
+        content_types: Optional[list] = None,
+        limit: Optional[int] = 25,
+    ) -> Tuple[bool, str]:
+        """Full-text search across Confluence using the platform search engine.
+
+        Searches page/blogpost titles, body content, comments, and labels via CQL ``text ~``.
+        This is identical to what the Confluence search bar does — far more powerful than
+        title-only search.
+
+        Args:
+            query: Free-text search query
+            space_id: Optional space key or numeric ID to restrict the search
+            content_types: List of types to include: "page", "blogpost" (default: both)
+            limit: Max results to return (default 25)
+
+        Returns:
+            Tuple of (success, json_response)
+        """
+        try:
+            resolved_space_id: Optional[str] = None
+            if space_id:
+                resolved_space_id = await self._resolve_space_id(space_id)
+
+            response = await self.client.search_full_text(
+                query=query,
+                space_id=resolved_space_id,
+                content_types=content_types,
+                limit=limit or 25,
+            )
+
+            if response.status not in [200, 201]:
+                error_text = response.text() if hasattr(response, 'text') else str(response)
+                return False, json.dumps({
+                    "error": f"HTTP {response.status}",
+                    "details": error_text
+                })
+
+            try:
+                data = response.json()
+            except Exception:
+                return False, json.dumps({"error": "Failed to parse search response"})
+
+            results = data.get("results", [])
+            total = data.get("totalSize", len(results))
+
+            # Normalise results into a clean, LLM-friendly structure
+            # and inject web URLs using the site base URL
+            site_url = await self._get_site_url()
+            cleaned: list = []
+            for item in results:
+                content = item.get("content") or {}
+                content_id   = content.get("id", "")
+                content_type = content.get("type", "page")
+                title        = content.get("title", "")
+                excerpt      = item.get("excerpt", "")
+                space_info   = content.get("space") or {}
+                space_key    = space_info.get("key", "")
+                space_name   = space_info.get("name", "")
+
+                # Prefer the webui link from the API response; fall back to constructing it
+                webui = ""
+                links = content.get("_links") or {}
+                if links.get("webui"):
+                    if site_url:
+                        webui = site_url + links["webui"]
+                    else:
+                        webui = links["webui"]
+                elif site_url and content_id and space_key:
+                    webui = f"{site_url}/wiki/spaces/{space_key}/pages/{content_id}"
+
+                entry: Dict[str, Any] = {
+                    "id": content_id,
+                    "type": content_type,
+                    "title": title,
+                    "space_key": space_key,
+                    "space_name": space_name,
+                    "excerpt": excerpt,
+                    "url": webui,
+                }
+
+                # Include last-modified if available
+                last_modified = item.get("lastModified") or (
+                    (content.get("version") or {}).get("when", "")
+                )
+                if last_modified:
+                    entry["last_modified"] = last_modified
+
+                cleaned.append(entry)
+
+            return True, json.dumps({
+                "message": "Search completed successfully",
+                "query": query,
+                "total_results": total,
+                "returned": len(cleaned),
+                "results": cleaned,
+            })
+
+        except Exception as e:
+            logger.error(f"Error in search_content: {e}")
             return False, json.dumps({"error": str(e)})
 
     @tool(
@@ -581,7 +962,31 @@ class Confluence:
         """
         try:
             response = await self.client.get_spaces()
-            return self._handle_response(response, "Spaces fetched successfully")
+            result = self._handle_response(response, "Spaces fetched successfully")
+
+            # Add web URLs if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    site_url = await self._get_site_url()
+                    if site_url:
+                        result_data = json.loads(result[1])
+                        if "data" in result_data:
+                            spaces = result_data["data"]
+                            if isinstance(spaces, dict) and "results" in spaces:
+                                for space in spaces["results"]:
+                                    space_key = space.get("key")
+                                    if space_key:
+                                        space["url"] = f"{site_url}/wiki/spaces/{space_key}"
+                            elif isinstance(spaces, list):
+                                for space in spaces:
+                                    space_key = space.get("key")
+                                    if space_key:
+                                        space["url"] = f"{site_url}/wiki/spaces/{space_key}"
+                        result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URLs to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error getting spaces: {e}")
@@ -629,7 +1034,25 @@ class Confluence:
                 return False, json.dumps({"error": f"Invalid space_id format: '{space_id}' is not a valid integer"})
 
             response = await self.client.get_space_by_id(id=space_id_int)
-            return self._handle_response(response, "Space fetched successfully")
+            result = self._handle_response(response, "Space fetched successfully")
+
+            # Add web URL if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    data = response.json()
+                    space_key = data.get("key")
+                    if space_key:
+                        site_url = await self._get_site_url()
+                        if site_url:
+                            web_url = f"{site_url}/wiki/spaces/{space_key}"
+                            result_data = json.loads(result[1])
+                            if "data" in result_data and isinstance(result_data["data"], dict):
+                                result_data["data"]["url"] = web_url
+                            result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URL to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error getting space: {e}")
@@ -772,7 +1195,40 @@ class Confluence:
                 id=page_id_int,
                 body=body
             )
-            return self._handle_response(response, "Page updated successfully")
+            result = self._handle_response(response, "Page updated successfully")
+
+            # Add web URL if successful
+            if result[0] and response.status == HttpStatusCode.SUCCESS.value:
+                try:
+                    data = response.json()
+                    page_id_from_data = data.get("id")
+                    space_id = data.get("spaceId")
+                    if page_id_from_data and space_id:
+                        site_url = await self._get_site_url()
+                        if site_url:
+                            # Get space key
+                            space_key = space_id
+                            try:
+                                int(space_id)
+                                spaces_response = await self.client.get_spaces()
+                                if spaces_response.status == HttpStatusCode.SUCCESS.value:
+                                    spaces_data = spaces_response.json()
+                                    for space in spaces_data.get("results", []):
+                                        if str(space.get("id")) == str(space_id):
+                                            space_key = space.get("key", space_id)
+                                            break
+                            except ValueError:
+                                pass
+
+                            web_url = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id_from_data}"
+                            result_data = json.loads(result[1])
+                            if "data" in result_data and isinstance(result_data["data"], dict):
+                                result_data["data"]["url"] = web_url
+                            result = (result[0], json.dumps(result_data))
+                except Exception as e:
+                    logger.debug(f"Could not add URL to response: {e}")
+
+            return result
 
         except Exception as e:
             logger.error(f"Error updating page: {e}")

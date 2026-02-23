@@ -7,6 +7,10 @@ const baseNavData = [
     items: [
       { title: 'Assistant', path: paths.dashboard.root },
       {
+        title: 'Agent (Beta)',
+        path: paths.dashboard.agent.root,
+      },
+      {
         title: 'All Records',
         path: paths.dashboard.allRecords,
       },
