@@ -79,6 +79,7 @@ class RecordType(str, Enum):
     DEAL = "DEAL"
     CASE = "CASE"
     TASK = "TASK"
+    CODE_FILE = "CODE_FILE"
     OTHERS = "OTHERS"
 
 
@@ -1711,6 +1712,70 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
         )
+
+class CodeFileRecord(Record):
+    """Record class for Code Files"""
+    file_path: Optional[str] = None
+    # file_name: Optional[str] = None
+    file_hash: Optional[str] = None
+    # file_type: Optional[str] = None
+    # branch_name: Optional[str] = None
+
+    def to_kafka_record(self) -> Dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "createdAtTimestamp": self.created_at,
+            "updatedAtTimestamp": self.updated_at,
+            # "signedUrl": self.signed_url,
+            # "signedUrlRoute": self.fetch_signed_url,
+            "origin": self.origin.value,
+            "webUrl": self.weburl,
+            "sourceCreatedAtTimestamp": self.source_created_at,
+            "sourceLastModifiedTimestamp": self.source_updated_at,
+            "filePath": self.file_path,
+            # "fileName": self.file_name,
+            "fileHash": self.file_hash,
+        }
+    def to_arango_record(self) -> Dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name":self.record_name,
+            "filePath": self.file_path,
+            # "fileName": self.file_name,
+            "fileHash": self.file_hash,
+        }
+        
+    @staticmethod
+    def from_arango_record(arango_base_code_file_record: Dict,arango_base_record:Dict) -> "CodeFileRecord":
+        """Create CodeFileRecord from ArangoDB documents (records + codeFiles collections)"""
+        conn_name_value = arango_base_record.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+        return CodeFileRecord(
+            id=arango_base_record.get("id", arango_base_record.get("_key")),
+            org_id=arango_base_record["orgId"],
+            record_name=arango_base_record["recordName"],
+            record_type=RecordType(arango_base_record["recordType"]),
+            external_record_id=arango_base_record["externalRecordId"],
+            file_path=arango_base_code_file_record.get("filePath"),
+            # file_name=arango_base_code_file_record.get("fileName"),
+            file_hash=arango_base_code_file_record.get("fileHash"),
+            origin=OriginTypes(arango_base_record["origin"]),
+            connector_name=connector_name,
+            connector_id=arango_base_record.get("connectorId"),
+            mime_type=arango_base_record.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=arango_base_record["webUrl"],
+        )
+        # NOTE: Add more prop. as per need.
 
 class Anyone(BaseModel):
     id: str = Field(description="Unique identifier for the anyone", default_factory=lambda: str(uuid4()))

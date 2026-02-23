@@ -145,8 +145,13 @@ class OAuthToken:
         """Create token from dictionary, filtering out unknown fields"""
         # Make a shallow copy to avoid mutating the caller's dict
         data = dict(data)
-        if 'created_at' in data and isinstance(data['created_at'], str):
-            data['created_at'] = datetime.fromisoformat(data['created_at'])
+        if 'created_at' in data:
+            if isinstance(data['created_at'], str):
+                data['created_at'] = datetime.fromisoformat(data['created_at'])
+            elif isinstance(data['created_at'], int):
+                # GitLab and others return Unix timestamp
+                data['created_at'] = datetime.fromtimestamp(data['created_at'])
+            # TODO: if none data types match what to do ? nullify them or raise error
         # Filter to only known fields to handle varying OAuth provider responses
         known_fields = {f.name for f in cls.__dataclass_fields__.values()}
         filtered_data = {k: v for k, v in data.items() if k in known_fields}
@@ -285,7 +290,7 @@ class OAuthProvider:
 
         if code_verifier:
             data["code_verifier"] = code_verifier
-
+        print(f"Exchanging code for token with data: {data} ")
         token_data = await self._make_token_request(data)
         # Normalize only if configured (backward compatible)
         normalized_data = self.config.normalize_token_response(token_data)
@@ -449,7 +454,7 @@ class OAuthProvider:
                     pass
             # Code was used but no valid credentials - treat as error
             raise ValueError("Authorization code has already been used")
-
+        print(f"could not find code in used_codes list")
         try:
             token = await self.exchange_code_for_token(code=code, state=state, code_verifier=oauth_data.get("code_verifier"))
             self.token = token

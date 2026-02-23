@@ -62,6 +62,7 @@ from app.connectors.sources.zammad.connector import ZammadConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
 
+from app.connectors.sources.gitlab.connector import GitLabConnector
 
 class ConnectorFactory:
     """Generic factory for creating and managing connectors"""
@@ -98,6 +99,7 @@ class ConnectorFactory:
         "zammad": ZammadConnector,
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,
+        "gitlab": GitLabConnector,
     }
 
     # Beta connector definitions - single source of truth
