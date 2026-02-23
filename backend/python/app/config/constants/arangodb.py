@@ -63,7 +63,7 @@ class Connectors(Enum):
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
     ZAMMAD = "ZAMMAD"
-
+    GITLAB = "GITLAB"
     UNKNOWN = "UNKNOWN"
 
     RSS = "RSS"
@@ -90,6 +90,8 @@ class AppGroups(Enum):
     RSS = "RSS"
 
 
+    GITLAB = "GitLab"
+    
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
     UPLOAD = "UPLOAD"
@@ -134,6 +136,7 @@ class CollectionNames(Enum):
     TICKETS = "tickets"
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
+    CODE_FILES = "codeFiles"
 
     # Users and groups
     PEOPLE = "people"
@@ -291,6 +294,7 @@ class RecordTypes(Enum):
     WEBPAGE_COMMENT = "WEBPAGE_COMMENT"
     SHAREPOINT_LIST = "SHAREPOINT_LIST"
     SHAREPOINT_PAGE = "SHAREPOINT_PAGE"
+    CODE_FILE = "CODE_FILE"
 
 class RecordRelations(Enum):
     PARENT_CHILD = "PARENT_CHILD"
@@ -348,5 +352,6 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "PROJECT": CollectionNames.PROJECTS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
+    "CODE_FILE": CollectionNames.CODE_FILES.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

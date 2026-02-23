@@ -419,6 +419,20 @@ project_record_schema = {
     },
 }
 
+code_file_record_schema={
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "summary": {"type": ["string", "null"]},
+            "description": {"type": ["string", "null"]},
+            "filePath": {"type": "string", "minLength": 0},
+            "fileName": {"type": "string", "minLength": 0},
+            "fileHash": {"type": "string", "minLength": 0},
+        },
+    },
+}
+
 record_group_schema = {
     "rule": {
         "type": "object",
