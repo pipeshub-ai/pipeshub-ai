@@ -18,7 +18,7 @@ Required env vars (backend/python/.env):
     NEO4J_DATABASE      — Neo4j database name (default: neo4j)
 
 Sample data is read from:
-    backend/python/tests/sample-data/
+    backend/python/sample-data/
         entities/org/org.json           — org identity used for Neo4j seeding
         entities/users/users.json       — users seeded into Neo4j
         entities/groups/groups.json     — groups seeded into Neo4j
@@ -111,8 +111,8 @@ ACCESS_KEY: str = os.getenv("S3_ACCESS_KEY", "")
 SECRET_KEY: str = os.getenv("S3_SECRET_KEY", "")
 
 # ── Sample-data roots ─────────────────────────────────────────────────────────
-_TESTS_ROOT = Path(__file__).resolve().parents[4] / "tests"
-SAMPLE_DATA_ROOT = _TESTS_ROOT / "sample-data" / "entities"
+_BACKEND_PYTHON_ROOT = Path(__file__).resolve().parents[4]
+SAMPLE_DATA_ROOT = _BACKEND_PYTHON_ROOT / "sample-data" / "entities"
 SETS_ROOT = SAMPLE_DATA_ROOT / "files" / "sets"
 
 # ── Key-index constants ────────────────────────────────────────────────────────
