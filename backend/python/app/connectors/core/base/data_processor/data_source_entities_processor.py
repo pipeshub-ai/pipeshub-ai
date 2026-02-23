@@ -1905,6 +1905,12 @@ class DataSourceEntitiesProcessor:
             else:
                 self.logger.warning(f"Failed to delete permission from record {record_id} for user {user_email}")
 
+    async def get_app_creator_user(self, connector_id: str) -> Optional[User]:
+        """
+        Fetch the creator user for a connector/app by connectorId.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_app_creator_user(connector_id)
     #IMPORTANT: DO NOT USE THIS METHOD
     #TODO: When an user is delelted from a connetor we need to delete the userAppRelation b/w the app and user
     # async def on_user_removed(

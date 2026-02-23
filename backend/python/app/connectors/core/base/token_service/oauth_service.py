@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode
 
 from aiohttp import ClientSession
 
@@ -254,7 +254,24 @@ class OAuthProvider:
                 raise Exception(error_msg)
 
             response.raise_for_status()
-            return await response.json()
+            # Handle both JSON and form-encoded responses
+            content_type = response.headers.get('Content-Type', '').lower()
+            if 'application/json' in content_type:
+                token_data = await response.json()
+                return token_data
+            elif 'application/x-www-form-urlencoded' in content_type or 'text/plain' in content_type:
+                text_response = await response.text()
+                parsed_data = parse_qs(text_response, keep_blank_values=True)
+                token_data = {key: values[0] if values else None for key, values in parsed_data.items()}
+                # Convert string numbers to integers for expires_in if present
+                if 'expires_in' in token_data and token_data['expires_in']:
+                    try:
+                        token_data['expires_in'] = int(token_data['expires_in'])
+                    except (ValueError, TypeError):
+                        pass
+                return token_data
+            else:
+                return await response.json()
 
     async def exchange_code_for_token(self, code: str, state: Optional[str] = None, code_verifier: Optional[str] = None) -> OAuthToken:
         # Note: State validation is handled in handle_callback, not here

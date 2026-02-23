@@ -4104,6 +4104,32 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to get all documents from collection: {collection}: {str(e)}")
             return []
 
+    async def get_app_creator_user(
+        self,
+        connector_id: str,
+        transaction:Optional[str]=None
+    ) -> Optional[User]:
+        try:
+            app_doc = await self.get_document(
+                document_key=connector_id,
+                collection = CollectionNames.APPS.value,
+                transaction=transaction
+            )
+            if not app_doc:
+                return None
+            created_by=app_doc.get("createdBy")
+            if not created_by:
+                return None
+            user_doc = await self.get_user_by_user_id(
+                user_id=created_by
+            )
+            if not user_doc:
+                return None
+            user_ = User.from_arango_user(user_doc)
+            return user_
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch user for {connector_id}: {str(e)}")
+            return None
 
     async def get_org_apps(
         self,

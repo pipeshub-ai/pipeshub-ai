@@ -34,7 +34,7 @@ class GitHubClientViaToken:
         self.timeout = timeout
         self.per_page = per_page
 
-    def create_client(self) -> Github:
+    def create_client(self) -> None:
         # Build kwargs dynamically to exclude None values
         kwargs = {"auth": Auth.Token(self.token)}
 
@@ -46,7 +46,7 @@ class GitHubClientViaToken:
             kwargs["per_page"] = self.per_page
 
         self._sdk = Github(**kwargs)
-        return self._sdk
+
 
     def get_sdk(self) -> Github:
         if self._sdk is None:
@@ -108,19 +108,42 @@ class GitHubClient(IClient):
         Returns:
             GitHubClient instance
         """
-        config = await cls._get_connector_config(logger, config_service, connector_instance_id)
-        if not config:
-            raise ValueError("Failed to get GitHub connector configuration")
-        auth_config = config.get("auth", {})
-        auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
-        if auth_type == "API_TOKEN":
-            token = auth_config.get("token", "")
-            if not token:
-                raise ValueError("Token required for token auth type")
-            client = GitHubClientViaToken(token).create_client()
-        else:
-            raise ValueError(f"Invalid auth type: {auth_type}")
-        return cls(client)
+        try:
+            config = await cls._get_connector_config(logger, config_service, connector_instance_id)
+            if not config:
+                raise ValueError("Failed to get GitHub connector configuration")
+            auth_config = config.get("auth", {})
+            if not auth_config:
+                raise ValueError ("Auth configuration not found in Github connector configuration")
+
+            credentials_config  = config.get("credentials",{})
+            if not  credentials_config:
+                raise ValueError("Credentials configuration not found in Github connector configuration")
+            # Extract configuration values
+            auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+
+            if auth_type == "API_TOKEN":
+                token = auth_config.get("token", "")
+                if not token:
+                    raise ValueError("Token required for token auth type")
+
+                client_via_token = GitHubClientViaToken(token=token,per_page=30)
+                client_via_token.create_client()
+                client =client_via_token
+            elif auth_type == "OAUTH":
+                access_token =credentials_config.get("access_token","")
+                if not access_token:
+                    raise ValueError("Access token required for OAuth auth type")
+
+                client_via_token = GitHubClientViaToken(token=access_token,per_page=30)
+                client_via_token.create_client()
+                client =client_via_token
+            else:
+                raise ValueError(f"Invalid auth type: {auth_type}")
+            return cls(client)
+        except Exception as e:
+            logger.error(f"Failed to build Github client from services: {str(e)}")
+            raise
 
     @staticmethod
     async def _get_connector_config(logger: logging.Logger, config_service: ConfigurationService, connector_instance_id: Optional[str] = None) -> Dict[str, Any]:
