@@ -13,8 +13,8 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.INHERIT_PERMISSIONS.value,
-        "from_vertex_collections": [CollectionNames.RECORDS.value],
-        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
+        "from_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value],
+        "to_vertex_collections": [CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value, CollectionNames.APPS.value],
     },
     {
         "edge_collection": CollectionNames.ORG_DEPARTMENT_RELATION.value,
