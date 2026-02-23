@@ -2003,6 +2003,23 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_inherit_permissions_relation_record_group_to_app(
+        self,
+        record_group_id: str,
+        app_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Create INHERIT_PERMISSIONS edge from record group to app.
+
+        Args:
+            record_group_id (str): Record group ID
+            app_id (str): App (connector) ID
+            transaction (Optional[Any]): Optional transaction context
+        """
+        pass
+
+    @abstractmethod
     async def get_accessible_records(
         self,
         user_id: str,

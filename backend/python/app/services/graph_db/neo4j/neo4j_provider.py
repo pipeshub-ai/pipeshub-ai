@@ -3916,6 +3916,28 @@ class Neo4jProvider(IGraphDBProvider):
             transaction=transaction
         )
 
+    async def create_inherit_permissions_relation_record_group_to_app(
+        self,
+        record_group_id: str,
+        app_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Create INHERIT_PERMISSIONS edge from record group to app."""
+        edge = {
+            "from_id": record_group_id,
+            "from_collection": CollectionNames.RECORD_GROUPS.value,
+            "to_id": app_id,
+            "to_collection": CollectionNames.APPS.value,
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+
+        await self.batch_create_edges(
+            [edge],
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=transaction
+        )
+
     async def delete_inherit_permissions_relation_record_group(
         self,
         record_id: str,
@@ -6742,8 +6764,13 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE orgPerm.type = 'ORG'
             WITH directPermissions, groupPermissions, collect(orgPerm.role) AS orgPermissions
 
+            // RecordGroup inherits from App: grant access if user has USER_APP_RELATION to that app
+            OPTIONAL MATCH (recordGroup)-[:INHERIT_PERMISSIONS]->(app:App)
+            OPTIONAL MATCH (userDoc)-[:USER_APP_RELATION]->(app)
+            WITH directPermissions, groupPermissions, orgPermissions, (app IS NOT NULL) AS hasAppAccess
+
             // Combine all permissions and filter out nulls
-            WITH directPermissions + groupPermissions + orgPermissions AS allPermissions
+            WITH directPermissions + groupPermissions + orgPermissions + (CASE WHEN hasAppAccess THEN ['READER'] ELSE [] END) AS allPermissions
             WITH [p IN allPermissions WHERE p IS NOT NULL] AS validPermissions
 
             WITH size(validPermissions) > 0 AS hasPermission,

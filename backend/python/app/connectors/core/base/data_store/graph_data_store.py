@@ -422,6 +422,16 @@ class GraphTransactionStore(TransactionStore):
             record_id, record_group_id, transaction=self.txn
         )
 
+    async def create_inherit_permissions_relation_record_group_to_app(self, record_group_id: str, app_id: str) -> None:
+        """
+        Create INHERIT_PERMISSIONS edge from record group to app.
+
+        Delegates to graph_provider for implementation.
+        """
+        return await self.graph_provider.create_inherit_permissions_relation_record_group_to_app(
+            record_group_id, app_id, transaction=self.txn
+        )
+
     async def delete_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
         """
         Delete INHERIT_PERMISSIONS edge from record to record group.
