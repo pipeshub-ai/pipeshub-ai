@@ -27,6 +27,9 @@ import {
   MenuItem,
   OutlinedInput,
   Chip,
+  FormControlLabel,
+  Checkbox,
+  FormGroup,
 } from '@mui/material';
 import { useNavigate, useParams, useLocation } from 'react-router-dom';
 import { Iconify } from 'src/components/iconify';
@@ -65,6 +68,7 @@ export function OAuth2AppDetailView() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [redirectUris, setRedirectUris] = useState<string[]>([]);
+  const [allowedGrantTypes, setAllowedGrantTypes] = useState<string[]>([]);
   const [allowedScopes, setAllowedScopes] = useState<string[]>([]);
   const [homepageUrl, setHomepageUrl] = useState('');
   const [privacyPolicyUrl, setPrivacyPolicyUrl] = useState('');
@@ -79,6 +83,7 @@ export function OAuth2AppDetailView() {
         setName(data.name);
         setDescription(data.description || '');
         setRedirectUris(data.redirectUris?.length ? data.redirectUris : ['']);
+        setAllowedGrantTypes(data.allowedGrantTypes?.length ? data.allowedGrantTypes : ['authorization_code', 'refresh_token']);
         setAllowedScopes(data.allowedScopes || []);
         setHomepageUrl(data.homepageUrl || '');
         setPrivacyPolicyUrl(data.privacyPolicyUrl || '');
@@ -116,6 +121,7 @@ export function OAuth2AppDetailView() {
         name: name.trim(),
         description: description.trim() || undefined,
         redirectUris: uris,
+        allowedGrantTypes: allowedGrantTypes.length > 0 ? allowedGrantTypes : undefined,
         allowedScopes,
         homepageUrl: homepageUrl.trim() || null,
         privacyPolicyUrl: privacyPolicyUrl.trim() || null,
@@ -410,6 +416,53 @@ export function OAuth2AppDetailView() {
                     placeholder="This is displayed to users of your OAuth app."
                   />
                   <TextField label="Homepage URL" fullWidth value={homepageUrl} onChange={(e) => setHomepageUrl(e.target.value)} placeholder="https://yourapp.com" />
+                  <Box>
+                    <Typography variant="subtitle2" sx={{ mb: 1 }}>Grant types</Typography>
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+                      OAuth 2.0 grant types this app is allowed to use.
+                    </Typography>
+                    <FormGroup row>
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={allowedGrantTypes.includes('authorization_code')}
+                            onChange={(e) =>
+                              setAllowedGrantTypes((prev) =>
+                                e.target.checked ? [...prev, 'authorization_code'] : prev.filter((x) => x !== 'authorization_code')
+                              )
+                            }
+                          />
+                        }
+                        label="Authorization Code"
+                      />
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={allowedGrantTypes.includes('refresh_token')}
+                            onChange={(e) =>
+                              setAllowedGrantTypes((prev) =>
+                                e.target.checked ? [...prev, 'refresh_token'] : prev.filter((x) => x !== 'refresh_token')
+                              )
+                            }
+                          />
+                        }
+                        label="Refresh Token"
+                      />
+                      <FormControlLabel
+                        control={
+                          <Checkbox
+                            checked={allowedGrantTypes.includes('client_credentials')}
+                            onChange={(e) =>
+                              setAllowedGrantTypes((prev) =>
+                                e.target.checked ? [...prev, 'client_credentials'] : prev.filter((x) => x !== 'client_credentials')
+                              )
+                            }
+                          />
+                        }
+                        label="Client Credentials"
+                      />
+                    </FormGroup>
+                  </Box>
                   <Box>
                     <Typography variant="subtitle2" sx={{ mb: 1 }}>Redirect URIs *</Typography>
                     {redirectUris.map((uri, index) => (
