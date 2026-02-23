@@ -138,11 +138,11 @@ class Gmail:
 
     def _handle_error(self, error: Exception, operation: str = "operation") -> tuple[bool, str]:
         """Handle errors with user-friendly authentication messages.
-        
+
         Args:
             error: The exception that occurred
             operation: Description of the operation that failed
-            
+
         Returns:
             tuple[bool, str]: (False, error_json_string)
         """

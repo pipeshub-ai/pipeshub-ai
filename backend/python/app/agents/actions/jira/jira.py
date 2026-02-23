@@ -590,13 +590,13 @@ class Jira:
 
     async def _get_site_url(self) -> Optional[str]:
         """Get the site URL (web URL) from accessible resources.
-        
+
         Returns:
             Site URL (e.g., 'https://example.atlassian.net') or None if unavailable
         """
         if self._site_url:
             return self._site_url
-        
+
         try:
             # Get token from client
             client_obj = self.client._client
@@ -612,7 +612,7 @@ class Jira:
                         return self._site_url
         except Exception as e:
             logger.warning(f"Could not get site URL: {e}")
-        
+
         return None
 
 
@@ -964,14 +964,14 @@ class Jira:
                           "issuetype", "created", "updated", "description", "fields", "url")
                     .clean()
                 )
-                
+
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")
                 if issue_key:
                     site_url = await self._get_site_url()
                     if site_url:
                         cleaned_data["url"] = f"{site_url}/browse/{issue_key}"
-                
+
                 return True, json.dumps({
                     "message": "Issue created successfully",
                     "data": cleaned_data
@@ -1126,14 +1126,14 @@ class Jira:
                           "issuetype", "created", "updated", "description", "fields")
                     .clean()
                 )
-                
+
                 # Add web URL if available
                 issue_key_from_data = cleaned_data.get("key") or issue_key
                 if issue_key_from_data:
                     site_url = await self._get_site_url()
                     if site_url:
                         cleaned_data["url"] = f"{site_url}/browse/{issue_key_from_data}"
-                
+
                 return True, json.dumps({
                     "message": "Issue updated successfully",
                     "data": cleaned_data
@@ -1189,7 +1189,7 @@ class Jira:
                     .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
                     .clean()
                 )
-                
+
                 # Add web URLs to projects if available
                 site_url = await self._get_site_url()
                 if site_url:
@@ -1202,7 +1202,7 @@ class Jira:
                         project_key = cleaned_data.get("key")
                         if project_key:
                             cleaned_data["url"] = f"{site_url}/projects/{project_key}"
-                
+
                 return True, json.dumps({
                     "message": "Projects fetched successfully",
                     "data": cleaned_data
@@ -1257,14 +1257,14 @@ class Jira:
                     .keep("key", "id", "name", "projectTypeKey", "lead", "displayName", "emailAddress", "accountId")
                     .clean()
                 )
-                
+
                 # Add web URL if available
                 project_key = cleaned_data.get("key")
                 if project_key:
                     site_url = await self._get_site_url()
                     if site_url:
                         cleaned_data["url"] = f"{site_url}/projects/{project_key}"
-                
+
                 return True, json.dumps({
                     "message": "Project fetched successfully",
                     "data": cleaned_data
@@ -1338,7 +1338,7 @@ class Jira:
                           "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
                     .clean()
                 )
-                
+
                 # Add web URLs to issues if available
                 site_url = await self._get_site_url()
                 if site_url and "issues" in cleaned_data:
@@ -1346,7 +1346,7 @@ class Jira:
                         issue_key = issue.get("key")
                         if issue_key:
                             issue["url"] = f"{site_url}/browse/{issue_key}"
-                
+
                 return True, json.dumps({
                     "message": "Issues fetched successfully",
                     "data": cleaned_data
@@ -1405,14 +1405,14 @@ class Jira:
                           "components", "url")
                     .clean()
                 )
-                
+
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")
                 if issue_key:
                     site_url = await self._get_site_url()
                     if site_url:
                         cleaned_data["url"] = f"{site_url}/browse/{issue_key}"
-                
+
                 return True, json.dumps({
                     "message": "Issue fetched successfully",
                     "data": cleaned_data
@@ -1523,7 +1523,7 @@ class Jira:
                               "total", "startAt", "maxResults", "nextPageToken", "isLast", "url")
                         .clean()
                     )
-                    
+
                     # Add web URLs to issues if available
                     site_url = await self._get_site_url()
                     if site_url and "issues" in cleaned_data:

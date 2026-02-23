@@ -3693,8 +3693,9 @@ def _build_knowledge_context(state: ChatState, log: logging.Logger) -> str:
         )
         for ts_key, tool_names in api_tools_by_type.items():
             # Show up to 5 representative tool names
+            MAX_TOOLS = 5
             sample = ", ".join(tool_names[:5])
-            more   = f" … (+{len(tool_names)-5} more)" if len(tool_names) > 5 else ""
+            more   = f" … (+{len(tool_names)-5} more)" if len(tool_names) > MAX_TOOLS else ""
             lines.append(f"  - 🛠️ **{ts_key.capitalize()}**: {sample}{more}")
 
     # --- Overlap guidance (apps with BOTH indexed AND live API) ---
@@ -5209,7 +5210,9 @@ async def respond_node(
                 _enriched: list = []
                 if _raw_answer:
                     try:
-                        from app.utils.citations import normalize_citations_and_chunks_for_agent as _ncc_agent  # noqa: PLC0415
+                        from app.utils.citations import (
+                            normalize_citations_and_chunks_for_agent as _ncc_agent,  # noqa: PLC0415
+                        )
                         _, _enriched = _ncc_agent(_raw_answer, final_results, virtual_record_map, [])
                         if _enriched:
                             log.info(

@@ -165,13 +165,13 @@ class Confluence:
 
     async def _get_site_url(self) -> Optional[str]:
         """Get the site URL (web URL) from accessible resources.
-        
+
         Returns:
             Site URL (e.g., 'https://example.atlassian.net') or None if unavailable
         """
         if self._site_url:
             return self._site_url
-        
+
         try:
             # Get token from client
             client_obj = self.client._client
@@ -187,7 +187,7 @@ class Confluence:
                         return self._site_url
         except Exception as e:
             logger.warning(f"Could not get site URL: {e}")
-        
+
         return None
 
     async def _resolve_space_id(self, space_identifier: str) -> str:
@@ -333,7 +333,7 @@ class Confluence:
 
             response = await self.client.create_page(body=body)
             result = self._handle_response(response, "Page created successfully")
-            
+
             # Add web URL if successful
             if result[0] and response.status in [HttpStatusCode.SUCCESS.value, HttpStatusCode.CREATED.value]:
                 try:
@@ -359,7 +359,7 @@ class Confluence:
                                             break
                             except ValueError:
                                 pass  # Already a key
-                            
+
                             web_url = f"{site_url}/wiki/spaces/{space_key_for_url}/pages/{page_id}"
                             result_data = json.loads(result[1])
                             if "data" in result_data and isinstance(result_data["data"], dict):
@@ -367,7 +367,7 @@ class Confluence:
                             result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URL to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -420,7 +420,7 @@ class Confluence:
                 body_format="storage"
             )
             result = self._handle_response(response, "Page content fetched successfully")
-            
+
             # Add web URL if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
@@ -443,7 +443,7 @@ class Confluence:
                                             break
                             except ValueError:
                                 pass  # Already a key
-                            
+
                             web_url = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id_from_data}"
                             result_data = json.loads(result[1])
                             if "data" in result_data and isinstance(result_data["data"], dict):
@@ -451,7 +451,7 @@ class Confluence:
                             result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URL to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -496,11 +496,11 @@ class Confluence:
             resolved_space_id = await self._resolve_space_id(space_id)
             response = await self.client.get_pages_in_space(id=resolved_space_id)
             result = self._handle_response(response, "Pages fetched successfully")
-            
+
             # Add web URLs if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
-                    data = response.json()
+                    response.json()
                     site_url = await self._get_site_url()
                     if site_url:
                         # Get space key
@@ -516,7 +516,7 @@ class Confluence:
                                         break
                         except ValueError:
                             pass  # Already a key
-                        
+
                         # Add URLs to pages
                         result_data = json.loads(result[1])
                         if "data" in result_data:
@@ -534,7 +534,7 @@ class Confluence:
                         result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URLs to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -636,11 +636,11 @@ class Confluence:
 
             response = await self.client.get_child_pages(id=page_id_int)
             result = self._handle_response(response, "Child pages fetched successfully")
-            
+
             # Add web URLs if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
-                    data = response.json()
+                    response.json()
                     # Get parent page to find space
                     parent_response = await self.client.get_page_by_id(id=page_id_int, body_format="storage")
                     if parent_response.status == HttpStatusCode.SUCCESS.value:
@@ -662,7 +662,7 @@ class Confluence:
                                                 break
                                 except ValueError:
                                     pass
-                                
+
                                 # Add URLs to child pages
                                 result_data = json.loads(result[1])
                                 if "data" in result_data:
@@ -680,7 +680,7 @@ class Confluence:
                                 result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URLs to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -733,11 +733,11 @@ class Confluence:
 
             response = await self.client.get_pages(**kwargs)
             result = self._handle_response(response, "Search completed successfully")
-            
+
             # Add web URLs if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
-                    data = response.json()
+                    response.json()
                     site_url = await self._get_site_url()
                     if site_url:
                         result_data = json.loads(result[1])
@@ -761,7 +761,7 @@ class Confluence:
                                                         break
                                         except ValueError:
                                             pass
-                                        
+
                                         page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
                             elif isinstance(pages, list):
                                 for page in pages:
@@ -780,12 +780,12 @@ class Confluence:
                                                         break
                                         except ValueError:
                                             pass
-                                        
+
                                         page["url"] = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id}"
                         result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URLs to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -858,7 +858,7 @@ class Confluence:
                 limit=limit or 25,
             )
 
-            if not (response.status in [200, 201]):
+            if response.status not in [200, 201]:
                 error_text = response.text() if hasattr(response, 'text') else str(response)
                 return False, json.dumps({
                     "error": f"HTTP {response.status}",
@@ -963,7 +963,7 @@ class Confluence:
         try:
             response = await self.client.get_spaces()
             result = self._handle_response(response, "Spaces fetched successfully")
-            
+
             # Add web URLs if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
@@ -985,7 +985,7 @@ class Confluence:
                         result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URLs to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -1035,7 +1035,7 @@ class Confluence:
 
             response = await self.client.get_space_by_id(id=space_id_int)
             result = self._handle_response(response, "Space fetched successfully")
-            
+
             # Add web URL if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
@@ -1051,7 +1051,7 @@ class Confluence:
                             result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URL to response: {e}")
-            
+
             return result
 
         except Exception as e:
@@ -1196,7 +1196,7 @@ class Confluence:
                 body=body
             )
             result = self._handle_response(response, "Page updated successfully")
-            
+
             # Add web URL if successful
             if result[0] and response.status == HttpStatusCode.SUCCESS.value:
                 try:
@@ -1219,7 +1219,7 @@ class Confluence:
                                             break
                             except ValueError:
                                 pass
-                            
+
                             web_url = f"{site_url}/wiki/spaces/{space_key}/pages/{page_id_from_data}"
                             result_data = json.loads(result[1])
                             if "data" in result_data and isinstance(result_data["data"], dict):
@@ -1227,7 +1227,7 @@ class Confluence:
                             result = (result[0], json.dumps(result_data))
                 except Exception as e:
                     logger.debug(f"Could not add URL to response: {e}")
-            
+
             return result
 
         except Exception as e:
