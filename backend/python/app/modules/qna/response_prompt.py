@@ -635,7 +635,6 @@ def create_response_messages(state) -> List[Any]:
         AIMessage,
         HumanMessage,
         SystemMessage,
-        ToolMessage,
     )
 
     messages = []
@@ -644,28 +643,7 @@ def create_response_messages(state) -> List[Any]:
     system_prompt = build_response_prompt(state)
     messages.append(SystemMessage(content=system_prompt))
 
-    # 2. Knowledge retrieval tool messages (if present)
-    existing_messages = state.get("messages", [])
-    knowledge_ai_msg = None
-    knowledge_tool_msg = None
-
-    for existing_msg in existing_messages:
-        if isinstance(existing_msg, AIMessage) and hasattr(existing_msg, 'tool_calls') and existing_msg.tool_calls:
-            for tool_call in existing_msg.tool_calls:
-                if isinstance(tool_call, dict) and tool_call.get("name") == "internal_knowledge_retrieval":
-                    knowledge_ai_msg = existing_msg
-                    break
-        elif isinstance(existing_msg, ToolMessage):
-            if hasattr(existing_msg, 'tool_call_id') and existing_msg.tool_call_id and 'knowledge_retrieval' in existing_msg.tool_call_id:
-                knowledge_tool_msg = existing_msg
-                break
-
-    if knowledge_ai_msg:
-        messages.append(knowledge_ai_msg)
-    if knowledge_tool_msg:
-        messages.append(knowledge_tool_msg)
-
-    # 3. Conversation history
+    # 2. Conversation history
     previous_conversations = state.get("previous_conversations", [])
 
     from app.modules.agents.qna.conversation_memory import ConversationMemory
@@ -689,7 +667,7 @@ def create_response_messages(state) -> List[Any]:
         if messages and isinstance(messages[-1], AIMessage):
             messages[-1].content = messages[-1].content + "\n\n" + ref_data_text
 
-    # 4. Current user message
+    # 3. Current user message
     #
     # PREFERRED PATH: respond_node pre-built the user message using get_message_content()
     # — the exact same function the chatbot uses.  This produces consistent R-label block

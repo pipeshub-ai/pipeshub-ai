@@ -14,6 +14,7 @@ class ReferenceDataItem(TypedDict, total=False):
     type: str
     key: str
     accountId: str
+    url: str
 
 
 class AgentAnswerWithMetadataJSON(BaseModel):

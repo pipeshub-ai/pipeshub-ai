@@ -170,6 +170,33 @@ class Retrieval:
                 })
 
             search_results = results.get("searchResults", [])
+
+            # === FALLBACK: if app filter returned 0 accessible records, retry without app filter ===
+            # This handles the case where the LLM passes filters.apps for an app that is only
+            # available as a live API toolset (not indexed as a connector). In that case, we
+            # fall back to searching all available indexed sources (e.g. KB).
+            if not search_results and filter_groups and filter_groups.get("apps"):
+                logger_instance.info(
+                    f"No results with app filter {filter_groups.get('apps')} — "
+                    "retrying without app filter (app may not be indexed as a connector)"
+                )
+                fallback_filters = {k: v for k, v in filter_groups.items() if k != "apps"}
+                fallback_results = await retrieval_service.search_with_filters(
+                    queries=[search_query],
+                    org_id=org_id,
+                    user_id=user_id,
+                    limit=adjusted_limit,
+                    filter_groups=fallback_filters,
+                    graph_provider=graph_provider,
+                )
+                if fallback_results and fallback_results.get("status_code", 200) not in [202, 500, 503]:
+                    fallback_search = fallback_results.get("searchResults", [])
+                    if fallback_search:
+                        logger_instance.info(
+                            f"Fallback retrieval (no app filter) returned {len(fallback_search)} results"
+                        )
+                        results = fallback_results
+                        search_results = fallback_search
             logger_instance.info(f"✅ Retrieved {len(search_results)} documents")
 
             if not search_results:
