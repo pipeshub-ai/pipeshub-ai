@@ -1,0 +1,17 @@
+{
+  "set_id": "1",
+  "description": "Primary file set — PDFs, CSV, JS, Python",
+  "fixture_folder": "sample1",
+  "bucket_suffix": "sample1",
+  "owner": "alice@s3test.pipeshub.test",
+  "group": "group-engineering",
+  "files": [
+    "report.pdf",
+    "employees.csv",
+    "index.js",
+    "utils.py",
+    "data.xlsx",
+    "notes.doc",
+    "proposal.docx"
+  ]
+}
