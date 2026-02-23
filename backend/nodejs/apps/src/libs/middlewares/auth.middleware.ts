@@ -1,6 +1,6 @@
 // auth.middleware.ts
 import { Response, NextFunction, Request, RequestHandler } from 'express';
-import jwt from 'jsonwebtoken';
+import jwt from 'jsonwebtoken'
 import { UnauthorizedError } from '../errors/http.errors';
 import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
@@ -49,6 +49,9 @@ export class AuthMiddleware {
       if (!token) {
         throw new UnauthorizedError('No token provided');
       }
+
+      // Security: Strip internal headers that could be spoofed
+      delete req.headers['x-oauth-user-id'];
 
       // peek at the token payload to determine token type
       const rawDecoded = jwt.decode(token) as Record<string, any> | null;
@@ -101,7 +104,7 @@ export class AuthMiddleware {
         this.logger.error('Failed to fetch user activity', activityError);
       }
 
-      if(userActivity) {
+      if (userActivity) {
         const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
         const activityTimestamp = userActivity.createdAt?.getTime() || 0;
         if (activityTimestamp > tokenIssuedAt + PASSWORD_CHANGE_TOKEN_DELAY_MS) {
@@ -148,6 +151,8 @@ export class AuthMiddleware {
           .exec();
         if (app) {
           userId = app.createdBy.toString();
+        } else {
+          throw new UnauthorizedError('OAuth app not found or revoked');
         }
       } catch (err) {
         this.logger.error('Failed to look up OAuth app owner', err);
@@ -260,7 +265,7 @@ export class AuthMiddleware {
             this.logger.error('Failed to fetch user activity', activityError);
           }
 
-          if(userActivity) {
+          if (userActivity) {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt ) {

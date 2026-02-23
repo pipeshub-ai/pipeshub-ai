@@ -338,7 +338,7 @@ export class Application {
     );
 
     // Global rate limiter - applies to all routes
-    this.app.use(createGlobalRateLimiter(this.logger));
+    this.app.use(createGlobalRateLimiter(this.logger, appConfig.maxRequestsPerMinute));
   }
 
   private configureRoutes(): void {

@@ -78,6 +78,10 @@ export interface AppConfig {
 
   // Domain check config
   skipDomainCheck: boolean;
+
+  // Rate limit config
+  maxRequestsPerMinute: number;
+  maxOAuthClientRequestsPerMinute: number;
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
@@ -122,5 +126,13 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
 
     // Domain check config - when true, skip domain matching and use first available org
     skipDomainCheck: process.env.SKIP_DOMAIN_CHECK === 'true',
+
+    // Rate limit config
+    maxRequestsPerMinute: process.env.MAX_REQUESTS_PER_MINUTE
+      ? parseInt(process.env.MAX_REQUESTS_PER_MINUTE, 10)
+      : 1000,
+    maxOAuthClientRequestsPerMinute: process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE
+      ? parseInt(process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE, 10)
+      : 1000,
   };
 };
