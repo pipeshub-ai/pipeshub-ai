@@ -120,9 +120,9 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
-    async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+    async def delete_parent_child_edge_to_record(self, record_id: str, collection: str = CollectionNames.RECORD_RELATIONS.value) -> int:
         """Delete PARENT_CHILD edges pointing to a specific target record"""
-        return await self.graph_provider.delete_parent_child_edge_to_record(record_id, transaction=self.txn)
+        return await self.graph_provider.delete_parent_child_edge_to_record(record_id, collection=collection, transaction=self.txn)
 
     async def delete_edges_to_groups(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_to_groups(from_id, from_collection, collection, transaction=self.txn)

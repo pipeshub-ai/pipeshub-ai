@@ -207,7 +207,7 @@ class DataSourceEntitiesProcessor:
         # Delete the old parent-child edge if it exists and the parent external record id has changed
         if existing_record is not None and existing_record.parent_external_record_id:
             if not record.parent_external_record_id or existing_record.parent_external_record_id != record.parent_external_record_id:
-                await tx_store.delete_parent_child_edge_to_record(existing_record.id)
+                await tx_store.delete_parent_child_edge_to_record(existing_record.id, collection=CollectionNames.RECORD_RELATIONS.value)
 
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
