@@ -1,0 +1,14 @@
+[
+  {
+    "id": "alice@s3test.pipeshub.test",
+    "email": "alice@s3test.pipeshub.test",
+    "userId": "alice@s3test.pipeshub.test",
+    "isActive": true
+  },
+  {
+    "id": "bob@s3test.pipeshub.test",
+    "email": "bob@s3test.pipeshub.test",
+    "userId": "bob@s3test.pipeshub.test",
+    "isActive": true
+  }
+]

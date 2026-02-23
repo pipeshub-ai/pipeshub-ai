@@ -1,0 +1,19 @@
+[
+  {
+    "id": "group-engineering",
+    "name": "Engineering",
+    "isActive": true,
+    "members": [
+      "alice@s3test.pipeshub.test",
+      "bob@s3test.pipeshub.test"
+    ]
+  },
+  {
+    "id": "group-analysts",
+    "name": "Analysts",
+    "isActive": true,
+    "members": [
+      "bob@s3test.pipeshub.test"
+    ]
+  }
+]
