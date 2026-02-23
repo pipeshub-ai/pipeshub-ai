@@ -116,6 +116,15 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
     [filteredTemplates]
   );
 
+  // Calculate actual Knowledge count (connector instances + individual KBs, excluding group nodes)
+  const knowledgeCount = useMemo(() => {
+    const connectorInstancesCount = Object.entries(groupedConnectorInstances).reduce(
+      (acc, [_, data]) => acc + data.instances.length,
+      0
+    );
+    return connectorInstancesCount + individualKBs.length;
+  }, [groupedConnectorInstances, individualKBs]);
+
   const handleCategoryToggle = (categoryName: string) => {
     setExpandedCategories((prev) => ({
       ...prev,
@@ -342,6 +351,8 @@ const FlowBuilderSidebar: React.FC<FlowBuilderSidebarProps> = ({
                         >
                           {config.name === 'Tools' 
                             ? Object.keys(toolsGroupedByConnectorType).length
+                            : config.name === 'Knowledge'
+                            ? knowledgeCount
                             : categoryTemplates.length}
                         </Typography>
                       )}
