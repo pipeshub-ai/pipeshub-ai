@@ -243,8 +243,9 @@ async def process_chat_query_with_status(
     if llm is None:
         raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
 
-    logger.info(f"LLM provider: {llm.provider.lower()}")
-    if config.get("provider").lower() == "ollama":
+    provider = config.get("provider", "unknown")
+    logger.info(f"LLM provider: {provider.lower()}")
+    if provider.lower() == "ollama":
         query_info.mode = "simple"
 
     # Handle conversation history and query transformation
