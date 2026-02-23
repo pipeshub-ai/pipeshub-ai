@@ -218,8 +218,12 @@ class DataSourceEntitiesProcessor:
 =======
         if existing_record is not None and existing_record.parent_external_record_id:
             if not record.parent_external_record_id or existing_record.parent_external_record_id != record.parent_external_record_id:
+<<<<<<< HEAD
                 await tx_store.delete_parent_child_edge_to_record(existing_record.id)
 >>>>>>> 53562293 (deleting old parent-child relation edge if parent has changed)
+=======
+                await tx_store.delete_parent_child_edge_to_record(existing_record.id, collection=CollectionNames.RECORD_RELATIONS.value)
+>>>>>>> a517c2d1 (fixes)
 
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
