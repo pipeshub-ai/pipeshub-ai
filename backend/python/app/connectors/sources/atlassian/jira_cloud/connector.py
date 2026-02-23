@@ -64,7 +64,6 @@ from app.connectors.sources.atlassian.core.oauth import (
 )
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
-    Block,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
@@ -107,6 +106,8 @@ USER_PAGE_SIZE: int = 50
 GROUP_PAGE_SIZE: int = 50
 GROUP_MEMBER_PAGE_SIZE: int = 50
 AUDIT_PAGE_SIZE: int = 500
+
+PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
 # JQL query constants
 ISSUE_SEARCH_FIELDS: List[str] = [
@@ -1015,11 +1016,8 @@ class JiraConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            # Fetch and sync users
+            # Fetch and sync users (pseudo-group migration)
             jira_users = await self._fetch_users()
-            if jira_users:
-                await self.data_entities_processor.on_new_app_users(jira_users)
-                self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
             # Fetch and sync user groups (returns mapping for role resolution)
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -1430,7 +1428,7 @@ class JiraConnector(BaseConnector):
             return 0
 
     # ============================================================================
-    # User & Group Management
+    # User, Role & Group Management
     # ============================================================================
 
     async def _fetch_users(self) -> List[AppUser]:
@@ -1501,7 +1499,24 @@ class JiraConnector(BaseConnector):
             )
             app_users.append(app_user)
 
-        self.logger.info(f"👥 Fetched {len(app_users)} active users with emails")
+        if app_users:
+            self.logger.info(f"👥 Synced {len(app_users)} Jira users")
+            await self.data_entities_processor.on_new_app_users(app_users)
+            # Migrate pseudo-group permissions to real users (for users now with emails)
+            for user in app_users:
+                if user.email and "@" in user.email and user.source_user_id:
+                    try:
+                        await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                            group_external_id=user.source_user_id,
+                            user_email=user.email,
+                            connector_id=self.connector_id
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Failed to migrate pseudo-group permissions for user {user.email}: {e}"
+                        )
+                        continue
+
         return app_users
 
     async def _fetch_application_roles_to_groups_mapping(self) -> Dict[str, List[Dict[str, str]]]:
@@ -1543,173 +1558,6 @@ class JiraConnector(BaseConnector):
             self.logger.error(f"❌ Error fetching application roles: {e}", exc_info=True)
 
         return mapping
-
-    async def _fetch_project_permission_scheme(
-        self,
-        project_key: str,
-        app_roles_mapping: Dict[str, List[Dict[str, str]]] = None
-    ) -> List[Permission]:
-        """
-        Fetch permission holders for a project from its Permission Scheme.
-
-        Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
-        - group: Direct group permissions (e.g., "jira-software-users")
-        - applicationRole: Product access (e.g., "jira-software") - resolved to associated groups
-        - user: Individual user permissions (by accountId/email)
-        - anyone: All authenticated users (org-level access)
-        - projectRole: Project-specific roles (e.g., "Administrators", "Developers") inside that user or groups in role
-        - projectLead: The project's designated lead user
-        - sd.customer.portal.only: JSM portal customers (external users)
-        - groupCustomField/userCustomField: Dynamic permissions based on issue fields
-
-        """
-        permissions: List[Permission] = []
-
-        try:
-            datasource = await self._get_fresh_datasource()
-
-            # Step 1: Get the permission scheme assigned to this project
-            scheme_response = await datasource.get_assigned_permission_scheme(
-                projectKeyOrId=project_key,
-                expand="all"
-            )
-
-            if scheme_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
-                return []
-
-            scheme_data = scheme_response.json()
-            scheme_id = scheme_data.get("id")
-
-            # Step 2: Get all permission grants in this scheme
-            grants_response = await datasource.get_permission_scheme_grants(
-                schemeId=scheme_id,
-                expand="all"
-            )
-
-            if grants_response.status != HttpStatusCode.OK.value:
-                self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
-                return []
-
-            grants_data = grants_response.json()
-            permission_grants = grants_data.get("permissions", [])
-
-            # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
-            relevant_permission_types = ["BROWSE_PROJECTS"]
-
-            seen_holders = set()
-
-            for grant in permission_grants:
-                permission_name = grant.get("permission")
-
-                if permission_name not in relevant_permission_types:
-                    continue
-
-                holder = grant.get("holder", {})
-                holder_type = holder.get("type")
-                holder_param = holder.get("parameter")
-                holder_value = holder.get("value")
-
-                # Create unique key for deduplication
-                holder_key = f"{holder_type}:{holder_value or holder_param}"
-                if holder_key in seen_holders:
-                    continue
-                seen_holders.add(holder_key)
-
-                # Process different holder types and create Permission objects
-                if holder_type == "group" and holder_value:
-                    # Group has BROWSE_PROJECTS permission
-                    permissions.append(Permission(
-                        entity_type=EntityType.GROUP,
-                        external_id=holder_value,
-                        type=PermissionType.READ
-                    ))
-
-                elif holder_type == "applicationRole":
-                    role_key = holder_param
-
-                    if role_key and app_roles_mapping and role_key in app_roles_mapping:
-                        role_groups = app_roles_mapping[role_key]
-                        for group_info in role_groups:
-                            group_id = group_info.get("groupId")
-                            if group_id:
-                                # Avoid duplicate if this group was already added directly
-                                group_key = f"group:{group_id}"
-                                if group_key not in seen_holders:
-                                    seen_holders.add(group_key)
-                                    permissions.append(Permission(
-                                        entity_type=EntityType.GROUP,
-                                        external_id=group_id,
-                                        type=PermissionType.READ
-                                    ))
-                    else:
-                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
-                        fallback_name = role_key or "all_licensed_users"
-                        permissions.append(Permission(
-                            entity_type=EntityType.ORG,
-                            external_id=fallback_name,
-                            type=PermissionType.READ
-                        ))
-
-                elif holder_type == "user" and holder_param:
-                    # Specific user has access
-                    user_data = holder.get("user", {})
-                    user_email = user_data.get("emailAddress")
-                    if user_email:
-                        permissions.append(Permission(
-                            entity_type=EntityType.USER,
-                            email=user_email,
-                            type=PermissionType.READ
-                        ))
-                    else:
-                        self.logger.warning(f"⚠️  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
-
-                elif holder_type == "anyone":
-                    # All authenticated users have access handle public condition
-                    permissions.append(Permission(
-                        entity_type=EntityType.ORG,
-                        external_id="anyone_authenticated",
-                        type=PermissionType.READ
-                    ))
-
-                elif holder_type == "projectRole":
-                    project_role = holder.get("projectRole", {})
-                    role_name = project_role.get("name", f"Role_{holder_param}")
-                    role_id = holder_param or project_role.get("id")
-
-                    if role_name == "atlassian-addons-project-access":
-                        continue
-
-                    permissions.append(Permission(
-                        entity_type=EntityType.ROLE,
-                        external_id=f"{project_key}_{role_id}",
-                        type=PermissionType.READ
-                    ))
-
-                elif holder_type == "sd.customer.portal.only":
-                    # JSM Service Desk customers (portal access)
-                    # These are external customers who only access via the service desk portal
-                    # Their access is limited to their own tickets through the portal UI
-                    self.logger.debug(f"  {project_key}: Skipping JSM portal customers (external users, not synced)")
-
-                elif holder_type == "projectLead":
-                    permissions.append(Permission(
-                        entity_type=EntityType.ROLE,
-                        external_id=f"{project_key}_projectLead",
-                        type=PermissionType.READ
-                    ))
-
-                elif holder_type in ("groupCustomField", "userCustomField"):
-                    continue
-
-                else:
-                    self.logger.warning(f"⚠️  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
-
-            return permissions
-
-        except Exception as e:
-            self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
-            return []
 
     async def _sync_user_groups(self, jira_users: List[AppUser]) -> Dict[str, List[AppUser]]:
         """
@@ -2141,8 +1989,558 @@ class JiraConnector(BaseConnector):
             self.logger.info("No project leads to sync")
 
     # ============================================================================
+    # Security Level Permissions
+    # ============================================================================
+
+    async def _get_project_security_scheme_id(self, project_key: str) -> Optional[str]:
+        """
+        Fetch security scheme ID for a project (if it has issue-level security).
+
+        Args:
+            project_key: Project key (e.g., "PROJ")
+
+        Returns:
+            Security scheme ID string, or None if no scheme or on error.
+        """
+        try:
+            datasource = await self._get_fresh_datasource()
+            scheme_response = await datasource.get_project_issue_security_scheme(
+                projectKeyOrId=project_key
+            )
+
+            if scheme_response.status == HttpStatusCode.OK.value:
+                scheme_data = scheme_response.json()
+                scheme_id = scheme_data.get("id")
+                if scheme_id:
+                    self.logger.debug(f"🔒 {project_key}: Security scheme {scheme_id}")
+                    return scheme_id
+            else:
+                self.logger.debug(f"🔒 {project_key}: No security scheme (status {scheme_response.status})")
+            return None
+        except Exception as e:
+            self.logger.error(f"🔒 {project_key}: Error fetching security scheme: {e}")
+            return None
+
+    async def _fetch_security_level_permissions(
+        self,
+        project_key: str,
+        security_level_id: str,
+        project_security_scheme_id: str,
+        assignee_email: Optional[str] = None,
+        reporter_email: Optional[str] = None,
+        assignee_account_id: Optional[str] = None,
+        reporter_account_id: Optional[str] = None
+    ) -> List[Permission]:
+        """
+        Fetch security level members from API for this specific issue.
+        """
+
+        # Fetch members for this level with pagination
+        all_members = []
+        start_at = 0
+        max_results = 50
+
+        try:
+            while True:
+                datasource = await self._get_fresh_datasource()
+                members_response = await datasource.get_issue_security_level_members(
+                    issueSecuritySchemeId=int(project_security_scheme_id),
+                    issueSecurityLevelId=[security_level_id],
+                    startAt=start_at,
+                    maxResults=max_results
+                )
+
+                if members_response.status != HttpStatusCode.OK.value:
+                    if start_at == 0:
+                        response_body = members_response.text()
+                        self.logger.debug(
+                            f"Failed to fetch members for security level {security_level_id}: "
+                            f"status={members_response.status}, response_body={response_body}"
+                        )
+                    return []
+
+                members_data = members_response.json()
+                members_batch = members_data.get("values", [])
+
+                if not members_batch:
+                    break
+
+                all_members.extend(members_batch)
+
+                # Check pagination
+                is_last = members_data.get("isLast", False)
+                total = members_data.get("total", 0)
+
+                if is_last or (total > 0 and start_at + len(members_batch) >= total):
+                    break
+
+                start_at += len(members_batch)
+
+                # Also break if we got less than requested
+                if len(members_batch) < max_results:
+                    break
+
+            if not all_members:
+                self.logger.debug(f"Security level {security_level_id} has no members")
+                return []
+
+            # Parse all members into Permission objects
+            permissions = await self._parse_security_level_members(
+                all_members,
+                project_key,
+                assignee_email=assignee_email,
+                reporter_email=reporter_email,
+                assignee_account_id=assignee_account_id,
+                reporter_account_id=reporter_account_id
+            )
+
+            self.logger.debug(
+                f"Security level {security_level_id}: Found {len(all_members)} members "
+                f"-> {len(permissions)} permissions"
+            )
+            return permissions
+
+        except Exception as e:
+            self.logger.error(f"Error fetching security level {security_level_id}: {e}")
+            return []
+
+    async def _get_user_email_by_account_id(self, account_id: str) -> Optional[str]:
+        """
+        Get user email by accountId via Jira GET /rest/api/3/user.
+        Returns email if available, otherwise None.
+        """
+        if not account_id:
+            return None
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_user(accountId=account_id)
+            if response.status != HttpStatusCode.OK.value:
+                return None
+            data = response.json()
+            email = data.get("emailAddress") or data.get("email")
+            return email if email else None
+        except Exception as e:
+            self.logger.debug("Could not fetch user for accountId %s: %s", account_id, e)
+            return None
+
+    async def _get_or_create_pseudo_group(self, account_id: str) -> Optional[AppUserGroup]:
+        """
+        Get existing pseudo-group by accountId or create one if not found.
+        Used when building permissions for a user whose email is not available;
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_user_group_by_external_id(
+                connector_id=self.connector_id,
+                external_id=account_id,
+            )
+            if group:
+                return group
+
+        try:
+            pseudo_group = AppUserGroup(
+                app_name=Connectors.JIRA,
+                connector_id=self.connector_id,
+                source_user_group_id=account_id,
+                name=f"{PSEUDO_USER_GROUP_PREFIX} {account_id}",
+                org_id=self.data_entities_processor.org_id,
+            )
+            await self.data_entities_processor.on_new_user_groups([(pseudo_group, [])])
+            self.logger.info(f"Created pseudo-group for user without email: {account_id}")
+            return pseudo_group
+        except Exception as e:
+            self.logger.error(f"Failed to create pseudo-group for {account_id}: {e}")
+            return None
+
+    async def _parse_security_level_members(
+        self,
+        members: List[Dict],
+        project_key: str,
+        assignee_email: Optional[str] = None,
+        reporter_email: Optional[str] = None,
+        assignee_account_id: Optional[str] = None,
+        reporter_account_id: Optional[str] = None
+    ) -> List[Permission]:
+        """
+        Parse security level members into Permission objects.
+
+        Holder types:
+        - user: Individual user by accountId (fetch email, pseudo-group fallback)
+        - group: Group by groupId
+        - projectRole: Project role by roleId
+        - applicationRole: Org-level access (all licensed users of that app role)
+        - assignee: The issue's assignee
+        - reporter: The issue's reporter
+        - projectLead: The project lead (already synced as a role)
+        """
+        permissions = []
+        seen_holders = set()
+
+        for member in members:
+            holder = member.get("holder", {})
+            holder_type = holder.get("type")
+
+            holder_value = holder.get("value") or holder.get("parameter") or holder_type
+            holder_key = f"{holder_type}:{holder_value}"
+            if holder_key in seen_holders:
+                continue
+            seen_holders.add(holder_key)
+
+            if holder_type == "user":
+                account_id = holder.get("parameter") or holder.get("value")
+                if not account_id:
+                    continue
+                email = await self._get_user_email_by_account_id(account_id)
+                if email:
+                    permissions.append(Permission(entity_type=EntityType.USER, email=email, type=PermissionType.READ))
+                else:
+                    pseudo_group = await self._get_or_create_pseudo_group(account_id)
+                    if pseudo_group:
+                        self.logger.debug(f"Using pseudo-group for user {account_id} (no email available)")
+                        permissions.append(Permission(
+                            entity_type=EntityType.GROUP,
+                            type=PermissionType.READ,
+                            external_id=account_id,
+                        ))
+
+            elif holder_type == "group":
+                group_id = holder.get("value")
+                if group_id:
+                    permissions.append(Permission(
+                        entity_type=EntityType.GROUP,
+                        external_id=group_id,
+                        type=PermissionType.READ
+                    ))
+
+            elif holder_type == "projectRole":
+                # Project role holder
+                role_id = holder.get("parameter") or holder.get("value")
+                if role_id:
+                    permissions.append(Permission(
+                        entity_type=EntityType.ROLE,
+                        external_id=f"{project_key}_{role_id}",
+                        type=PermissionType.READ
+                    ))
+
+            elif holder_type == "applicationRole":
+                # Two cases: (1) no parameter = any logged-in user (org-level);
+                # (2) parameter present = users with that application role (e.g. jira-software = Jira Software license)
+                role_key = holder.get("parameter") or holder.get("value")
+                external_id = role_key if role_key else "all_licensed_users"
+                permissions.append(Permission(
+                    entity_type=EntityType.ORG,
+                    external_id=external_id,
+                    type=PermissionType.READ
+                ))
+
+            elif holder_type == "assignee":
+                if assignee_email:
+                    permissions.append(Permission(
+                        entity_type=EntityType.USER,
+                        email=assignee_email,
+                        type=PermissionType.READ
+                    ))
+                elif assignee_account_id:
+                    pseudo_group = await self._get_or_create_pseudo_group(assignee_account_id)
+                    if pseudo_group:
+                        self.logger.debug(f"Using pseudo-group for assignee {assignee_account_id} (no email available)")
+                        permissions.append(Permission(
+                            entity_type=EntityType.GROUP,
+                            type=PermissionType.READ,
+                            external_id=assignee_account_id,
+                        ))
+
+            elif holder_type == "reporter":
+                if reporter_email:
+                    permissions.append(Permission(
+                        entity_type=EntityType.USER,
+                        email=reporter_email,
+                        type=PermissionType.READ
+                    ))
+                elif reporter_account_id:
+                    pseudo_group = await self._get_or_create_pseudo_group(reporter_account_id)
+                    if pseudo_group:
+                        self.logger.debug(f"Using pseudo-group for reporter {reporter_account_id} (no email available)")
+                        permissions.append(Permission(
+                            entity_type=EntityType.GROUP,
+                            type=PermissionType.READ,
+                            external_id=reporter_account_id,
+                        ))
+
+            elif holder_type == "projectLead":
+                permissions.append(Permission(
+                    entity_type=EntityType.ROLE,
+                    external_id=f"{project_key}_projectLead",
+                    type=PermissionType.READ
+                ))
+
+            else:
+                self.logger.debug(f"Unknown security holder type: {holder_type}")
+
+        return permissions
+
+    # ============================================================================
     # Project Management
     # ============================================================================
+
+    async def _fetch_projects_via_api(
+        self,
+        keys: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        fetch projects from Jira API with pagination.
+        Pass keys=None to fetch all projects; pass keys=[...] to filter by project keys.
+        Jira search_projects omits keys param when None; adds keys to query when list.
+        """
+        if not self.data_source:
+            raise ValueError("DataSource not initialized")
+
+        projects: List[Dict[str, Any]] = []
+        start_at = 0
+        expand = ["description", "url", "permissions", "issueTypes", "lead"]
+
+        while True:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.search_projects(
+                maxResults=DEFAULT_MAX_RESULTS,
+                startAt=start_at,
+                keys=keys,
+                expand=expand
+            )
+
+            if response.status != HttpStatusCode.OK.value:
+                raise Exception(f"Failed to fetch projects: {response.text()}")
+
+            projects_batch = self._safe_json_parse(response, "project search")
+            if projects_batch is None:
+                raise Exception("Failed to parse project search response")
+            batch_projects = projects_batch.get("values", [])
+
+            if not batch_projects:
+                break
+
+            projects.extend(batch_projects)
+            start_at += len(batch_projects)
+
+            total = projects_batch.get("total", 0)
+            is_last = projects_batch.get("isLast", False)
+            if is_last or (total > 0 and start_at >= total):
+                break
+
+        return projects
+
+    async def _fetch_project_permission_scheme(
+        self,
+        project_key: str,
+        app_roles_mapping: Dict[str, List[Dict[str, str]]] = None
+    ) -> List[Permission]:
+        """
+        Fetch permission holders for a project from its Permission Scheme.
+
+        Permission Schemes grant permissions (like BROWSE_PROJECTS) through different holder types:
+        - group: Direct group permissions (e.g., "jira-software-users")
+        - applicationRole: Product access (e.g., "jira-software") - resolved to associated groups
+        - user: Individual user permissions (by accountId/email)
+        - anyone: All authenticated users (org-level access)
+        - projectRole: Project-specific roles (e.g., "Administrators", "Developers") inside that user or groups in role
+        - projectLead: The project's designated lead user
+        - sd.customer.portal.only: JSM portal customers (external users)
+        - groupCustomField/userCustomField: Dynamic permissions based on issue fields
+
+        """
+        permissions: List[Permission] = []
+
+        try:
+            datasource = await self._get_fresh_datasource()
+
+            # Step 1: Get the permission scheme assigned to this project
+            scheme_response = await datasource.get_assigned_permission_scheme(
+                projectKeyOrId=project_key,
+                expand="all"
+            )
+
+            if scheme_response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"⚠️ Failed to fetch permission scheme for {project_key}: {scheme_response.text()}")
+                return []
+
+            scheme_data = scheme_response.json()
+            scheme_id = scheme_data.get("id")
+
+            # Step 2: Get all permission grants in this scheme
+            grants_response = await datasource.get_permission_scheme_grants(
+                schemeId=scheme_id,
+                expand="all"
+            )
+
+            if grants_response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"⚠️ Failed to fetch permission grants for scheme {scheme_id}: {grants_response.text()}")
+                return []
+
+            grants_data = grants_response.json()
+            permission_grants = grants_data.get("permissions", [])
+
+            # Step 3: Filter for BROWSE_PROJECTS permission (determines who can see the project)
+            relevant_permission_types = ["BROWSE_PROJECTS"]
+
+            seen_holders = set()
+
+            for grant in permission_grants:
+                permission_name = grant.get("permission")
+
+                if permission_name not in relevant_permission_types:
+                    continue
+
+                holder = grant.get("holder", {})
+                holder_type = holder.get("type")
+                holder_param = holder.get("parameter")
+                holder_value = holder.get("value")
+
+                # Create unique key for deduplication
+                holder_key = f"{holder_type}:{holder_value or holder_param}"
+                if holder_key in seen_holders:
+                    continue
+                seen_holders.add(holder_key)
+
+                # Process different holder types and create Permission objects
+                if holder_type == "group" and holder_value:
+                    # Group has BROWSE_PROJECTS permission
+                    permissions.append(Permission(
+                        entity_type=EntityType.GROUP,
+                        external_id=holder_value,
+                        type=PermissionType.READ
+                    ))
+
+                elif holder_type == "applicationRole":
+                    role_key = holder_param
+
+                    if role_key and app_roles_mapping and role_key in app_roles_mapping:
+                        role_groups = app_roles_mapping[role_key]
+                        for group_info in role_groups:
+                            group_id = group_info.get("groupId")
+                            if group_id:
+                                # Avoid duplicate if this group was already added directly
+                                group_key = f"group:{group_id}"
+                                if group_key not in seen_holders:
+                                    seen_holders.add(group_key)
+                                    permissions.append(Permission(
+                                        entity_type=EntityType.GROUP,
+                                        external_id=group_id,
+                                        type=PermissionType.READ
+                                    ))
+                    else:
+                        # Fallback: No mapping found or no role_key - treat as org-level handle any logged in user condition
+                        fallback_name = role_key or "all_licensed_users"
+                        permissions.append(Permission(
+                            entity_type=EntityType.ORG,
+                            external_id=fallback_name,
+                            type=PermissionType.READ
+                        ))
+
+                elif holder_type == "user" and holder_param:
+                    # Specific user has access
+                    user_data = holder.get("user", {})
+                    user_email = user_data.get("emailAddress")
+                    if user_email:
+                        permissions.append(Permission(
+                            entity_type=EntityType.USER,
+                            email=user_email,
+                            type=PermissionType.READ
+                        ))
+                    else:
+                        self.logger.warning(f"⚠️  {project_key}: User permission skipped - no email for accountId '{holder_param}'")
+
+                elif holder_type == "anyone":
+                    # All authenticated users have access handle public condition
+                    permissions.append(Permission(
+                        entity_type=EntityType.ORG,
+                        external_id="anyone_authenticated",
+                        type=PermissionType.READ
+                    ))
+
+                elif holder_type == "projectRole":
+                    project_role = holder.get("projectRole", {})
+                    role_name = project_role.get("name", f"Role_{holder_param}")
+                    role_id = holder_param or project_role.get("id")
+
+                    if role_name == "atlassian-addons-project-access":
+                        continue
+
+                    permissions.append(Permission(
+                        entity_type=EntityType.ROLE,
+                        external_id=f"{project_key}_{role_id}",
+                        type=PermissionType.READ
+                    ))
+
+                elif holder_type == "sd.customer.portal.only":
+                    # JSM Service Desk customers (portal access)
+                    # These are external customers who only access via the service desk portal
+                    # Their access is limited to their own tickets through the portal UI
+                    self.logger.debug(f"  {project_key}: Skipping JSM portal customers (external users, not synced)")
+
+                elif holder_type == "projectLead":
+                    permissions.append(Permission(
+                        entity_type=EntityType.ROLE,
+                        external_id=f"{project_key}_projectLead",
+                        type=PermissionType.READ
+                    ))
+
+                elif holder_type in ("groupCustomField", "userCustomField"):
+                    continue
+
+                else:
+                    self.logger.warning(f"⚠️  {project_key}: Unknown holder type '{holder_type}' with param '{holder_param}' - skipping")
+
+            return permissions
+
+        except Exception as e:
+            self.logger.error(f"❌ Error fetching permission scheme for project {project_key}: {e}", exc_info=True)
+            return []
+
+    async def _build_record_groups_from_projects(
+        self,
+        projects: List[Dict[str, Any]],
+        app_roles_mapping: Dict[str, List[Dict[str, str]]]
+    ) -> List[Tuple[RecordGroup, List[Permission]]]:
+        """
+        Build (RecordGroup, permissions) for each raw project.
+        Single place for record group creation and permission scheme resolution.
+        """
+        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+
+        for project in projects:
+            project_id = project.get("id")
+            project_key = project.get("key")
+            if not project_key:
+                self.logger.debug("Skipping project with no key: id=%s", project_id)
+                continue
+
+            project_name = project.get("name")
+
+            description = project.get("description")
+            if description and isinstance(description, dict):
+                description = adf_to_text(description)
+            else:
+                description = description or None
+
+            record_group = RecordGroup(
+                id=str(uuid4()),
+                org_id=self.data_entities_processor.org_id,
+                external_group_id=project_id,
+                connector_id=self.connector_id,
+                connector_name=Connectors.JIRA,
+                name=project_name,
+                short_name=project_key,
+                group_type=RecordGroupType.PROJECT,
+                description=description,
+                web_url=project.get("url"),
+            )
+
+            project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
+            record_groups.append((record_group, project_permissions))
+
+            if project_permissions:
+                self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
+
+        return record_groups
 
     async def _fetch_projects(
         self,
@@ -2159,169 +2557,26 @@ class JiraConnector(BaseConnector):
         if not self.data_source:
             raise ValueError("DataSource not initialized")
 
-        projects: List[Dict[str, Any]] = []
-
-        # Determine if we're excluding projects (NOT_IN operator)
         is_exclude = False
         if project_keys_operator:
             operator_value = project_keys_operator.value if hasattr(project_keys_operator, 'value') else str(project_keys_operator)
             is_exclude = operator_value == "not_in"
 
-        # If list has values, handle based on operator; otherwise fetch all
         if project_keys:
-            # List has values - handle IN/NOT_IN
             if is_exclude:
-                # NOT_IN with non-empty list: Fetch all projects, then filter out excluded ones
                 self.logger.info(f"📁 Fetching all projects, excluding: {project_keys}")
-
-                all_projects: List[Dict[str, Any]] = []
-                start_at = 0
-
-                while True:
-                    datasource = await self._get_fresh_datasource()
-                    response = await datasource.search_projects(
-                        maxResults=DEFAULT_MAX_RESULTS,
-                        startAt=start_at,
-                        expand=["description", "url", "permissions", "issueTypes", "lead"]
-                    )
-
-                    if response.status != HttpStatusCode.OK.value:
-                        raise Exception(f"Failed to fetch projects: {response.text()}")
-
-                    projects_batch = self._safe_json_parse(response, "project search")
-                    if projects_batch is None:
-                        raise Exception("Failed to parse project search response")
-                    batch_projects = projects_batch.get("values", [])
-
-                    if not batch_projects:
-                        break
-
-                    all_projects.extend(batch_projects)
-
-                    # Move to next page
-                    start_at += len(batch_projects)
-
-                    # Check if we've reached the end
-                    total = projects_batch.get("total", 0)
-                    is_last = projects_batch.get("isLast", False)
-
-                    if is_last or (total > 0 and start_at >= total):
-                        break
-
-                # Filter out excluded project keys
-                excluded_keys_set = set(project_keys)
-                for project in all_projects:
-                    project_key = project.get("key")
-                    if project_key and project_key not in excluded_keys_set:
-                        projects.append(project)
+                all_projects = await self._fetch_projects_via_api(keys=None)
+                excluded_set = set(project_keys)
+                projects = [p for p in all_projects if p.get("key") and p.get("key") not in excluded_set]
             else:
-                # IN (default) with non-empty list: Use Jira's built-in keys parameter (optimized)
                 self.logger.info(f"📁 Fetching specific projects using keys filter: {project_keys}")
-                start_at = 0
-
-                while True:
-                    datasource = await self._get_fresh_datasource()
-                    response = await datasource.search_projects(
-                        maxResults=DEFAULT_MAX_RESULTS,
-                        startAt=start_at,
-                        keys=project_keys,  # Jira API built-in filter (like Linear's {"id": {"in": ...}})
-                        expand=["description", "url", "permissions", "issueTypes", "lead"]
-                    )
-
-                    if response.status != HttpStatusCode.OK.value:
-                        raise Exception(f"Failed to fetch projects: {response.text()}")
-
-                    projects_batch = self._safe_json_parse(response, "project search")
-                    if projects_batch is None:
-                        raise Exception("Failed to parse project search response")
-                    batch_projects = projects_batch.get("values", [])
-
-                    if not batch_projects:
-                        break
-
-                    projects.extend(batch_projects)
-
-                    # Move to next page
-                    start_at += len(batch_projects)
-
-                    # Check if we've reached the end
-                    total = projects_batch.get("total", 0)
-                    is_last = projects_batch.get("isLast", False)
-
-                    if is_last or (total > 0 and start_at >= total):
-                        break
-
+                projects = await self._fetch_projects_via_api(keys=project_keys)
         else:
-            # No filter or empty list - fetch all projects
             self.logger.info("📁 Fetching all projects")
-            start_at = 0
+            projects = await self._fetch_projects_via_api(keys=None)
 
-            while True:
-                datasource = await self._get_fresh_datasource()
-                response = await datasource.search_projects(
-                    maxResults=DEFAULT_MAX_RESULTS,
-                    startAt=start_at,
-                    expand=["description", "url", "permissions", "issueTypes", "lead"]
-                )
-
-                if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch projects: {response.text()}")
-
-                projects_batch = self._safe_json_parse(response, "project search")
-                if projects_batch is None:
-                    raise Exception("Failed to parse project search response")
-                batch_projects = projects_batch.get("values", [])
-
-                if not batch_projects:
-                    break
-
-                projects.extend(batch_projects)
-
-                # Move to next page
-                start_at += len(batch_projects)
-
-                # Check if we've reached the end
-                total = projects_batch.get("total", 0)
-                is_last = projects_batch.get("isLast", False)
-
-                if is_last or (total > 0 and start_at >= total):
-                    break
-
-        # Fetch application roles → groups mapping once (cached)
         app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
-
-        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
-        for project in projects:
-            project_id = project.get("id")
-            project_name = project.get("name")
-            project_key = project.get("key")
-
-            description = project.get("description")
-            if description and isinstance(description, dict):
-                description = adf_to_text(description)
-            elif not description:
-                description = None
-
-            record_group = RecordGroup(
-                id=str(uuid4()),
-                org_id=self.data_entities_processor.org_id,
-                external_group_id=project_id,
-                connector_id=self.connector_id,
-                connector_name=Connectors.JIRA,
-                name=project_name,
-                short_name=project_key,
-                group_type=RecordGroupType.PROJECT,
-                description=description,
-                web_url=project.get("url"),
-            )
-
-            # This determines which groups/users can access the project
-            project_permissions = await self._fetch_project_permission_scheme(project_key, app_roles_mapping)
-
-            record_groups.append((record_group, project_permissions))
-
-            if project_permissions:
-                self.logger.info(f"🔐 Project {project_key}: {len(project_permissions)} permission grants from scheme")
+        record_groups = await self._build_record_groups_from_projects(projects, app_roles_mapping)
 
         return record_groups, projects
 
@@ -2371,6 +2626,9 @@ class JiraConnector(BaseConnector):
         project_key = project.short_name
         project_id = project.external_group_id
 
+        # Fetch security scheme ID for this project (if exists)
+        project_security_scheme_id = await self._get_project_security_scheme_id(project_key)
+
         # Read project sync point
         project_sync_data = await self._get_project_sync_checkpoint(project_key)
 
@@ -2381,8 +2639,6 @@ class JiraConnector(BaseConnector):
         )
 
         # Use last_issue_updated if available (works for both resume and incremental sync)
-        # For new projects, don't use any timestamp to fetch ALL issues
-        # Fall back to project sync time, then global sync time (only for existing projects)
         resume_from_timestamp = None
         if not is_new_project:
             resume_from_timestamp = project_sync_data.get("last_issue_updated")
@@ -2408,7 +2664,8 @@ class JiraConnector(BaseConnector):
             project_id,
             jira_users,
             project_last_sync_time,
-            resume_from_timestamp
+            resume_from_timestamp,
+            project_security_scheme_id
         ):
             batch_number += 1
             batch_size = len(issues_batch)
@@ -2433,7 +2690,7 @@ class JiraConnector(BaseConnector):
             self.logger.info(f"📦 Processing batch {batch_number} for project {project_key}: {batch_size} records")
 
             # Process this batch
-            await self._process_new_records(issues_batch, project_key, stats)
+            await self._process_new_records(issues_batch, stats)
             total_issues_processed += batch_size
 
             # Update checkpoint AFTER successful processing
@@ -2465,13 +2722,56 @@ class JiraConnector(BaseConnector):
             "updated_count": stats["updated_count"]
         }
 
+    def _build_issues_jql(
+        self,
+        project_key: str,
+        last_sync_time: Optional[int] = None,
+        resume_from_timestamp: Optional[int] = None,
+    ) -> str:
+        """Build the JQL query for fetching issues of a project, applying sync/date filters and timestamp checkpoints."""
+        jql_conditions = [f'project = "{project_key}"']
+
+        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
+        modified_after, modified_before = modified_filter.get_value(default=(None, None)) if modified_filter else (None, None)
+
+        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
+        created_after, created_before = created_filter.get_value(default=(None, None)) if created_filter else (None, None)
+
+        if resume_from_timestamp:
+            modified_after = resume_from_timestamp
+            self.logger.info(f"🔄 Starting from timestamp: {resume_from_timestamp}")
+        elif modified_after:
+            if last_sync_time:
+                modified_after = max(modified_after, last_sync_time)
+        elif last_sync_time:
+            modified_after = last_sync_time
+
+        if modified_after:
+            dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
+            jql_conditions.append(f'updated > "{dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        if modified_before:
+            dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
+            jql_conditions.append(f'updated <= "{dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        if created_after:
+            dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
+            jql_conditions.append(f'created >= "{dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        if created_before:
+            dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
+            jql_conditions.append(f'created <= "{dt.strftime("%Y-%m-%d %H:%M")}"')
+
+        return " AND ".join(jql_conditions) + " ORDER BY updated ASC, id ASC"
+
     async def _fetch_issues_batched(
         self,
         project_key: str,
         project_id: str,
         users: List[AppUser],
         last_sync_time: Optional[int] = None,
-        resume_from_timestamp: Optional[int] = None
+        resume_from_timestamp: Optional[int] = None,
+        project_security_scheme_id: Optional[str] = None
     ) -> AsyncGenerator[Tuple[List[Tuple[Record, List[Permission]]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -2490,57 +2790,7 @@ class JiraConnector(BaseConnector):
             self.logger.error("❌ cloud_id is not set. Cannot fetch issues.")
             return
 
-        # Build JQL query
-        jql_conditions = [f'project = "{project_key}"']
-
-        # Get modified filter
-        modified_filter = self.sync_filters.get(SyncFilterKey.MODIFIED) if self.sync_filters else None
-        modified_after = None
-        modified_before = None
-
-        if modified_filter:
-            modified_after, modified_before = modified_filter.get_value(default=(None, None))
-
-        # Get created filter
-        created_filter = self.sync_filters.get(SyncFilterKey.CREATED) if self.sync_filters else None
-        created_after = None
-        created_before = None
-
-        if created_filter:
-            created_after, created_before = created_filter.get_value(default=(None, None))
-
-        # Determine modified_after from filter and/or checkpoint
-        # resume_from_timestamp can be from last_issue_updated (resume) or last_sync_time (incremental)
-        if resume_from_timestamp:
-            # Use checkpoint timestamp (works for both resume and incremental sync)
-            modified_after = resume_from_timestamp
-            self.logger.info(f"🔄 Starting from timestamp: {resume_from_timestamp}")
-        elif modified_after:
-            if last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-        elif last_sync_time:
-            modified_after = last_sync_time
-
-        if modified_after:
-            modified_dt = datetime.fromtimestamp(modified_after / 1000, tz=timezone.utc)
-            # Always use > to avoid reprocessing the last issue (works for both resume and incremental)
-            jql_conditions.append(f'updated > "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
-
-        if modified_before:
-            modified_dt = datetime.fromtimestamp(modified_before / 1000, tz=timezone.utc)
-            jql_conditions.append(f'updated <= "{modified_dt.strftime("%Y-%m-%d %H:%M")}"')
-
-        if created_after:
-            created_dt = datetime.fromtimestamp(created_after / 1000, tz=timezone.utc)
-            jql_conditions.append(f'created >= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
-
-        if created_before:
-            created_dt = datetime.fromtimestamp(created_before / 1000, tz=timezone.utc)
-            jql_conditions.append(f'created <= "{created_dt.strftime("%Y-%m-%d %H:%M")}"')
-
-        # Build final JQL (ORDER BY required for consistent pagination)
-        # Add id ASC as secondary sort for stable ordering when timestamps are equal
-        jql = " AND ".join(jql_conditions) + " ORDER BY updated ASC, id ASC"
+        jql = self._build_issues_jql(project_key, last_sync_time, resume_from_timestamp)
         self.logger.info(f"🔍 JQL Query for {project_key}: {jql}")
 
         page_count = 0
@@ -2590,7 +2840,14 @@ class JiraConnector(BaseConnector):
 
             # Build records for this batch
             async with self.data_store_provider.transaction() as tx_store:
-                records_batch = await self._build_issue_records(batch_issues, project_id, users, tx_store)
+                records_batch = await self._build_issue_records(
+                    batch_issues,
+                    project_id,
+                    project_key,
+                    users,
+                    project_security_scheme_id,
+                    tx_store
+                )
 
             self.logger.debug(f"📦 Fetched batch {page_count}: {len(batch_issues)} issues -> {len(records_batch)} records (last updated: {last_issue_updated})")
 
@@ -2610,23 +2867,16 @@ class JiraConnector(BaseConnector):
     async def _process_new_records(
         self,
         records_with_permissions: List[Tuple[Record, List[Permission]]],
-        project_name: str,
         stats: Dict[str, int]
     ) -> None:
         """
         Process records (new and updated) in batches.
         on_new_records internally handles both new and updated.
         """
-        # Sort records: records without parent_external_record_id (Epics) come first
-        sorted_records = sorted(
-            records_with_permissions,
-            key=lambda x: (x[0].parent_external_record_id is not None, x[0].parent_external_record_id or "")
-        )
-
         batch_size = BATCH_PROCESSING_SIZE
 
-        for i in range(0, len(sorted_records), batch_size):
-            batch = sorted_records[i:i + batch_size]
+        for i in range(0, len(records_with_permissions), batch_size):
+            batch = records_with_permissions[i:i + batch_size]
             await self.data_entities_processor.on_new_records(batch)
 
             # Update stats
@@ -2811,6 +3061,10 @@ class JiraConnector(BaseConnector):
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
 
+        # Extract security level
+        security_obj = fields.get("security")
+        security_level_id = security_obj.get("id") if security_obj else None
+
         return {
             "issue_id": issue_id,
             "issue_key": issue_key,
@@ -2828,17 +3082,22 @@ class JiraConnector(BaseConnector):
             "creator_name": creator_name,
             "reporter_email": reporter_email,
             "reporter_name": reporter_name,
+            "reporter_account_id": reporter_account_id,
             "assignee_email": assignee_email,
             "assignee_name": assignee_name,
+            "assignee_account_id": assignee_account_id,
             "created_at": created_at,
             "updated_at": updated_at,
+            "security_level_id": security_level_id,
         }
 
     async def _build_issue_records(
         self,
         issues: List[Dict[str, Any]],
         project_id: str,
+        project_key: str,
         users: List[AppUser],
+        project_security_scheme_id: Optional[str],
         tx_store
     ) -> List[Tuple[Record, List[Permission]]]:
         """
@@ -2870,13 +3129,37 @@ class JiraConnector(BaseConnector):
             creator_name = issue_data["creator_name"]
             reporter_email = issue_data["reporter_email"]
             reporter_name = issue_data["reporter_name"]
+            reporter_account_id = issue_data["reporter_account_id"]
             assignee_email = issue_data["assignee_email"]
             assignee_name = issue_data["assignee_name"]
+            assignee_account_id = issue_data["assignee_account_id"]
             created_at = issue_data["created_at"]
             updated_at = issue_data["updated_at"]
+            security_level_id = issue_data["security_level_id"]
 
-            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
-            permissions = []
+            # Determine record-level permissions based on security field
+            if security_level_id and project_security_scheme_id:
+
+                self.logger.debug(f"🔒 Fetching security level permissions for issue {issue_key} with security level {security_level_id} and project security scheme {project_security_scheme_id}")
+                # Issue has security level and project has security scheme - fetch permissions via API
+                permissions = await self._fetch_security_level_permissions(
+                    project_key=project_key,
+                    security_level_id=security_level_id,
+                    project_security_scheme_id=project_security_scheme_id,
+                    assignee_email=assignee_email,
+                    reporter_email=reporter_email,
+                    assignee_account_id=assignee_account_id,
+                    reporter_account_id=reporter_account_id
+                )
+
+                if not permissions:
+                    self.logger.debug(
+                        f"Issue {issue_key}: Security level {security_level_id} has no members, "
+                        "will inherit from project"
+                    )
+            else:
+                # No security field - pass empty list
+                permissions = []
 
             # Get fields for attachments (needed by _fetch_issue_attachments)
             fields = issue.get("fields", {})
@@ -2962,7 +3245,7 @@ class JiraConnector(BaseConnector):
                 created_at=created_at,
                 updated_at=updated_at,
                 inherit_permissions=True,
-                preview_renderable=False,
+                preview_renderable=True,
                 is_dependent_node=False,  # Tickets are not dependent
                 parent_node_id=None,  # Tickets have no parent node
             )
@@ -2987,7 +3270,6 @@ class JiraConnector(BaseConnector):
                     fields,
                     permissions,
                     external_record_group_id,
-                    record_group_type,
                     tx_store,
                     parent_node_id=issue_record.id,
                 )
@@ -3013,7 +3295,6 @@ class JiraConnector(BaseConnector):
         issue_fields: Dict[str, Any],
         parent_permissions: List[Permission],
         parent_record_group_id: str,
-        parent_record_group_type: RecordGroupType,
         tx_store,
         parent_node_id: Optional[str] = None,
     ) -> List[Tuple[FileRecord, List[Permission]]]:
@@ -3307,6 +3588,40 @@ class JiraConnector(BaseConnector):
     # BlockGroups & Blocks Parsing
     # ============================================================================
 
+    async def _fetch_issue_comments_with_pagination(
+        self,
+        issue_id_or_key: str,
+        max_results: int = 50
+    ) -> List[Dict[str, Any]]:
+        """
+        Fetch all comments for an issue using the dedicated comments endpoint with pagination.
+        Returns list of all comments with proper parentId field for threading.
+        """
+        datasource = await self._get_fresh_datasource()
+        comments_data: List[Dict[str, Any]] = []
+        start_at = 0
+
+        while True:
+            comments_response = await datasource.get_comments(
+                issueIdOrKey=issue_id_or_key,
+                startAt=start_at,
+                maxResults=max_results
+            )
+            if comments_response.status != HttpStatusCode.OK.value:
+                self.logger.warning(f"⚠️ Failed to fetch comments for issue {issue_id_or_key}: {comments_response.status}")
+                break
+
+            comments_batch_data = comments_response.json()
+            comments_batch = comments_batch_data.get("comments", [])
+            comments_data.extend(comments_batch)
+
+            total = comments_batch_data.get("total", 0)
+            if start_at + len(comments_batch) >= total:
+                break
+            start_at += max_results
+
+        return comments_data
+
     def _organize_issue_comments_to_threads(
         self,
         comments_data: List[Dict[str, Any]]
@@ -3315,8 +3630,8 @@ class JiraConnector(BaseConnector):
         Group Jira comments by thread (parent comment) and sort by created timestamp.
         Returns list of threads, each thread is a list of comments sorted by created.
 
-        Jira supports threaded comments via 'parent' field on comment objects.
-        - Top-level comments (no parent) start their own thread
+        Jira returns threaded comments using direct 'parentId' field (integer).
+        - Top-level comments (no parentId) start their own thread
         - Replies grouped under their parent's thread_id
         - Each thread sorted by created timestamp (oldest first)
         - Threads sorted by first comment's created timestamp
@@ -3328,9 +3643,10 @@ class JiraConnector(BaseConnector):
 
         for comment in comments_data:
             comment_id = comment.get("id", "")
-            parent = comment.get("parent", {})
-            # Thread ID is parent's ID if it's a reply, or self ID if top-level
-            thread_id = parent.get("id") if parent and parent.get("id") else comment_id
+            # Jira API returns parentId as direct integer field, not nested parent object
+            parent_id = comment.get("parentId")
+            # Thread ID is parent's ID if it's a reply (convert to string), or self ID if top-level
+            thread_id = str(parent_id) if parent_id else comment_id
             if not thread_id:
                 continue
 
@@ -3352,110 +3668,81 @@ class JiraConnector(BaseConnector):
 
         return sorted_threads
 
-    async def _parse_issue_to_blocks(
+    def _resolve_attachment_id_from_media(self, media_info: Dict[str, Any], filename_to_id: Dict[str, str]) -> Optional[str]:
+        """Resolve ADF media node to attachment ID via filename matching."""
+        media_filename = media_info.get("filename", "") or media_info.get("alt", "")
+        if not media_filename:
+            return None
+        attachment_id = filename_to_id.get(media_filename)
+        if not attachment_id:
+            attachment_id = filename_to_id.get(media_filename.lower().strip())
+        return attachment_id
+
+    def _is_image_attachment(self, attachment_id: str, attachment_mime_types: Dict[str, str]) -> bool:
+        """Check if attachment is an image based on MIME type."""
+        mime_type = attachment_mime_types.get(attachment_id, "")
+        return mime_type.startswith("image/")
+
+    def _build_attachment_filename_lookup(
         self,
-        issue_data: Dict[str, Any],
-        issue_key: str,
-        weburl: Optional[str] = None,
-        attachment_children_map: Optional[Dict[str, ChildRecord]] = None,
-        attachment_mime_types: Optional[Dict[str, str]] = None,
-    ) -> BlocksContainer:
-        """
-        Parse Jira issue data into BlocksContainer with BlockGroups and Blocks.
-
-        This creates:
-        - Description BlockGroup (index=0) with:
-          - Issue description markdown (images converted to base64)
-          - children_records:
-            - Embedded files from description (PDFs, docs, etc.)
-            - Standalone attachments (not used in comments and not embedded images)
-            - Excludes: embedded images (already in content as base64) and attachments used in comments
-        - Thread BlockGroups (index=1,2,...) for each comment thread with:
-          - parent_index=0 (pointing to Description BlockGroup)
-        - Comment BlockGroup objects (sub_type=COMMENT) for each comment with:
-          - parent_index pointing to thread BlockGroup index
-          - children_records: attachments used in that specific comment (assigned to comment's BlockGroup)
-          - requires_processing=True (comments need further processing through docling)
-
-        Attachment assignment logic:
-        - Attachments used in comments → assigned to that comment's children
-        - Embedded images in description → excluded from children (already in content as base64)
-        - Embedded files in description → included in description children
-        - Standalone attachments → included in description children
-
-        IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the numeric attachment ID!
-        We use FILENAME matching to map ADF media nodes to attachments from fields.attachment[].
-        """
-        issue_id = issue_data.get("id", "")
-        fields = issue_data.get("fields", {})
-        issue_title = fields.get("summary", "")
-        issue_description_adf = fields.get("description")
-
-        if not weburl:
-            raise ValueError("weburl is required when creating BlockGroup for issues")
-
-        block_groups: List[BlockGroup] = []
-        blocks: List[Block] = []
-        block_group_index = 0
-
-        # Prepare maps for resolving ADF media nodes to attachment IDs
-        # IMPORTANT: In Jira ADF, media.attrs.id is a UUID token, NOT the attachment ID!
-        # The attachment ID is numeric (e.g., "12345"). We must use FILENAME matching
-        # to map ADF media nodes to actual attachments.
-        _attachment_mime_types = attachment_mime_types or {}
-
-        # Build filename -> attachment_id map for resolving ADF media to attachments
-        _attachment_filename_to_id: Dict[str, str] = {}
+        attachment_children_map: Optional[Dict[str, ChildRecord]]
+    ) -> Dict[str, str]:
+        """Build filename -> attachment_id map for case-insensitive matching."""
+        filename_to_id: Dict[str, str] = {}
         if attachment_children_map:
             for att_id, child_record in attachment_children_map.items():
                 child_name = child_record.child_name
                 if child_name:
-                    _attachment_filename_to_id[child_name] = att_id
-                    # Also add normalized (lowercase) version for case-insensitive matching
-                    _attachment_filename_to_id[child_name.lower().strip()] = att_id
+                    filename_to_id[child_name] = att_id
+                    filename_to_id[child_name.lower().strip()] = att_id
+        return filename_to_id
 
-        def resolve_attachment_id(media_info: Dict[str, Any]) -> Optional[str]:
-            """Resolve ADF media node to attachment ID via filename matching."""
-            media_filename = media_info.get("filename", "") or media_info.get("alt", "")
-            if not media_filename:
-                return None
-            # Try exact match first, then normalized (lowercase) match
-            attachment_id = _attachment_filename_to_id.get(media_filename)
-            if not attachment_id:
-                attachment_id = _attachment_filename_to_id.get(media_filename.lower().strip())
-            return attachment_id
-
-        def is_image_attachment(attachment_id: str) -> bool:
-            """Check if attachment is an image based on MIME type."""
-            mime_type = _attachment_mime_types.get(attachment_id, "")
-            return mime_type.startswith("image/")
-
-        # Track attachment IDs used in comments (to exclude from description children)
+    def _identify_comment_and_description_media(
+        self,
+        issue_data: Dict[str, Any],
+        issue_description_adf: Optional[Dict[str, Any]],
+        attachment_children_map: Optional[Dict[str, ChildRecord]],
+        attachment_mime_types: Dict[str, str],
+        filename_to_id: Dict[str, str]
+    ) -> Tuple[Set[str], Set[str]]:
+        """
+        Pre-scan description and comments to identify attachment usage.
+        Returns (comment_attachment_ids, description_image_ids).
+        """
         comment_attachment_ids: Set[str] = set()
-        # Track embedded images in description (already in content as base64, exclude from children)
         description_image_ids: Set[str] = set()
 
         # Pre-scan comments to identify which attachments are used in comments
         comments_data = issue_data.get("comments", [])
-        for comment in comments_data:
-            comment_body_adf = comment.get("body")
-            if comment_body_adf and isinstance(comment_body_adf, dict):
-                for media_info in extract_media_from_adf(comment_body_adf):
-                    attachment_id = resolve_attachment_id(media_info)
-                    if attachment_id:
-                        comment_attachment_ids.add(attachment_id)
+        if attachment_children_map:
+            for comment in comments_data:
+                comment_body_adf = comment.get("body")
+                if comment_body_adf and isinstance(comment_body_adf, dict):
+                    for media_info in extract_media_from_adf(comment_body_adf):
+                        attachment_id = self._resolve_attachment_id_from_media(media_info, filename_to_id)
+                        if attachment_id and attachment_id in attachment_children_map:
+                            comment_attachment_ids.add(attachment_id)
 
-        # Extract media from description ADF - identify embedded images (to exclude from children)
+        # Extract media from description ADF - identify embedded images
         if issue_description_adf and isinstance(issue_description_adf, dict):
             for media_info in extract_media_from_adf(issue_description_adf):
-                attachment_id = resolve_attachment_id(media_info)
-                if attachment_id and is_image_attachment(attachment_id):
+                attachment_id = self._resolve_attachment_id_from_media(media_info, filename_to_id)
+                if attachment_id and self._is_image_attachment(attachment_id, attachment_mime_types):
                     description_image_ids.add(attachment_id)
 
-        # 1. Description BlockGroup (index=0)
-        # Convert ADF description to markdown with base64 images
+        return comment_attachment_ids, description_image_ids
+
+    async def _create_description_blockgroup_with_content(
+        self,
+        issue_id: str,
+        issue_key: str,
+        issue_title: str,
+        issue_description_adf: Optional[Dict[str, Any]],
+        weburl: str,
+        block_group_index: int
+    ) -> BlockGroup:
+        """Create the description BlockGroup with converted ADF content."""
         if issue_description_adf and isinstance(issue_description_adf, dict):
-            # Create media fetcher callback for this issue using helper method
             description_content = await adf_to_text_with_images(
                 issue_description_adf,
                 self._create_media_fetcher(issue_id)
@@ -3463,12 +3750,10 @@ class JiraConnector(BaseConnector):
         else:
             description_content = ""
 
-        # Use description if available, otherwise create minimal content with title
         if not description_content:
             description_content = f"# {issue_title}" if issue_title else f"# Issue {issue_key or issue_id}"
 
-        # Create description BlockGroup (children will be set after processing comments)
-        description_block_group = BlockGroup(
+        return BlockGroup(
             id=str(uuid4()),
             index=block_group_index,
             name=issue_title if issue_title else (f"{issue_key} - Description" if issue_key else "Issue Description"),
@@ -3481,13 +3766,186 @@ class JiraConnector(BaseConnector):
             weburl=weburl,
             requires_processing=True,
         )
+
+    async def _create_comment_blockgroups_for_thread(
+        self,
+        thread_comments: List[Dict[str, Any]],
+        issue_id: str,
+        issue_key: str,
+        weburl: str,
+        thread_block_group_index: int,
+        starting_comment_index: int,
+        attachment_children_map: Optional[Dict[str, ChildRecord]],
+        attachment_mime_types: Dict[str, str],
+        filename_to_id: Dict[str, str]
+    ) -> List[BlockGroup]:
+        """Create BlockGroups for all comments in a thread."""
+        comment_block_groups: List[BlockGroup] = []
+        block_group_index = starting_comment_index
+
+        for comment in thread_comments:
+            comment_id = comment.get("id", "")
+            comment_body_adf = comment.get("body")
+
+            if not comment_body_adf:
+                continue
+
+            # Convert ADF comment body to markdown with base64 images
+            if isinstance(comment_body_adf, dict):
+                comment_body = await adf_to_text_with_images(
+                    comment_body_adf,
+                    self._create_media_fetcher(issue_id)
+                )
+            else:
+                comment_body = str(comment_body_adf) if comment_body_adf else ""
+
+            if not comment_body:
+                continue
+
+            # Build comment weburl
+            if self.site_url and issue_key and comment_id:
+                comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
+            else:
+                comment_weburl = weburl
+
+            # Get author info
+            author = comment.get("author", {})
+            author_name = author.get("displayName", "Unknown")
+
+            # Get file attachments used in this comment (images excluded - already as base64)
+            comment_children: List[ChildRecord] = []
+            if attachment_children_map and isinstance(comment_body_adf, dict):
+                for media_info in extract_media_from_adf(comment_body_adf):
+                    attachment_id = self._resolve_attachment_id_from_media(media_info, filename_to_id)
+                    if attachment_id and attachment_id in attachment_children_map:
+                        if not self._is_image_attachment(attachment_id, attachment_mime_types):
+                            comment_children.append(attachment_children_map[attachment_id])
+
+            # Create BlockGroup with sub_type=COMMENT
+            comment_block_group = BlockGroup(
+                id=str(uuid4()),
+                index=block_group_index,
+                parent_index=thread_block_group_index,
+                type=GroupType.TEXT_SECTION,
+                sub_type=GroupSubType.COMMENT,
+                name=f"Comment by {author_name}",
+                description=f"Comment by {author_name}",
+                source_group_id=comment_id,
+                data=comment_body,
+                format=DataFormat.MARKDOWN,
+                weburl=comment_weburl,
+                requires_processing=True,
+                children_records=comment_children if comment_children else None,
+            )
+            comment_block_groups.append(comment_block_group)
+            block_group_index += 1
+
+        return comment_block_groups
+
+    def _assign_description_children(
+        self,
+        attachment_children_map: Optional[Dict[str, ChildRecord]],
+        comment_attachment_ids: Set[str],
+        description_image_ids: Set[str]
+    ) -> List[ChildRecord]:
+        """
+        Assign attachments to description children.
+        Excludes: attachments used in comments and embedded images.
+        """
+        description_children: List[ChildRecord] = []
+        if attachment_children_map:
+            for attachment_id, child_record in attachment_children_map.items():
+                if attachment_id in comment_attachment_ids:
+                    continue  # Used in comment
+                if attachment_id in description_image_ids:
+                    continue  # Embedded image (already in content as base64)
+                description_children.append(child_record)
+        return description_children
+
+    def _populate_blockgroup_hierarchy(self, block_groups: List[BlockGroup]) -> None:
+        """Build and populate parent-child relationships for BlockGroups."""
+        blockgroup_children_map: Dict[int, List[int]] = defaultdict(list)
+
+        # Collect all BlockGroup children
+        for bg in block_groups:
+            if bg.parent_index is not None:
+                blockgroup_children_map[bg.parent_index].append(bg.index)
+
+        # Populate children arrays
+        for bg in block_groups:
+            if bg.index in blockgroup_children_map:
+                child_bg_indices = sorted(blockgroup_children_map[bg.index])
+                bg.children = BlockGroupChildren.from_indices(
+                    block_indices=[],
+                    block_group_indices=child_bg_indices
+                )
+
+    async def _parse_issue_to_blocks(
+        self,
+        issue_data: Dict[str, Any],
+        issue_key: str,
+        weburl: Optional[str] = None,
+        attachment_children_map: Optional[Dict[str, ChildRecord]] = None,
+        attachment_mime_types: Optional[Dict[str, str]] = None,
+    ) -> BlocksContainer:
+        """
+        Parse Jira issue data into BlocksContainer with BlockGroups.
+
+        FLOW:
+        1. Build attachment lookup helpers (filename → attachment_id mapping)
+        2. Pre-scan description & comments to identify which attachments go where
+        3. Create description BlockGroup (index=0) with markdown content + base64 images
+        4. Create comment thread BlockGroups (index=1+) and comment BlockGroups (nested)
+        5. Assign attachments to description or comments based on usage
+        6. Build BlockGroup parent-child hierarchy
+        7. Return BlocksContainer
+
+        STRUCTURE:
+        - Description BlockGroup (index=0)
+          └─ children: standalone attachments + embedded files (NOT images or comment attachments)
+        - Thread BlockGroup (index=1+, parent=0)
+          └─ Comment BlockGroup (index=N, parent=thread_index)
+             └─ children: attachments used in that comment (NOT images)
+
+        ATTACHMENT RULES:
+        - Used in comment → assigned to that comment's children
+        - Embedded image in description → excluded (already in content as base64)
+        - Embedded file in description → included in description children
+        - Standalone (not mentioned anywhere) → included in description children
+
+        NOTE: Jira ADF media.attrs.id is a UUID token, NOT the attachment ID. We use FILENAME matching.
+        """
+        issue_id = issue_data.get("id", "")
+        fields = issue_data.get("fields", {})
+        issue_title = fields.get("summary", "")
+        issue_description_adf = fields.get("description")
+
+        if not weburl:
+            raise ValueError("weburl is required when creating BlockGroup for issues")
+
+        # Step 1: Build attachment lookup maps
+        filename_to_id = self._build_attachment_filename_lookup(attachment_children_map)
+
+        # Step 2: Pre-scan to identify which attachments go where
+        comment_attachment_ids, description_image_ids = self._identify_comment_and_description_media(
+            issue_data,
+            issue_description_adf,
+            attachment_children_map,
+            attachment_mime_types or {},
+            filename_to_id
+        )
+
+        # Step 3: Create description BlockGroup (index=0)
+        block_groups: List[BlockGroup] = []
+        block_group_index = 0
+        description_block_group = await self._create_description_blockgroup_with_content(
+            issue_id, issue_key, issue_title, issue_description_adf, weburl, block_group_index
+        )
         block_groups.append(description_block_group)
         block_group_index += 1
 
-        # 2. Comment Thread BlockGroups (index=1,2,...) and Comment Blocks
-        # Get comments from the issue data (fetched via expand=comments or separate API call)
+        # Step 4: Create comment thread BlockGroups and comment BlockGroups
         comments_data = issue_data.get("comments", [])
-        # Handle both formats: direct list or nested structure
         if isinstance(comments_data, dict):
             comments_data = comments_data.get("comments", [])
 
@@ -3498,13 +3956,13 @@ class JiraConnector(BaseConnector):
                 if not thread_comments:
                     continue
 
-                # Get thread ID from first comment (either its ID if top-level, or parent ID if reply)
+                # Get thread ID from first comment (using parentId field)
                 first_comment = thread_comments[0]
-                parent = first_comment.get("parent", {})
                 first_comment_id = first_comment.get("id", "")
-                thread_id = parent.get("id") if parent and parent.get("id") else first_comment_id
+                parent_id = first_comment.get("parentId")
+                thread_id = str(parent_id) if parent_id else first_comment_id
 
-                # Create thread BlockGroup with parent_index=0 (Description BlockGroup)
+                # Create thread BlockGroup
                 thread_block_group_index = block_group_index
                 thread_block_group = BlockGroup(
                     id=str(uuid4()),
@@ -3515,125 +3973,40 @@ class JiraConnector(BaseConnector):
                     sub_type=GroupSubType.COMMENT_THREAD,
                     description=f"Comment thread for issue {issue_key}" if issue_key else "Comment thread",
                     source_group_id=f"{issue_id}_thread_{thread_id}" if thread_id else f"{issue_id}_thread_{thread_block_group_index}",
-                    weburl=weburl,  # Use issue weburl as base
+                    weburl=weburl,
                     requires_processing=False,
                 )
                 block_groups.append(thread_block_group)
                 block_group_index += 1
 
-                # Create BlockGroup objects for each comment in the thread
-                for comment in thread_comments:
-                    comment_id = comment.get("id", "")
-                    comment_body_adf = comment.get("body")
+                # Create comment BlockGroups for this thread
+                comment_blockgroups = await self._create_comment_blockgroups_for_thread(
+                    thread_comments,
+                    issue_id,
+                    issue_key,
+                    weburl,
+                    thread_block_group_index,
+                    block_group_index,
+                    attachment_children_map,
+                    attachment_mime_types or {},
+                    filename_to_id
+                )
+                block_groups.extend(comment_blockgroups)
+                block_group_index += len(comment_blockgroups)
 
-                    # Skip comments without body
-                    if not comment_body_adf:
-                        continue
-
-                    # Convert ADF comment body to markdown with base64 images
-                    if isinstance(comment_body_adf, dict):
-                        # Use helper method to create media fetcher (avoids closure issues)
-                        comment_body = await adf_to_text_with_images(
-                            comment_body_adf,
-                            self._create_media_fetcher(issue_id)
-                        )
-                    else:
-                        comment_body = str(comment_body_adf) if comment_body_adf else ""
-
-                    if not comment_body:
-                        continue
-
-                    # Build comment weburl
-                    if self.site_url and issue_key and comment_id:
-                        comment_weburl = f"{self.site_url}/browse/{issue_key}?focusedCommentId={comment_id}"
-                    else:
-                        comment_weburl = weburl
-
-                    # Get author info
-                    author = comment.get("author", {})
-                    author_name = author.get("displayName", "Unknown")
-
-                    # Get file attachments used in this comment (images excluded - already as base64)
-                    comment_children: List[ChildRecord] = []
-                    if attachment_children_map and isinstance(comment_body_adf, dict):
-                        for media_info in extract_media_from_adf(comment_body_adf):
-                            attachment_id = resolve_attachment_id(media_info)
-                            if attachment_id and attachment_id in attachment_children_map:
-                                # Mark as used in comment (to exclude from description)
-                                comment_attachment_ids.add(attachment_id)
-                                # Only include non-image files (images already embedded as base64)
-                                if not is_image_attachment(attachment_id):
-                                    comment_children.append(attachment_children_map[attachment_id])
-
-                    # Create BlockGroup with sub_type=COMMENT
-                    comment_block_group = BlockGroup(
-                        id=str(uuid4()),
-                        index=block_group_index,
-                        parent_index=thread_block_group_index,  # Points to thread BlockGroup
-                        type=GroupType.TEXT_SECTION,
-                        sub_type=GroupSubType.COMMENT,
-                        name=f"Comment by {author_name}",
-                        description=f"Comment by {author_name}",
-                        source_group_id=comment_id,
-                        data=comment_body,
-                        format=DataFormat.MARKDOWN,
-                        weburl=comment_weburl,
-                        requires_processing=True,
-                        children_records=comment_children if comment_children else None,
-                    )
-                    block_groups.append(comment_block_group)
-                    block_group_index += 1
-
-        # Build description children: all attachments NOT used in comments and NOT embedded images
-        description_children: List[ChildRecord] = []
-        if attachment_children_map:
-            for attachment_id, child_record in attachment_children_map.items():
-                if attachment_id in comment_attachment_ids:
-                    continue  # Used in comment - belongs to that comment's BlockGroup
-                if attachment_id in description_image_ids:
-                    continue  # Embedded image in description - already in content as base64
-                description_children.append(child_record)
-
-        # Set description BlockGroup children
+        # Step 5: Assign attachments to description children
+        description_children = self._assign_description_children(
+            attachment_children_map,
+            comment_attachment_ids,
+            description_image_ids
+        )
         if description_children:
             description_block_group.children_records = description_children
 
-        # Populate children arrays for BlockGroups
-        # Build a map of parent_index -> list of child indices
-        blockgroup_children_map: Dict[int, List[int]] = defaultdict(list)
-        block_children_map: Dict[int, List[int]] = defaultdict(list)
+        # Step 6: Build parent-child hierarchy
+        self._populate_blockgroup_hierarchy(block_groups)
 
-        # Collect all BlockGroup children (thread groups and comment groups that are children of their parents)
-        for bg in block_groups:
-            if bg.parent_index is not None:
-                blockgroup_children_map[bg.parent_index].append(bg.index)
-
-        # Collect all Block children (if any blocks exist with parent_index)
-        for b in blocks:
-            if b.parent_index is not None:
-                block_children_map[b.parent_index].append(b.index)
-
-        # Now populate the children arrays using range-based structure
-        for bg in block_groups:
-            child_block_indices = []
-            child_bg_indices = []
-
-            # Add child BlockGroups
-            if bg.index in blockgroup_children_map:
-                child_bg_indices = sorted(blockgroup_children_map[bg.index])
-
-            # Add child Blocks
-            if bg.index in block_children_map:
-                child_block_indices = sorted(block_children_map[bg.index])
-
-            # Set children if we have any
-            if child_block_indices or child_bg_indices:
-                bg.children = BlockGroupChildren.from_indices(
-                    block_indices=child_block_indices,
-                    block_group_indices=child_bg_indices
-                )
-
-        return BlocksContainer(blocks=blocks, block_groups=block_groups)
+        return BlocksContainer(blocks=[], block_groups=block_groups)
 
     async def _process_issue_attachments_for_children(
         self,
@@ -3731,25 +4104,15 @@ class JiraConnector(BaseConnector):
         3. Creates new FileRecords if any new attachments/files added since sync
         4. Parses issue to BlocksContainer with Description and Thread BlockGroups
         5. Serializes BlocksContainer to JSON bytes for streaming
-
-        Args:
-            record: TicketRecord to stream
-
-        Returns:
-            bytes: Serialized BlocksContainer as JSON bytes
-
-        Raises:
-            Exception: If issue data cannot be fetched or processed
         """
         issue_id = record.external_record_id
 
         datasource = await self._get_fresh_datasource()
 
-        # Fetch issue with comments
+        # Fetch issue WITHOUT comments (will fetch separately)
         response = await datasource.get_issue(
             issueIdOrKey=issue_id,
-            fields=["summary", "description", "attachment", "comment"],
-            expand=["comments"]
+            fields=["summary", "description", "attachment"]
         )
 
         if response.status != HttpStatusCode.OK.value:
@@ -3770,15 +4133,11 @@ class JiraConnector(BaseConnector):
         else:
             issue_weburl = record.weburl
 
-        # Get attachments and comments from issue data
+        # Get attachments from issue data
         attachments_data = fields.get("attachment", [])
 
-        # Handle comments - can be nested in "comment" field with "comments" array
-        comments_field = fields.get("comment", {})
-        if isinstance(comments_field, dict):
-            comments_data = comments_field.get("comments", [])
-        else:
-            comments_data = []
+        # Fetch comments using dedicated endpoint with pagination (for proper parentId support)
+        comments_data = await self._fetch_issue_comments_with_pagination(issue_id)
 
         # Get project ID from record group
         project_id = record.external_record_group_id or ""
@@ -3891,14 +4250,6 @@ class JiraConnector(BaseConnector):
         Jira inline media (images in description/comments) reference attachments
         on the issue. Per Jira API, media.attrs.id in ADF IS the attachment ID,
         so we first try direct lookup by media_id, then fall back to filename matching.
-
-        Args:
-            issue_id: The issue ID containing the attachment
-            media_id: The media ID from ADF (should match attachment ID)
-            media_alt: The alt text/filename for fallback matching
-
-        Returns:
-            Base64 data URI string like "data:image/png;base64,..." or None
         """
         try:
             # Get issue attachments (cached per issue to avoid repeated calls)
@@ -4384,6 +4735,23 @@ class JiraConnector(BaseConnector):
             # Get project info
             project = fields.get("project", {})
             project_id = project.get("id", "")
+            project_key = project.get("key", "")
+
+            # Fetch security level permissions if the issue has a security field
+            security_level_id = issue_data.get("security_level_id")
+            permissions = []
+            if security_level_id and project_key:
+                project_security_scheme_id = await self._get_project_security_scheme_id(project_key)
+                if project_security_scheme_id:
+                    permissions = await self._fetch_security_level_permissions(
+                        project_key=project_key,
+                        security_level_id=security_level_id,
+                        project_security_scheme_id=project_security_scheme_id,
+                        assignee_email=issue_data.get("assignee_email"),
+                        reporter_email=issue_data.get("reporter_email"),
+                        assignee_account_id=issue_data.get("assignee_account_id"),
+                        reporter_account_id=issue_data.get("reporter_account_id")
+                    )
 
             # Increment version
             version = record.version + 1 if hasattr(record, 'version') else 1
@@ -4424,9 +4792,6 @@ class JiraConnector(BaseConnector):
                 parent_node_id=None,  # Tickets have no parent node
             )
 
-            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
-            permissions = []
-
             return (issue_record, permissions)
 
         except Exception as e:
@@ -4461,11 +4826,10 @@ class JiraConnector(BaseConnector):
                 return None
 
             # Get parent ticket's internal record ID
-            async with self.data_store_provider.transaction() as tx_store:
-                parent_ticket_record = await tx_store.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=issue_id
-                )
+            parent_ticket_record = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id,
+                external_record_id=issue_id
+            )
             parent_node_id = parent_ticket_record.id if parent_ticket_record else None
 
             # Fetch issue to get attachment metadata
@@ -4488,6 +4852,7 @@ class JiraConnector(BaseConnector):
             issue_key = issue_data.get("key")  # Fallback to None if key not found
             fields = issue_data.get("fields", {})
             attachments = fields.get("attachment", [])
+            project_key = fields.get("project", {}).get("key", "")
 
             # Find the specific attachment
             attachment_data = None
@@ -4544,8 +4909,28 @@ class JiraConnector(BaseConnector):
                 skip_filter_check=True,
             )
 
-            # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
+            # Attachments inherit the same security level permissions as their parent issue
             permissions = []
+            security_obj = fields.get("security")
+            security_level_id = security_obj.get("id") if security_obj else None
+            if security_level_id and project_key:
+                project_security_scheme_id = await self._get_project_security_scheme_id(project_key)
+                if project_security_scheme_id:
+                    assignee = fields.get("assignee") or {}
+                    reporter = fields.get("reporter") or {}
+                    assignee_email = assignee.get("emailAddress")
+                    reporter_email = reporter.get("emailAddress")
+                    assignee_account_id = assignee.get("accountId")
+                    reporter_account_id = reporter.get("accountId")
+                    permissions = await self._fetch_security_level_permissions(
+                        project_key=project_key,
+                        security_level_id=security_level_id,
+                        project_security_scheme_id=project_security_scheme_id,
+                        assignee_email=assignee_email,
+                        reporter_email=reporter_email,
+                        assignee_account_id=assignee_account_id,
+                        reporter_account_id=reporter_account_id
+                    )
 
             return (attachment_record, permissions)
 
