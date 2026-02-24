@@ -142,6 +142,7 @@ RUN apt-get update && \
     echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends cypher-shell && \
+    apt-get purge -y --auto-remove gnupg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 

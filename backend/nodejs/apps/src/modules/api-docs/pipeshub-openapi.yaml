@@ -277,6 +277,17 @@ tags:
       These endpoints allow dynamic reloading of SMTP configuration without service restart.
       Requires scoped token with `fetch:config` scope.
 
+  # Slack Integration
+  - name: Slack Events Proxy
+    description: |
+      Reverse proxy endpoint that forwards Slack Events API requests to the internal Slack bot service.
+
+      This endpoint is mounted at the application root (outside `/api/v1`) so that it matches the
+      webhook URL registered with Slack. Incoming requests are forwarded as-is to the Slack bot
+      microservice running on a configurable port (default 3020).
+
+      **Authentication:** None — Slack request signatures are verified by the downstream Slack bot service.
+
   # ==================== INTERNAL PIPESHUB MICROSERVICES ====================
   # IMPORTANT: These are INTERNAL services used for service-to-service communication
   # within PipesHub. They are NOT meant for direct external access.
@@ -19701,6 +19712,66 @@ paths:
             <li>etcd connection failure</li>
             <li>Invalid configuration format</li>
             </ul>
+
+  # ==================== SLACK EVENTS PROXY ENDPOINT ====================
+  /slack/events:
+    post:
+      tags:
+        - Slack Events Proxy
+      summary: Proxy Slack Events API requests to the Slack bot service
+      description: |
+        Reverse proxy that forwards incoming Slack Events API HTTP requests to the
+        internal Slack bot microservice.
+
+        <b>Service:</b> Main Node.js API (proxy)<br>
+        <b>Downstream:</b> Slack Bot Service on port 3020 (configurable via <code>SLACK_BOT_PORT</code>)<br><br>
+
+        Slack sends the following types of payloads to this endpoint:<br>
+        <ul>
+        <li><b>URL Verification</b> — <code>{"type":"url_verification","challenge":"..."}</code></li>
+        <li><b>Event Callbacks</b> — messages, reactions, app mentions, etc.</li>
+        <li><b>Interactive Payloads</b> — button clicks, modal submissions, shortcuts</li>
+        </ul>
+
+        <b>Authentication:</b> No application-level auth is required. The downstream
+        Slack bot service validates the <code>X-Slack-Signature</code> header using
+        the Slack signing secret.
+      operationId: slackEventsProxy
+      security: []
+      servers:
+        - url: /
+          description: Application root (outside /api/v1)
+      requestBody:
+        required: true
+        description: Raw Slack event payload forwarded as-is to the Slack bot service
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  description: "Event envelope type (e.g. url_verification, event_callback)"
+                  example: event_callback
+                challenge:
+                  type: string
+                  description: "Challenge string for URL verification (present only when type is url_verification)"
+                event:
+                  type: object
+                  description: "The event payload (present only when type is event_callback)"
+      responses:
+        '200':
+          description: Request successfully proxied to the Slack bot service
+        '502':
+          description: Slack bot service is unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    example: Slack bot service unavailable
 
   # ==================== INTERNAL PYTHON MICROSERVICE ENDPOINTS ====================
   #
