@@ -13116,6 +13116,38 @@ paths:
         '502':
           description: AI backend service unavailable
 
+  /conversations/internal/stream:
+    post:
+      tags:
+        - Conversations
+      summary: Create conversation with streaming response (internal)
+      description: |
+        Internal service-to-service variant of <code>/conversations/stream</code>.<br><br>
+        Uses scoped token authentication and streams AI responses via SSE.
+      operationId: streamChatInternal
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateConversationRequest'
+      responses:
+        '200':
+          description: SSE stream established
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SSEEvent'
+        '400':
+          description: Invalid request parameters
+        '401':
+          description: Unauthorized - Valid scoped token required
+        '502':
+          description: AI backend service unavailable
+
   /conversations:
     get:
       tags:
@@ -13396,6 +13428,43 @@ paths:
                 $ref: '#/components/schemas/SSEEvent'
         '401':
           description: Unauthorized
+        '404':
+          description: Conversation not found
+
+  /conversations/internal/{conversationId}/messages/stream:
+    post:
+      tags:
+        - Conversations
+      summary: Add message with streaming response (internal)
+      description: |
+        Internal service-to-service variant of <code>/conversations/{conversationId}/messages/stream</code>.<br><br>
+        Adds a follow-up message and streams the AI response via SSE using scoped token authentication.
+      operationId: addMessageStreamInternal
+      security:
+        - scopedToken: []
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+      requestBody:
+        required: true
+        description: "Request payload"
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddMessageRequest'
+      responses:
+        '200':
+          description: SSE stream established
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/SSEEvent'
+        '401':
+          description: Unauthorized - Valid scoped token required
         '404':
           description: Conversation not found
 

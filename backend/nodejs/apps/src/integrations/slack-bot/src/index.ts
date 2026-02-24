@@ -498,8 +498,9 @@ async function processSlackMessage(
     };
 
     await new Promise<void>((resolve, reject) => {
-      responseStream.on("data", (chunk: Buffer | string) => {
-        sseBuffer += chunk.toString();
+      responseStream.setEncoding("utf8");
+      responseStream.on("data", (chunk: string) => {
+        sseBuffer += chunk;
         const { events, remainder } = parseSSEEvents(sseBuffer);
         sseBuffer = remainder;
 
