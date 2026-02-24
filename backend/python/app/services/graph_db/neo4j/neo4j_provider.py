@@ -6623,10 +6623,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "reason": f"Unsupported record origin: {origin}"
                 }
 
-            # Reset indexing status to QUEUED before reindexing
-            await self._reset_indexing_status_to_queued(record_id)
-
-            # Create event data for router to publish
+            # Create event data for router to publish (router sets indexing status to QUEUED after successful publish)
             try:
                 # KB records should always use record-events, not sync-events
                 # They don't need connector-based batch reindexing
@@ -9131,6 +9128,7 @@ class Neo4jProvider(IGraphDBProvider):
                 record_data.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
                 record_data.setdefault("lastSyncTimestamp", timestamp)
                 record_data.setdefault("isVLMOcrProcessed", False)
+                record_data.setdefault("indexingStatus", "NOT_STARTED")
                 record_data.setdefault("extractionStatus", "NOT_STARTED")
                 record_data.setdefault("isLatestVersion", True)
                 record_data.setdefault("isDirty", False)

@@ -1394,9 +1394,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             else:
                 return {"success": False, "code": 400, "reason": f"Unsupported record origin: {origin}"}
 
-            await self._reset_indexing_status_to_queued(record_id)
-
-            # Create event data for router to publish
+            # Create event data for router to publish (router sets indexing status to QUEUED after successful publish)
             try:
                 # KB records should always use record-events, not sync-events
                 # They don't need connector-based batch reindexing
@@ -11324,6 +11322,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             record.setdefault("connectorName", Connectors.KNOWLEDGE_BASE.value)
             record.setdefault("lastSyncTimestamp", timestamp)
             record.setdefault("isVLMOcrProcessed", False)
+            record.setdefault("indexingStatus", "NOT_STARTED")
             record.setdefault("extractionStatus", "NOT_STARTED")  # Files need extraction, unlike folders
             record.setdefault("isLatestVersion", True)
             record.setdefault("isDirty", False)

@@ -1190,7 +1190,7 @@ async def reindex_single_record(
         )
 
         if result["success"]:
-            # Publish event in router
+            # Publish event in router; only set indexing status to QUEUED after successful publish
             event_data = result.get("eventData")
             if event_data:
                 try:
@@ -1202,6 +1202,14 @@ async def reindex_single_record(
                     }
                     await kafka_service.publish_event(event_data["topic"], event)
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                    try:
+                        await graph_provider.update_node(
+                            record_id,
+                            CollectionNames.RECORDS.value,
+                            {"indexingStatus": "QUEUED"},
+                        )
+                    except Exception as status_err:
+                        logger.warning("Failed to set QUEUED for record %s after publish: %s", record_id, status_err)
                 except Exception as e:
                     logger.error(f"❌ Failed to publish event: {str(e)}")
 
