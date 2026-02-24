@@ -135,6 +135,16 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Neo4j Cypher Shell
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gnupg && \
+    curl -fsSL https://debian.neo4j.com/neotechnology.gpg.key | gpg --dearmor -o /usr/share/keyrings/neo4j.gpg && \
+    echo "deb [signed-by=/usr/share/keyrings/neo4j.gpg] https://debian.neo4j.com stable latest" > /etc/apt/sources.list.d/neo4j.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends cypher-shell && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
+
 # -----------------------------------------------------------------------------
 # Stage 6: Final Runtime Image
 # -----------------------------------------------------------------------------
@@ -174,6 +184,7 @@ NODEJS_PORT=${NODEJS_PORT:-3000}
 
 # PIDs of child processes
 NODEJS_PID=""
+SLACKBOT_PID=""
 DOCLING_PID=""
 INDEXING_PID=""
 CONNECTOR_PID=""
@@ -209,6 +220,18 @@ start_nodejs() {
         log "ERROR: Node.js health check failed after $MAX_RETRIES attempts"
         return 1
     fi
+}
+
+start_slackbot() {
+    if [ -z "$SLACK_SIGNING_SECRET" ] || [ -z "$BOT_TOKEN" ]; then
+        log "Slack bot not configured (SLACK_SIGNING_SECRET or BOT_TOKEN not set), skipping..."
+        return 0
+    fi
+    log "Starting Slack Bot service..."
+    cd /app/backend
+    node dist/integrations/slack-bot/src/index.js &
+    SLACKBOT_PID=$!
+    log "Slack Bot started with PID: $SLACKBOT_PID"
 }
 
 start_docling() {
@@ -278,6 +301,7 @@ cleanup() {
     log "Shutting down all services..."
     
     [ -n "$NODEJS_PID" ] && kill "$NODEJS_PID" 2>/dev/null || true
+    [ -n "$SLACKBOT_PID" ] && kill "$SLACKBOT_PID" 2>/dev/null || true
     [ -n "$DOCLING_PID" ] && kill "$DOCLING_PID" 2>/dev/null || true
     [ -n "$INDEXING_PID" ] && kill "$INDEXING_PID" 2>/dev/null || true
     [ -n "$CONNECTOR_PID" ] && kill "$CONNECTOR_PID" 2>/dev/null || true
@@ -292,6 +316,7 @@ trap cleanup SIGTERM SIGINT SIGQUIT
 
 log "=== Process Monitor Starting ==="
 start_nodejs
+start_slackbot
 start_connector
 start_indexing
 start_query
@@ -304,6 +329,10 @@ while true; do
     
     if ! check_process "$NODEJS_PID" "Node.js"; then
         start_nodejs
+    fi
+    
+    if [ -n "$SLACKBOT_PID" ] && ! check_process "$SLACKBOT_PID" "Slack Bot"; then
+        start_slackbot
     fi
     
     if ! check_process "$DOCLING_PID" "Docling"; then
@@ -326,6 +355,6 @@ EOF
 
 RUN chmod +x /app/process_monitor.sh
 
-EXPOSE 3000 8000 8088 8091 8081
+EXPOSE 3000
 
 CMD ["/app/process_monitor.sh"]

@@ -232,6 +232,10 @@ export class Application {
       // Initialize API Documentation
       this.apiDocsContainer = await ApiDocsContainer.initialize();
 
+      // Slack events proxy must be mounted before body-parsing middleware
+      // so the raw request body is forwarded intact for signature verification
+      this.setupSlackEventsProxy();
+
       // Configure Express
       this.configureMiddleware(appConfig);
       this.configureRoutes();
@@ -591,6 +595,37 @@ export class Application {
     } else {
       logger.info('KV store migration not needed (already completed or etcd not available)');
     }
+  }
+
+  private setupSlackEventsProxy(): void {
+    const slackBotPort = parseInt(process.env.SLACK_BOT_PORT || '3020', 10);
+
+    this.app.use('/slack/events', (req, res) => {
+      const proxyReq = http.request(
+        {
+          hostname: 'localhost',
+          port: slackBotPort,
+          path: '/slack/events',
+          method: req.method,
+          headers: req.headers,
+        },
+        (proxyRes) => {
+          res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+          proxyRes.pipe(res);
+        },
+      );
+
+      proxyReq.on('error', (err) => {
+        this.logger.error('Slack events proxy error', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (!res.headersSent) {
+          res.status(502).json({ error: 'Slack bot service unavailable' });
+        }
+      });
+
+      req.pipe(proxyReq);
+    });
   }
 
   async addOAuthServicesToAuthMiddleware(): Promise<void> {
