@@ -51,6 +51,10 @@ import {
   getAvailablePlatformFeatureFlags,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
+  getSlackBotConfigs,
+  createSlackBotConfig,
+  updateSlackBotConfig,
+  deleteSlackBotConfig,
 } from '../controller/cm_controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -76,6 +80,9 @@ import {
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
   sharepointCredentialsSchema,
+  createSlackBotConfigSchema,
+  updateSlackBotConfigSchema,
+  deleteSlackBotConfigSchema,
 } from '../validator/validators';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
 import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.constant';
@@ -469,6 +476,48 @@ export function createConfigurationManagerRouter(container: Container): Router {
     userAdminCheck,
     metricsMiddleware(container),
     getAvailablePlatformFeatureFlags(),
+  );
+
+  // Slack Bot configuration
+  router.get(
+    '/slack-bot',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    getSlackBotConfigs(keyValueStoreService),
+  );
+  router.get(
+    '/internal/slack-bot',
+    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
+    metricsMiddleware(container),
+    getSlackBotConfigs(keyValueStoreService),
+  );
+
+  router.post(
+    '/slack-bot',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(createSlackBotConfigSchema),
+    createSlackBotConfig(keyValueStoreService),
+  );
+
+  router.put(
+    '/slack-bot/:configId',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(updateSlackBotConfigSchema),
+    updateSlackBotConfig(keyValueStoreService),
+  );
+
+  router.delete(
+    '/slack-bot/:configId',
+    authMiddleware.authenticate,
+    userAdminCheck,
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(deleteSlackBotConfigSchema),
+    deleteSlackBotConfig(keyValueStoreService),
   );
 
   // Custom System Prompt routes

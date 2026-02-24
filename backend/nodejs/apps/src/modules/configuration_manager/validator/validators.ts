@@ -9,6 +9,13 @@ export const baseStorageSchema = z.object({
   ]),
 });
 
+const slackBotConfigBodySchema = z.object({
+  name: z.string().trim().min(1, { message: 'Slack Bot name is required' }),
+  botToken: z.string().trim().min(1, { message: 'Bot token is required' }),
+  signingSecret: z.string().trim().min(1, { message: 'Signing secret is required' }),
+  agentId: z.string().trim().min(1, { message: 'Agent ID is required' }),
+});
+
 export const s3ConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.S3),
   s3AccessKeyId: z.string().min(1, { message: 'S3 access key ID is required' }),
@@ -200,6 +207,25 @@ export const platformSettingsSchema = z.object({
       .record(z.boolean())
       .default({})
       .describe('Feature flags map, e.g., { ENABLE_WORKFLOW_BUILDER: true }'),
+  }),
+});
+
+
+
+export const createSlackBotConfigSchema = z.object({
+  body: slackBotConfigBodySchema,
+});
+
+export const updateSlackBotConfigSchema = z.object({
+  params: z.object({
+    configId: z.string().min(1, { message: 'Config ID is required' }),
+  }),
+  body: slackBotConfigBodySchema,
+});
+
+export const deleteSlackBotConfigSchema = z.object({
+  params: z.object({
+    configId: z.string().min(1, { message: 'Config ID is required' }),
   }),
 });
 
