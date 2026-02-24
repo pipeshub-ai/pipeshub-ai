@@ -1572,7 +1572,6 @@ class IGraphDBProvider(ABC):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        collection: str,
         transaction: Optional[str] = None,
     ) -> bool:
         """Delete PARENT_CHILD edge from parent to record."""

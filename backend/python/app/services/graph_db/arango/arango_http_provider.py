@@ -15867,7 +15867,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def delete_parent_child_edge_to_record(
         self,
         record_id: str,
-        collection: str,
         transaction: Optional[str] = None
     ) -> int:
         """
@@ -15894,7 +15893,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 query,
                 bind_vars={
                     "record_id": record_id,
-                    "@record_relations": collection,
+                    "@record_relations": CollectionNames.RECORD_RELATIONS.value,
                 },
                 txn_id=transaction
             )
