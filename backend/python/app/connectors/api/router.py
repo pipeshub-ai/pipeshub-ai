@@ -5419,7 +5419,7 @@ async def delete_connector_instance(
         # 7. Clean up connector credentials from etcd/config store
         try:
             config_service = container.config_service()
-            config_path = f"connectors/{connector_id}"
+            config_path = _get_config_path_for_instance(connector_id)
             await config_service.delete_config(config_path)
             logger.info(f"✅ Deleted config for connector {connector_id}")
         except Exception as e:
