@@ -149,8 +149,23 @@ class RecordEventHandler(BaseEventService):
             if virtual_record_id is None:
                 virtual_record_id = record.get("virtualRecordId")
 
-            if event_type == EventTypes.UPDATE_RECORD.value:
-                await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
+            #Reconciliation
+            if event_type == EventTypes.UPDATE_RECORD.value or event_type == EventTypes.REINDEX_RECORD.value:
+                from app.config.constants.arangodb import (
+                    RECONCILIATION_ENABLED_EXTENSIONS,
+                    RECONCILIATION_ENABLED_MIME_TYPES,
+                )
+                is_reconciliation_type = (
+                    mime_type in RECONCILIATION_ENABLED_MIME_TYPES
+                    or extension in RECONCILIATION_ENABLED_EXTENSIONS
+                )
+                if is_reconciliation_type:
+                    self.logger.info(
+                        f"📊 Reconciliation-enabled type detected for record {record_id}, "
+                        f"skipping full embedding deletion"
+                    )
+                else:
+                    await self.event_processor.processor.indexing_pipeline.delete_embeddings(record_id, virtual_record_id)
 
             doc = dict(record)
 
@@ -237,6 +252,8 @@ class RecordEventHandler(BaseEventService):
                 MimeTypes.PPT.value,
                 MimeTypes.MDX.value,
                 MimeTypes.TSV.value,
+                MimeTypes.SQL_TABLE.value,
+                MimeTypes.SQL_VIEW.value,
             ]
 
             supported_extensions = [
@@ -258,6 +275,8 @@ class RecordEventHandler(BaseEventService):
                 ExtensionTypes.WEBP.value,
                 ExtensionTypes.SVG.value,
                 ExtensionTypes.TSV.value,
+                ExtensionTypes.SQL_TABLE.value,
+                ExtensionTypes.SQL_VIEW.value,
             ]
 
             if (
@@ -397,8 +416,6 @@ class RecordEventHandler(BaseEventService):
                 if record is None:
                     self.logger.warning(f"Record {record_id} not found in database")
                     return
-
-
 
                 indexing_status = record.get("indexingStatus")
                 virtual_record_id = record.get("virtualRecordId")
