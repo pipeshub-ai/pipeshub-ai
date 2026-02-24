@@ -137,11 +137,27 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
             pat_token: Personal Access Token for authentication
             timeout: Request timeout in seconds
         """
-        # Snowflake PAT uses "Snowflake Token" as the auth scheme
-        super().__init__(token=pat_token, token_type="Snowflake Token", timeout=timeout)
+        logger.debug(f"🔧 [PAT] SnowflakeRESTClientViaPAT.__init__ called")
+        logger.debug(f"🔧 [PAT] account_identifier: '{account_identifier}'")
+        logger.debug(f"🔧 [PAT] pat_token (first 10 chars): '{pat_token[:10] if pat_token else 'None'}...'")
+        logger.debug(f"🔧 [PAT] timeout: {timeout}")
+        
+        # Initialize with PAT token using Bearer format
+        # When using X-Snowflake-Authorization-Token-Type header, Snowflake expects Bearer format
+        # See: https://docs.snowflake.com/en/user-guide/programmatic-access-tokens
+        super().__init__(token=pat_token, token_type="Bearer", timeout=timeout)
+        
+        # Required header for PAT authentication with REST API v2
+        # This tells Snowflake the type of token being used
+        self.headers["X-Snowflake-Authorization-Token-Type"] = "PROGRAMMATIC_ACCESS_TOKEN"
+        
         self.account_identifier = account_identifier
         self.pat_token = pat_token
         self._base_url = self._build_base_url(account_identifier)
+        
+        logger.debug(f"🔧 [PAT] Final headers: {self.headers}")
+        logger.debug(f"🔧 [PAT] Final base_url: '{self._base_url}'")
+        logger.info(f"🔧 [PAT] SnowflakeRESTClientViaPAT initialized successfully with base_url: '{self._base_url}'")
 
     @staticmethod
     def _build_base_url(account_identifier: str) -> str:
@@ -154,18 +170,24 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         Returns:
             Base URL for Snowflake SQL API
         """
+        logger.debug(f"🔧 [PAT] _build_base_url called with account_identifier: '{account_identifier}'")
+        
         # Parse the account identifier as a URL
         parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
+        logger.debug(f"🔧 [PAT] Parsed URL: scheme='{parsed.scheme}', netloc='{parsed.netloc}', path='{parsed.path}'")
 
         # Extract the account name from netloc
         netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+        logger.debug(f"🔧 [PAT] Extracted netloc: '{netloc}'")
 
         # Remove the .snowflakecomputing.com suffix if present
         if netloc.endswith(".snowflakecomputing.com"):
             account = netloc[:-len(".snowflakecomputing.com")]
+            logger.debug(f"🔧 [PAT] Removed .snowflakecomputing.com suffix, account: '{account}'")
         else:
             # If no suffix, assume netloc is the account name
             account = netloc
+            logger.debug(f"🔧 [PAT] No .snowflakecomputing.com suffix found, using netloc as account: '{account}'")
 
         # Build the base URL using urlunparse for proper URL construction
         base_url = urlunparse((
@@ -176,14 +198,17 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
             "",
             ""
         ))
+        logger.debug(f"🔧 [PAT] Built base_url: '{base_url}'")
         return base_url
 
     def get_base_url(self) -> str:
         """Get the base URL for Snowflake API."""
+        logger.debug(f"🔧 [PAT] get_base_url() returning: '{self._base_url}'")
         return self._base_url
 
     def get_account_identifier(self) -> str:
         """Get the Snowflake account identifier."""
+        logger.debug(f"🔧 [PAT] get_account_identifier() returning: '{self.account_identifier}'")
         return self.account_identifier
 
 
@@ -348,17 +373,25 @@ class SnowflakeClient(IClient):
             ValueError: If configuration is missing or invalid
         """
         try:
+            logger.debug(f"🔧 [SnowflakeClient] build_from_services called with connector_instance_id: {connector_instance_id}")
+            
             config_dict = await cls._get_connector_config(
                 logger, config_service, connector_instance_id
             )
+            logger.debug(f"🔧 [SnowflakeClient] Raw config_dict keys: {list(config_dict.keys()) if config_dict else 'None'}")
+            logger.debug(f"🔧 [SnowflakeClient] Raw config_dict: {config_dict}")
 
             config = SnowflakeConnectorConfig.model_validate(config_dict)
+            logger.debug(f"🔧 [SnowflakeClient] Validated config - accountIdentifier: '{config.accountIdentifier}'")
+            logger.debug(f"🔧 [SnowflakeClient] Validated config - auth.authType: '{config.auth.authType}'")
+            logger.debug(f"🔧 [SnowflakeClient] Validated config - timeout: {config.timeout}")
 
             auth_type = config.auth.authType
             account_identifier = config.accountIdentifier
             timeout = config.timeout
 
             if auth_type == AuthType.OAUTH:
+                logger.debug(f"🔧 [SnowflakeClient] Using OAuth authentication")
                 if not config.credentials or not config.credentials.access_token:
                     raise ValueError("OAuth access token required for OAuth auth type")
                 client = SnowflakeRESTClientViaOAuth(
@@ -368,6 +401,8 @@ class SnowflakeClient(IClient):
                 )
 
             elif auth_type == AuthType.PAT:
+                logger.debug(f"🔧 [SnowflakeClient] Using PAT authentication")
+                logger.debug(f"🔧 [SnowflakeClient] patToken present: {bool(config.auth.patToken)}")
                 if not config.auth.patToken:
                     raise ValueError("PAT token required for PAT auth type")
                 client = SnowflakeRESTClientViaPAT(
@@ -379,6 +414,7 @@ class SnowflakeClient(IClient):
             else:
                 raise ValueError(f"Unsupported auth type: {auth_type}")
 
+            logger.info(f"🔧 [SnowflakeClient] Successfully built client with base_url: '{client.get_base_url()}'")
             return cls(client=client)
 
         except ValidationError as e:

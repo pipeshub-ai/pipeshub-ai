@@ -1,8 +1,8 @@
 from datetime import datetime
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Union
 from uuid import uuid4
-
+import hashlib
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
 if TYPE_CHECKING:
@@ -39,6 +39,22 @@ class BlockType(str, Enum):
     HEADING = "heading"
     QUOTE = "quote"
     DIVIDER = "divider"
+    VIEW = "view"
+    SQL = "sql"
+
+
+
+class BlockSubType(str, Enum):
+    CHILD_RECORD = "child_record"
+    COMMENT = "comment"
+    PARAGRAPH = "paragraph"
+    HEADING = "heading"
+    QUOTE = "quote"
+    LIST_ITEM = "list_item"
+    CODE = "code"
+    EQUATION = "equation"
+    DIVIDER = "divider"
+    LINK = "link"
 
 class BlockSubType(str, Enum):
     CHILD_RECORD = "child_record"
@@ -63,6 +79,7 @@ class DataFormat(str, Enum):
     YAML = "yaml"
     BASE64 = "base64"
     UTF8 = "utf8"
+
 
 class CommentAttachment(BaseModel):
     """Attachment model for comments"""
@@ -228,6 +245,7 @@ class GroupType(str, Enum):
     COLUMN = "column"
     COLUMN_LIST = "column_list"
 
+    VIEW = "view"
     # Do not use these types as currently not supported
     CODE = "code"
     MEDIA = "media"
@@ -247,6 +265,8 @@ class GroupSubType(str, Enum):
     QUOTE = "quote"
     SYNCED_BLOCK = "synced_block"
     NESTED_BLOCK = "nested_block"  # Generic wrapper for blocks with children
+    SQL_TABLE = "sql_table" 
+    SQL_VIEW = "sql_view"
 
 class SemanticMetadata(BaseModel):
     entities: Optional[List[Dict[str, Any]]] = None
@@ -312,6 +332,8 @@ class Block(BaseModel):
     image_metadata: Optional[ImageMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
     children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block")
+    content_hash: Optional[str] = Field(default=None, description="Hash of the content")
+    
 
 class Blocks(BaseModel):
     blocks: List[Block] = Field(default_factory=list)
@@ -432,6 +454,8 @@ class BlockGroup(BaseModel):
     link_metadata: Optional[LinkMetadata] = None
     semantic_metadata: Optional[SemanticMetadata] = None
     children_records: Optional[List[ChildRecord]] = Field(default=None, description="List of child records associated with this block group")
+    content_hash: Optional[str] = Field(default=None, description="Hash of the content for reconciliation")
+    #Check for Changes !!!
     children: Optional[BlockGroupChildren] = None
     data: Optional[Any] = None
 

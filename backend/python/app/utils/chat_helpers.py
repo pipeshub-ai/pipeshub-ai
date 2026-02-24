@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from jinja2 import Template
 
+from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.models.blocks import BlockType, GroupType, SemanticMetadata
 from app.models.entities import (
@@ -52,7 +53,7 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
 
     Args:
         record_dict: Dictionary with record data from blob storage
-        graph_doc: Optional dictionary with type-specific data from ArangoDB collection
+        graph_doc: Optional dictionary with type-specific data from graph DB
 
     Returns:
         Record subclass instance or None
@@ -157,6 +158,290 @@ def create_record_instance_from_dict(record_dict: Dict[str, Any], graph_doc: Opt
         logger.error(f"Error creating record instance: {str(e)}")
         return None
 
+
+async def enrich_virtual_record_id_to_result_with_fk_children(
+    virtual_record_id_to_result: Dict[str, Dict[str, Any]],
+    blob_store: BlobStorage,
+    org_id: str,
+    graph_provider: Optional[IGraphDBProvider] = None,
+    flattened_results: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    """
+    For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
+    (FK-related tables) or parent tables (via FK edges), fetch their full blob and add 
+    to virtual_record_id_to_result. Also adds DDL block_group to flattened_results
+    so the agent context includes DDL for FK-related tables.
+    
+    Additionally, enriches flattened_results with fk_parent_relations and fk_child_relations
+    (each containing record_id, table name, source column, and target column metadata)
+    so the agent knows which related tables it can fetch via tools.
+
+    Field naming conventions:
+    - Graph DB (ArangoDB) returns camelCase: recordName, recordType, webUrl, hideWeburl, etc.
+    - Blob storage returns snake_case (Pydantic model_dump): record_name, record_type, weburl, etc.
+    - After graph_rec merge, rec dict is normalized to snake_case keys.
+    - Metadata dicts sent to the frontend use camelCase (virtualRecordId, recordName, webUrl, etc.).
+    """
+    if not graph_provider:
+        logger.debug("FK enrichment skipped: no graph_provider provided")
+        return
+    
+    from app.config.constants.arangodb import RecordRelations
+    
+    related_record_ids = set()
+    sql_table_record_ids = []
+    record_id_to_fk_relations: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    
+    flattened_len_before = len(flattened_results) if flattened_results is not None else 0
+    logger.debug(
+        "FK enrichment: checking %d records; flattened_results=%d items",
+        len(virtual_record_id_to_result),
+        flattened_len_before,
+    )
+    if flattened_results is None:
+        logger.warning("FK enrichment: flattened_results is None - FK DDL blocks will not be added to context")
+
+    # Build mapping of vrid -> record_id for existing SQL_TABLE records
+    # Records come from get_record() which normalizes to snake_case via graphDb_record merge
+    vrid_to_record_id: Dict[str, str] = {}
+    for vrid, record in virtual_record_id_to_result.items():
+        if not record or not isinstance(record, dict):
+            continue
+        if record.get("record_type") != "SQL_TABLE":
+            continue
+        record_id = record.get("id")
+        if record_id:
+            sql_table_record_ids.append(record_id)
+            vrid_to_record_id[vrid] = record_id
+            logger.debug("FK enrichment: found SQL_TABLE record_id=%s, vrid=%s, name=%s", 
+                        record_id, vrid, record.get("record_name"))
+    
+    logger.debug("FK enrichment: found %d SQL_TABLE records to check for FK relations", len(sql_table_record_ids))
+    
+    # Query both child and parent tables via FK edges
+    for record_id in sql_table_record_ids:
+        child_relations = []
+        parent_relations = []
+        
+        try:
+            child_relations = await graph_provider.get_child_record_ids_by_relation_type(
+                record_id, RecordRelations.FOREIGN_KEY.value
+            )
+            logger.debug("FK enrichment: record %s has %d child tables", record_id, len(child_relations))
+            for rel in child_relations:
+                if rel.get("record_id"):
+                    related_record_ids.add(rel["record_id"])
+        except Exception as e:
+            logger.warning("Could not fetch child record IDs for %s: %s", record_id, str(e))
+        
+        try:
+            parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
+                record_id, RecordRelations.FOREIGN_KEY.value
+            )
+            logger.debug("FK enrichment: record %s has %d parent tables", record_id, len(parent_relations))
+            for rel in parent_relations:
+                if rel.get("record_id"):
+                    related_record_ids.add(rel["record_id"])
+        except Exception as e:
+            logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
+        
+        record_id_to_fk_relations[record_id] = {
+            "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
+            "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
+        }
+    
+    logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
+    
+    # Enrich existing flattened_results with FK relations
+    if flattened_results is not None:
+        for result in flattened_results:
+            vrid = result.get("virtual_record_id")
+            if not vrid or vrid not in vrid_to_record_id:
+                continue
+            record_id = vrid_to_record_id[vrid]
+            if record_id not in record_id_to_fk_relations:
+                continue
+            fk_relations = record_id_to_fk_relations[record_id]
+            result["fk_parent_relations"] = fk_relations["parents"]
+            result["fk_child_relations"] = fk_relations["children"]
+            if result.get("metadata"):
+                result["metadata"]["fk_parent_relations"] = fk_relations["parents"]
+                result["metadata"]["fk_child_relations"] = fk_relations["children"]
+    
+    if not related_record_ids:
+        return
+    
+    record_id_to_vrid = await graph_provider.get_virtual_record_ids_for_record_ids(list(related_record_ids))
+    logger.debug("FK enrichment: resolved %d record_ids to virtual_record_ids", len(record_id_to_vrid))
+    
+    # Build set of vrids already in flattened_results
+    vrids_in_flattened = set()
+    if flattened_results is not None:
+        vrids_in_flattened = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
+    
+    for record_id, vrid in record_id_to_vrid.items():
+        already_in_flattened = vrid in vrids_in_flattened
+        
+        if vrid in virtual_record_id_to_result:
+            rec = virtual_record_id_to_result[vrid]
+            if already_in_flattened:
+                continue
+        else:
+            try:
+                # Blob returns snake_case keys (Pydantic model_dump)
+                rec = await blob_store.get_record_from_storage(virtual_record_id=vrid, org_id=org_id)
+                if not rec:
+                    logger.warning("FK enrichment: could not fetch blob for vrid %s", vrid)
+                    virtual_record_id_to_result[vrid] = None
+                    continue
+                # Graph DB returns camelCase — normalize to snake_case on rec
+                try:
+                    graph_rec = await graph_provider.get_document(
+                        record_id, CollectionNames.RECORDS.value
+                    )
+                    if graph_rec and isinstance(graph_rec, dict):
+                        rec["id"] = record_id
+                        rec["record_name"] = graph_rec.get("recordName") or rec.get("record_name", "")
+                        rec["record_type"] = graph_rec.get("recordType") or rec.get("record_type", "")
+                        rec["origin"] = graph_rec.get("origin") or rec.get("origin", "")
+                        rec["connector_name"] = graph_rec.get("connectorName") or rec.get("connector_name", "")
+                        rec["mime_type"] = graph_rec.get("mimeType") or rec.get("mime_type", "")
+                        rec["weburl"] = graph_rec.get("webUrl") or rec.get("weburl", "")
+                        rec["hide_weburl"] = graph_rec.get("hideWeburl", False)
+                        rec["org_id"] = graph_rec.get("orgId") or rec.get("org_id", "")
+                except Exception as graph_e:
+                    logger.debug("FK enrichment: could not fetch graph metadata for record_id=%s: %s", record_id, graph_e)
+                virtual_record_id_to_result[vrid] = rec
+                logger.debug("FK enrichment: fetched blob for %s (record_id=%s)", rec.get("record_name"), record_id)
+            except Exception as e:
+                logger.debug("Could not fetch blob for FK related vrid %s: %s", vrid, str(e))
+                virtual_record_id_to_result[vrid] = None
+                continue
+        
+        if not rec:
+            continue
+        
+        # Add DDL block_group to flattened_results so it appears in agent context.
+        # After graph_rec merge above, all rec keys are snake_case.
+        # Blob uses: block_containers -> block_groups, blocks (snake_case).
+        if flattened_results is not None:
+            block_containers = rec.get("block_containers", {})
+            block_groups = block_containers.get("block_groups", [])
+            rec_name = rec.get("record_name", "")
+            if not block_groups:
+                logger.warning("FK enrichment: no block_groups for vrid=%s", vrid)
+            added = False
+            for bg_index, bg in enumerate(block_groups):
+                bg_type = bg.get("type", "")
+                if bg_type != BlockType.TABLE.value and bg_type != "table":
+                    continue
+                data = bg.get("data") or {}
+                if isinstance(data, dict):
+                    table_summary = data.get("table_summary", "")
+                    ddl = data.get("ddl", "")
+                    if ddl:
+                        table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                else:
+                    table_summary = str(data or "")
+                
+                # Extract first 2 sample rows
+                blocks = block_containers.get("blocks", [])
+                sample_rows = []
+                for block in blocks[:2]:
+                    if block.get("type") == "table_row":
+                        block_data = block.get("data", {})
+                        if isinstance(block_data, dict):
+                            row_text = block_data.get("row_natural_language_text", "")
+                            if row_text:
+                                sample_rows.append(row_text)
+                
+                if sample_rows:
+                    table_summary = f"{table_summary}\n\nSample Rows:\n" + "\n".join(sample_rows)
+                
+                # Get FK relations for this record if available, otherwise fetch them
+                fk_parent_relations = []
+                fk_child_relations = []
+                if record_id in record_id_to_fk_relations:
+                    fk_parent_relations = record_id_to_fk_relations[record_id]["parents"]
+                    fk_child_relations = record_id_to_fk_relations[record_id]["children"]
+                else:
+                    try:
+                        fk_child_relations = await graph_provider.get_child_record_ids_by_relation_type(
+                            record_id, RecordRelations.FOREIGN_KEY.value
+                        )
+                        fk_child_relations = list(fk_child_relations) if not isinstance(fk_child_relations, list) else fk_child_relations
+                    except Exception as e:
+                        logger.debug("Could not fetch child record IDs for %s: %s", record_id, str(e))
+                    try:
+                        fk_parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
+                            record_id, RecordRelations.FOREIGN_KEY.value
+                        )
+                        fk_parent_relations = list(fk_parent_relations) if not isinstance(fk_parent_relations, list) else fk_parent_relations
+                    except Exception as e:
+                        logger.debug("Could not fetch parent record IDs for %s: %s", record_id, str(e))
+                    record_id_to_fk_relations[record_id] = {
+                        "children": fk_child_relations,
+                        "parents": fk_parent_relations,
+                    }
+                    
+                
+                # Build flattened result entry
+                # rec keys are snake_case; metadata dict uses camelCase for frontend
+                flattened_results.append({
+                    "virtual_record_id": vrid,
+                    "record_id": record_id,
+                    "record_name": rec_name,
+                    "block_index": bg_index,
+                    "block_group_index": bg_index,
+                    "block_type": GroupType.TABLE.value,
+                    "content": (table_summary, []),
+                    "fk_parent_relations": fk_parent_relations,
+                    "fk_child_relations": fk_child_relations,
+                    "metadata": {
+                        "virtualRecordId": vrid,
+                        "blockIndex": bg_index,
+                        "isBlockGroup": True,
+                        "recordName": rec_name,
+                        "recordType": rec.get("record_type", ""),
+                        "source": "FK_ENRICHMENT",
+                        "fk_parent_relations": fk_parent_relations,
+                        "fk_child_relations": fk_child_relations,
+                        "origin": rec.get("origin", ""),
+                        "recordId": record_id,
+                        "mimeType": rec.get("mime_type", ""),
+                        "orgId": rec.get("org_id", ""),
+                        "connector": rec.get("connector_name", ""),
+                        "webUrl": rec.get("weburl", ""),
+                        "hideWeburl": rec.get("hide_weburl", False),
+                    },
+                })
+                logger.debug(
+                    "FK enrichment: added DDL block_group for %s to flattened_results (len now=%d)",
+                    rec_name or vrid,
+                    len(flattened_results),
+                )
+                added = True
+                break  # Only add the first table block_group (DDL)
+            if not added:
+                logger.warning(
+                    "FK enrichment: no table block_group found for vrid=%s (block_groups=%d)",
+                    vrid,
+                    len(block_groups),
+                )
+
+    if flattened_results is not None:
+        fk_count = sum(1 for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT")
+        logger.info(
+            "FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
+            flattened_len_before,
+            len(flattened_results),
+            fk_count,
+        )
+
+
+
+
+
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: Optional[IGraphDBProvider] = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
@@ -164,6 +449,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
+    # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
+    virtual_record_id_to_recon_metadata: Dict[str, Optional[Dict[str, Any]]] = {}
     if from_retrieval_service:
         new_type_results = result_set
     else:
@@ -176,7 +463,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 old_type_results.append(result)
 
     sorted_new_type_results = sorted(new_type_results, key=lambda x: not x.get("metadata", {}).get("isBlockGroup", False))
-    rows_to_be_included = defaultdict(list)
+    rows_to_be_included = defaultdict[Any, list](list)
 
     records_to_fetch = set()
     for result in sorted_new_type_results:
@@ -186,6 +473,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             records_to_fetch.add(virtual_record_id)
 
     # Fetch frontend URL once for all records
+    #!!!
     frontend_url = None
     try:
         endpoints_config = await blob_store.config_service.get_config(
@@ -198,18 +486,94 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         logger.warning(f"Failed to fetch frontend URL from config service: {str(e)}")
 
     await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url) for virtual_record_id in records_to_fetch])
+    #parallel prefetch for records and reconciliation metadata
+    vrids_needing_record: Dict[str, Dict[str, Any]] = {}  
+    vrids_needing_recon: set = set[Any]()
+
+    for result in sorted_new_type_results:
+        vrid = result["metadata"].get("virtualRecordId")
+        meta = result.get("metadata")
+        if vrid and vrid not in virtual_record_id_to_result and vrid not in vrids_needing_record:
+            vrids_needing_record[vrid] = meta
+        if meta.get("blockIndex") is None and meta.get("blockId") and vrid and vrid not in virtual_record_id_to_recon_metadata:
+            vrids_needing_recon.add(vrid)
+
+    async def _prefetch_record(vrid: str, meta: Dict[str, Any]):
+        await get_record(vrid, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
+
+    async def _prefetch_recon(vrid: str):
+        try:
+            recon = await blob_store.get_reconciliation_metadata(vrid, org_id)
+            virtual_record_id_to_recon_metadata[vrid] = recon
+        except Exception as e:
+            logger.warning("Failed to prefetch reconciliation metadata for %s: %s", vrid, str(e))
+            virtual_record_id_to_recon_metadata[vrid] = None
+
+    prefetch_tasks = []
+    for vrid, first_meta in vrids_needing_record.items():
+        prefetch_tasks.append(_prefetch_record(vrid, first_meta))
+    for vrid in vrids_needing_recon:
+        prefetch_tasks.append(_prefetch_recon(vrid))
+
+    if prefetch_tasks:
+        await asyncio.gather(*prefetch_tasks)
+    # --- End prefetch ---
 
     for result in sorted_new_type_results:
         virtual_record_id = result["metadata"].get("virtualRecordId")
-        if not virtual_record_id:
-            continue
         meta = result.get("metadata")
+
+        if virtual_record_id not in virtual_record_id_to_result:
+            # Fallback
+            await get_record(virtual_record_id, virtual_record_id_to_result, blob_store, org_id, virtual_to_record_map, graph_provider, frontend_url)
+
 
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
 
         index = meta.get("blockIndex")
         is_block_group = meta.get("isBlockGroup")
+        # Block groups from vectorstore use blockGroupIndex, not blockIndex (e.g. SQL/DDL tables)
+        # if index is None and is_block_group:
+        #     index = meta.get("blockGroupIndex")
+
+        # For reconciliation-enabled types (SQL_TABLE, SQL_VIEW), Qdrant stores blockId
+        # instead of blockIndex. Resolve blockId → index via reconciliation metadata.
+        if index is None:
+            block_id = meta.get("blockId")
+            if block_id:
+                if virtual_record_id not in virtual_record_id_to_recon_metadata:
+                    # Fallback: fetch inline if missed by prefetch (should be rare)
+                    try:
+                        recon_metadata = await blob_store.get_reconciliation_metadata(virtual_record_id, org_id)
+                        virtual_record_id_to_recon_metadata[virtual_record_id] = recon_metadata
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to fetch reconciliation metadata for %s: %s",
+                            virtual_record_id, str(e)
+                        )
+                        virtual_record_id_to_recon_metadata[virtual_record_id] = None
+
+                recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
+                if recon_metadata:
+                    block_id_to_index = recon_metadata.get("block_id_to_index", {})
+                    index_val = block_id_to_index.get(block_id)
+                    if index_val is not None:
+                        index = index_val if isinstance(index_val, int) else index_val.get("index")
+                        if index is not None:
+                            meta["blockIndex"] = index
+
+        # Skip if index is still None - cannot access blocks without a valid index
+        if index is None:
+            logger.warning(
+                f"Skipping result with None blockIndex - "
+                f"virtual_record_id: {virtual_record_id}, "
+                f"is_block_group: {is_block_group}, "
+                f"metadata keys: {list(meta.keys()) if meta else 'None'}, "
+                f"full metadata: {meta}"
+            )
+            continue
+            
         if is_block_group:
             chunk_id = f"{virtual_record_id}-{index}-block_group"
         else:
@@ -302,6 +666,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
                 table_summary = table_data.get("table_summary","")
+                ddl = table_data.get("ddl", "") or ""
+                if ddl:
+                    table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
 
                 if not is_large_table:
                     child_results=[]
@@ -375,7 +742,11 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         blocks = block_container.get("blocks",[])
         block_groups = block_container.get("block_groups",[])
         block_group = block_groups[block_group_index]
-        table_summary = block_group.get("data",{}).get("table_summary","")
+        data = block_group.get("data", {})
+        table_summary = data.get("table_summary","")
+        ddl = data.get("ddl", "") or ""
+        if ddl:
+            table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
         child_results = []
         for row_index,row_score in sorted_rows_tuple:
             block = blocks[row_index]
@@ -556,7 +927,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "recordType": record.get("record_type", ""),
                         "recordVersion": record.get("version", ""),
                         "origin": meta.get("origin") or record.get("origin", ""),
-                        "connector": meta.get("connector") or record.get("connector_name", ""),
+                        "connector": meta.get("connector") or record.get("connector_name") or record.get("connectorName") or "",
                         "blockText": block_text,
                         "blockType": str(block_type),
                         "bounding_box": extract_bounding_boxes(block.get("citation_metadata")),
@@ -609,7 +980,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: Dict[st
             graphDb_record = (virtual_to_record_map or {}).get(virtual_record_id)
             if graphDb_record:
                 record_type = graphDb_record.get("recordType")
-                record_key = graphDb_record.get("_key")
+                record_key = graphDb_record.get("id") or graphDb_record.get("_key")
 
                 record["id"] = record_key
                 record["org_id"] = org_id
@@ -1057,7 +1428,7 @@ Record blocks (sorted):\n\n"""
                 if current_vrid in ordered_unique_vrids:
                     record_number = ordered_unique_vrids.index(current_vrid) + 1
         except Exception:
-            return []
+            return None
 
         # Group blocks with parent_index (like table rows) for processing as block groups
 
@@ -1164,6 +1535,22 @@ Record blocks (sorted):\n\n"""
 
 def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_id_to_result: Dict[str, Any], user_data: str, query: str, logger, mode: str = "json") -> str:
     content = []
+
+    # Logs for Enriched Data Check, for record type -> SQL_TABLE
+    vrids_in_flattened = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
+    vrids_in_map = set(virtual_record_id_to_result.keys())
+    vrids_only_in_map = vrids_in_map - vrids_in_flattened
+    fk_enriched_in_flattened = [r for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
+    logger.debug(
+        "get_message_content: flattened_results=%d items, virtual_record_id_to_result=%d keys; "
+        "vrids_in_flattened=%d, vrids_only_in_map (e.g. FK blob not in list)=%d %s; FK_ENRICHMENT blocks in flattened=%d",
+        len(flattened_results),
+        len(virtual_record_id_to_result),
+        len(vrids_in_flattened),
+        len(vrids_only_in_map),
+        list(vrids_only_in_map)[:5] if vrids_only_in_map else [],
+        len(fk_enriched_in_flattened),
+    )
 
     # Use simple prompt for quick mode
     if mode == "simple":
@@ -1275,6 +1662,29 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                         })
                 elif block_type == GroupType.TABLE.value:
                     table_summary,child_results = result.get("content")
+                    # Get FK relations if available (now includes table/column metadata)
+                    fk_parent_relations = result.get("fk_parent_relations", [])
+                    fk_child_relations = result.get("fk_child_relations", [])
+                    fk_info = ""
+                    if fk_parent_relations or fk_child_relations:
+                        fk_info = "\n* FK Relations (use fetch_full_record tool with these record_ids to get related table data):"
+                        if fk_parent_relations:
+                            fk_info += "\n  - Parent Tables (this table references):"
+                            for rel in fk_parent_relations:
+                                parent_table = rel.get("parentTable", "")
+                                source_col = rel.get("sourceColumn", "")
+                                target_col = rel.get("targetColumn", "")
+                                record_id = rel.get("record_id", "")
+                                fk_info += f"\n    - {parent_table} (via {source_col} -> {target_col}) [record_id: {record_id}]"
+                        if fk_child_relations:
+                            fk_info += "\n  - Child Tables (reference this table):"
+                            for rel in fk_child_relations:
+                                child_table = rel.get("childTable", "")
+                                source_col = rel.get("sourceColumn", "")
+                                target_col = rel.get("targetColumn", "")
+                                record_id = rel.get("record_id", "")
+                                fk_info += f"\n    - {child_table} (via {source_col} -> {target_col}) [record_id: {record_id}]"
+                    
                     if child_results:
                         template = Template(table_prompt)
                         rendered_form = template.render(
@@ -1285,12 +1695,12 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                         )
                         content.append({
                             "type": "text",
-                            "text": f"{rendered_form}\n\n"
+                            "text": f"{rendered_form}{fk_info}\n\n"
                         })
                     else:
                         content.append({
                             "type": "text",
-                            "text": f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}\n\n"
+                            "text": f"* Block Group Number: R{record_number}-{result.get('block_group_index')}\n* Block Type: table summary \n* Block Content: {table_summary}{fk_info}\n\n"
                         })
                 elif block_type == BlockType.TEXT.value:
                     content.append({
@@ -1409,7 +1819,11 @@ def block_group_to_message_content(tool_result: Dict[str, Any], final_results: L
 
     child_results = []
     blocks = block_group.get("blocks",[])
-    table_summary = block_group.get("data",{}).get("table_summary","")
+    data = block_group.get("data", {})
+    table_summary = data.get("table_summary","")
+    ddl = data.get("ddl", "") or ""
+    if ddl:
+        table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
     for block in blocks:
         block_data = block.get("data", {})
         if isinstance(block_data, dict):

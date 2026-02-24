@@ -7,7 +7,8 @@ All methods have explicit parameter signatures - NO Any type, NO **kwargs.
 """
 
 import logging
-from typing import Dict, List, Optional
+import traceback
+from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode
 
 from app.sources.client.http.http_request import HTTPRequest
@@ -36,13 +37,18 @@ class SnowflakeDataSource:
         Args:
             client: SnowflakeClient instance with configured authentication
         """
+        logger.debug(f"🔧 [SnowflakeDataSource] __init__ called")
         self._client = client
         self.http = client.get_client()
+        logger.debug(f"🔧 [SnowflakeDataSource] http client type: {type(self.http).__name__}")
         if self.http is None:
             raise ValueError('HTTP client is not initialized')
         try:
             self.base_url = self.http.get_base_url().rstrip('/')
+            logger.debug(f"🔧 [SnowflakeDataSource] base_url set to: '{self.base_url}'")
+            logger.info(f"🔧 [SnowflakeDataSource] Initialized successfully with base_url: '{self.base_url}'")
         except AttributeError as exc:
+            logger.error(f"🔧 [SnowflakeDataSource] Failed to get base_url: {exc}")
             raise ValueError('HTTP client does not have get_base_url method') from exc
 
     def get_data_source(self) -> 'SnowflakeDataSource':
@@ -73,6 +79,10 @@ class SnowflakeDataSource:
         Returns:
             SnowflakeResponse with operation result
         """
+        logger.debug(f"🔧 [SnowflakeDataSource] list_databases called")
+        logger.debug(f"🔧 [SnowflakeDataSource] Parameters: like={like}, starts_with={starts_with}, show_limit={show_limit}, from_name={from_name}, history={history}")
+        logger.debug(f"🔧 [SnowflakeDataSource] base_url: '{self.base_url}'")
+        
         query_params = []
         if like is not None:
             query_params.append(('like', like))
@@ -90,7 +100,10 @@ class SnowflakeDataSource:
             query_string = urlencode(query_params)
             url += f"?{query_string}"
 
+        logger.debug(f"🔧 [SnowflakeDataSource] Final URL: '{url}'")
+        
         headers = self.http.headers.copy()
+        logger.debug(f"🔧 [SnowflakeDataSource] Request headers (excluding auth): { {k: v for k, v in headers.items() if 'authorization' not in k.lower()} }")
 
         request = HTTPRequest(
             method="GET",
@@ -99,14 +112,27 @@ class SnowflakeDataSource:
         )
 
         try:
+            logger.debug(f"🔧 [SnowflakeDataSource] Executing HTTP request...")
             response = await self.http.execute(request)
+            logger.debug(f"🔧 [SnowflakeDataSource] Response status: {response.status}")
+            logger.debug(f"🔧 [SnowflakeDataSource] Response text (first 500 chars): {response.text()[:500] if response.text() else 'Empty'}")
+            
             response_data = response.json() if response.text() else None
+            success = response.status < ERROR_STATUS_CODE
+            
+            logger.debug(f"🔧 [SnowflakeDataSource] list_databases success: {success}")
+            if not success:
+                logger.error(f"🔧 [SnowflakeDataSource] list_databases FAILED with status {response.status}")
+                logger.error(f"🔧 [SnowflakeDataSource] Response data: {response_data}")
+            
             return SnowflakeResponse(
-                success=response.status < ERROR_STATUS_CODE,
+                success=success,
                 data=response_data,
-                message="Successfully executed list_databases" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+                message="Successfully executed list_databases" if success else f"Failed with status {response.status}"
             )
         except Exception as e:
+            logger.error(f"🔧 [SnowflakeDataSource] list_databases exception: {str(e)}")
+            logger.error(f"🔧 [SnowflakeDataSource] Traceback: {traceback.format_exc()}")
             return SnowflakeResponse(success=False, error=str(e), message="Failed to execute list_databases")
 
     async def create_database(
@@ -189,15 +215,15 @@ class SnowflakeDataSource:
             SnowflakeResponse with operation result
         """
         url = self.base_url + "/databases/{name}".format(name=name)
-
+        # print(url)
         headers = self.http.headers.copy()
-
+        # print(headers)
         request = HTTPRequest(
             method="GET",
             url=url,
             headers=headers
         )
-
+        # print(request)
         try:
             response = await self.http.execute(request)
             response_data = response.json() if response.text() else None
@@ -3805,3 +3831,697 @@ class SnowflakeDataSource:
             )
         except Exception as e:
             return SnowflakeResponse(success=False, error=str(e), message="Failed to execute delete_notebook")
+
+    # ========================================================================
+    # SQL Statements API - For executing custom SQL queries
+    # ========================================================================
+
+    async def execute_sql(
+        self,
+        statement: str,
+        database: Optional[str] = None,
+        schema: Optional[str] = None,
+        warehouse: Optional[str] = None,
+        role: Optional[str] = None,
+        timeout: Optional[int] = None,
+        async_exec: Optional[bool] = None,
+        parameters: Optional[Dict[str, str]] = None
+    ) -> SnowflakeResponse:
+        """Execute a SQL statement via the Snowflake SQL API
+
+        This is used for queries like:
+        - SELECT * FROM DIRECTORY(@stage) - List files in a stage
+        - SHOW GRANTS ON <object_type> <object_name> - Get permissions
+        - DESCRIBE TABLE <table> - Get column details
+        - SELECT GET_DDL('VIEW', '<view>') - Get view definition
+
+        Args:
+            statement: SQL statement to execute
+            database: Database context for the statement
+            schema: Schema context for the statement
+            warehouse: Warehouse to use for execution
+            role: Role to use for execution
+            timeout: Query timeout in seconds
+            async_exec: If True, execute asynchronously and return statement handle
+            parameters: Bind parameters for the statement
+
+        Returns:
+            SnowflakeResponse with query results or statement handle
+        """
+        query_params = []
+        if async_exec is not None:
+            query_params.append(('async', 'true' if async_exec else 'false'))
+
+        url = self.base_url + "/statements"
+        if query_params:
+            query_string = urlencode(query_params)
+            url += f"?{query_string}"
+
+        body: Dict = {
+            "statement": statement,
+        }
+        if database is not None:
+            body["database"] = database
+        if schema is not None:
+            body["schema"] = schema
+        if warehouse is not None:
+            body["warehouse"] = warehouse
+        if role is not None:
+            body["role"] = role
+        if timeout is not None:
+            body["timeout"] = timeout
+        if parameters is not None:
+            body["parameters"] = parameters
+
+        headers = self.http.headers.copy()
+        headers["Content-Type"] = "application/json"
+
+        request = HTTPRequest(
+            method="POST",
+            url=url,
+            headers=headers,
+            body=body
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully executed SQL statement" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to execute SQL statement")
+
+    async def get_statement_status(
+        self,
+        statement_handle: str,
+        partition: Optional[int] = None
+    ) -> SnowflakeResponse:
+        """Get the status and results of a previously submitted SQL statement
+
+        Use this to check on async statements or retrieve additional result partitions.
+
+        Args:
+            statement_handle: The statement handle returned from execute_sql
+            partition: Partition index for paginated results (0-based)
+
+        Returns:
+            SnowflakeResponse with statement status and/or results
+        """
+        query_params = []
+        if partition is not None:
+            query_params.append(('partition', str(partition)))
+
+        url = self.base_url + f"/statements/{statement_handle}"
+        if query_params:
+            query_string = urlencode(query_params)
+            url += f"?{query_string}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully retrieved statement status" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to get statement status")
+
+    async def cancel_statement(
+        self,
+        statement_handle: str
+    ) -> SnowflakeResponse:
+        """Cancel a running SQL statement
+
+        Args:
+            statement_handle: The statement handle to cancel
+
+        Returns:
+            SnowflakeResponse with cancellation result
+        """
+        url = self.base_url + f"/statements/{statement_handle}/cancel"
+
+        headers = self.http.headers.copy()
+        headers["Content-Type"] = "application/json"
+
+        request = HTTPRequest(
+            method="POST",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully cancelled statement" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to cancel statement")
+
+    # ========================================================================
+    # Grants API - For permission management
+    # ========================================================================
+
+    async def list_grants_to_role(
+        self,
+        role_name: str,
+        show_limit: Optional[int] = None
+    ) -> SnowflakeResponse:
+        """List all privileges granted to a role
+
+        Equivalent to: SHOW GRANTS TO ROLE <role_name>
+        Returns the privileges that the role has on various objects.
+
+        Args:
+            role_name: Name of the role
+            show_limit: Maximum number of grants to return
+
+        Returns:
+            SnowflakeResponse with list of grants (privilege, granted_on, name, etc.)
+        """
+        query_params = []
+        if show_limit is not None:
+            query_params.append(('showLimit', str(show_limit)))
+
+        url = self.base_url + f"/grants/role/{role_name}"
+        if query_params:
+            query_string = urlencode(query_params)
+            url += f"?{query_string}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully retrieved grants to role" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to list grants to role")
+
+    async def list_grants_to_user(
+        self,
+        user_name: str,
+        show_limit: Optional[int] = None
+    ) -> SnowflakeResponse:
+        """List all roles and privileges granted to a user
+
+        Equivalent to: SHOW GRANTS TO USER <user_name>
+
+        Args:
+            user_name: Name of the user
+            show_limit: Maximum number of grants to return
+
+        Returns:
+            SnowflakeResponse with list of grants
+        """
+        query_params = []
+        if show_limit is not None:
+            query_params.append(('showLimit', str(show_limit)))
+
+        url = self.base_url + f"/grants/user/{user_name}"
+        if query_params:
+            query_string = urlencode(query_params)
+            url += f"?{query_string}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully retrieved grants to user" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to list grants to user")
+
+    async def list_grants_of_role(
+        self,
+        role_name: str
+    ) -> SnowflakeResponse:
+        """List all users and roles that have been granted this role
+
+        Equivalent to: SHOW GRANTS OF ROLE <role_name>
+        Returns the grantees (users/roles) that have this role.
+
+        Args:
+            role_name: Name of the role
+
+        Returns:
+            SnowflakeResponse with list of grantees (grantee_name, granted_to: ROLE/USER)
+        """
+        # This endpoint may not exist in REST API, use SQL statement instead
+        statement = f"SHOW GRANTS OF ROLE {role_name}"
+        return await self.execute_sql(statement=statement)
+
+    async def list_grants_on_object(
+        self,
+        object_type: str,
+        object_name: str
+    ) -> SnowflakeResponse:
+        """List all grants on a specific object
+
+        Equivalent to: SHOW GRANTS ON <object_type> <object_name>
+        Returns all privileges granted on the object.
+
+        Args:
+            object_type: Type of object (DATABASE, SCHEMA, TABLE, VIEW, STAGE, etc.)
+            object_name: Fully qualified name of the object
+
+        Returns:
+            SnowflakeResponse with list of grants
+        """
+        # Use SQL statement as there's no direct REST endpoint for this
+        statement = f"SHOW GRANTS ON {object_type} {object_name}"
+        return await self.execute_sql(statement=statement)
+
+    # ========================================================================
+    # Database Roles API
+    # ========================================================================
+
+    async def list_database_roles(
+        self,
+        database: str,
+        like: Optional[str] = None,
+        starts_with: Optional[str] = None,
+        show_limit: Optional[int] = None,
+        from_name: Optional[str] = None
+    ) -> SnowflakeResponse:
+        """List all database roles in a database
+
+        Args:
+            database: Database name
+            like: Filter by name pattern
+            starts_with: Filter by name prefix
+            show_limit: Maximum rows to return
+            from_name: Fetch rows after this name (pagination)
+
+        Returns:
+            SnowflakeResponse with list of database roles
+        """
+        query_params = []
+        if like is not None:
+            query_params.append(('like', like))
+        if starts_with is not None:
+            query_params.append(('startsWith', starts_with))
+        if show_limit is not None:
+            query_params.append(('showLimit', str(show_limit)))
+        if from_name is not None:
+            query_params.append(('fromName', from_name))
+
+        url = self.base_url + f"/databases/{database}/database-roles"
+        if query_params:
+            query_string = urlencode(query_params)
+            url += f"?{query_string}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully listed database roles" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to list database roles")
+
+    async def get_database_role(
+        self,
+        database: str,
+        name: str
+    ) -> SnowflakeResponse:
+        """Get a specific database role
+
+        Args:
+            database: Database name
+            name: Database role name
+
+        Returns:
+            SnowflakeResponse with database role details
+        """
+        url = self.base_url + f"/databases/{database}/database-roles/{name}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully retrieved database role" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to get database role")
+
+    # ========================================================================
+    # Files API - For downloading files from stages
+    # ========================================================================
+
+    async def download_file(
+        self,
+        file_url: str
+    ) -> SnowflakeResponse:
+        """Download a file from a Snowflake stage using the Files API
+
+        Use this to download files for indexing in the vector database.
+        The file_url should be obtained from a directory table query
+        (FILE_URL column).
+
+        REST Endpoint: GET /api/files/{encoded_file_url}
+
+        Args:
+            file_url: The file_url from directory table query
+                     Format: https://{account}.snowflakecomputing.com/api/files/{db}/{schema}/{stage}/{path}
+
+        Returns:
+            SnowflakeResponse with file content in raw_content field (bytes)
+        """
+        # Extract the path portion if it's a full URL
+        if file_url.startswith('http'):
+            import re
+            match = re.search(r'/api/files/(.+)', file_url)
+            if match:
+                file_path = match.group(1)
+            else:
+                file_path = file_url
+        else:
+            file_path = file_url
+
+        url = self.base_url.replace('/api/v2', '') + f"/api/files/{file_path}"
+
+        headers = self.http.headers.copy()
+        headers["Accept"] = "*/*"  # Accept any content type for file download
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            if response.status < ERROR_STATUS_CODE:
+                # Get raw bytes from response
+                content = response.content if hasattr(response, 'content') else None
+                if content is None and hasattr(response, 'text'):
+                    # Fallback to text if no content attribute
+                    text = response.text()
+                    content = text.encode('utf-8') if isinstance(text, str) else text
+                
+                return SnowflakeResponse(
+                    success=True,
+                    raw_content=content,
+                    message=f"Successfully downloaded file ({len(content) if content else 0} bytes)"
+                )
+            else:
+                return SnowflakeResponse(
+                    success=False,
+                    data=None,
+                    message=f"Failed to download file with status {response.status}"
+                )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to download file")
+
+    async def download_file_from_presigned_url(
+        self,
+        presigned_url: str
+    ) -> SnowflakeResponse:
+        """Download a file using a pre-signed URL (direct S3 access)
+
+        This is the simplest way to download files from Snowflake stages.
+        Pre-signed URLs are obtained from generate_presigned_url() and provide
+        direct access to the underlying cloud storage without authentication.
+
+        Args:
+            presigned_url: Pre-signed URL from GET_PRESIGNED_URL function
+                          (direct S3/Azure/GCS URL with auth in query string)
+
+        Returns:
+            SnowflakeResponse with file content in raw_content field (bytes)
+        """
+        import aiohttp
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(presigned_url) as response:
+                    if response.status < 400:
+                        content = await response.read()
+                        return SnowflakeResponse(
+                            success=True,
+                            raw_content=content,
+                            message=f"Successfully downloaded file ({len(content)} bytes)"
+                        )
+                    else:
+                        return SnowflakeResponse(
+                            success=False,
+                            message=f"Failed to download file with status {response.status}"
+                        )
+        except ImportError:
+            return SnowflakeResponse(
+                success=False,
+                error="aiohttp not installed",
+                message="Install aiohttp: pip install aiohttp"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to download file")
+
+    async def generate_presigned_url(
+        self,
+        database: str,
+        schema: str,
+        stage: str,
+        file_path: str,
+        expiration_seconds: int = 3600,
+        warehouse: Optional[str] = None
+    ) -> SnowflakeResponse:
+        """Generate a pre-signed URL for file download
+
+        Pre-signed URLs can be shared and accessed by anyone with the URL.
+        Uses SQL: SELECT GET_PRESIGNED_URL(@stage, 'path', expiration_seconds)
+
+        Args:
+            database: Database name
+            schema: Schema name
+            stage: Stage name
+            file_path: Relative path of the file within the stage
+            expiration_seconds: URL expiration time in seconds (default: 1 hour)
+            warehouse: Warehouse to use for SQL execution (required)
+
+        Returns:
+            SnowflakeResponse with presigned_url in data field
+        """
+        # Escape single quotes in file path
+        safe_file_path = file_path.replace("'", "''")
+        statement = f"SELECT GET_PRESIGNED_URL(@{database}.{schema}.{stage}, '{safe_file_path}', {expiration_seconds}) AS presigned_url"
+        return await self.execute_sql(statement=statement, database=database, schema=schema, warehouse=warehouse)
+
+    async def list_stage_files(
+        self,
+        database: str,
+        schema: str,
+        stage: str,
+        pattern: Optional[str] = None,
+        warehouse: Optional[str] = None
+    ) -> SnowflakeResponse:
+        """List all files in a stage using Directory Table
+
+        This queries the directory table of the stage to get file metadata
+        including paths, sizes, timestamps, and download URLs.
+
+        Args:
+            database: Database name
+            schema: Schema name
+            stage: Stage name
+            pattern: Optional pattern to filter files (e.g., '%.pdf')
+            warehouse: Warehouse to use for SQL execution (required for queries)
+
+        Returns:
+            SnowflakeResponse with list of files containing:
+            - RELATIVE_PATH: File path within stage
+            - LAST_MODIFIED: Last modification timestamp
+            - MD5: File MD5 hash
+            - ETAG: Entity tag
+            - FILE_URL: Permanent file URL
+            - SCOPED_FILE_URL: Temporary scoped URL for download
+        """
+        statement = f"SELECT * FROM DIRECTORY(@{database}.{schema}.{stage})"
+        if pattern:
+            safe_pattern = pattern.replace("'", "''")
+            statement += f" WHERE RELATIVE_PATH LIKE '{safe_pattern}'"
+
+        return await self.execute_sql(statement=statement, database=database, schema=schema, warehouse=warehouse)
+
+    # ========================================================================
+    # Dynamic Tables API
+    # ========================================================================
+
+    async def list_dynamic_tables(
+        self,
+        database: str,
+        schema: str,
+        like: Optional[str] = None,
+        starts_with: Optional[str] = None,
+        show_limit: Optional[int] = None
+    ) -> SnowflakeResponse:
+        """List all dynamic tables in a schema
+
+        Args:
+            database: Database name
+            schema: Schema name
+            like: Filter by name pattern
+            starts_with: Filter by name prefix
+            show_limit: Maximum rows to return
+
+        Returns:
+            SnowflakeResponse with list of dynamic tables
+        """
+        query_params = []
+        if like is not None:
+            query_params.append(('like', like))
+        if starts_with is not None:
+            query_params.append(('startsWith', starts_with))
+        if show_limit is not None:
+            query_params.append(('showLimit', str(show_limit)))
+
+        url = self.base_url + f"/databases/{database}/schemas/{schema}/dynamic-tables"
+        if query_params:
+            query_string = urlencode(query_params)
+            url += f"?{query_string}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully listed dynamic tables" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to list dynamic tables")
+
+    async def get_dynamic_table(
+        self,
+        database: str,
+        schema: str,
+        name: str
+    ) -> SnowflakeResponse:
+        """Get a specific dynamic table
+
+        Args:
+            database: Database name
+            schema: Schema name
+            name: Dynamic table name
+
+        Returns:
+            SnowflakeResponse with dynamic table details including target_lag and refresh info
+        """
+        url = self.base_url + f"/databases/{database}/schemas/{schema}/dynamic-tables/{name}"
+
+        headers = self.http.headers.copy()
+
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+
+        try:
+            response = await self.http.execute(request)
+            response_data = response.json() if response.text() else None
+            return SnowflakeResponse(
+                success=response.status < ERROR_STATUS_CODE,
+                data=response_data,
+                message="Successfully retrieved dynamic table" if response.status < ERROR_STATUS_CODE else f"Failed with status {response.status}"
+            )
+        except Exception as e:
+            return SnowflakeResponse(success=False, error=str(e), message="Failed to get dynamic table")
+
+    async def get_stage_file_stream(
+        self,
+        database: str,
+        schema: str,
+        stage: str,
+        relative_path: str
+    ) -> Any:
+        """Get a stream of a file from a stage.
+        
+        Args:
+            database: Database name
+            schema: Schema name
+            stage: Stage name
+            relative_path: Path to file in stage
+            
+        Returns:
+            Stream/Response object
+        """
+        # Constructing a request specific for file retrieval
+        # Note: This path structure is hypothetical for the REST API wrapper pattern
+        url = self.base_url + f"/databases/{database}/schemas/{schema}/stages/{stage}/files/{relative_path}"
+        
+        headers = self.http.headers.copy()
+        
+        # Ensure we accept binary stream
+        headers["Accept"] = "*/*"
+        
+        request = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=headers
+        )
+        
+        # We return the raw response context manager to allow streaming
+        return await self.http.execute(request)
+

@@ -271,7 +271,9 @@ class IndexingFilterKey(str, Enum):
     ISSUES = "issues"
     TICKETS = "tickets"
     GROUP_CONVERSATIONS = "group_conversations"
-
+    TABLES = "index_stage_tables"
+    VIEWS = "index_stage_views"
+    STAGE_FILES = "index_stage_files"
     # Child content types (generic)
     COMMENTS = "comments"
     ATTACHMENTS = "attachments"

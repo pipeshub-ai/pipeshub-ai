@@ -613,11 +613,14 @@ async def execute_tool_calls(
         for tool_result in tool_results_inner:
             if tool_result.get("ok"):
                 tool_msg = {
-                    "ok": True,
-                    "records": message_contents,
-                    "record_count": tool_result.get("record_count", None),
-                    "not_found": tool_result.get("not_found", None),
-                }
+                        "ok": True,
+                        "records": message_contents,
+                        "record_count": tool_result.get("record_count", None),
+                        "sql_result": tool_result.get("markdown_result", None),
+                        "row_count": tool_result.get("row_count", None),
+                        "column_count": tool_result.get("column_count", None),
+                        "not_found": tool_result.get("not_found", None),
+                    }
 
                 # tool_msgs.append(HumanMessage(content=f"Full record: {message_content}"))
                 tool_msgs.append(ToolMessage(content=json.dumps(tool_msg), tool_call_id=tool_result["call_id"]))
@@ -1497,6 +1500,7 @@ async def call_aiter_llm_stream(
     # Try to parse the full JSON buffer
     try:
         response_text = state.full_json_buf
+        logger.debug("[streaming] before cleanup_content (full_json_buf) type=%s", type(response_text).__name__)
         if  isinstance(response_text, str):
             response_text = cleanup_content(response_text)
 
@@ -1639,9 +1643,17 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
 
 def cleanup_content(response_text: str) -> str:
+    # Diagnostic: catch 'tuple' (or other non-str) has no attribute 'startswith'
+    if not isinstance(response_text, str):
+        logger.warning(
+            "[streaming cleanup_content] response_text is not str | type=%s repr=%s",
+            type(response_text).__name__, repr(response_text)[:300],
+        )
+        response_text = str(response_text)
     response_text = response_text.strip()
     if '</think>' in response_text:
             response_text = response_text.split('</think>')[-1]
+    logger.debug("[streaming cleanup_content] before startswith/endswith type=%s", type(response_text).__name__)
     if response_text.startswith("```json"):
         response_text = response_text.replace("```json", "", 1)
     if response_text.endswith("```"):
@@ -1685,6 +1697,7 @@ async def invoke_with_structured_output_and_reflection(
                 # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
                 logger.debug("Response is a dict with 'content' key, extracting content for parsing")
                 response_content = response['content']
+                logger.debug("[streaming] before cleanup_content (dict content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
@@ -1699,6 +1712,7 @@ async def invoke_with_structured_output_and_reflection(
                 # Response is an AIMessage or string
                 logger.debug("Response is AIMessage, extracting content for parsing")
                 response_content = response.content
+                logger.debug("[streaming] before cleanup_content (AIMessage.content) type=%s", type(response_content).__name__)
                 response_text = cleanup_content(response_content)
                 logger.debug(f"Cleaned response content length: {len(response_text)} chars")
                 parsed_response = schema.model_validate_json(response_text)
@@ -1737,6 +1751,7 @@ Respond only with valid JSON that matches the schema."""
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
                         logger.debug("Reflection response is a dict with 'content' key, extracting content for parsing")
                         reflection_content = reflection_response['content']
+                        logger.debug("[streaming] before cleanup_content (reflection dict content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)
@@ -1748,6 +1763,7 @@ Respond only with valid JSON that matches the schema."""
                     if hasattr(reflection_response, 'content'):
                         logger.debug("Reflection response is AIMessage, extracting content")
                         reflection_content = reflection_response.content
+                        logger.debug("[streaming] before cleanup_content (reflection AIMessage.content) type=%s", type(reflection_content).__name__)
                         reflection_text = cleanup_content(reflection_content)
                         logger.debug(f"Cleaned reflection content length: {len(reflection_text)} chars")
                         parsed_response = schema.model_validate_json(reflection_text)

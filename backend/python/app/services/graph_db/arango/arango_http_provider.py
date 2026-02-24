@@ -1661,6 +1661,61 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch entity relation creation failed: {str(e)}")
             raise
 
+    async def batch_upsert_record_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch upsert record relation edges - FULLY ASYNC.
+
+        Uses UPSERT to avoid duplicates - matches on _from, _to, and relationType.
+        This allows multiple edges between the same record pair with different
+        relation types (e.g., FOREIGN_KEY and DEPENDS_ON).
+
+        Args:
+            edges: List of edge documents with _from, _to, and relationType
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("🚀 Batch upserting record relation edges")
+
+            arango_edges = self._translate_edges_to_arango(edges)
+
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to, relationType: edge.relationType }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "edges": arango_edges,
+                "@collection": CollectionNames.RECORD_RELATIONS.value
+            }
+
+            results = await self.http_client.execute_aql(
+                batch_query,
+                bind_vars,
+                txn_id=transaction
+            )
+
+            self.logger.info(
+                f"✅ Successfully upserted {len(results)} record relation edges."
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch record relation upsert failed: {str(e)}")
+            raise
+
     async def get_edge(
         self,
         from_id: str,
@@ -1871,6 +1926,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             raise
 
     # ==================== Query Operations ====================
+
+    async def get_connector_id_by_type(self, org_id: str, connector_type: str) -> Optional[str]:
+        """Get connector instance ID by connector type for an organization.
+        
+        Args:
+            org_id: Organization ID
+            connector_type: Connector type enum value (e.g., 'POSTGRESQL', 'SNOWFLAKE')
+            
+        Returns:
+            Connector instance ID (_key) if found, None otherwise
+        """
+        try:
+            query = f"""
+            FOR app IN OUTBOUND
+                '{CollectionNames.ORGS.value}/{org_id}'
+                {CollectionNames.ORG_APP_RELATION.value}
+            FILTER app.isActive == true
+            FILTER app.type == @connector_type
+            LIMIT 1
+            RETURN app._key
+            """
+            results = await self.http_client.execute_aql(
+                query, {"connector_type": connector_type}
+            )
+            return results[0] if results else None
+        except Exception as e:
+            self.logger.error(f"Failed to get connector ID by type: {str(e)}")
+            return None
 
     async def execute_query(
         self,
@@ -2321,6 +2404,130 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Get record by external revision ID failed: {str(e)}")
             return None
+
+    async def get_child_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record _keys of all records that have an edge pointing TO this record
+        with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
+
+        Args:
+            record_id: Record _key (vertex id)
+            relation_type: Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction: Optional transaction ID
+
+        Returns:
+            List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
+        """
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._to == CONCAT("records/", @record_id)
+                FILTER edge.relationType == @relation_type OR edge.relationshipType == @relation_type
+                RETURN {{
+                    record_id: PARSE_IDENTIFIER(edge._from).key,
+                    childTable: edge.childTableName || "",
+                    sourceColumn: edge.sourceColumn || "",
+                    targetColumn: edge.targetColumn || ""
+                }}
+            """
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"record_id": record_id, "relation_type": relation_type},
+                txn_id=transaction
+            )
+            return list(results) if results else []
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get child record IDs by relation type for record %s: %s",
+                record_id,
+                str(e),
+            )
+            return []
+
+    async def get_parent_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record _keys of all records that this record has an edge pointing TO
+        with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
+
+        Args:
+            record_id: Record _key (vertex id)
+            relation_type: Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction: Optional transaction ID
+
+        Returns:
+            List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
+        """
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._from == CONCAT("records/", @record_id)
+                FILTER edge.relationType == @relation_type OR edge.relationshipType == @relation_type
+                RETURN {{
+                    record_id: PARSE_IDENTIFIER(edge._to).key,
+                    parentTable: edge.parentTableName || "",
+                    sourceColumn: edge.sourceColumn || "",
+                    targetColumn: edge.targetColumn || ""
+                }}
+            """
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"record_id": record_id, "relation_type": relation_type},
+                txn_id=transaction
+            )
+            return list(results) if results else []
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get parent record IDs by relation type for record %s: %s",
+                record_id,
+                str(e),
+            )
+            return []
+
+    async def get_virtual_record_ids_for_record_ids(
+        self,
+        record_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Resolve record _keys to virtualRecordIds. Used to fetch blob for child records by id.
+
+        Args:
+            record_ids: List of record _keys
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict mapping record_id (_key) -> virtual_record_id
+        """
+        if not record_ids:
+            return {}
+        try:
+            query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r._key IN @record_ids
+                FILTER r.virtualRecordId != null
+                RETURN {{ _key: r._key, virtualRecordId: r.virtualRecordId }}
+            """
+            results = await self.http_client.execute_aql(
+                query,
+                bind_vars={"record_ids": list(record_ids)},
+                txn_id=transaction
+            )
+            return {row["_key"]: row["virtualRecordId"] for row in (results or [])}
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get virtual_record_ids for record_ids: %s", str(e)
+            )
+            return {}
 
     async def get_record_key_by_external_id(
         self,
@@ -16038,7 +16245,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             if size_in_bytes is not None:
                 query += """
-                AND record.sizeInBytes == @size_in_bytes
+                AND (record.sizeInBytes == null OR record.sizeInBytes == @size_in_bytes)
                 """
                 bind_vars["size_in_bytes"] = size_in_bytes
 

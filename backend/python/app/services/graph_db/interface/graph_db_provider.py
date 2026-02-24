@@ -702,8 +702,68 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    # ==================== Record Operations ====================
 
+    @abstractmethod
+    async def get_child_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record _keys of all records that have an edge pointing TO this record
+        with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
+
+        Args:
+            record_id (str): Record _key (vertex id)
+            relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
+        """
+        pass
+
+    @abstractmethod
+    async def get_parent_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record _keys of all records that this record has an edge pointing TO
+        with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
+
+        Args:
+            record_id (str): Record _key (vertex id)
+            relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
+        """
+        pass
+
+    @abstractmethod
+    async def get_virtual_record_ids_for_record_ids(
+        self,
+        record_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Resolve record _keys to virtualRecordIds (e.g. to fetch blob for child records).
+
+        Args:
+            record_ids (List[str]): List of record _keys
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            Dict[str, str]: Mapping record_id -> virtual_record_id
+        """
+        pass
+
+    # ==================== Record Operations ====================
     @abstractmethod
     async def get_record_by_path(
         self,
