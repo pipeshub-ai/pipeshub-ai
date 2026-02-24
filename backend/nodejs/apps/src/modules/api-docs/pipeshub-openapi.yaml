@@ -18505,6 +18505,239 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/slack-bot:
+    get:
+      tags:
+        - Platform Settings
+      summary: Get Slack bot configurations
+      description: Retrieve all configured Slack bot entries for the organization.
+      operationId: getSlackBotConfigs
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Slack bot configurations retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          example: 3c6a0454-52e8-42ac-99f1-ec52e2fcdf17
+                        name:
+                          type: string
+                          example: Customer Support Bot
+                        botToken:
+                          type: string
+                          example: xoxb-************
+                        signingSecret:
+                          type: string
+                          example: ************
+                        agentId:
+                          type: string
+                          example: agent_123abc
+                        createdAt:
+                          type: string
+                          format: date-time
+                          example: "2026-02-24T10:30:00.000Z"
+                        updatedAt:
+                          type: string
+                          format: date-time
+                          example: "2026-02-24T10:45:00.000Z"
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+    post:
+      tags:
+        - Platform Settings
+      summary: Create Slack bot configuration
+      description: Add a new Slack bot configuration with bot credentials and linked agent.
+      operationId: createSlackBotConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        description: Request body for creating a Slack bot configuration
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - botToken
+                - signingSecret
+                - agentId
+              properties:
+                name:
+                  type: string
+                  example: Customer Support Bot
+                botToken:
+                  type: string
+                  example: xoxb-1234567890-abcdefghijklmnop
+                signingSecret:
+                  type: string
+                  example: 1a2b3c4d5e6f7g8h9i0j
+                agentId:
+                  type: string
+                  example: agent_123abc
+      responses:
+        '200':
+          description: Slack bot configuration created successfully
+        '400':
+          description: Invalid request payload
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+
+  /configurationManager/slack-bot/{configId}:
+    put:
+      tags:
+        - Platform Settings
+      summary: Update Slack bot configuration
+      description: Update an existing Slack bot configuration by config ID.
+      operationId: updateSlackBotConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - in: path
+          name: configId
+          required: true
+          schema:
+            type: string
+          description: Unique Slack bot configuration ID
+      requestBody:
+        required: true
+        description: Request body for updating a Slack bot configuration
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - botToken
+                - signingSecret
+                - agentId
+              properties:
+                name:
+                  type: string
+                  example: Customer Support Bot
+                botToken:
+                  type: string
+                  example: xoxb-1234567890-abcdefghijklmnop
+                signingSecret:
+                  type: string
+                  example: 1a2b3c4d5e6f7g8h9i0j
+                agentId:
+                  type: string
+                  example: agent_123abc
+      responses:
+        '200':
+          description: Slack bot configuration updated successfully
+        '400':
+          description: Invalid request payload
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+        '404':
+          description: Slack bot configuration not found
+
+    delete:
+      tags:
+        - Platform Settings
+      summary: Delete Slack bot configuration
+      description: Delete a Slack bot configuration by config ID.
+      operationId: deleteSlackBotConfig
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - in: path
+          name: configId
+          required: true
+          schema:
+            type: string
+          description: Unique Slack bot configuration ID
+      responses:
+        '200':
+          description: Slack bot configuration deleted successfully
+        '401':
+          description: Unauthorized
+        '403':
+          description: Admin access required
+        '404':
+          description: Slack bot configuration not found
+
+  /configurationManager/internal/slack-bot:
+    get:
+      tags:
+        - Platform Settings
+      summary: Get Slack bot configurations (Internal)
+      description: |
+        Internal service-to-service endpoint to retrieve Slack bot configurations.
+        Requires scoped token authentication with `fetch:config` scope.
+      operationId: getInternalSlackBotConfigs
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Slack bot configurations retrieved successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                          example: 3c6a0454-52e8-42ac-99f1-ec52e2fcdf17
+                        name:
+                          type: string
+                          example: Customer Support Bot
+                        botToken:
+                          type: string
+                          example: xoxb-************
+                        signingSecret:
+                          type: string
+                          example: ************
+                        agentId:
+                          type: string
+                          example: agent_123abc
+                        createdAt:
+                          type: string
+                          format: date-time
+                          example: "2026-02-24T10:30:00.000Z"
+                        updatedAt:
+                          type: string
+                          format: date-time
+                          example: "2026-02-24T10:45:00.000Z"
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing required `fetch:config` scope
+
   /configurationManager/prompts/system:
     put:
       tags:
