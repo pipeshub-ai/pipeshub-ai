@@ -32,6 +32,7 @@ from app.models.entities import (
     RecordGroup,
     RecordType,
     RelatedExternalRecord,
+    SavedFilterRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -750,7 +751,7 @@ class DataSourceEntitiesProcessor:
 
         # Handle related external records (issue links, project links, etc.)
         # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
-        if isinstance(record, (TicketRecord, ProjectRecord)):
+        if isinstance(record, (TicketRecord, ProjectRecord, SavedFilterRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord

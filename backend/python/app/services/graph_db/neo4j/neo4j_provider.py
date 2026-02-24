@@ -49,6 +49,7 @@ from app.models.entities import (
     ProjectRecord,
     Record,
     RecordGroup,
+    SavedFilterRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -2007,6 +2008,8 @@ class Neo4jProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc, record_dict)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc, record_dict)
+            elif collection == CollectionNames.SAVED_FILTERS.value:
+                return SavedFilterRecord.from_arango_record(type_doc, record_dict)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_dict)
@@ -4984,9 +4987,9 @@ class Neo4jProvider(IGraphDBProvider):
 
         MATCH (record:Record {id: record_id})-[:IS_OF_TYPE]->(typeNode)
         WITH DISTINCT typeNode, labels(typeNode) AS nodeLabels
-        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project'])
+        WHERE any(label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'SavedFilter', 'Link', 'Project'])
         RETURN {
-          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'Link', 'Project']]),
+          collection: head([label IN nodeLabels WHERE label IN ['File', 'Mail', 'Webpage', 'Comment', 'Ticket', 'SavedFilter', 'Link', 'Project']]),
           key: typeNode.id,
           full_id: typeNode.id
         } AS target
@@ -5226,6 +5229,7 @@ class Neo4jProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.SAVED_FILTERS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,

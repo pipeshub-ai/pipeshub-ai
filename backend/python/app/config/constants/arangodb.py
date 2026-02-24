@@ -134,6 +134,7 @@ class CollectionNames(Enum):
     TICKETS = "tickets"
     ENTITY_RELATIONS = "entityRelations"
     PROJECTS = "projects"
+    SAVED_FILTERS = "savedFilters"
 
     # Users and groups
     PEOPLE = "people"
@@ -306,6 +307,7 @@ class RecordRelations(Enum):
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
     RELATED = "RELATED"
+    HAS_SCHEMA = "HAS_SCHEMA"
 
 
 class EntityRelations(Enum):
@@ -348,5 +350,7 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "PROJECT": CollectionNames.PROJECTS.value,
     "DATABASE": CollectionNames.WEBPAGES.value,
     "DATASOURCE": CollectionNames.WEBPAGES.value,
+    "FILTER_SCHEMA": CollectionNames.WEBPAGES.value,
+    "SAVED_FILTER": CollectionNames.SAVED_FILTERS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }

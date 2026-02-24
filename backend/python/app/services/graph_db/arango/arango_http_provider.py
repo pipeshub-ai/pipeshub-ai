@@ -43,6 +43,7 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordType,
+    SavedFilterRecord,
     TicketRecord,
     User,
     WebpageRecord,
@@ -112,6 +113,7 @@ NODE_COLLECTIONS = [
     (CollectionNames.SUBCATEGORIES1.value, None),
     (CollectionNames.SUBCATEGORIES2.value, None),
     (CollectionNames.SUBCATEGORIES3.value, None),
+    (CollectionNames.SAVED_FILTERS.value, None),
     (CollectionNames.BLOCKS.value, None),
     (CollectionNames.RECORD_GROUPS.value, record_group_schema),
     (CollectionNames.AGENT_INSTANCES.value, agent_schema),
@@ -3015,6 +3017,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 return CommentRecord.from_arango_record(type_doc_data, record_data)
             elif collection == CollectionNames.LINKS.value:
                 return LinkRecord.from_arango_record(type_doc_data, record_data)
+            elif collection == CollectionNames.SAVED_FILTERS.value:
+                return SavedFilterRecord.from_arango_record(type_doc_data, record_data)
             else:
                 # Unknown collection - fallback to base Record
                 return Record.from_arango_base_record(record_data)
@@ -6077,6 +6081,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.WEBPAGES.value,
                 CollectionNames.COMMENTS.value,
                 CollectionNames.TICKETS.value,
+                CollectionNames.SAVED_FILTERS.value,
                 CollectionNames.LINKS.value,
                 CollectionNames.PROJECTS.value,
                 CollectionNames.APPS.value,

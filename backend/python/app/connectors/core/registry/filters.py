@@ -287,6 +287,9 @@ class IndexingFilterKey(str, Enum):
     # Knowledge base
     KNOWLEDGE_BASE = "knowledge_base"
 
+    # Saved filters
+    SAVED_FILTERS = "saved_filters"
+
     SHARED = "shared"
     SHARED_WITH_ME = "shared_with_me"
 
