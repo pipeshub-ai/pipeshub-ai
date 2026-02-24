@@ -713,7 +713,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER perm.type == "ORG"
                             RETURN perm.role
             )
-            LET allPermissions = UNION_DISTINCT(directPermission, groupPermission, orgPermission)
+            LET appPermission = (
+                FOR app IN 1..1 OUTBOUND recordGroup @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("apps", app)
+                    FOR appRel IN @@user_app_relation
+                        FILTER appRel._from == userDoc._id
+                        FILTER appRel._to == app._id
+                        LIMIT 1
+                        RETURN "READER"
+            )
+            LET allPermissions = UNION_DISTINCT(directPermission, groupPermission, orgPermission, appPermission)
             LET hasPermission = LENGTH(allPermissions) > 0
             LET rolePriority = { "OWNER": 4, "WRITER": 3, "READER": 2, "COMMENTER": 1 }
             LET userRole = LENGTH(allPermissions) > 0 ? (
@@ -727,6 +736,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "@permission": CollectionNames.PERMISSION.value,
                 "@belongs_to": CollectionNames.BELONGS_TO.value,
                 "@inherit_permissions": CollectionNames.INHERIT_PERMISSIONS.value,
+                "@user_app_relation": CollectionNames.USER_APP_RELATION.value,
                 "user_key": user_key,
                 "record_group_id": record_group_id,
                 "org_id": org_id,
@@ -1165,6 +1175,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         RETURN perm.role
             )
 
+            // 2.6b Check inherited ancestor Record permissions (record -> parent record chain)
+            LET inherited_record_permission = FIRST(
+                FOR ancestorRecord, inheritEdge, path IN 1..20 OUTBOUND record_from @@inherit_permissions
+                    FILTER IS_SAME_COLLECTION("records", ancestorRecord)
+                    FOR perm IN @@permission
+                        FILTER perm._from == user_from AND perm._to == ancestorRecord._id AND perm.type == "USER"
+                        RETURN perm.role
+            )
+
             // 2.7 Check group -> inherited recordGroup permission
             LET group_inherited_record_group_permission = FIRST(
                 // Traverse up the recordGroup hierarchy from record
@@ -1262,6 +1281,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             // Return the highest permission level found (in order of precedence)
             LET final_permission = (
                 direct_permission ? direct_permission :
+                inherited_record_permission ? inherited_record_permission :
                 inherited_record_group_permission ? inherited_record_group_permission :
                 group_inherited_record_group_permission ? group_inherited_record_group_permission :
                 group_permission ? group_permission :
@@ -1278,6 +1298,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 permission: final_permission,
                 source: (
                     direct_permission ? "DIRECT" :
+                    inherited_record_permission ? "INHERITED_RECORD" :
                     inherited_record_group_permission ? "INHERITED_RECORD_GROUP" :
                     group_inherited_record_group_permission ? "GROUP_INHERITED_RECORD_GROUP" :
                     group_permission ? "GROUP" :
@@ -4050,6 +4071,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         await self.batch_create_edges(
             [record_edge],
+            collection=CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=transaction
+        )
+
+    async def create_inherit_permissions_relation_record_group_to_app(
+        self,
+        record_group_id: str,
+        app_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """Create INHERIT_PERMISSIONS edge from record group to app."""
+        edge = {
+            "_from": f"{CollectionNames.RECORD_GROUPS.value}/{record_group_id}",
+            "_to": f"{CollectionNames.APPS.value}/{app_id}",
+            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+
+        await self.batch_create_edges(
+            [edge],
             collection=CollectionNames.INHERIT_PERMISSIONS.value,
             transaction=transaction
         )

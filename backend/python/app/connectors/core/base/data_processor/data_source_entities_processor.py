@@ -203,6 +203,7 @@ class DataSourceEntitiesProcessor:
             )
 
     async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
+        parent_record: Optional[Record] = None
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
@@ -234,6 +235,10 @@ class DataSourceEntitiesProcessor:
                 else:
                     relation_type = RecordRelations.PARENT_CHILD.value
                 await tx_store.create_record_relation(parent_record.id, record.id, relation_type)
+                # INHERIT_PERMISSIONS for records with parent: edge to parent or clear
+                await tx_store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.INHERIT_PERMISSIONS.value)
+                if record.inherit_permissions:
+                    await tx_store.create_inherit_permissions_relation_record(record.id, parent_record.id)
 
     async def _handle_related_external_records(
         self,
@@ -357,20 +362,23 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+    async def _link_record_to_group(self, record: Record, record_group_id: Optional[str], tx_store: TransactionStore) -> None:
         """
-        Create edges between record and record group.
-        This should be called AFTER saving the record (when record.id is available).
+        Create structural edges between record and record group (BELONGS_TO).
+        For root records (no parent), also create or clear INHERIT_PERMISSIONS edge to record group.
+        Called AFTER saving the record (when record.id is available).
         """
+        if not record.id:
+            return
 
-        if record.id and record_group_id:
-            # Create a edge between the record and the record group if it doesn't exist
+        if record_group_id:
             await tx_store.create_record_group_relation(record.id, record_group_id)
 
-            if record.inherit_permissions:
+        # INHERIT_PERMISSIONS for root records only: edge to record group or clear
+        if not record.parent_external_record_id:
+            await tx_store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.INHERIT_PERMISSIONS.value)
+            if record.inherit_permissions and record_group_id:
                 await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group_id)
-            else:
-                await tx_store.delete_inherit_permissions_relation_record_group(record.id, record_group_id)
 
         if record.is_shared_with_me and record.shared_with_me_record_group_id is not None:
             shared_with_me_record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id, external_id=record.shared_with_me_record_group_id)
@@ -694,28 +702,33 @@ class DataSourceEntitiesProcessor:
                 if permissions:
                     self.logger.info(f"Adding {len(permissions)} new permission edge(s) for record: {record.id}")
                     await self._handle_record_permissions(record, permissions, tx_store)
-                # if record comes with inherit permissions true create inherit permissions edge else check if inherit permissions edge exists and delete it
-                if record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
-                                                                      external_id=record.external_record_group_id)
-
-                    if record_group:
-                        await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
-
-                if not record.inherit_permissions:
-                    record_group = await tx_store.get_record_group_by_external_id(connector_id=record.connector_id,
-                                                                      external_id=record.external_record_group_id)
-                    if record_group:
-                        # Delete the INHERIT_PERMISSIONS edge
-                        await tx_store.delete_edge(
-                            from_id=record.id,
-                            from_collection=CollectionNames.RECORDS.value,
-                            to_id=record_group.id,
-                            to_collection=CollectionNames.RECORD_GROUPS.value,
-                            collection=CollectionNames.INHERIT_PERMISSIONS.value
-                        )
                 else:
                     self.logger.info(f"No new permissions to add for record: {record.id}")
+
+                # INHERIT_PERMISSIONS: one edge per record - to parent Record if present, else to RecordGroup (root)
+                await tx_store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.INHERIT_PERMISSIONS.value)
+                if record.inherit_permissions:
+                    if record.parent_external_record_id:
+                        parent_record = await tx_store.get_record_by_external_id(
+                            connector_id=record.connector_id,
+                            external_id=record.parent_external_record_id
+                        )
+                        if parent_record:
+                            await tx_store.create_inherit_permissions_relation_record(record.id, parent_record.id)
+                        else:
+                            record_group = await tx_store.get_record_group_by_external_id(
+                                connector_id=record.connector_id,
+                                external_id=record.external_record_group_id
+                            )
+                            if record_group:
+                                await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
+                    else:
+                        record_group = await tx_store.get_record_group_by_external_id(
+                            connector_id=record.connector_id,
+                            external_id=record.external_record_group_id
+                        )
+                        if record_group:
+                            await tx_store.create_inherit_permissions_relation_record_group(record.id, record_group.id)
 
                 self.logger.info(f"Successfully updated permissions for record: {record.id}")
 
@@ -925,6 +938,7 @@ class DataSourceEntitiesProcessor:
 
             async with self.data_store_provider.transaction() as tx_store:
                 for record_group, permissions in record_groups:
+                    parent_record_group = None
                     record_group.org_id = self.org_id
 
                     self.logger.info(f"Processing record group: {record_group.name}")
@@ -1016,19 +1030,34 @@ class DataSourceEntitiesProcessor:
                             await tx_store.batch_create_edges(
                                 [parent_relation], collection=CollectionNames.BELONGS_TO.value
                             )
-
-                            if record_group.inherit_permissions:
-                                inherit_relation = parent_relation.copy()
-                                inherit_relation.pop("entityType", None)
-
-                                await tx_store.batch_create_edges(
-                                    [inherit_relation], collection=CollectionNames.INHERIT_PERMISSIONS.value
-                                )
-                            #if inherit records is false we need to remove the edge aswell
                         else:
                             self.logger.warning(
                                 f"Could not find parent record group with external_id "
                                 f"'{record_group.parent_external_group_id}' for child '{record_group.name}'"
+                            )
+
+                    # Unified INHERIT_PERMISSIONS: clear outbound then at most one edge (to App for root, to parent RG for child)
+                    await tx_store.delete_edges_from(
+                        record_group.id,
+                        CollectionNames.RECORD_GROUPS.value,
+                        CollectionNames.INHERIT_PERMISSIONS.value,
+                    )
+                    if record_group.inherit_permissions:
+                        if parent_record_group is not None:
+                            inherit_relation = {
+                                "from_id": record_group.id,
+                                "from_collection": CollectionNames.RECORD_GROUPS.value,
+                                "to_id": parent_record_group.id,
+                                "to_collection": CollectionNames.RECORD_GROUPS.value,
+                                "createdAtTimestamp": record_group.created_at,
+                                "updatedAtTimestamp": record_group.updated_at,
+                            }
+                            await tx_store.batch_create_edges(
+                                [inherit_relation], collection=CollectionNames.INHERIT_PERMISSIONS.value
+                            )
+                        elif record_group.parent_external_group_id is None:
+                            await tx_store.create_inherit_permissions_relation_record_group_to_app(
+                                record_group.id, record_group.connector_id
                             )
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
