@@ -8,6 +8,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { DashboardLayout } from 'src/layouts/dashboard';
 
 import { LoadingScreen } from 'src/components/loading-screen';
+
 import { ConnectorProvider } from 'src/sections/accountdetails/connectors/context';
 
 import { AuthGuard } from 'src/auth/guard';
@@ -34,16 +35,16 @@ const PersonalProfile = lazy(() => import('src/pages/dashboard/account/personal-
 const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
-const MailSettings = lazy(
-  () => import('src/pages/dashboard/account/mail-settings')
-);
+const MailSettings = lazy(() => import('src/pages/dashboard/account/mail-settings'));
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
 const OAuth2Page = lazy(() => import('src/pages/dashboard/account/oauth2'));
-const OAuth2AppDetailPage = lazy(() => import('src/pages/dashboard/account/oauth2/oauth2-app-detail'));
+const OAuth2AppDetailPage = lazy(
+  () => import('src/pages/dashboard/account/oauth2/oauth2-app-detail')
+);
 const OAuth2NewAppPage = lazy(() => import('src/pages/dashboard/account/oauth2/oauth2-new-app'));
 
 // Connector Pages
@@ -60,14 +61,14 @@ const ConnectorOAuthCallback = lazy(
 
 // Toolsets Pages
 const ToolsetsSettingsPage = lazy(() => import('src/pages/dashboard/account/toolsets'));
-const ToolsetOAuthCallback = lazy(() => import('src/pages/dashboard/account/toolsets/oauth-callback'));
+const ToolsetOAuthCallback = lazy(
+  () => import('src/pages/dashboard/account/toolsets/oauth-callback')
+);
 
 // Knowledge Base Pages
 const Collections = lazy(() => import('src/pages/dashboard/knowledgebase/collections'));
 const RecordDetails = lazy(() => import('src/pages/dashboard/knowledgebase/record-details'));
-const KnowledgeSearch = lazy(
-  () => import('src/pages/dashboard/knowledgebase/knowledge-search')
-);
+const KnowledgeSearch = lazy(() => import('src/pages/dashboard/knowledgebase/knowledge-search'));
 const AllRecordsPage = lazy(() => import('src/sections/knowledgebase/all-records-page'));
 
 // ----------------------------------------------------------------------
@@ -187,7 +188,11 @@ const WithAuth = ({ children }: { children: ReactNode }) => {
   if (CONFIG.auth.skip) {
     return <>{children}</>;
   }
-  return <AuthGuard><FullNameGuard>{children}</FullNameGuard></AuthGuard>;
+  return (
+    <AuthGuard>
+      <FullNameGuard>{children}</FullNameGuard>
+    </AuthGuard>
+  );
 };
 
 /**
@@ -314,7 +319,7 @@ export const dashboardRoutes = [
           // Redirect /account to appropriate profile based on account type
           {
             index: true,
-            element: <ProtectedRoute component={AccountTypeRedirect} />
+            element: <ProtectedRoute component={AccountTypeRedirect} />,
           },
 
           // ----------------------------------------------------------------------
@@ -370,7 +375,9 @@ export const dashboardRoutes = [
                   // Redirect /account/company-settings/settings to authentication
                   {
                     index: true,
-                    element: <Navigate to="/account/company-settings/settings/authentication" replace />,
+                    element: (
+                      <Navigate to="/account/company-settings/settings/authentication" replace />
+                    ),
                   },
 
                   // Authentication Settings
