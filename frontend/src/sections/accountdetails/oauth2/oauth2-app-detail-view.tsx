@@ -7,6 +7,8 @@ import React, { useState, useEffect, useCallback } from 'react';
 import deleteForeverIcon from '@iconify-icons/mdi/delete-forever';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 
+import { getOAuth2Paths } from 'src/routes/paths';
+
 import {
   Box,
   List,
@@ -54,8 +56,8 @@ export function OAuth2AppDetailView() {
   const { appId } = useParams<{ appId: string }>();
   const isDark = theme.palette.mode === 'dark';
 
-  const pathSegments = location.pathname.split('/').filter(Boolean);
-  const oauth2ListPath = `/${pathSegments.slice(0, -1).join('/')}`;
+  const oauth2Paths = getOAuth2Paths(location.pathname);
+  const oauth2ListPath = oauth2Paths.root;
 
   const [app, setApp] = useState<OAuth2App | null>(null);
   const [loading, setLoading] = useState(true);

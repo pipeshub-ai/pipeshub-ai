@@ -548,15 +548,15 @@ export const dashboardRoutes = [
                   // OAuth 2.0 (Pipeshub OAuth provider apps - admin only enforced by API)
                   {
                     path: 'oauth2',
-                    element: <IndividualOnlyRoute component={OAuth2Page} />,
+                    element: <AdminProtectedRoute component={OAuth2Page} />,
                   },
                   {
                     path: 'oauth2/new',
-                    element: <IndividualOnlyRoute component={OAuth2NewAppPage} />,
+                    element: <AdminProtectedRoute component={OAuth2NewAppPage} />,
                   },
                   {
                     path: 'oauth2/:appId',
-                    element: <IndividualOnlyRoute component={OAuth2AppDetailPage} />,
+                    element: <AdminProtectedRoute component={OAuth2AppDetailPage} />,
                   },
 
                   // AI Models Settings

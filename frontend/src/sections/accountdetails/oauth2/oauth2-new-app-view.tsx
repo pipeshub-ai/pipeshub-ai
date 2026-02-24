@@ -4,6 +4,8 @@ import arrowLeftIcon from '@iconify-icons/mdi/arrow-left';
 import contentCopyIcon from '@iconify-icons/mdi/content-copy';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 
+import { getOAuth2Paths } from 'src/routes/paths';
+
 import {
   Box,
   alpha,
@@ -44,18 +46,8 @@ export function OAuth2NewAppView() {
   const location = useLocation();
   const isDark = theme.palette.mode === 'dark';
 
-  const getAppSettingsPath = (appId: string) => {
-    const pathname = location.pathname.replace(/\/$/, '');
-    const base = pathname.endsWith('/new')
-      ? pathname.slice(0, -4)
-      : pathname.replace(/\/new\/?$/, '');
-    return `${base}/${appId}`;
-  };
-
-  const oauth2ListPath = (() => {
-    const pathname = location.pathname.replace(/\/$/, '');
-    return pathname.endsWith('/new') ? pathname.slice(0, -4) : pathname.replace(/\/new\/?$/, '');
-  })();
+  const oauth2Paths = getOAuth2Paths(location.pathname);
+  const oauth2ListPath = oauth2Paths.root;
 
   const [step, setStep] = useState<'form' | 'success'>('form');
   const [createdApp, setCreatedApp] = useState<OAuth2AppWithSecret | null>(null);
@@ -314,7 +306,7 @@ export function OAuth2NewAppView() {
             <Button
               variant="outlined"
               component={Link}
-              to={getAppSettingsPath(createdApp.id ?? (createdApp as any)._id)}
+              to={oauth2Paths.app(createdApp.id)}
               sx={{ textTransform: 'none', fontSize: '0.875rem', py: 1, px: 2 }}
             >
               Open application settings
