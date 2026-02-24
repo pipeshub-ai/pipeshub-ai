@@ -403,9 +403,7 @@ async function processSlackMessage(
       console.error("Error posting Slack waiting message:", error);
     }
 
-    const url = conversation
-      ? `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/internal/${conversation}/messages/stream`
-      : `${process.env.QUESTIONNAIRE_BACKEND_URL}/api/v1/conversations/internal/stream`;
+    const url = `http://localhost:3000/api/v1/conversations/internal/stream`;
 
     const response = await axios.post(
       url,
