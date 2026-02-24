@@ -1,5 +1,6 @@
 import asyncio
 from collections import defaultdict
+import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
@@ -32,6 +33,8 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
+from urllib.parse import quote
+
 
 group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
 
@@ -547,7 +550,12 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             hide_weburl = meta.get("hideWeburl")
             if hide_weburl is None:
                 hide_weburl = record.get("hide_weburl", False)
-
+            
+            web_url = meta.get("webUrl") or record.get("weburl", "")
+            origin = meta.get("origin") or record.get("origin", "")
+            if web_url and origin != "UPLOAD":
+                web_url = generate_text_fragment_url(web_url, block_text)
+            
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": meta.get("recordId") or record.get("id", ""),
@@ -555,7 +563,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "recordName": meta.get("recordName") or record.get("record_name", ""),
                         "recordType": record.get("record_type", ""),
                         "recordVersion": record.get("version", ""),
-                        "origin": meta.get("origin") or record.get("origin", ""),
+                        "origin": origin,
                         "connector": meta.get("connector") or record.get("connector_name", ""),
                         "blockText": block_text,
                         "blockType": str(block_type),
@@ -564,7 +572,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                         "extension": extension,
                         "mimeType": mime_type,
                         "blockNum":block_num,
-                        "webUrl": meta.get("webUrl") or record.get("weburl", ""),
+                        "webUrl": web_url,
                         "previewRenderable": preview_renderable,
                         "hideWeburl": hide_weburl,
                     }
@@ -1549,4 +1557,98 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
 
     return current_message_tokens, new_tokens
+
+
+
+def extract_start_end_text(snippet):
+    if not snippet:
+        return "", ""
+
+    PATTERN = re.compile(r'[a-zA-Z0-9 ]+')
+
+    # --- Find start_text: first matching segment, first 4 words ---
+    first_match = PATTERN.search(snippet)
+    if not first_match:
+        return "", ""
+
+    first_text = first_match.group().strip()
+    if not first_text:
+        return "", ""
+
+    words = first_text.split()
+    start_text = " ".join(words[:4])
+    start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
+
+    # Compute exact end position of start_text in snippet
+    # It starts at first_match.start() + leading whitespace offset
+    leading_spaces = len(first_match.group()) - len(first_match.group().lstrip())
+    start_text_begin = first_match.start() + leading_spaces
+    start_text_end = start_text_begin + len(start_text)
+
+    # --- Find end_text: last matching segment after start_text_end, last 4 words ---
+    # Search backwards by scanning from start_text_end onward for the *last* match
+    remaining = snippet[start_text_end:]
+
+    # Find last match in remaining using finditer (but we only keep last)
+    # Alternatively, search from the end using a reverse approach
+    last_text = None
+    for m in PATTERN.finditer(remaining):
+        stripped = m.group().strip()
+        if stripped:
+            last_text = stripped
+
+    if last_text:
+        words = last_text.split()
+        end_text = " ".join(words[-4:])
+    elif len(first_text.split()) > 4:
+        word_count = len(first_text.split())
+        diff = word_count - 4
+        diff = min(4, diff)
+        # Fall back to last 4 words of the first segment
+        end_text = " ".join(first_text.split()[-diff:])
+    else:
+        end_text = ""
+
+    return start_text, end_text
+
+def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
+    """
+    Generate a URL with text fragment for direct navigation to specific text.
+    
+    Format: url#:~:text=start_text,end_text
+    
+    Args:
+        base_url: The base URL of the page
+        text_snippet: The text to highlight/navigate to
+    
+    Returns:
+        URL with text fragment, or base_url if encoding fails
+    """
+    if not base_url or not text_snippet:
+        return base_url
+    
+    try:
+        snippet = text_snippet.strip()
+        if not snippet:
+            return base_url
+        
+        start_text, end_text = extract_start_end_text(snippet)
+
+        if not start_text:
+            return base_url
+       
+        encoded_start = quote(start_text, safe='')
+        encoded_end = None
+        if end_text:
+            encoded_end = quote(end_text, safe='')
+        
+        if '#' in base_url:
+            base_url = base_url.split('#')[0]
+        
+        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
+        
+    except Exception:
+        return base_url
+
+
 

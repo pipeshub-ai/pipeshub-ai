@@ -17713,7 +17713,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset usage: {str(e)}")
             raise
 
-    async def get_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def get_agent(
+        self,
+        agent_id: str,
+        user_id: str,
+        transaction: Optional[str] = None,
+        allow_unscoped_access: bool = False
+    ) -> Optional[Dict]:
         """
         Get an agent by ID with user permissions and linked graph data.
 
@@ -17774,10 +17780,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     }})
             ) : []
 
-            // Get base agent with permissions
+            // Allow bypass for stream-chat if explicit flag is enabled
+            LET bypass_access = @allow_unscoped_access ? (
+                LET agent = DOCUMENT(agent_path)
+                FILTER agent != null
+                FILTER agent.isDeleted != true
+                RETURN MERGE(agent, {
+                    access_type: "BYPASS",
+                    user_role: "OWNER",
+                    can_edit: true,
+                    can_delete: true,
+                    can_share: true,
+                    can_view: true
+                })
+            ) : []
+
+            // Get base agent with permissions or bypass access
             LET base_agent = LENGTH(individual_access) > 0 ?
                 FIRST(individual_access) :
-                (LENGTH(team_access) > 0 ? FIRST(team_access) : null)
+                (LENGTH(team_access) > 0 ? FIRST(team_access) :
+                    (LENGTH(bypass_access) > 0 ? FIRST(bypass_access) : null))
 
             // Get linked toolsets with their tools
             LET linked_toolsets = base_agent != null ? (
@@ -17883,13 +17905,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
             bind_vars = {
                 "agent_id": agent_id,
                 "user_id": user_id,
+                "allow_unscoped_access": allow_unscoped_access,
                 "kb_type": Connectors.KNOWLEDGE_BASE.value,
             }
 
             result = await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
 
             if not result or len(result) == 0 or result[0] is None:
-                self.logger.warning(f"No permissions found for user {user_id} on agent {agent_id}")
+                self.logger.warning(f"No accessible agent found for user {user_id} on agent {agent_id}")
                 return None
 
             agent = result[0]

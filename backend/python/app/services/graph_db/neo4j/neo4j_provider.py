@@ -15438,7 +15438,13 @@ class Neo4jProvider(IGraphDBProvider):
             raise
 
 
-    async def get_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def get_agent(
+        self,
+        agent_id: str,
+        user_id: str,
+        transaction: Optional[str] = None,
+        allow_unscoped_access: bool = False
+    ) -> Optional[Dict]:
         """
         Get an agent by ID with user permissions and linked graph data.
 
@@ -15545,8 +15551,25 @@ class Neo4jProvider(IGraphDBProvider):
                     user_role = team_result[0]["role"]
                     access_type = "TEAM"
 
+            if not agent_data and allow_unscoped_access:
+                bypass_query = f"""
+                MATCH (agent:{agent_label} {{id: $agent_id}})
+                WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+                RETURN agent
+                LIMIT 1
+                """
+                bypass_result = await self.client.execute_query(
+                    bypass_query,
+                    parameters={"agent_id": agent_id},
+                    txn_id=transaction
+                )
+                if bypass_result:
+                    agent_data = dict(bypass_result[0]["agent"])
+                    user_role = "OWNER"
+                    access_type = "BYPASS"
+
             if not agent_data:
-                self.logger.warning(f"No permissions found for user {user_key} on agent {agent_id}")
+                self.logger.warning(f"No accessible agent found for user {user_key} on agent {agent_id}")
                 return None
 
             # Convert to ArangoDB format

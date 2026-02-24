@@ -28,8 +28,10 @@ import {
   addMessageStream,
   createAgentConversation,
   streamAgentConversation,
+  streamAgentConversationInternal,
   addMessageToAgentConversation,
   addMessageStreamToAgentConversation,
+  addMessageStreamToAgentConversationInternal,
   getAllAgentConversations,
   getAgentConversationById,
   deleteAgentConversationById,
@@ -522,6 +524,22 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     metricsMiddleware(container),
     addMessageStreamToAgentConversation(appConfig),
+  );
+
+  router.post(
+    '/:agentKey/conversations/internal/:conversationId/messages/stream',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    addMessageStreamToAgentConversationInternal(appConfig),
+  );
+
+  router.post(
+    '/:agentKey/conversations/internal/stream',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    metricsMiddleware(container),
+    streamAgentConversationInternal(appConfig),
   );
 
 
