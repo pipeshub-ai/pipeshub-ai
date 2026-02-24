@@ -1784,6 +1784,19 @@ class KnowledgeBaseService:
         except Exception as e:
             self.logger.warning("Failed to set QUEUED for record %s: %s", record_id, e)
 
+    async def set_records_indexing_status_queued(self, record_ids: List[str]) -> None:
+        """Set indexing status to QUEUED for multiple records (batch; called by router after publishing events)."""
+        if not record_ids:
+            return
+        try:
+            await self.graph_provider.batch_update_nodes(
+                record_ids,
+                {"indexingStatus": "QUEUED"},
+                CollectionNames.RECORDS.value,
+            )
+        except Exception as e:
+            self.logger.warning("Failed to set QUEUED for %d records: %s", len(record_ids), e)
+
     # Convenience methods that call the unified method
     async def upload_records_to_kb(self, kb_id: str, user_id: str, org_id: str, files: List[Dict]) -> Dict:
         """Upload to KB root"""
