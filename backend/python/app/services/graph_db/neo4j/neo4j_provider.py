@@ -2922,6 +2922,34 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Get org apps failed: {str(e)}")
             return []
 
+    async def get_connector_id_by_type(
+        self, org_id: str, connector_type: str
+    ) -> Optional[str]:
+        """Get connector instance ID by connector type for an organization.
+
+        Args:
+            org_id: Organization ID
+            connector_type: Connector type enum value (e.g., 'POSTGRESQL', 'SNOWFLAKE')
+
+        Returns:
+            Connector instance ID if found, None otherwise
+        """
+        try:
+            query = """
+            MATCH (o:Organization {id: $org_id})-[:ORG_APP_RELATION]->(app:App)
+            WHERE app.isActive = true AND app.type = $connector_type
+            RETURN app.id AS app_id
+            LIMIT 1
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"org_id": org_id, "connector_type": connector_type}
+            )
+            return results[0]["app_id"] if results else None
+        except Exception as e:
+            self.logger.error(f"Failed to get connector ID by type: {str(e)}")
+            return None
+
     async def get_departments(
         self,
         org_id: Optional[str] = None,
@@ -3009,9 +3037,10 @@ class Neo4jProvider(IGraphDBProvider):
                 """
                 params["record_type"] = record_type
 
+            # If caller has size: match only when candidate has same size or no size (both have size => check size).
             if size_in_bytes is not None:
                 query += """
-                AND r.sizeInBytes = $size_in_bytes
+                AND (r.sizeInBytes IS NULL OR r.sizeInBytes = $size_in_bytes)
                 """
                 params["size_in_bytes"] = size_in_bytes
 
@@ -3832,6 +3861,205 @@ class Neo4jProvider(IGraphDBProvider):
             collection=CollectionNames.RECORD_RELATIONS.value,
             transaction=transaction
         )
+
+    async def batch_upsert_record_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[str] = None
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Uses MERGE to avoid duplicates - matches on from, to, and relationType.
+        This allows multiple edges between the same record pair with different
+        relation types (e.g., FOREIGN_KEY and DEPENDS_ON).
+
+        Args:
+            edges: List of edge documents with from_id, to_id, and relationType
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("Batch upserting record relation edges")
+
+            edge_data = []
+            for edge in edges:
+                from_key = edge.get("from_id") or edge.get("_from", "").split("/")[-1]
+                to_key = edge.get("to_id") or edge.get("_to", "").split("/")[-1]
+                relation_type = edge.get("relationType", "")
+                props = {k: v for k, v in edge.items() if k not in [
+                    "from_id", "to_id", "from_collection", "to_collection", "_from", "_to"
+                ]}
+                edge_data.append({
+                    "from_key": from_key,
+                    "to_key": to_key,
+                    "relationType": relation_type,
+                    "props": props
+                })
+
+            query = """
+            UNWIND $edges AS edge
+            MATCH (from:Record {id: edge.from_key})
+            MATCH (to:Record {id: edge.to_key})
+            MERGE (from)-[r:RECORD_RELATION {relationType: edge.relationType}]->(to)
+            SET r += edge.props
+            RETURN count(r) AS upserted
+            """
+
+            await self.client.execute_query(
+                query,
+                parameters={"edges": edge_data},
+                txn_id=transaction
+            )
+
+            self.logger.info(f"Successfully upserted {len(edge_data)} record relation edges.")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Batch record relation upsert failed: {str(e)}")
+            raise
+
+    async def get_child_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record IDs of all records that have an edge pointing TO this record
+        with the given relation type.
+
+        Args:
+            record_id: Record ID
+            relation_type: Edge relation type
+            transaction: Optional transaction ID
+
+        Returns:
+            List of dicts with record_id and FK metadata.
+        """
+        try:
+            query = """
+            MATCH (child:Record)-[r:RECORD_RELATION]->(parent:Record {id: $record_id})
+            WHERE r.relationType = $relation_type OR r.relationshipType = $relation_type
+            RETURN child.id AS record_id,
+                   COALESCE(r.childTableName, '') AS childTable,
+                   COALESCE(r.sourceColumn, '') AS sourceColumn,
+                   COALESCE(r.targetColumn, '') AS targetColumn
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "relation_type": relation_type},
+                txn_id=transaction
+            )
+
+            output = []
+            for record in results:
+                output.append({
+                    "record_id": record["record_id"],
+                    "childTable": record.get("childTable", ""),
+                    "sourceColumn": record.get("sourceColumn", ""),
+                    "targetColumn": record.get("targetColumn", ""),
+                })
+            return output
+
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get child record IDs by relation type for record %s: %s",
+                record_id, str(e),
+            )
+            return []
+
+    async def get_virtual_record_ids_for_record_ids(
+        self,
+        record_ids: List[str],
+        transaction: Optional[str] = None
+    ) -> Dict[str, str]:
+        """
+        Resolve record IDs to virtualRecordIds. Used to fetch blob for child records by id.
+
+        Args:
+            record_ids: List of record IDs
+            transaction: Optional transaction ID
+
+        Returns:
+            Dict mapping record_id -> virtual_record_id
+        """
+        if not record_ids:
+            return {}
+        try:
+            query = """
+            MATCH (r:Record)
+            WHERE r.id IN $record_ids AND r.virtualRecordId IS NOT NULL
+            RETURN r.id AS record_id, r.virtualRecordId AS virtualRecordId
+            """
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_ids": list(record_ids)},
+                txn_id=transaction
+            )
+            return {row["record_id"]: row["virtualRecordId"] for row in (results or [])}
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get virtual_record_ids for record_ids: %s", str(e)
+            )
+            return {}
+
+    async def get_parent_record_ids_by_relation_type(
+        self,
+        record_id: str,
+        relation_type: str,
+        transaction: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record IDs of all records that this record has an edge pointing TO
+        with the given relation type.
+
+        Args:
+            record_id: Record ID
+            relation_type: Edge relation type
+            transaction: Optional transaction ID
+
+        Returns:
+            List of dicts with record_id and FK metadata.
+        """
+        try:
+            query = """
+            MATCH (child:Record {id: $record_id})-[r:RECORD_RELATION]->(parent:Record)
+            WHERE r.relationType = $relation_type OR r.relationshipType = $relation_type
+            RETURN parent.id AS record_id,
+                   COALESCE(r.parentTableName, '') AS parentTable,
+                   COALESCE(r.sourceColumn, '') AS sourceColumn,
+                   COALESCE(r.targetColumn, '') AS targetColumn
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"record_id": record_id, "relation_type": relation_type},
+                txn_id=transaction
+            )
+
+            output = []
+            for record in results:
+                output.append({
+                    "record_id": record["record_id"],
+                    "parentTable": record.get("parentTable", ""),
+                    "sourceColumn": record.get("sourceColumn", ""),
+                    "targetColumn": record.get("targetColumn", ""),
+                })
+            return output
+
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get parent record IDs by relation type for record %s: %s",
+                record_id, str(e),
+            )
+            return []
 
     async def batch_upsert_record_groups(
         self,
@@ -11350,7 +11578,7 @@ class Neo4jProvider(IGraphDBProvider):
                 target_labels = result.get("target_labels", [])
                 target_id = result.get("target_id")
 
-                # Determine target collection from labels
+                # Determine target collection from labels using reverse of COLLECTION_TO_LABEL
                 target_collection = "records"  # Default
                 for label in target_labels:
                     # Use reverse mapping to get collection from label

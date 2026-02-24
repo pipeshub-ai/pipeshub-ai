@@ -488,6 +488,39 @@ class BaseArangoService:
             self.logger.error(f"Failed to get org apps: {str(e)}")
             raise
 
+    async def get_connector_id_by_type(self, org_id: str, connector_type: str) -> Optional[str]:
+        """Get connector instance ID by connector type for an organization.
+        
+        Args:
+            org_id: Organization ID
+            connector_type: Connector type enum value (e.g., 'POSTGRESQL', 'SNOWFLAKE')
+            
+        Returns:
+            Connector instance ID (_key) if found, None otherwise
+        """
+        try:
+            self.logger.debug(f"🔍 Looking up connector: org_id={org_id}, connector_type={connector_type}")
+            query = f"""
+            FOR app IN OUTBOUND
+                '{CollectionNames.ORGS.value}/{org_id}'
+                {CollectionNames.ORG_APP_RELATION.value}
+            FILTER app.isActive == true
+            FILTER app.type == @connector_type
+            LIMIT 1
+            RETURN app._key
+            """
+            cursor = self.db.aql.execute(query, bind_vars={"connector_type": connector_type})
+            result = list(cursor)
+            connector_id = result[0] if result else None
+            if connector_id:
+                self.logger.debug(f"✅ Found connector_id={connector_id} for type={connector_type}")
+            else:
+                self.logger.debug(f"⚠️ No active connector found for type={connector_type} in org={org_id}")
+            return connector_id
+        except Exception as e:
+            self.logger.error(f"Failed to get connector ID by type: {str(e)}")
+            return None
+
     async def get_user_apps(self, user_id: str) -> list:
         """Get all apps associated with a user"""
         try:
@@ -2527,10 +2560,26 @@ class BaseArangoService:
                     await self._publish_sync_event(event_type, payload)
                     self.logger.info(f"✅ Published {event_type} event for record {record_id} with depth {depth}")
                 else:
-                    # Single record reindex - use existing newRecord event
+                    # Single record reindex
                     payload = await self._create_reindex_event_payload(record, file_record, user_id, request)
-                    await self._publish_record_event("newRecord", payload)
-                    self.logger.info(f"✅ Published reindex event for record {record_id}")
+
+                    from app.config.constants.arangodb import (
+                        RECONCILIATION_ENABLED_EXTENSIONS,
+                        RECONCILIATION_ENABLED_MIME_TYPES,
+                    )
+                    mime_type = record.get("mimeType", "")
+                    extension = record.get("extension", "")
+                    is_reconciliation_type = (
+                        mime_type in RECONCILIATION_ENABLED_MIME_TYPES
+                        or extension in RECONCILIATION_ENABLED_EXTENSIONS
+                    )
+
+                    if is_reconciliation_type:
+                        await self._publish_record_event("reindexRecord", payload)
+                        self.logger.info(f"✅ Published reindexRecord event for record {record_id} (reconciliation-enabled)")
+                    else:
+                        await self._publish_record_event("newRecord", payload)
+                        self.logger.info(f"✅ Published newRecord event for record {record_id} (full reindex)")
 
                 return {
                     "success": True,
@@ -5444,6 +5493,58 @@ class BaseArangoService:
                 raise
             return False
 
+    async def batch_upsert_record_relations(
+        self,
+        edges: List[Dict],
+        transaction: Optional[TransactionDatabase] = None,
+    ) -> bool | None:
+        """Batch upsert record relation edges with relationType in UPSERT match condition.
+
+        Uses UPSERT to avoid duplicates - matches on _from, _to, and relationType.
+        This allows multiple edges between the same record pair with different
+        relation types (e.g., FOREIGN_KEY and DEPENDS_ON).
+
+        Args:
+            edges: List of edge documents with _from, _to, and relationType
+            transaction: Optional transaction context
+
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            if not edges:
+                return True
+
+            self.logger.info("🚀 Batch upserting record relation edges")
+
+            batch_query = """
+            FOR edge IN @edges
+                UPSERT { _from: edge._from, _to: edge._to, relationType: edge.relationType }
+                INSERT edge
+                UPDATE edge
+                IN @@collection
+                RETURN NEW
+            """
+            bind_vars = {
+                "edges": edges,
+                "@collection": CollectionNames.RECORD_RELATIONS.value
+            }
+
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(batch_query, bind_vars=bind_vars)
+            results = list(cursor)
+
+            self.logger.info(
+                f"✅ Successfully upserted {len(results)} record relation edges."
+            )
+            return True
+
+        except Exception as e:
+            self.logger.error(f"❌ Batch record relation upsert failed: {str(e)}")
+            if transaction:
+                raise
+            return False
+
     async def get_record_by_conversation_index(
         self,
         connector_id: str,
@@ -5657,6 +5758,113 @@ class BaseArangoService:
                 "❌ Failed to retrieve internal key for external file ID %s %s: %s", connector_id, external_id, str(e)
             )
             return None
+
+    async def get_child_record_ids_by_relation_type(
+        self, record_id: str, relation_type: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record _keys of all records that have an edge pointing TO this record
+        with the given relation type (e.g. child tables that reference this table via FOREIGN_KEY).
+
+        Args:
+            record_id: Record _key (vertex id)
+            relation_type: Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+
+        Returns:
+            List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
+        """
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._to == CONCAT("records/", @record_id)
+                FILTER edge.relationType == @relation_type OR edge.relationshipType == @relation_type
+                RETURN {{
+                    record_id: PARSE_IDENTIFIER(edge._from).key,
+                    childTable: edge.childTableName || "",
+                    sourceColumn: edge.sourceColumn || "",
+                    targetColumn: edge.targetColumn || "",
+                }}
+            """
+            cursor = self.db.aql.execute(
+                query, bind_vars={"record_id": record_id, "relation_type": relation_type}
+            )
+            return list(cursor) or []
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get child record IDs by relation type for record %s: %s",
+                record_id,
+                str(e),
+            )
+            return []
+
+    async def get_parent_record_ids_by_relation_type(
+        self, record_id: str, relation_type: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Get record _keys of all records that this record has an edge pointing TO
+        with the given relation type (e.g. parent tables that this table references via FOREIGN_KEY).
+
+        Args:
+            record_id: Record _key (vertex id)
+            relation_type: Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
+
+        Returns:
+            List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
+        """
+        try:
+            query = f"""
+            FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge._from == CONCAT("records/", @record_id)
+                FILTER edge.relationType == @relation_type OR edge.relationshipType == @relation_type
+                RETURN {{
+                    record_id: PARSE_IDENTIFIER(edge._to).key,
+                    parentTable: edge.parentTableName || "",
+                    sourceColumn: edge.sourceColumn || "",
+                    targetColumn: edge.targetColumn || "",
+                }}
+            """
+            cursor = self.db.aql.execute(
+                query, bind_vars={"record_id": record_id, "relation_type": relation_type}
+            )
+            return list(cursor) or []
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get parent record IDs by relation type for record %s: %s",
+                record_id,
+                str(e),
+            )
+            return []
+
+    async def get_virtual_record_ids_for_record_ids(
+        self, record_ids: List[str], transaction: Optional[TransactionDatabase] = None
+    ) -> Dict[str, str]:
+        """
+        Resolve record _keys to virtualRecordIds. Used to fetch blob for child records by id.
+
+        Args:
+            record_ids: List of record _keys
+            transaction: Optional transaction
+
+        Returns:
+            Dict mapping record_id (_key) -> virtual_record_id
+        """
+        if not record_ids:
+            return {}
+        try:
+            query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r._key IN @record_ids
+                FILTER r.virtualRecordId != null
+                RETURN {{ _key: r._key, virtualRecordId: r.virtualRecordId }}
+            """
+            db = transaction if transaction else self.db
+            cursor = db.aql.execute(query, bind_vars={"record_ids": list(record_ids)})
+            return {row["_key"]: row["virtualRecordId"] for row in cursor}
+        except Exception as e:
+            self.logger.warning(
+                "Failed to get virtual_record_ids for record_ids: %s", str(e)
+            )
+            return {}
 
     async def get_record_by_external_revision_id(
         self, connector_id: str, external_revision_id: str, transaction: Optional[TransactionDatabase] = None

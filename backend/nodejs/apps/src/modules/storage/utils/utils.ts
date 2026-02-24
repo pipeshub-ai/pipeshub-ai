@@ -204,9 +204,12 @@ export async function createPlaceholderDocument(
     // Validate file extension, MIME type, and document name constraints
     validateFileAndDocumentName(extension, documentName, fileNameForError);
 
+    const fullDocumentPath = documentPath
+      ? `${orgId}/PipesHub/${documentPath}`
+      : `${orgId}/PipesHub`;
     const documentInfo: Partial<Document> = {
       documentName,
-      documentPath,
+      documentPath: fullDocumentPath,
       alternateDocumentName,
       orgId: new mongoose.Types.ObjectId(orgId),
       isVersionedFile: isVersionedFile,

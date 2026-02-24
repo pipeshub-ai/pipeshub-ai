@@ -564,6 +564,10 @@ class GraphTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> None:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
+    async def batch_upsert_record_relations(self, edges: List[Dict]) -> None:
+        """Batch upsert record relation edges with relationType in UPSERT match condition."""
+        return await self.graph_provider.batch_upsert_record_relations(edges, transaction=self.txn)
+
     async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
         return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
