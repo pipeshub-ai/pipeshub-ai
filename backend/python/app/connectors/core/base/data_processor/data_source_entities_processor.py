@@ -357,11 +357,15 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore) -> None:
+    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
         """
+
+        if existing_record and existing_record.record_group_id and existing_record.record_group_id != record_group_id:
+            await tx_store.delete_edge(existing_record.id, CollectionNames.RECORDS.value, existing_record.record_group_id, CollectionNames.RECORD_GROUPS.value, CollectionNames.BELONGS_TO.value)
+            await tx_store.delete_inherit_permissions_relation_record_group(existing_record.id, existing_record.record_group_id)
 
         if record.id and record_group_id:
             # Create a edge between the record and the record group if it doesn't exist
@@ -743,7 +747,7 @@ class DataSourceEntitiesProcessor:
 
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.is_shared_with_me:
-            await self._link_record_to_group(record, record_group_id, tx_store)
+            await self._link_record_to_group(record, record_group_id, tx_store, existing_record)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
         await self._handle_parent_record(record, tx_store)
