@@ -39,6 +39,8 @@ class AtlassianScope(Enum):
     JIRA_AUDIT_LOG_READ = "read:audit-log:jira"
     JIRA_APPLICATION_ROLE_READ = "read:application-role:jira"
     JIRA_PROJECT_ROLE_READ = "read:project-role:jira"
+    JIRA_ISSUE_SECURITY_LEVEL_READ = "read:issue-security-level:jira"
+    JIRA_FIELD_READ = "read:field:jira"
 
     # Confluence Scopes
     CONFLUENCE_CONTENT_READ = "read:confluence-content.all"
@@ -107,6 +109,8 @@ class AtlassianScope(Enum):
             cls.JIRA_AUDIT_LOG_READ.value,      # Read audit logs (for detecting deleted issues)
             cls.JIRA_APPLICATION_ROLE_READ.value,  # Read application roles
             cls.JIRA_PROJECT_ROLE_READ.value,   # Read project roles
+            cls.JIRA_ISSUE_SECURITY_LEVEL_READ.value,   # Read issue security level members
+            cls.JIRA_FIELD_READ.value,                  # Read fields
 
             # Common scopes
             cls.ACCOUNT_READ.value,             # Read Atlassian account info

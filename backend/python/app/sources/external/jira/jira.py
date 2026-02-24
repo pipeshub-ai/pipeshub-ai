@@ -6141,8 +6141,8 @@ class JiraDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
         resp = await self._client.execute(req)
@@ -8166,8 +8166,8 @@ class JiraDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
         resp = await self._client.execute(req)
@@ -13386,8 +13386,8 @@ class JiraDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
         resp = await self._client.execute(req)
@@ -16114,8 +16114,8 @@ class JiraDataSource:
             method='GET',
             url=url,
             headers=_as_str_dict(_headers),
-            path_params=_as_str_dict(_path),
-            query_params=_as_str_dict(_query),
+            path=_as_str_dict(_path),
+            query=_as_str_dict(_query),
             body=_body,
         )
         resp = await self._client.execute(req)
