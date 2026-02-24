@@ -376,6 +376,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     is_updated = True
                     metadata_changed = True
 
+                if existing_record and (metadata.get("parents") or [None])[0] != existing_record.parent_external_record_id:
+                    is_updated = True
+                    metadata_changed = True
+
             # Determine if it's a file or folder
             mime_type = metadata.get("mimeType", "")
             is_file = mime_type != MimeTypes.GOOGLE_DRIVE_FOLDER.value
