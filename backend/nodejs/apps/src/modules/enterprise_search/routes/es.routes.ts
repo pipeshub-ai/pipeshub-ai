@@ -49,6 +49,8 @@ import {
   updateAgentPermissions,
   getAgentPermissions,
   regenerateAgentAnswers,
+  streamChatInternal,
+  addMessageStreamInternal,
 } from '../controller/es_controller';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -130,6 +132,14 @@ export function createConversationalRouter(container: Container): Router {
     streamChat(appConfig),
   );
 
+  router.post(
+    '/internal/stream',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+    streamChatInternal(appConfig),
+  );
+
   /**
    * @route POST /api/v1/conversations/:conversationId/messages
    * @desc Add a new message to existing conversation
@@ -182,6 +192,14 @@ export function createConversationalRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(addMessageParamsSchema),
     addMessageStream(appConfig),
+  );
+
+  router.post(
+    '/internal/:conversationId/messages/stream',
+    authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
+    metricsMiddleware(container),
+    ValidationMiddleware.validate(addMessageParamsSchema),
+    addMessageStreamInternal(appConfig),
   );
 
   /**
