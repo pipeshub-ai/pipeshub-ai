@@ -448,6 +448,7 @@ components:
             document:delete: Delete documents
             crawl:read: Read crawling jobs
             crawl:write: Create and manage crawling jobs
+            crawl:delete: Delete crawling jobs
         clientCredentials:
           tokenUrl: /api/v1/oauth/token
           scopes:
@@ -19004,7 +19005,7 @@ paths:
       operationId: removeCrawlingJob
       security:
         - bearerAuth: []
-        - oauth2: [crawl:write]
+        - oauth2: [crawl:delete]
       parameters:
         - name: connector
           in: path
@@ -19281,6 +19282,7 @@ paths:
       operationId: removeAllCrawlingJobs
       security:
         - bearerAuth: []
+        - oauth2: [crawl:delete]
       responses:
         '200':
           description: All crawling jobs removed successfully
