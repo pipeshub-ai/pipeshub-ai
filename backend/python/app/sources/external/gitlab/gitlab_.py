@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from gitlab import Gitlab
 from typing import Dict, List, Optional, Tuple, Union, cast
-
+from datetime import datetime
 from app.sources.client.gitlab.gitlab import GitLabResponse
 
 
@@ -17,11 +17,20 @@ class GitLabDataSource:
     def __init__(self, client_or_sdk: Union[Gitlab, object]) -> None:
         # Support a raw SDK or a wrapper that exposes `.get_sdk()`
         if hasattr(client_or_sdk, "get_sdk"):
-            sdk_obj = getattr(client_or_sdk, "get_sdk")()
-            self._sdk: Gitlab = cast(Gitlab, sdk_obj)
+            sdk_obj = getattr(client_or_sdk, "get_sdk")
+            self._sdk: Gitlab = cast(Gitlab, sdk_obj())
         else:
             self._sdk = cast(Gitlab, client_or_sdk)
-
+            
+    def get_user(self) -> GitLabResponse:
+        """Fetching GitLab user info."""
+        try:    
+            self._sdk.auth()  
+            user = self._sdk.user
+            return GitLabResponse(success=True, data=user)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+    
     # ---- helpers ----
     def _project(self, project_id: Union[int, str]) -> object:
         # python-gitlab allows numeric ID or full path for project lookup
@@ -50,15 +59,18 @@ class GitLabDataSource:
         get_all: bool = True,
     ) -> GitLabResponse:
         """List accessible projects (optionally filtered).  [projects]"""
-        params = self._params(
-            search=search,
-            membership=membership,
-            owned=owned,
-            starred=starred,
-            simple=simple,
-        )
-        projects = self._sdk.projects.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=projects)
+        try:
+            params = self._params(
+                search=search,
+                membership=membership,
+                owned=owned,
+                starred=starred,
+                simple=simple,
+            )
+            projects = self._sdk.projects.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=projects)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_project(self, project_id: Union[int, str]) -> GitLabResponse:
         """Get a single project by ID or path.  [projects]"""
@@ -131,25 +143,33 @@ class GitLabDataSource:
         search: Optional[str] = None,
         author_id: Optional[int] = None,
         assignee_id: Optional[int] = None,
+        updated_after: Optional[str] = None,
         get_all: bool = True,
     ) -> GitLabResponse:
         """List project issues with filters.  [issues]"""
-        p = self._project(project_id)
-        params = self._params(
-            state=state,
-            labels=labels,
-            search=search,
-            author_id=author_id,
-            assignee_id=assignee_id,
-        )
-        items = p.issues.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=items)
+        try:
+            p = self._sdk.projects.get(project_id)
+            params = self._params(
+                state=state,
+                labels=labels,
+                search=search,
+                author_id=author_id,
+                assignee_id=assignee_id,
+                updated_after=updated_after,
+                  )
+            items = p.issues.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def get_issue(self, project_id: Union[int, str], issue_iid: int) -> GitLabResponse:
         """Get a single issue by IID.  [issues]"""
-        p = self._project(project_id)
-        issue = p.issues.get(issue_iid)
-        return GitLabResponse(success=True, data=issue)
+        try:
+            p = self._project(project_id)
+            issue = p.issues.get(issue_iid)
+            return GitLabResponse(success=True, data=issue)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
 
     def create_issue(
         self,
@@ -647,10 +667,24 @@ class GitLabDataSource:
         self, project_id: Union[int, str], get_all: bool = True
     ) -> GitLabResponse:
         """List project members."""
-        p = self._project(project_id)
-        items = p.members.list(get_all=get_all)
-        return GitLabResponse(success=True, data=items)
-
+        try:
+            p = self._project(project_id)
+            items = p.members.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False,error=str(e))
+    
+    def list_project_members_all(
+        self,project_id:Union[str,int],get_all:bool = True
+    )->GitLabResponse:
+        """List project members including inherited ones"""
+        try:
+            p = self._project(project_id)
+            items = p.members_all.list(get_all =get_all)
+            return GitLabResponse(success=True,data = items)
+        except Exception as e:
+            return GitLabResponse(success=False,error=str(e))
+        
     def add_project_member(
         self,
         project_id: Union[int, str],
@@ -696,13 +730,41 @@ class GitLabDataSource:
         return GitLabResponse(success=True, data=True)
 
     def list_groups(
-        self, search: Optional[str] = None, get_all: bool = True
+        self, 
+        search: Optional[str] = None, 
+        get_all: bool = True, 
+        owned: Optional[bool] = None,
     ) -> GitLabResponse:
         """List groups."""
-        params = self._params(search=search)
-        groups = self._sdk.groups.list(get_all=get_all, **params)
-        return GitLabResponse(success=True, data=groups)
-
+        try:
+            params = self._params(search=search,owned=owned)
+            groups = self._sdk.groups.list(get_all=get_all, **params)
+            return GitLabResponse(success=True, data=groups)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+    
+    def list_group_members(
+        self,
+        group_id: Union[int, str],
+        get_all:bool = True
+    )-> GitLabResponse:
+        """List group members."""
+        try:
+            g = self._sdk.groups.get(group_id)
+            items = g.members.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+        
+    def list_group_members_all(self, group_id: Union[int, str],get_all:bool =True) -> GitLabResponse:
+        """List all group members including inherited ones."""
+        try:
+            g = self._sdk.groups.get(group_id)
+            items = g.members_all.list(get_all=get_all)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+    
     def get_group(self, group_id: Union[int, str]) -> GitLabResponse:
         """Get a group by ID or full path."""
         g = self._sdk.groups.get(group_id)
@@ -755,3 +817,44 @@ class GitLabDataSource:
         g = self._sdk.groups.get(group_id)
         g.delete()
         return GitLabResponse(success=True, data=True)
+
+    def list_issue_notes(
+        self, project_id: Union[int, str], issue_iid: int, get_all: bool = True
+    ) -> GitLabResponse:
+        try:
+            # p = self._project(project_id)
+            p = self._sdk.projects.get(project_id)
+            issue = p.issues.get(issue_iid)
+            notes = issue.notes.list(get_all=get_all)
+            return GitLabResponse(success=True, data=notes)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+        
+    def list_repo_tree(self,project_id:Union[int,str],ref:Optional[str] = None,recursive:Optional[bool] = None,get_all:bool = True) -> GitLabResponse:
+        """List repository tree."""
+        try:
+            p = self._sdk.projects.get(project_id)
+            payload = self._params(
+                ref=ref,
+                recursive=recursive,
+                get_all=get_all,
+            )
+            items = p.repository_tree(**payload)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            print(f"error  :  {e}")
+            return GitLabResponse(success=False, error=str(e))
+    
+    def get_file_content(self,project_id:Union[int,str],file_path:str,ref:str = "HEAD") -> GitLabResponse:
+        """Get file content."""
+        try:
+            p = self._project(project_id)
+            payload = self._params(
+                ref=ref,
+                file_path=file_path,
+            )
+            items = p.files.get(**payload)
+            return GitLabResponse(success=True, data=items)
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e))
+            
