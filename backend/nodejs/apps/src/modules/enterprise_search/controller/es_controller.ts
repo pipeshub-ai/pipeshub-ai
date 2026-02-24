@@ -4973,6 +4973,24 @@ export const unshareAgent =
     }
   };
 
+export const streamAgentConversationInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await streamAgentConversation(appConfig)(
+        req as AuthenticatedUserRequest,
+        res,
+      );
+    } catch (error) {
+      next(error);
+    }
+  };
+
 export const createAgentConversation =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -6034,6 +6052,24 @@ export const addMessageStreamToAgentConversation =
       if (session) {
         session.endSession();
       }
+    }
+  };
+
+export const addMessageStreamToAgentConversationInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await addMessageStreamToAgentConversation(appConfig)(
+        req as AuthenticatedUserRequest,
+        res,
+      );
+    } catch (error) {
+      next(error);
     }
   };
 
