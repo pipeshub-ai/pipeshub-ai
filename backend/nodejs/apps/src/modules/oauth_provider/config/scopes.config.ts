@@ -233,6 +233,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     category: 'Crawling',
     requiresUserConsent: true,
   },
+  'crawl:delete': {
+    name: 'crawl:delete',
+    description: 'Delete crawling jobs',
+    category: 'Crawling',
+    requiresUserConsent: true,
+  },
 
   // OpenID Connect standard scopes
   openid: {
