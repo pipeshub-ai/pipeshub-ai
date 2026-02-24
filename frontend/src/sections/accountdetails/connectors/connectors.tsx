@@ -287,12 +287,12 @@ const Connectors: React.FC = () => {
     }
 
     setSelectedScope(targetScope);
-    
+
     // Update URL if it doesn't match
     if (scopeParam !== targetScope) {
       setSearchParams({ scope: targetScope }, { replace: true });
     }
-    
+
     scopeInitializedRef.current = true;
   }, [isBusiness, isAdmin, searchParams, setSearchParams]);
 
@@ -481,7 +481,7 @@ const Connectors: React.FC = () => {
       setSearchInput('');
       setActiveSearchQuery('');
       setSelectedFilter('all');
-      
+
       // Update URL with new scope
       setSearchParams({ scope: newScope }, { replace: true });
 

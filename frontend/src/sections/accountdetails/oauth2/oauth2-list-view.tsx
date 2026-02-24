@@ -21,6 +21,7 @@ import {
   Typography,
   IconButton,
   InputAdornment,
+  Pagination,
 } from '@mui/material';
 
 import { Iconify } from 'src/components/iconify';
@@ -49,6 +50,7 @@ export function OAuth2ListView() {
     message: '',
     severity: 'success',
   });
+  const [currentPage, setCurrentPage] = useState(1);
   const [pagination, setPagination] = useState({ page: 1, total: 0, totalPages: 0 });
 
   const loadApps = useCallback(async (page: number, searchQuery?: string) => {
@@ -81,8 +83,12 @@ export function OAuth2ListView() {
   }, [search]);
 
   useEffect(() => {
-    loadApps(1, searchActive || undefined);
-  }, [loadApps, searchActive]);
+    setCurrentPage(1);
+  }, [searchActive]);
+
+  useEffect(() => {
+    loadApps(currentPage, searchActive || undefined);
+  }, [loadApps, searchActive, currentPage]);
 
   const handleOpenApp = (app: OAuth2App) => {
     navigate(`${app.id}`);
@@ -90,6 +96,10 @@ export function OAuth2ListView() {
 
   const handleAddNew = () => {
     navigate('new');
+  };
+
+  const handlePaginationChange = (_event: React.ChangeEvent<unknown>, page: number) => {
+    setCurrentPage(page);
   };
 
   return (
@@ -288,13 +298,41 @@ export function OAuth2ListView() {
               </Box>
             </Fade>
           ) : (
-            <Grid container spacing={2.5}>
-              {apps.map((app) => (
-                <Grid item xs={12} sm={6} md={4} lg={3} key={app.id}>
-                  <OAuth2AppCard app={app} onClick={() => handleOpenApp(app)} />
-                </Grid>
-              ))}
-            </Grid>
+            <>
+              <Grid container spacing={2.5}>
+                {apps.map((app) => (
+                  <Grid item xs={12} sm={6} md={4} lg={3} key={app.id}>
+                    <OAuth2AppCard app={app} onClick={() => handleOpenApp(app)} />
+                  </Grid>
+                ))}
+              </Grid>
+
+              {pagination.totalPages > 1 && (
+                <Stack
+                  direction="row"
+                  justifyContent="center"
+                  alignItems="center"
+                  sx={{ mt: 3, mb: 2 }}
+                >
+                  <Pagination
+                    count={pagination.totalPages}
+                    page={currentPage}
+                    onChange={handlePaginationChange}
+                    color="primary"
+                    size="medium"
+                    showFirstButton
+                    showLastButton
+                    siblingCount={1}
+                    boundaryCount={1}
+                    sx={{
+                      '& .MuiPaginationItem-root': {
+                        fontSize: '0.875rem',
+                      },
+                    }}
+                  />
+                </Stack>
+              )}
+            </>
           )}
         </Box>
       </Box>
