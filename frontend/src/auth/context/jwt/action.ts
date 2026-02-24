@@ -168,11 +168,10 @@ export const VerifyOtp = async ({ email, otp }: SignInOtpParams): Promise<AuthRe
  * Auth initialization
  *************************************** */
 
-export const authInitConfig = async (email: string): Promise<AuthInitResponse> => {
+export const authInitConfig = async (): Promise<AuthInitResponse> => {
   try {
     const response = await axios.post<AuthInitResponse>(
       `${CONFIG.authUrl}/api/v1/userAccount/initAuth`,
-      { email }
     );
     const sessionToken = response.headers['x-session-token'];
 

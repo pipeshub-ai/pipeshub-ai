@@ -1724,7 +1724,7 @@ export const setSsoAuthConfig =
   (keyValueStoreService: KeyValueStoreService) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const { entryPoint, emailKey, enableJit } = req.body;
+      const { entryPoint, emailKey, enableJit , samlPlatform} = req.body;
       let { certificate } = req.body;
       certificate = certificate
         .replace(/\\n/g, '') // Remove \n
@@ -1746,7 +1746,7 @@ export const setSsoAuthConfig =
       const encryptedSsoConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true }));
+      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true , samlPlatform }));
       await keyValueStoreService.set<string>(
         configPaths.auth.sso,
         encryptedSsoConfig,
