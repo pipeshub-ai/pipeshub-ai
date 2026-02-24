@@ -1,16 +1,17 @@
-import React from 'react';
 import {
-  useTheme,
-  alpha,
   Box,
-  Typography,
   Card,
-  CardContent,
-  Avatar,
   Chip,
+  alpha,
   Stack,
+  Avatar,
+  useTheme,
+  Typography,
+  CardContent,
 } from '@mui/material';
+
 import { Iconify } from 'src/components/iconify';
+
 import type { OAuth2App } from './services/oauth2-api';
 
 interface OAuth2AppCardProps {
@@ -50,23 +51,46 @@ export function OAuth2AppCard({ app, onClick }: OAuth2AppCardProps) {
         },
       }}
     >
-      <CardContent sx={{ p: 2, display: 'flex', flexDirection: 'column', height: '100%', gap: 1.5, '&:last-child': { pb: 2 } }}>
+      <CardContent
+        sx={{
+          p: 2,
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          gap: 1.5,
+          '&:last-child': { pb: 2 },
+        }}
+      >
         <Stack spacing={1.5} alignItems="center">
           <Avatar
             sx={{
               width: 48,
               height: 48,
-              backgroundColor: isDark ? alpha(theme.palette.common.white, 0.9) : alpha(theme.palette.grey[100], 0.8),
+              backgroundColor: isDark
+                ? alpha(theme.palette.common.white, 0.9)
+                : alpha(theme.palette.grey[100], 0.8),
               border: `1px solid ${theme.palette.divider}`,
             }}
           >
-            <Iconify icon="mdi:application-cog" width={24} height={24} sx={{ color: theme.palette.primary.main }} />
+            <Iconify
+              icon="mdi:application-cog"
+              width={24}
+              height={24}
+              sx={{ color: theme.palette.primary.main }}
+            />
           </Avatar>
           <Box sx={{ textAlign: 'center', width: '100%' }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600, color: theme.palette.text.primary, mb: 0.25 }}>
+            <Typography
+              sx={{
+                fontWeight: 600,
+                fontSize: '0.875rem',
+                color: theme.palette.text.primary,
+                mb: 0.25,
+              }}
+            >
               {app.name}
             </Typography>
-            <Typography variant="caption" sx={{ color: theme.palette.text.secondary, fontSize: '0.8125rem' }}>
+            <Typography sx={{ color: theme.palette.text.secondary, fontSize: '0.75rem' }}>
               {app.clientId}
             </Typography>
           </Box>
@@ -86,7 +110,13 @@ export function OAuth2AppCard({ app, onClick }: OAuth2AppCardProps) {
             {app.description}
           </Typography>
         )}
-        <Stack direction="row" spacing={0.5} justifyContent="center" flexWrap="wrap" sx={{ mt: 'auto' }}>
+        <Stack
+          direction="row"
+          spacing={0.5}
+          justifyContent="center"
+          flexWrap="wrap"
+          sx={{ mt: 'auto' }}
+        >
           <Chip
             size="small"
             label={app.status}
@@ -94,8 +124,12 @@ export function OAuth2AppCard({ app, onClick }: OAuth2AppCardProps) {
               height: 20,
               fontSize: '0.6875rem',
               textTransform: 'capitalize',
-              bgcolor: app.status === 'active' ? alpha(theme.palette.success.main, 0.16) : alpha(theme.palette.warning.main, 0.16),
-              color: app.status === 'active' ? theme.palette.success.dark : theme.palette.warning.dark,
+              bgcolor:
+                app.status === 'active'
+                  ? alpha(theme.palette.success.main, 0.16)
+                  : alpha(theme.palette.warning.main, 0.16),
+              color:
+                app.status === 'active' ? theme.palette.success.dark : theme.palette.warning.dark,
             }}
           />
           <Chip

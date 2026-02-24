@@ -1,29 +1,32 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import {
-  Container,
-  Box,
-  alpha,
-  useTheme,
-  Button,
-  Stack,
-  Typography,
-  TextField,
-  InputAdornment,
-  IconButton,
-  Skeleton,
-  Fade,
-  Alert,
-  Snackbar,
-  Grid,
-} from '@mui/material';
 import { useNavigate } from 'react-router-dom';
-import { Iconify } from 'src/components/iconify';
-import keyLinkIcon from '@iconify-icons/mdi/key-link';
 import plusIcon from '@iconify-icons/mdi/plus';
+import keyLinkIcon from '@iconify-icons/mdi/key-link';
 import magniferIcon from '@iconify-icons/mdi/magnify';
 import clearIcon from '@iconify-icons/mdi/close-circle';
-import { OAuth2Api, type OAuth2App } from './services/oauth2-api';
+import { useState, useEffect, useCallback } from 'react';
+
+import {
+  Box,
+  Fade,
+  Grid,
+  alpha,
+  Stack,
+  Alert,
+  Button,
+  useTheme,
+  Skeleton,
+  Snackbar,
+  Container,
+  TextField,
+  Typography,
+  IconButton,
+  InputAdornment,
+} from '@mui/material';
+
+import { Iconify } from 'src/components/iconify';
+
 import { OAuth2AppCard } from './oauth2-app-card';
+import { OAuth2Api, type OAuth2App } from './services/oauth2-api';
 
 const ITEMS_PER_PAGE = 20;
 const SEARCH_DEBOUNCE_MS = 400;
@@ -37,7 +40,11 @@ export function OAuth2ListView() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [searchActive, setSearchActive] = useState('');
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' | 'info' }>({
+  const [snackbar, setSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: 'success' | 'error' | 'info';
+  }>({
     open: false,
     message: '',
     severity: 'success',
@@ -59,7 +66,8 @@ export function OAuth2ListView() {
         totalPages: result.pagination?.totalPages ?? 0,
       });
     } catch (err: any) {
-      const msg = err?.response?.data?.message || err?.message || 'Failed to load OAuth 2.0 apps';
+      const msg =
+        err?.response?.data?.message || err?.message || 'Failed to load OAuth 2.0 applications.';
       setSnackbar({ open: true, message: msg, severity: 'error' });
       setApps([]);
     } finally {
@@ -100,10 +108,18 @@ export function OAuth2ListView() {
           sx={{
             p: 3,
             borderBottom: `1px solid ${theme.palette.divider}`,
-            backgroundColor: isDark ? alpha(theme.palette.background.default, 0.4) : alpha(theme.palette.grey[50], 0.6),
+            backgroundColor: isDark
+              ? alpha(theme.palette.background.default, 0.4)
+              : alpha(theme.palette.grey[50], 0.6),
           }}
         >
-          <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={2}>
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            flexWrap="wrap"
+            gap={2}
+          >
             <Stack direction="row" alignItems="center" spacing={2}>
               <Box
                 sx={{
@@ -117,13 +133,22 @@ export function OAuth2ListView() {
                   justifyContent: 'center',
                 }}
               >
-                <Iconify icon={keyLinkIcon} width={22} height={22} sx={{ color: theme.palette.primary.main }} />
+                <Iconify
+                  icon={keyLinkIcon}
+                  width={22}
+                  height={22}
+                  sx={{ color: theme.palette.primary.main }}
+                />
               </Box>
               <Box>
-                <Typography variant="h5" sx={{ fontWeight: 700, color: theme.palette.text.primary }}>
+                <Typography
+                  sx={{ fontWeight: 600, fontSize: '1.5rem', color: theme.palette.text.primary }}
+                >
                   OAuth 2.0
                 </Typography>
-                <Typography variant="body2" sx={{ color: theme.palette.text.secondary, mt: 0.25 }}>
+                <Typography
+                  sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary, mt: 0.25 }}
+                >
                   Manage OAuth 2.0 applications that can access your organization via Pipeshub
                 </Typography>
               </Box>
@@ -133,24 +158,43 @@ export function OAuth2ListView() {
               color="primary"
               startIcon={<Iconify icon={plusIcon} width={18} height={18} />}
               onClick={handleAddNew}
-              sx={{ textTransform: 'none', fontWeight: 600, borderRadius: 1.5, px: 3, py: 1.25 }}
+              sx={{
+                textTransform: 'none',
+                fontWeight: 600,
+                borderRadius: 1.5,
+                px: 3,
+                py: 1.25,
+                fontSize: '0.875rem',
+              }}
             >
-              New OAuth App
+              New OAuth application
             </Button>
           </Stack>
         </Box>
 
         <Box sx={{ p: 3 }}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap" gap={2} sx={{ mb: 3 }}>
+          <Stack
+            direction="row"
+            alignItems="center"
+            justifyContent="space-between"
+            flexWrap="wrap"
+            gap={2}
+            sx={{ mb: 3 }}
+          >
             <TextField
-              placeholder="Search apps by name or description..."
+              placeholder="Search applications by name or description..."
+              size="small"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              size="small"
               InputProps={{
                 startAdornment: (
                   <InputAdornment position="start">
-                    <Iconify icon={magniferIcon} width={20} height={20} sx={{ color: theme.palette.text.secondary }} />
+                    <Iconify
+                      icon={magniferIcon}
+                      width={20}
+                      height={20}
+                      sx={{ color: theme.palette.text.secondary }}
+                    />
                   </InputAdornment>
                 ),
                 endAdornment: search ? (
@@ -167,11 +211,12 @@ export function OAuth2ListView() {
                   borderRadius: 1.5,
                   backgroundColor: theme.palette.background.default,
                 },
+                '& .MuiInputBase-input': { fontSize: '0.875rem' },
               }}
             />
             {!loading && apps.length > 0 && (
-              <Typography variant="body2" sx={{ color: theme.palette.text.secondary }}>
-                {pagination.total} {pagination.total === 1 ? 'app' : 'apps'}
+              <Typography sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary }}>
+                {pagination.total} {pagination.total === 1 ? 'application' : 'applications'}
               </Typography>
             )}
           </Stack>
@@ -188,7 +233,7 @@ export function OAuth2ListView() {
             <Fade in>
               <Box
                 sx={{
-                  py: 10,
+                  py: 8,
                   px: 3,
                   textAlign: 'center',
                   borderRadius: 2,
@@ -196,20 +241,49 @@ export function OAuth2ListView() {
                   backgroundColor: alpha(theme.palette.grey[500], 0.04),
                 }}
               >
-                <Iconify icon="mdi:application-cog-outline" width={64} height={64} sx={{ color: theme.palette.text.disabled }} />
-                <Typography variant="h6" sx={{ mt: 2, fontWeight: 600, color: theme.palette.text.primary }}>
-                  No OAuth 2.0 apps yet
+                <Iconify
+                  icon="mdi:application-cog-outline"
+                  width={64}
+                  height={64}
+                  sx={{ color: theme.palette.text.disabled }}
+                />
+                <Typography
+                  sx={{
+                    mt: 2.5,
+                    fontWeight: 600,
+                    fontSize: '1.25rem',
+                    color: theme.palette.text.primary,
+                  }}
+                >
+                  No OAuth 2.0 applications
                 </Typography>
-                <Typography variant="body2" sx={{ color: theme.palette.text.secondary, mt: 1, maxWidth: 420, mx: 'auto' }}>
-                  Create an OAuth 2.0 app to allow third-party applications to access your organization via Pipeshub.
+                <Typography
+                  sx={{
+                    fontSize: '0.875rem',
+                    color: theme.palette.text.secondary,
+                    mt: 1.5,
+                    maxWidth: 420,
+                    mx: 'auto',
+                  }}
+                >
+                  Create an OAuth 2.0 application to allow third-party integrations to access your
+                  organization via Pipeshub.
                 </Typography>
                 <Button
                   variant="contained"
                   startIcon={<Iconify icon={plusIcon} width={20} height={20} />}
                   onClick={handleAddNew}
-                  sx={{ mt: 3, textTransform: 'none', fontWeight: 600, borderRadius: 1.5, px: 3 }}
+                  sx={{
+                    mt: 3,
+                    textTransform: 'none',
+                    fontWeight: 600,
+                    borderRadius: 1.5,
+                    px: 3,
+                    fontSize: '0.875rem',
+                    py: 1.25,
+                  }}
                 >
-                  New OAuth App
+                  New OAuth application
                 </Button>
               </Box>
             </Fade>
@@ -231,7 +305,11 @@ export function OAuth2ListView() {
         onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
-        <Alert severity={snackbar.severity} variant="filled" onClose={() => setSnackbar((s) => ({ ...s, open: false }))}>
+        <Alert
+          severity={snackbar.severity}
+          variant="filled"
+          onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        >
           {snackbar.message}
         </Alert>
       </Snackbar>

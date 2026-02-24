@@ -1,49 +1,51 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import {
-  Box,
-  alpha,
-  useTheme,
-  Button,
-  Stack,
-  Typography,
-  TextField,
-  CircularProgress,
-  Alert,
-  Snackbar,
-  IconButton,
-  Dialog,
-  DialogTitle,
-  DialogContent,
-  DialogContentText,
-  DialogActions,
-  List,
-  ListItemButton,
-  ListItemIcon,
-  ListItemText,
-  Divider,
-  FormControl,
-  InputLabel,
-  Select,
-  MenuItem,
-  OutlinedInput,
-  Chip,
-  FormControlLabel,
-  Checkbox,
-  FormGroup,
-} from '@mui/material';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
-import { Iconify } from 'src/components/iconify';
+import cogIcon from '@iconify-icons/mdi/cog';
 import gridIcon from '@iconify-icons/mdi/grid';
 import lockIcon from '@iconify-icons/mdi/lock';
-import cogIcon from '@iconify-icons/mdi/cog';
-import alertOctagonIcon from '@iconify-icons/mdi/alert-octagon';
-import keyLinkIcon from '@iconify-icons/mdi/key-link';
-import contentCopyIcon from '@iconify-icons/mdi/content-copy';
 import refreshIcon from '@iconify-icons/mdi/refresh';
+import contentCopyIcon from '@iconify-icons/mdi/content-copy';
+import React, { useState, useEffect, useCallback } from 'react';
 import deleteForeverIcon from '@iconify-icons/mdi/delete-forever';
-import { OAuth2Api, type OAuth2App, type UpdateOAuth2AppRequest, type ScopeCategory } from './services/oauth2-api';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 
-type DetailSection = 'general' | 'permissions' | 'advanced' | 'danger';
+import {
+  Box,
+  List,
+  Chip,
+  alpha,
+  Stack,
+  Alert,
+  Paper,
+  Button,
+  Dialog,
+  Divider,
+  useTheme,
+  Snackbar,
+  Checkbox,
+  TextField,
+  FormGroup,
+  Typography,
+  IconButton,
+  DialogTitle,
+  ListItemIcon,
+  ListItemText,
+  DialogContent,
+  DialogActions,
+  ListItemButton,
+  CircularProgress,
+  FormControlLabel,
+  DialogContentText,
+} from '@mui/material';
+
+import { Iconify } from 'src/components/iconify';
+
+import {
+  OAuth2Api,
+  type OAuth2App,
+  type ScopeCategory,
+  type UpdateOAuth2AppRequest,
+} from './services/oauth2-api';
+
+type DetailSection = 'general' | 'permissions' | 'advanced';
 
 export function OAuth2AppDetailView() {
   const theme = useTheme();
@@ -59,7 +61,11 @@ export function OAuth2AppDetailView() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [scopesByCategory, setScopesByCategory] = useState<ScopeCategory | null>(null);
-  const [snackbar, setSnackbar] = useState<{ open: boolean; message: string; severity: 'success' | 'error' }>({ open: false, message: '', severity: 'success' });
+  const [snackbar, setSnackbar] = useState<{
+    open: boolean;
+    message: string;
+    severity: 'success' | 'error';
+  }>({ open: false, message: '', severity: 'success' });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
   const [newSecret, setNewSecret] = useState<string | null>(null);
@@ -83,14 +89,18 @@ export function OAuth2AppDetailView() {
         setName(data.name);
         setDescription(data.description || '');
         setRedirectUris(data.redirectUris?.length ? data.redirectUris : ['']);
-        setAllowedGrantTypes(data.allowedGrantTypes?.length ? data.allowedGrantTypes : ['authorization_code', 'refresh_token']);
+        setAllowedGrantTypes(
+          data.allowedGrantTypes?.length
+            ? data.allowedGrantTypes
+            : ['authorization_code', 'refresh_token']
+        );
         setAllowedScopes(data.allowedScopes || []);
         setHomepageUrl(data.homepageUrl || '');
         setPrivacyPolicyUrl(data.privacyPolicyUrl || '');
         setTermsOfServiceUrl(data.termsOfServiceUrl || '');
       })
       .catch(() => {
-        setSnackbar({ open: true, message: 'Failed to load app', severity: 'error' });
+        setSnackbar({ open: true, message: 'Failed to load application.', severity: 'error' });
         setApp(null);
       })
       .finally(() => setLoading(false));
@@ -101,14 +111,30 @@ export function OAuth2AppDetailView() {
   }, [loadApp]);
 
   useEffect(() => {
-    OAuth2Api.listScopes().then((res) => setScopesByCategory(res.scopes || {})).catch(() => setScopesByCategory({}));
+    OAuth2Api.listScopes()
+      .then((res) => setScopesByCategory(res.scopes || {}))
+      .catch(() => setScopesByCategory({}));
   }, []);
+
+  // Clear regenerated secret when user navigates away (section change or leave page)
+  const prevSectionRef = React.useRef(section);
+  useEffect(() => {
+    if (prevSectionRef.current !== section) {
+      prevSectionRef.current = section;
+      setNewSecret(null);
+    }
+  }, [section]);
+  useEffect(() => () => setNewSecret(null), [location.pathname]);
 
   const handleSave = async () => {
     if (!appId || !app) return;
     const uris = redirectUris.map((u) => u.trim()).filter(Boolean);
     if (uris.length === 0) {
-      setSnackbar({ open: true, message: 'At least one redirect URI is required', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: 'At least one redirect URI is required',
+        severity: 'error',
+      });
       return;
     }
     if (allowedScopes.length === 0) {
@@ -129,9 +155,17 @@ export function OAuth2AppDetailView() {
       };
       const result = await OAuth2Api.updateApp(appId, body);
       setApp(result.app);
-      setSnackbar({ open: true, message: 'App updated', severity: 'success' });
+      setSnackbar({
+        open: true,
+        message: 'Application updated successfully.',
+        severity: 'success',
+      });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.response?.data?.message || err?.message || 'Update failed', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.message || err?.message || 'Update failed.',
+        severity: 'error',
+      });
     } finally {
       setSaving(false);
     }
@@ -143,9 +177,18 @@ export function OAuth2AppDetailView() {
     try {
       const result = await OAuth2Api.regenerateSecret(appId);
       setNewSecret(result.clientSecret);
-      setSnackbar({ open: true, message: 'New client secret generated. Save it now; it won’t be shown again.', severity: 'success' });
+      setSnackbar({
+        open: true,
+        message:
+          'A new client secret has been generated. Store it securely; it will not be displayed again.',
+        severity: 'success',
+      });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.response?.data?.message || 'Failed to regenerate secret', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.message || 'Failed to regenerate client secret.',
+        severity: 'error',
+      });
     } finally {
       setRegenerating(false);
     }
@@ -158,7 +201,11 @@ export function OAuth2AppDetailView() {
       setApp(result.app);
       setSnackbar({ open: true, message: 'App suspended', severity: 'success' });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.response?.data?.message || 'Failed to suspend', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.message || 'Failed to suspend',
+        severity: 'error',
+      });
     }
   };
 
@@ -169,7 +216,11 @@ export function OAuth2AppDetailView() {
       setApp(result.app);
       setSnackbar({ open: true, message: 'App activated', severity: 'success' });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.response?.data?.message || 'Failed to activate', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.message || 'Failed to activate',
+        severity: 'error',
+      });
     }
   };
 
@@ -179,7 +230,11 @@ export function OAuth2AppDetailView() {
       await OAuth2Api.revokeAllTokens(appId);
       setSnackbar({ open: true, message: 'All tokens revoked', severity: 'success' });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.response?.data?.message || 'Failed to revoke tokens', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.message || 'Failed to revoke tokens',
+        severity: 'error',
+      });
     }
   };
 
@@ -191,7 +246,11 @@ export function OAuth2AppDetailView() {
       setDeleteDialogOpen(false);
       navigate(oauth2ListPath, { replace: true });
     } catch (err: any) {
-      setSnackbar({ open: true, message: err?.response?.data?.message || 'Failed to delete', severity: 'error' });
+      setSnackbar({
+        open: true,
+        message: err?.response?.data?.message || 'Failed to delete',
+        severity: 'error',
+      });
     }
   };
 
@@ -211,15 +270,17 @@ export function OAuth2AppDetailView() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
-    setSnackbar({ open: true, message: 'Copied to clipboard', severity: 'success' });
+    setSnackbar({ open: true, message: 'Copied to clipboard.', severity: 'success' });
   };
 
   if (loading && !app) {
     return (
       <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 320 }}>
-        <Stack alignItems="center" spacing={2}>
-          <CircularProgress />
-          <Typography color="text.secondary">Loading app…</Typography>
+        <Stack alignItems="center" spacing={2.5}>
+          <CircularProgress size={32} />
+          <Typography sx={{ fontSize: '0.875rem', color: 'text.secondary' }}>
+            Loading application…
+          </Typography>
         </Stack>
       </Box>
     );
@@ -228,15 +289,23 @@ export function OAuth2AppDetailView() {
   if (!app) {
     return (
       <Box sx={{ p: 3 }}>
-        <Alert severity="error">App not found.</Alert>
-        <Button startIcon={<Iconify icon="mdi:arrow-left" />} onClick={() => navigate('..')} sx={{ mt: 2 }}>
-          Back to OAuth 2.0
+        <Alert severity="error" sx={{ '& .MuiAlert-message': { fontSize: '0.875rem' } }}>
+          Application not found.
+        </Alert>
+        <Button
+          startIcon={<Iconify icon="mdi:arrow-left" />}
+          onClick={() => navigate('..')}
+          sx={{ mt: 2.5, fontSize: '0.875rem' }}
+        >
+          Return to OAuth 2.0
         </Button>
       </Box>
     );
   }
 
-  const sidebarBg = isDark ? alpha(theme.palette.background.default, 0.4) : alpha(theme.palette.grey[50], 0.6);
+  const sidebarBg = isDark
+    ? alpha(theme.palette.background.default, 0.4)
+    : alpha(theme.palette.grey[50], 0.6);
   const selectedBg = alpha(theme.palette.primary.main, isDark ? 0.2 : 0.1);
 
   return (
@@ -247,13 +316,11 @@ export function OAuth2AppDetailView() {
           <Button
             startIcon={<Iconify icon="mdi:arrow-left" width={20} height={20} />}
             onClick={() => navigate(oauth2ListPath)}
-            sx={{ textTransform: 'none', minWidth: 'auto', px: 1 }}
+            sx={{ textTransform: 'none', minWidth: 'auto', px: 1, fontSize: '0.875rem' }}
           >
             Back
           </Button>
-          <Typography variant="h6" sx={{ fontWeight: 600 }}>
-            {app.name}
-          </Typography>
+          <Typography sx={{ fontWeight: 600, fontSize: '1.25rem' }}>{app.name}</Typography>
         </Stack>
       </Box>
 
@@ -268,16 +335,27 @@ export function OAuth2AppDetailView() {
             py: 2,
           }}
         >
-          <Typography variant="caption" sx={{ px: 2, fontWeight: 600, color: theme.palette.text.secondary, letterSpacing: '0.05em' }}>
+          <Typography
+            sx={{
+              px: 2,
+              fontWeight: 600,
+              fontSize: '0.6875rem',
+              color: theme.palette.text.secondary,
+              letterSpacing: '0.08em',
+            }}
+          >
             GENERAL
           </Typography>
-          <List disablePadding sx={{ mt: 0.5 }}>
+          <List disablePadding sx={{ mt: 1 }}>
             <ListItemButton
               selected={section === 'general'}
               onClick={() => setSection('general')}
               sx={{
-                py: 1,
-                '&.Mui-selected': { backgroundColor: selectedBg, borderRight: `3px solid ${theme.palette.primary.main}` },
+                py: 1.25,
+                '&.Mui-selected': {
+                  backgroundColor: selectedBg,
+                  borderRight: `3px solid ${theme.palette.primary.main}`,
+                },
               }}
             >
               <ListItemIcon sx={{ minWidth: 36 }}>
@@ -289,21 +367,30 @@ export function OAuth2AppDetailView() {
               selected={section === 'permissions'}
               onClick={() => setSection('permissions')}
               sx={{
-                py: 1,
-                '&.Mui-selected': { backgroundColor: selectedBg, borderRight: `3px solid ${theme.palette.primary.main}` },
+                py: 1.25,
+                '&.Mui-selected': {
+                  backgroundColor: selectedBg,
+                  borderRight: `3px solid ${theme.palette.primary.main}`,
+                },
               }}
             >
               <ListItemIcon sx={{ minWidth: 36 }}>
                 <Iconify icon={lockIcon} width={18} height={18} />
               </ListItemIcon>
-              <ListItemText primary="Permissions & scopes" primaryTypographyProps={{ fontSize: '0.875rem' }} />
+              <ListItemText
+                primary="Permissions & scopes"
+                primaryTypographyProps={{ fontSize: '0.875rem' }}
+              />
             </ListItemButton>
             <ListItemButton
               selected={section === 'advanced'}
               onClick={() => setSection('advanced')}
               sx={{
-                py: 1,
-                '&.Mui-selected': { backgroundColor: selectedBg, borderRight: `3px solid ${theme.palette.primary.main}` },
+                py: 1.25,
+                '&.Mui-selected': {
+                  backgroundColor: selectedBg,
+                  borderRight: `3px solid ${theme.palette.primary.main}`,
+                },
               }}
             >
               <ListItemIcon sx={{ minWidth: 36 }}>
@@ -312,81 +399,122 @@ export function OAuth2AppDetailView() {
               <ListItemText primary="Advanced" primaryTypographyProps={{ fontSize: '0.875rem' }} />
             </ListItemButton>
           </List>
-          <Divider sx={{ my: 2 }} />
-          <Typography variant="caption" sx={{ px: 2, fontWeight: 600, color: theme.palette.text.secondary, letterSpacing: '0.05em' }}>
-            DANGER ZONE
-          </Typography>
-          <List disablePadding sx={{ mt: 0.5 }}>
-            <ListItemButton
-              selected={section === 'danger'}
-              onClick={() => setSection('danger')}
-              sx={{
-                py: 1,
-                '&.Mui-selected': { backgroundColor: alpha(theme.palette.error.main, 0.08), borderRight: `3px solid ${theme.palette.error.main}` },
-              }}
-            >
-              <ListItemIcon sx={{ minWidth: 36 }}>
-                <Iconify icon={alertOctagonIcon} width={18} height={18} sx={{ color: theme.palette.error.main }} />
-              </ListItemIcon>
-              <ListItemText primary="Danger zone" primaryTypographyProps={{ fontSize: '0.875rem' }} />
-            </ListItemButton>
-          </List>
         </Box>
 
         {/* Main content */}
         <Box sx={{ flex: 1, overflow: 'auto', p: 3 }}>
           {newSecret && (
-            <Alert severity="warning" sx={{ mb: 3 }} onClose={() => setNewSecret(null)}>
-              <Typography variant="subtitle2">New client secret (copy now):</Typography>
-              <Typography component="code" sx={{ fontFamily: 'monospace', fontSize: '0.875rem' }}>
-                {newSecret}
+            <Paper
+              variant="outlined"
+              sx={{
+                mb: 3,
+                p: 2,
+                bgcolor: alpha(theme.palette.warning.main, 0.08),
+                borderColor: theme.palette.warning.main,
+              }}
+            >
+              <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1.5 }}>
+                Copy and store this client secret securely. It will not be displayed again.
               </Typography>
-            </Alert>
+              <Stack direction="row" alignItems="center" spacing={1.5}>
+                <Box
+                  component="code"
+                  sx={{
+                    flex: 1,
+                    py: 1.25,
+                    px: 2,
+                    fontFamily: 'monospace',
+                    fontSize: '0.8125rem',
+                    bgcolor: theme.palette.background.paper,
+                    borderRadius: 1,
+                    border: `1px solid ${theme.palette.divider}`,
+                    overflow: 'auto',
+                  }}
+                >
+                  {newSecret}
+                </Box>
+                <IconButton size="small" onClick={() => copyToClipboard(newSecret)} title="Copy">
+                  <Iconify icon={contentCopyIcon} width={18} height={18} />
+                </IconButton>
+                <IconButton size="small" onClick={() => setNewSecret(null)} title="Dismiss">
+                  <Iconify icon="mdi:close" width={18} height={18} />
+                </IconButton>
+              </Stack>
+            </Paper>
           )}
 
           {section === 'general' && (
             <>
-              {/* About */}
-              <Box sx={{ mb: 4 }}>
-                <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
-                  About
+              {/* About / Client ID */}
+              <Box sx={{ mb: 3 }}>
+                <Typography sx={{ fontWeight: 600, fontSize: '1rem', mb: 1 }}>About</Typography>
+                <Typography
+                  sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary, mb: 1.5 }}
+                >
+                  Use this Client ID in your OAuth flows.
                 </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  App ID: <Typography component="span" sx={{ fontFamily: 'monospace' }}>{app.id}</Typography>
-                </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-                  Use Client ID (not App ID) for OAuth flows. Client ID:{' '}
-                  <Typography component="span" sx={{ fontFamily: 'monospace' }}>{app.clientId}</Typography>
-                  <IconButton size="small" onClick={() => copyToClipboard(app.clientId)} sx={{ ml: 0.5 }}>
+                <Paper
+                  variant="outlined"
+                  sx={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    py: 1,
+                    px: 2,
+                    mt: 0.5,
+                    maxWidth: '100%',
+                    bgcolor: alpha(theme.palette.primary.main, isDark ? 0.12 : 0.06),
+                    borderColor: alpha(theme.palette.primary.main, 0.3),
+                  }}
+                >
+                  <Box
+                    component="code"
+                    sx={{
+                      fontFamily: 'monospace',
+                      fontSize: '0.8125rem',
+                      overflow: 'auto',
+                      flex: 1,
+                      minWidth: 0,
+                    }}
+                  >
+                    {app.clientId}
+                  </Box>
+                  <IconButton
+                    size="small"
+                    onClick={() => copyToClipboard(app.clientId)}
+                    title="Copy Client ID"
+                  >
                     <Iconify icon={contentCopyIcon} width={16} height={16} />
                   </IconButton>
-                </Typography>
-                <Button variant="contained" color="error" size="medium" onClick={handleRevokeAllTokens} sx={{ mt: 2, textTransform: 'none' }}>
-                  Revoke all user tokens
-                </Button>
-                <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: 560 }}>
-                  OAuth 2.0 apps use client credentials to authenticate to the API. Revoking all tokens will sign out every user who has authorized this app.
-                </Typography>
+                </Paper>
               </Box>
 
               <Divider sx={{ my: 3 }} />
 
               {/* Client secrets */}
-              <Box sx={{ mb: 4 }}>
-                <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
+              <Box sx={{ mb: 3 }}>
+                <Typography sx={{ fontWeight: 600, fontSize: '1rem', mb: 1 }}>
                   Client secrets
                 </Typography>
-                <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                  You need a client secret to authenticate as the application to the API.
+                <Typography
+                  sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary, mb: 1.5 }}
+                >
+                  A client secret is required to authenticate this application with the API.
                 </Typography>
                 <Button
                   variant="outlined"
-                  startIcon={regenerating ? <CircularProgress size={16} /> : <Iconify icon={refreshIcon} width={18} height={18} />}
+                  startIcon={
+                    regenerating ? (
+                      <CircularProgress size={16} />
+                    ) : (
+                      <Iconify icon={refreshIcon} width={18} height={18} />
+                    )
+                  }
                   onClick={handleRegenerateSecret}
                   disabled={regenerating}
                   sx={{ textTransform: 'none' }}
                 >
-                  Generate a new client secret
+                  Generate new client secret
                 </Button>
               </Box>
 
@@ -394,32 +522,53 @@ export function OAuth2AppDetailView() {
 
               {/* Basic information */}
               <Box>
-                <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
+                <Typography sx={{ fontWeight: 600, fontSize: '1rem', mb: 1.5 }}>
                   Basic information
                 </Typography>
                 <Stack spacing={2} sx={{ maxWidth: 560 }}>
                   <TextField
                     label="OAuth App name"
+                    size="small"
                     required
                     fullWidth
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    helperText="The name of your OAuth app."
+                    helperText="The display name of this OAuth application."
+                    sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
                   />
                   <TextField
                     label="Description"
                     fullWidth
                     multiline
                     rows={3}
+                    size="small"
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="This is displayed to users of your OAuth app."
+                    placeholder="Displayed to users when they authorize this application."
+                    sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
                   />
-                  <TextField label="Homepage URL" fullWidth value={homepageUrl} onChange={(e) => setHomepageUrl(e.target.value)} placeholder="https://yourapp.com" />
+                  <TextField
+                    label="Homepage URL"
+                    fullWidth
+                    size="small"
+                    value={homepageUrl}
+                    onChange={(e) => setHomepageUrl(e.target.value)}
+                    placeholder="https://yourapp.com"
+                    sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+                  />
                   <Box>
-                    <Typography variant="subtitle2" sx={{ mb: 1 }}>Grant types</Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
-                      OAuth 2.0 grant types this app is allowed to use.
+                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1 }}>
+                      Grant types
+                    </Typography>
+                    <Typography
+                      sx={{
+                        fontSize: '0.75rem',
+                        color: theme.palette.text.secondary,
+                        display: 'block',
+                        mb: 1.5,
+                      }}
+                    >
+                      OAuth 2.0 grant types permitted for this application.
                     </Typography>
                     <FormGroup row>
                       <FormControlLabel
@@ -428,7 +577,9 @@ export function OAuth2AppDetailView() {
                             checked={allowedGrantTypes.includes('authorization_code')}
                             onChange={(e) =>
                               setAllowedGrantTypes((prev) =>
-                                e.target.checked ? [...prev, 'authorization_code'] : prev.filter((x) => x !== 'authorization_code')
+                                e.target.checked
+                                  ? [...prev, 'authorization_code']
+                                  : prev.filter((x) => x !== 'authorization_code')
                               )
                             }
                           />
@@ -441,7 +592,9 @@ export function OAuth2AppDetailView() {
                             checked={allowedGrantTypes.includes('refresh_token')}
                             onChange={(e) =>
                               setAllowedGrantTypes((prev) =>
-                                e.target.checked ? [...prev, 'refresh_token'] : prev.filter((x) => x !== 'refresh_token')
+                                e.target.checked
+                                  ? [...prev, 'refresh_token']
+                                  : prev.filter((x) => x !== 'refresh_token')
                               )
                             }
                           />
@@ -454,7 +607,9 @@ export function OAuth2AppDetailView() {
                             checked={allowedGrantTypes.includes('client_credentials')}
                             onChange={(e) =>
                               setAllowedGrantTypes((prev) =>
-                                e.target.checked ? [...prev, 'client_credentials'] : prev.filter((x) => x !== 'client_credentials')
+                                e.target.checked
+                                  ? [...prev, 'client_credentials']
+                                  : prev.filter((x) => x !== 'client_credentials')
                               )
                             }
                           />
@@ -464,24 +619,67 @@ export function OAuth2AppDetailView() {
                     </FormGroup>
                   </Box>
                   <Box>
-                    <Typography variant="subtitle2" sx={{ mb: 1 }}>Redirect URIs *</Typography>
+                    <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1 }}>
+                      Redirect URIs *
+                    </Typography>
                     {redirectUris.map((uri, index) => (
-                      <Stack direction="row" spacing={1} key={index} sx={{ mb: 1 }}>
-                        <TextField fullWidth size="small" value={uri} onChange={(e) => setRedirectUriAt(index, e.target.value)} placeholder="https://yourapp.com/callback" />
-                        <IconButton onClick={() => removeRedirectUri(index)} disabled={redirectUris.length <= 1} size="small">
+                      <Stack direction="row" spacing={1.5} key={index} sx={{ mb: 1.5 }}>
+                        <TextField
+                          fullWidth
+                          size="small"
+                          value={uri}
+                          onChange={(e) => setRedirectUriAt(index, e.target.value)}
+                          placeholder="https://yourapp.com/callback"
+                          sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+                        />
+                        <IconButton
+                          onClick={() => removeRedirectUri(index)}
+                          disabled={redirectUris.length <= 1}
+                          size="small"
+                        >
                           <Iconify icon="mdi:minus-circle-outline" width={20} height={20} />
                         </IconButton>
                       </Stack>
                     ))}
                     {redirectUris.length < 10 && (
-                      <Button size="small" startIcon={<Iconify icon="mdi:plus" width={16} />} onClick={addRedirectUri} sx={{ textTransform: 'none' }}>
-                        Add URI
+                      <Button
+                        size="small"
+                        startIcon={<Iconify icon="mdi:plus" width={16} />}
+                        onClick={addRedirectUri}
+                        sx={{ textTransform: 'none' }}
+                      >
+                        Add redirect URI
                       </Button>
                     )}
                   </Box>
-                  <TextField label="Privacy policy URL" fullWidth value={privacyPolicyUrl} onChange={(e) => setPrivacyPolicyUrl(e.target.value)} />
-                  <TextField label="Terms of service URL" fullWidth value={termsOfServiceUrl} onChange={(e) => setTermsOfServiceUrl(e.target.value)} />
-                  <Button variant="contained" onClick={handleSave} disabled={saving} sx={{ textTransform: 'none', alignSelf: 'flex-start' }}>
+                  <TextField
+                    label="Privacy policy URL"
+                    fullWidth
+                    size="small"
+                    value={privacyPolicyUrl}
+                    onChange={(e) => setPrivacyPolicyUrl(e.target.value)}
+                    sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+                  />
+                  <TextField
+                    label="Terms of service URL"
+                    fullWidth
+                    size="small"
+                    value={termsOfServiceUrl}
+                    onChange={(e) => setTermsOfServiceUrl(e.target.value)}
+                    sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+                  />
+                  <Button
+                    variant="contained"
+                    onClick={handleSave}
+                    disabled={saving}
+                    sx={{
+                      textTransform: 'none',
+                      alignSelf: 'flex-start',
+                      fontSize: '0.875rem',
+                      py: 1,
+                      px: 2,
+                    }}
+                  >
                     {saving ? <CircularProgress size={20} /> : 'Save changes'}
                   </Button>
                 </Stack>
@@ -491,109 +689,246 @@ export function OAuth2AppDetailView() {
 
           {section === 'permissions' && (
             <Box>
-              <Typography variant="h6" sx={{ fontWeight: 600, mb: 1 }}>
+              <Typography sx={{ fontWeight: 600, fontSize: '1rem', mb: 1.5 }}>
                 Permissions & scopes
               </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-                Select the scopes (permissions) that this app can request when users authorize it.
+              <Typography sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary, mb: 2 }}>
+                Select the scopes (permissions) that this application may request during user
+                authorization.
               </Typography>
               {scopesByCategory && Object.keys(scopesByCategory).length > 0 ? (
-                <Stack spacing={3} sx={{ maxWidth: 640 }}>
-                  {Object.entries(scopesByCategory).map(([category, scopes]) => {
-                    const scopeList = scopes as Array<{ name: string; description: string }>;
-                    const selectedInCategory = scopeList.filter((s) => allowedScopes.includes(s.name)).map((s) => s.name);
-                    return (
-                      <Box key={category}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1.5, color: theme.palette.text.primary }}>
-                          {category}
-                        </Typography>
-                        <FormControl fullWidth size="small">
-                          <InputLabel>Scopes</InputLabel>
-                          <Select
-                            multiple
-                            value={selectedInCategory}
-                            onChange={(e) => {
-                              const next = e.target.value as string[];
-                              const toRemove = selectedInCategory.filter((s) => !next.includes(s));
-                              const toAdd = next.filter((s) => !selectedInCategory.includes(s));
-                              setAllowedScopes((prev) => [...prev.filter((x) => !toRemove.includes(x)), ...toAdd]);
-                            }}
-                            input={<OutlinedInput label="Scopes" />}
-                            renderValue={(selected) => (
-                              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
-                                {(selected as string[]).map((value) => (
-                                  <Chip key={value} size="small" label={value} sx={{ fontFamily: 'monospace' }} />
-                                ))}
-                              </Box>
-                            )}
-                          >
-                            {scopeList.map((s) => (
-                              <MenuItem key={s.name} value={s.name}>
-                                <Box>
-                                  <Typography variant="body2" sx={{ fontFamily: 'monospace' }}>{s.name}</Typography>
-                                  <Typography variant="caption" color="text.secondary">{s.description}</Typography>
-                                </Box>
-                              </MenuItem>
-                            ))}
-                          </Select>
-                        </FormControl>
-                      </Box>
+                <Stack spacing={2.5} sx={{ maxWidth: 640 }}>
+                  {(() => {
+                    const entries = Object.entries(scopesByCategory) as [
+                      string,
+                      Array<{ name: string; description: string }>,
+                    ][];
+                    const allScopeNames = entries.flatMap(([, scopes]) =>
+                      scopes.map((s) => s.name)
                     );
-                  })}
-                  <Button variant="contained" onClick={handleSave} disabled={saving} sx={{ textTransform: 'none', alignSelf: 'flex-start' }}>
-                    {saving ? <CircularProgress size={20} /> : 'Save scopes'}
-                  </Button>
+                    const allSelected =
+                      allScopeNames.length > 0 &&
+                      allScopeNames.every((scopeName) => allowedScopes.includes(scopeName));
+                    const someSelected = allScopeNames.some((scopeName) =>
+                      allowedScopes.includes(scopeName)
+                    );
+                    return (
+                      <>
+                        <FormGroup>
+                          <FormControlLabel
+                            control={
+                              <Checkbox
+                                checked={allSelected}
+                                indeterminate={someSelected && !allSelected}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setAllowedScopes([...allScopeNames]);
+                                  } else {
+                                    setAllowedScopes([]);
+                                  }
+                                }}
+                              />
+                            }
+                            label={
+                              <Typography sx={{ fontWeight: 600, fontSize: '0.875rem' }}>
+                                Select all scopes
+                              </Typography>
+                            }
+                          />
+                        </FormGroup>
+                        <Divider sx={{ my: 1.5 }} />
+                        {entries.map(([category, scopeList]) => {
+                          const namesInCategory = scopeList.map((s) => s.name);
+                          const selectedInCategory = namesInCategory.filter((n) =>
+                            allowedScopes.includes(n)
+                          );
+                          const categoryAllChecked =
+                            namesInCategory.length > 0 &&
+                            selectedInCategory.length === namesInCategory.length;
+                          const categorySomeChecked = selectedInCategory.length > 0;
+                          return (
+                            <Box key={category} sx={{ mb: 1.5 }}>
+                              <FormGroup sx={{ mb: 0.75 }}>
+                                <FormControlLabel
+                                  control={
+                                    <Checkbox
+                                      checked={categoryAllChecked}
+                                      indeterminate={categorySomeChecked && !categoryAllChecked}
+                                      onChange={(e) => {
+                                        if (e.target.checked) {
+                                          setAllowedScopes((prev) => [
+                                            ...prev.filter((x) => !namesInCategory.includes(x)),
+                                            ...namesInCategory,
+                                          ]);
+                                        } else {
+                                          setAllowedScopes((prev) =>
+                                            prev.filter((x) => !namesInCategory.includes(x))
+                                          );
+                                        }
+                                      }}
+                                    />
+                                  }
+                                  label={
+                                    <Typography
+                                      sx={{
+                                        fontWeight: 600,
+                                        fontSize: '0.875rem',
+                                        color: theme.palette.text.primary,
+                                      }}
+                                    >
+                                      {category}
+                                    </Typography>
+                                  }
+                                />
+                              </FormGroup>
+                              <FormGroup sx={{ pl: 3.5, mt: 0 }}>
+                                {scopeList.map((s) => (
+                                  <FormControlLabel
+                                    key={s.name}
+                                    control={
+                                      <Checkbox
+                                        checked={allowedScopes.includes(s.name)}
+                                        onChange={(e) => {
+                                          if (e.target.checked) {
+                                            setAllowedScopes((prev) => [...prev, s.name]);
+                                          } else {
+                                            setAllowedScopes((prev) =>
+                                              prev.filter((x) => x !== s.name)
+                                            );
+                                          }
+                                        }}
+                                      />
+                                    }
+                                    label={
+                                      <Box>
+                                        <Typography
+                                          component="span"
+                                          sx={{ fontFamily: 'monospace', fontSize: '0.8125rem' }}
+                                        >
+                                          {s.name}
+                                        </Typography>
+                                        {s.description && (
+                                          <Typography
+                                            component="span"
+                                            sx={{
+                                              display: 'block',
+                                              fontSize: '0.75rem',
+                                              color: theme.palette.text.secondary,
+                                            }}
+                                          >
+                                            {s.description}
+                                          </Typography>
+                                        )}
+                                      </Box>
+                                    }
+                                  />
+                                ))}
+                              </FormGroup>
+                            </Box>
+                          );
+                        })}
+                        <Button
+                          variant="contained"
+                          onClick={handleSave}
+                          disabled={saving}
+                          sx={{
+                            textTransform: 'none',
+                            alignSelf: 'flex-start',
+                            fontSize: '0.875rem',
+                            py: 1,
+                            px: 2,
+                          }}
+                        >
+                          {saving ? <CircularProgress size={20} /> : 'Save scopes'}
+                        </Button>
+                      </>
+                    );
+                  })()}
                 </Stack>
               ) : (
-                <Typography variant="body2" color="text.secondary">No scopes available.</Typography>
+                <Typography sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary }}>
+                  No scopes are available.
+                </Typography>
               )}
             </Box>
           )}
 
           {section === 'advanced' && (
             <Box>
-              <Typography variant="h6" sx={{ fontWeight: 600, mb: 2 }}>
-                Advanced
-              </Typography>
-              <Stack spacing={2}>
+              <Typography sx={{ fontWeight: 600, fontSize: '1rem', mb: 1.5 }}>Advanced</Typography>
+              <Stack spacing={2.5}>
                 <Box>
-                  <Typography variant="subtitle2" sx={{ mb: 1 }}>Status</Typography>
-                  <Chip size="small" label={app.status} color={app.status === 'active' ? 'success' : 'default'} sx={{ textTransform: 'capitalize', mr: 1 }} />
+                  <Typography sx={{ fontSize: '0.875rem', fontWeight: 500, mb: 1.5 }}>
+                    Status
+                  </Typography>
+                  <Chip
+                    size="small"
+                    label={app.status}
+                    color={app.status === 'active' ? 'success' : 'default'}
+                    sx={{ textTransform: 'capitalize', mr: 1 }}
+                  />
                   {app.status === 'active' ? (
-                    <Button variant="outlined" color="warning" size="small" onClick={handleSuspend} sx={{ textTransform: 'none' }}>
-                      Suspend app
+                    <Button
+                      variant="outlined"
+                      color="warning"
+                      size="small"
+                      onClick={handleSuspend}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Suspend application
                     </Button>
                   ) : (
-                    <Button variant="outlined" color="success" size="small" onClick={handleActivate} sx={{ textTransform: 'none' }}>
-                      Activate app
+                    <Button
+                      variant="outlined"
+                      color="success"
+                      size="small"
+                      onClick={handleActivate}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Activate application
                     </Button>
                   )}
                 </Box>
-              </Stack>
-            </Box>
-          )}
 
-          {section === 'danger' && (
-            <Box>
-              <Typography variant="h6" sx={{ fontWeight: 600, mb: 2, color: theme.palette.error.main }}>
-                Danger zone
-              </Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-                Revoke all tokens or permanently delete this OAuth app. These actions cannot be undone.
-              </Typography>
-              <Stack direction="row" spacing={2} flexWrap="wrap">
-                <Button variant="outlined" color="warning" onClick={handleRevokeAllTokens} sx={{ textTransform: 'none' }}>
-                  Revoke all tokens
-                </Button>
-                <Button
-                  variant="outlined"
-                  color="error"
-                  startIcon={<Iconify icon={deleteForeverIcon} width={18} height={18} />}
-                  onClick={() => setDeleteDialogOpen(true)}
-                  sx={{ textTransform: 'none' }}
-                >
-                  Delete OAuth app
-                </Button>
+                <Divider />
+
+                <Box>
+                  <Typography
+                    sx={{
+                      fontWeight: 600,
+                      fontSize: '1rem',
+                      mb: 1,
+                      color: theme.palette.error.main,
+                    }}
+                  >
+                    Danger Zone
+                  </Typography>
+                  <Typography
+                    sx={{ fontSize: '0.875rem', color: theme.palette.text.secondary, mb: 1.5 }}
+                  >
+                    Revoke all tokens or permanently delete this OAuth application. These actions
+                    cannot be undone.
+                  </Typography>
+                  <Stack direction="row" spacing={2} flexWrap="wrap" gap={1}>
+                    <Button
+                      variant="outlined"
+                      color="warning"
+                      onClick={handleRevokeAllTokens}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Revoke all tokens
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      color="error"
+                      startIcon={<Iconify icon={deleteForeverIcon} width={18} height={18} />}
+                      onClick={() => setDeleteDialogOpen(true)}
+                      sx={{ textTransform: 'none' }}
+                    >
+                      Delete application
+                    </Button>
+                  </Stack>
+                </Box>
               </Stack>
             </Box>
           )}
@@ -601,15 +936,23 @@ export function OAuth2AppDetailView() {
       </Box>
 
       <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
-        <DialogTitle>Delete OAuth app?</DialogTitle>
+        <DialogTitle>Delete OAuth application?</DialogTitle>
         <DialogContent>
           <DialogContentText>
-            This will delete &quot;{app.name}&quot; and revoke all tokens. This action cannot be undone.
+            This will delete &quot;{app.name}&quot; and revoke all tokens. This action cannot be
+            undone.
           </DialogContentText>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setDeleteDialogOpen(false)} sx={{ textTransform: 'none' }}>Cancel</Button>
-          <Button onClick={handleDelete} color="error" variant="contained" sx={{ textTransform: 'none' }}>
+          <Button onClick={() => setDeleteDialogOpen(false)} sx={{ textTransform: 'none' }}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleDelete}
+            color="error"
+            variant="contained"
+            sx={{ textTransform: 'none' }}
+          >
             Delete
           </Button>
         </DialogActions>
@@ -621,7 +964,10 @@ export function OAuth2AppDetailView() {
         onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
         anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
       >
-        <Alert severity={snackbar.severity} onClose={() => setSnackbar((s) => ({ ...s, open: false }))}>
+        <Alert
+          severity={snackbar.severity}
+          onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
+        >
           {snackbar.message}
         </Alert>
       </Snackbar>

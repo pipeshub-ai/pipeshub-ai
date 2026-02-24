@@ -1,19 +1,19 @@
+import { useState, useEffect } from 'react';
 import cogIcon from '@iconify-icons/mdi/cog';
 import robotIcon from '@iconify-icons/mdi/robot';
-import React, { useState, useEffect } from 'react';
+import toolsIcon from '@iconify-icons/mdi/tools';
+import emailIcon from '@iconify-icons/mdi/email';
 import upIcon from '@iconify-icons/mdi/chevron-up';
 import accountIcon from '@iconify-icons/mdi/account';
+import keyLinkIcon from '@iconify-icons/mdi/key-link';
 import downIcon from '@iconify-icons/mdi/chevron-down';
 import { useLocation, useNavigate } from 'react-router';
 import shieldLockIcon from '@iconify-icons/mdi/shield-lock';
 import linkVariantIcon from '@iconify-icons/mdi/link-variant';
+import messageTextIcon from '@iconify-icons/mdi/message-text';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
-import accountServiceIcon from '@iconify-icons/mdi/account-service-outline';
-import messageTextIcon from '@iconify-icons/mdi/message-text';
-import toolsIcon from '@iconify-icons/mdi/tools';
-import emailIcon from '@iconify-icons/mdi/email';
-import keyLinkIcon from '@iconify-icons/mdi/key-link';
+
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
 import Divider from '@mui/material/Divider';
@@ -117,7 +117,6 @@ export default function Sidebar() {
     ? allSettingsOptions.filter((option) => !option.adminOnly || isAdmin)
     : allSettingsOptions;
 
-
   return (
     <Drawer
       sx={{
@@ -127,9 +126,10 @@ export default function Sidebar() {
           width: drawerWidth,
           boxSizing: 'border-box',
           borderRight: `1px solid ${theme.palette.divider}`,
-          backgroundColor: theme.palette.mode === 'dark'
-            ? alpha(theme.palette.background.paper, 0.1)
-            : theme.palette.background.paper,
+          backgroundColor:
+            theme.palette.mode === 'dark'
+              ? alpha(theme.palette.background.paper, 0.1)
+              : theme.palette.background.paper,
         },
       }}
       variant="permanent"
@@ -159,20 +159,23 @@ export default function Sidebar() {
                   py: 1,
                   borderRadius: '0',
                   '&.Mui-selected': {
-                    bgcolor: theme.palette.mode === 'dark'
-                      ? alpha(theme.palette.primary.main, 0.15)
-                      : alpha(theme.palette.primary.main, 0.08),
+                    bgcolor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.primary.main, 0.15)
+                        : alpha(theme.palette.primary.main, 0.08),
                     borderRight: `3px solid ${theme.palette.primary.main}`,
                     '&:hover': {
-                      bgcolor: theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.primary.main, 0.2)
-                        : alpha(theme.palette.primary.main, 0.12),
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.primary.main, 0.2)
+                          : alpha(theme.palette.primary.main, 0.12),
                     },
                   },
                   '&:hover': {
-                    bgcolor: theme.palette.mode === 'dark'
-                      ? alpha(theme.palette.action.hover, 0.1)
-                      : alpha(theme.palette.action.hover, 0.05),
+                    bgcolor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.action.hover, 0.1)
+                        : alpha(theme.palette.action.hover, 0.05),
                   },
                 }}
               >
@@ -197,20 +200,23 @@ export default function Sidebar() {
                     py: 1,
                     borderRadius: '0',
                     '&.Mui-selected': {
-                      bgcolor: theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.primary.main, 0.15)
-                        : alpha(theme.palette.primary.main, 0.08),
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.primary.main, 0.15)
+                          : alpha(theme.palette.primary.main, 0.08),
                       borderRight: `3px solid ${theme.palette.primary.main}`,
                       '&:hover': {
-                        bgcolor: theme.palette.mode === 'dark'
-                          ? alpha(theme.palette.primary.main, 0.2)
-                          : alpha(theme.palette.primary.main, 0.12),
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.2)
+                            : alpha(theme.palette.primary.main, 0.12),
                       },
                     },
                     '&:hover': {
-                      bgcolor: theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.action.hover, 0.1)
-                        : alpha(theme.palette.action.hover, 0.05),
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.action.hover, 0.1)
+                          : alpha(theme.palette.action.hover, 0.05),
                     },
                   }}
                 >
@@ -239,20 +245,23 @@ export default function Sidebar() {
                       py: 1,
                       borderRadius: '0',
                       '&.Mui-selected': {
-                        bgcolor: theme.palette.mode === 'dark'
-                          ? alpha(theme.palette.primary.main, 0.15)
-                          : alpha(theme.palette.primary.main, 0.08),
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.15)
+                            : alpha(theme.palette.primary.main, 0.08),
                         borderRight: `3px solid ${theme.palette.primary.main}`,
                         '&:hover': {
-                          bgcolor: theme.palette.mode === 'dark'
-                            ? alpha(theme.palette.primary.main, 0.2)
-                            : alpha(theme.palette.primary.main, 0.12),
+                          bgcolor:
+                            theme.palette.mode === 'dark'
+                              ? alpha(theme.palette.primary.main, 0.2)
+                              : alpha(theme.palette.primary.main, 0.12),
                         },
                       },
                       '&:hover': {
-                        bgcolor: theme.palette.mode === 'dark'
-                          ? alpha(theme.palette.action.hover, 0.1)
-                          : alpha(theme.palette.action.hover, 0.05),
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.action.hover, 0.1)
+                            : alpha(theme.palette.action.hover, 0.05),
                       },
                     }}
                   >
@@ -263,7 +272,7 @@ export default function Sidebar() {
                       primary="Settings"
                       primaryTypographyProps={{
                         fontSize: '0.9375rem',
-                        fontWeight: (isSettingsPath || settingsOpen) ? 600 : 400,
+                        fontWeight: isSettingsPath || settingsOpen ? 600 : 400,
                       }}
                     />
                     <Iconify
@@ -279,9 +288,10 @@ export default function Sidebar() {
                     component="div"
                     disablePadding
                     sx={{
-                      bgcolor: theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.background.default, 0.3)
-                        : alpha(theme.palette.background.default, 0.5),
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.background.default, 0.3)
+                          : alpha(theme.palette.background.default, 0.5),
                     }}
                   >
                     {settingsOptions.map((option) => (
@@ -291,20 +301,23 @@ export default function Sidebar() {
                           pl: 5,
                           py: 0.75,
                           '&.Mui-selected': {
-                            bgcolor: theme.palette.mode === 'dark'
-                              ? alpha(theme.palette.primary.main, 0.15)
-                              : alpha(theme.palette.primary.main, 0.08),
+                            bgcolor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.primary.main, 0.15)
+                                : alpha(theme.palette.primary.main, 0.08),
                             borderRight: `3px solid ${theme.palette.primary.main}`,
                             '&:hover': {
-                              bgcolor: theme.palette.mode === 'dark'
-                                ? alpha(theme.palette.primary.main, 0.2)
-                                : alpha(theme.palette.primary.main, 0.12),
+                              bgcolor:
+                                theme.palette.mode === 'dark'
+                                  ? alpha(theme.palette.primary.main, 0.2)
+                                  : alpha(theme.palette.primary.main, 0.12),
                             },
                           },
                           '&:hover': {
-                            bgcolor: theme.palette.mode === 'dark'
-                              ? alpha(theme.palette.action.hover, 0.1)
-                              : alpha(theme.palette.action.hover, 0.05),
+                            bgcolor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.action.hover, 0.1)
+                                : alpha(theme.palette.action.hover, 0.05),
                           },
                         }}
                         onClick={() => navigate(option.path)}
@@ -357,20 +370,23 @@ export default function Sidebar() {
               py: 1,
               borderRadius: '0',
               '&.Mui-selected': {
-                bgcolor: theme.palette.mode === 'dark'
-                  ? alpha(theme.palette.primary.main, 0.15)
-                  : alpha(theme.palette.primary.main, 0.08),
+                bgcolor:
+                  theme.palette.mode === 'dark'
+                    ? alpha(theme.palette.primary.main, 0.15)
+                    : alpha(theme.palette.primary.main, 0.08),
                 borderRight: `3px solid ${theme.palette.primary.main}`,
                 '&:hover': {
-                  bgcolor: theme.palette.mode === 'dark'
-                    ? alpha(theme.palette.primary.main, 0.2)
-                    : alpha(theme.palette.primary.main, 0.12),
+                  bgcolor:
+                    theme.palette.mode === 'dark'
+                      ? alpha(theme.palette.primary.main, 0.2)
+                      : alpha(theme.palette.primary.main, 0.12),
                 },
               },
               '&:hover': {
-                bgcolor: theme.palette.mode === 'dark'
-                  ? alpha(theme.palette.action.hover, 0.1)
-                  : alpha(theme.palette.action.hover, 0.05),
+                bgcolor:
+                  theme.palette.mode === 'dark'
+                    ? alpha(theme.palette.action.hover, 0.1)
+                    : alpha(theme.palette.action.hover, 0.05),
               },
             }}
           >
@@ -381,7 +397,10 @@ export default function Sidebar() {
               primary="Profile"
               primaryTypographyProps={{
                 fontSize: '0.9375rem',
-                fontWeight: pathname === (isBusiness ? `${baseUrl}/personal-profile` : `${baseUrl}/profile`) ? 600 : 400,
+                fontWeight:
+                  pathname === (isBusiness ? `${baseUrl}/personal-profile` : `${baseUrl}/profile`)
+                    ? 600
+                    : 400,
               }}
             />
           </ListItemButton>
@@ -398,20 +417,23 @@ export default function Sidebar() {
                   py: 1,
                   borderRadius: '0',
                   '&.Mui-selected': {
-                    bgcolor: theme.palette.mode === 'dark'
-                      ? alpha(theme.palette.primary.main, 0.15)
-                      : alpha(theme.palette.primary.main, 0.08),
+                    bgcolor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.primary.main, 0.15)
+                        : alpha(theme.palette.primary.main, 0.08),
                     borderRight: `3px solid ${theme.palette.primary.main}`,
                     '&:hover': {
-                      bgcolor: theme.palette.mode === 'dark'
-                        ? alpha(theme.palette.primary.main, 0.2)
-                        : alpha(theme.palette.primary.main, 0.12),
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.primary.main, 0.2)
+                          : alpha(theme.palette.primary.main, 0.12),
                     },
                   },
                   '&:hover': {
-                    bgcolor: theme.palette.mode === 'dark'
-                      ? alpha(theme.palette.action.hover, 0.1)
-                      : alpha(theme.palette.action.hover, 0.05),
+                    bgcolor:
+                      theme.palette.mode === 'dark'
+                        ? alpha(theme.palette.action.hover, 0.1)
+                        : alpha(theme.palette.action.hover, 0.05),
                   },
                 }}
               >
@@ -422,7 +444,7 @@ export default function Sidebar() {
                   primary="Settings"
                   primaryTypographyProps={{
                     fontSize: '0.9375rem',
-                    fontWeight: (isSettingsPath || settingsOpen) ? 600 : 400,
+                    fontWeight: isSettingsPath || settingsOpen ? 600 : 400,
                   }}
                 />
                 <Iconify
@@ -438,9 +460,10 @@ export default function Sidebar() {
                 component="div"
                 disablePadding
                 sx={{
-                  bgcolor: theme.palette.mode === 'dark'
-                    ? alpha(theme.palette.background.default, 0.3)
-                    : alpha(theme.palette.background.default, 0.5),
+                  bgcolor:
+                    theme.palette.mode === 'dark'
+                      ? alpha(theme.palette.background.default, 0.3)
+                      : alpha(theme.palette.background.default, 0.5),
                 }}
               >
                 {settingsOptions.map((option) => (
@@ -450,20 +473,23 @@ export default function Sidebar() {
                       pl: 5,
                       py: 0.75,
                       '&.Mui-selected': {
-                        bgcolor: theme.palette.mode === 'dark'
-                          ? alpha(theme.palette.primary.main, 0.15)
-                          : alpha(theme.palette.primary.main, 0.08),
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.15)
+                            : alpha(theme.palette.primary.main, 0.08),
                         borderRight: `3px solid ${theme.palette.primary.main}`,
                         '&:hover': {
-                          bgcolor: theme.palette.mode === 'dark'
-                            ? alpha(theme.palette.primary.main, 0.2)
-                            : alpha(theme.palette.primary.main, 0.12),
+                          bgcolor:
+                            theme.palette.mode === 'dark'
+                              ? alpha(theme.palette.primary.main, 0.2)
+                              : alpha(theme.palette.primary.main, 0.12),
                         },
                       },
                       '&:hover': {
-                        bgcolor: theme.palette.mode === 'dark'
-                          ? alpha(theme.palette.action.hover, 0.1)
-                          : alpha(theme.palette.action.hover, 0.05),
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.action.hover, 0.1)
+                            : alpha(theme.palette.action.hover, 0.05),
                       },
                     }}
                     onClick={() => navigate(option.path)}
