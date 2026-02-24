@@ -376,7 +376,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     is_updated = True
                     metadata_changed = True
 
-                if existing_record and (metadata.get("parents") or [None])[0] != existing_record.parent_external_record_id:
+                parent_external_record_id = (metadata.get("parents") or [None])[0]
+                if existing_record and parent_external_record_id != existing_record.parent_external_record_id:
                     is_updated = True
                     metadata_changed = True
 
