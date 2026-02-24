@@ -390,4 +390,5 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "DATASOURCE": CollectionNames.WEBPAGES.value,
     "SQL_TABLE": CollectionNames.SQL_TABLES.value,
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
+    # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }
