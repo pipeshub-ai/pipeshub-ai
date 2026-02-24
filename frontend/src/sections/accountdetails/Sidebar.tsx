@@ -90,6 +90,7 @@ export default function Sidebar() {
       name: 'OAuth 2.0',
       icon: keyLinkIcon,
       path: `${baseUrl}/settings/oauth2`,
+      adminOnly: true,
     },
     {
       name: 'AI Models',
