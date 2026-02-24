@@ -53,6 +53,7 @@ const STREAM_UPDATE_THROTTLE_MS = 900;
 const SLACK_MAX_TEXT_LENGTH = 39000;
 const SLACK_STREAM_MARKDOWN_LIMIT = 12000;
 const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again later.";
+const SLACK_MENTION_REGEX = /<@[A-Z0-9]+>/g;
 
 interface StreamStartResult {
   ts?: string;
@@ -673,7 +674,7 @@ app.message(async ({ message, client, context }) => {
     return;
   }
 
-  const query = typedMessage.text?.replace(/<@[A-Z0-9]+>/g, "").trim();
+  const query = typedMessage.text?.replace(SLACK_MENTION_REGEX, "").trim();
   if (!query) {
     return;
   }
@@ -695,7 +696,7 @@ app.event("app_mention", async ({ event, client, context }) => {
     return;
   }
 
-  const query = typedMessage.text?.replace(/<@[A-Z0-9]+>/g, "").trim();
+  const query = typedMessage.text?.replace(SLACK_MENTION_REGEX, "").trim();
   if (!query) {
     return;
   }
