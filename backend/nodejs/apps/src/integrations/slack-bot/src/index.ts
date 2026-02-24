@@ -672,8 +672,8 @@ app.message(async ({ message, client, context }) => {
   if (!isDirectMessage) {
     return;
   }
-
-  const query = typedMessage.text?.trim();
+  
+  const query = typedMessage.text?.replace(/<@[A-Z0-9]+>/g, "").trim();
   if (!query) {
     return;
   }
