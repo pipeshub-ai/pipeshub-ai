@@ -98,7 +98,7 @@ export const paths = {
 
 /** Resolve OAuth 2.0 paths from current pathname (company-settings vs individual). */
 export function getOAuth2Paths(pathname: string) {
-  return pathname.includes('company-settings')
+  return pathname.startsWith('/account/company-settings')
     ? paths.dashboard.account.companySettings.settings.oauth2
     : paths.dashboard.account.individual.settings.oauth2;
 }

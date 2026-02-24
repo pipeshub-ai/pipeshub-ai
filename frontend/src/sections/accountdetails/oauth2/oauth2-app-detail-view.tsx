@@ -3,11 +3,9 @@ import gridIcon from '@iconify-icons/mdi/grid';
 import lockIcon from '@iconify-icons/mdi/lock';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import contentCopyIcon from '@iconify-icons/mdi/content-copy';
-import React, { useState, useEffect, useCallback } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import deleteForeverIcon from '@iconify-icons/mdi/delete-forever';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-
-import { getOAuth2Paths } from 'src/routes/paths';
 
 import {
   Box,
@@ -37,6 +35,8 @@ import {
   FormControlLabel,
   DialogContentText,
 } from '@mui/material';
+
+import { getOAuth2Paths } from 'src/routes/paths';
 
 import { Iconify } from 'src/components/iconify';
 
@@ -119,7 +119,7 @@ export function OAuth2AppDetailView() {
   }, []);
 
   // Clear regenerated secret when user navigates away (section change or leave page)
-  const prevSectionRef = React.useRef(section);
+  const prevSectionRef = useRef(section);
   useEffect(() => {
     if (prevSectionRef.current !== section) {
       prevSectionRef.current = section;
