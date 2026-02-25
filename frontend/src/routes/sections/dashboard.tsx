@@ -8,6 +8,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { DashboardLayout } from 'src/layouts/dashboard';
 
 import { LoadingScreen } from 'src/components/loading-screen';
+
 import { ConnectorProvider } from 'src/sections/accountdetails/connectors/context';
 
 import { AuthGuard } from 'src/auth/guard';
@@ -34,14 +35,17 @@ const PersonalProfile = lazy(() => import('src/pages/dashboard/account/personal-
 const AuthenticationSettings = lazy(
   () => import('src/pages/dashboard/account/authentication-settings')
 );
-const MailSettings = lazy(
-  () => import('src/pages/dashboard/account/mail-settings')
-);
+const MailSettings = lazy(() => import('src/pages/dashboard/account/mail-settings'));
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
+const OAuth2Page = lazy(() => import('src/pages/dashboard/account/oauth2'));
+const OAuth2AppDetailPage = lazy(
+  () => import('src/pages/dashboard/account/oauth2/oauth2-app-detail')
+);
+const OAuth2NewAppPage = lazy(() => import('src/pages/dashboard/account/oauth2/oauth2-new-app'));
 
 // Connector Pages
 const ConnectorSettings = lazy(
@@ -57,14 +61,14 @@ const ConnectorOAuthCallback = lazy(
 
 // Toolsets Pages
 const ToolsetsSettingsPage = lazy(() => import('src/pages/dashboard/account/toolsets'));
-const ToolsetOAuthCallback = lazy(() => import('src/pages/dashboard/account/toolsets/oauth-callback'));
+const ToolsetOAuthCallback = lazy(
+  () => import('src/pages/dashboard/account/toolsets/oauth-callback')
+);
 
 // Knowledge Base Pages
 const Collections = lazy(() => import('src/pages/dashboard/knowledgebase/collections'));
 const RecordDetails = lazy(() => import('src/pages/dashboard/knowledgebase/record-details'));
-const KnowledgeSearch = lazy(
-  () => import('src/pages/dashboard/knowledgebase/knowledge-search')
-);
+const KnowledgeSearch = lazy(() => import('src/pages/dashboard/knowledgebase/knowledge-search'));
 const AllRecordsPage = lazy(() => import('src/sections/knowledgebase/all-records-page'));
 
 // ----------------------------------------------------------------------
@@ -90,12 +94,12 @@ export function FullNameGuard({ children }: { children: ReactNode }) {
  */
 function BusinessRouteGuard({ children }: { children: ReactNode }) {
   const { user, loading } = useAuthContext();
-  
+
   // Show loading screen while auth is being checked
   if (loading) {
     return <LoadingScreen />;
   }
-  
+
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (!isBusiness) {
@@ -110,12 +114,12 @@ function BusinessRouteGuard({ children }: { children: ReactNode }) {
  */
 function IndividualRouteGuard({ children }: { children: ReactNode }) {
   const { user, loading } = useAuthContext();
-  
+
   // Show loading screen while auth is being checked
   if (loading) {
     return <LoadingScreen />;
   }
-  
+
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (isBusiness) {
@@ -131,12 +135,12 @@ function IndividualRouteGuard({ children }: { children: ReactNode }) {
 function AdminRouteGuard({ children }: { children: ReactNode }) {
   const { isAdmin, loading: adminLoading, isInitialized } = useAdmin();
   const { user, loading: authLoading } = useAuthContext();
-  
+
   // Show loading screen while auth or admin status is being checked
   if (authLoading || adminLoading || !isInitialized) {
     return <LoadingScreen />;
   }
-  
+
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (!isBusiness) {
@@ -159,12 +163,12 @@ function AdminRouteGuard({ children }: { children: ReactNode }) {
  */
 function AccountTypeRedirect() {
   const { user, loading } = useAuthContext();
-  
+
   // Show loading screen while auth is being checked
   if (loading) {
     return <LoadingScreen />;
   }
-  
+
   const isBusiness = user?.accountType === 'business' || user?.accountType === 'organization';
 
   if (isBusiness) {
@@ -184,7 +188,11 @@ const WithAuth = ({ children }: { children: ReactNode }) => {
   if (CONFIG.auth.skip) {
     return <>{children}</>;
   }
-  return <AuthGuard><FullNameGuard>{children}</FullNameGuard></AuthGuard>;
+  return (
+    <AuthGuard>
+      <FullNameGuard>{children}</FullNameGuard>
+    </AuthGuard>
+  );
 };
 
 /**
@@ -263,13 +271,13 @@ export const dashboardRoutes = [
         path: 'toolsets/oauth/callback/:toolsetType',
         element: <ToolsetOAuthCallback />,
       },
-      
+
       // ----------------------------------------------------------------------
       // QNA Routes
       // ----------------------------------------------------------------------
       { element: <ChatBotPage key="home" />, index: true },
       { path: ':conversationId', element: <ChatBotPage key="conversation" /> },
-      
+
       // Agent Routes
       { path: 'agents', element: <AgentPage key="agent" /> },
       { path: 'agents/new', element: <AgentBuilderPage key="agent-builder" /> },
@@ -309,9 +317,9 @@ export const dashboardRoutes = [
         path: 'account',
         children: [
           // Redirect /account to appropriate profile based on account type
-          { 
-            index: true, 
-            element: <ProtectedRoute component={AccountTypeRedirect} /> 
+          {
+            index: true,
+            element: <ProtectedRoute component={AccountTypeRedirect} />,
           },
 
           // ----------------------------------------------------------------------
@@ -367,7 +375,9 @@ export const dashboardRoutes = [
                   // Redirect /account/company-settings/settings to authentication
                   {
                     index: true,
-                    element: <Navigate to="/account/company-settings/settings/authentication" replace />,
+                    element: (
+                      <Navigate to="/account/company-settings/settings/authentication" replace />
+                    ),
                   },
 
                   // Authentication Settings
@@ -423,10 +433,24 @@ export const dashboardRoutes = [
                     element: <BusinessOnlyRoute component={ToolsetsSettingsPage} />,
                   },
 
-                  // OAuth Configuration
+                  // OAuth Configuration (connector OAuth configs)
                   {
                     path: 'oauth-config',
                     element: <AdminProtectedRoute component={OAuthConfig} />,
+                  },
+
+                  // OAuth 2.0 (Pipeshub OAuth provider apps)
+                  {
+                    path: 'oauth2',
+                    element: <AdminProtectedRoute component={OAuth2Page} />,
+                  },
+                  {
+                    path: 'oauth2/new',
+                    element: <AdminProtectedRoute component={OAuth2NewAppPage} />,
+                  },
+                  {
+                    path: 'oauth2/:appId',
+                    element: <AdminProtectedRoute component={OAuth2AppDetailPage} />,
                   },
 
                   // AI Models Settings
@@ -445,6 +469,20 @@ export const dashboardRoutes = [
                   {
                     path: 'prompts',
                     element: <AdminProtectedRoute component={PromptsSettings} />,
+                  },
+
+                  // OAuth 2.0 (Pipeshub OAuth provider apps - admin only enforced by API)
+                  {
+                    path: 'oauth2',
+                    element: <AdminProtectedRoute component={OAuth2Page} />,
+                  },
+                  {
+                    path: 'oauth2/new',
+                    element: <AdminProtectedRoute component={OAuth2NewAppPage} />,
+                  },
+                  {
+                    path: 'oauth2/:appId',
+                    element: <AdminProtectedRoute component={OAuth2AppDetailPage} />,
                   },
                 ],
               },
@@ -522,7 +560,7 @@ export const dashboardRoutes = [
                     element: <IndividualOnlyRoute component={ToolsetsSettingsPage} />,
                   },
 
-                  // OAuth Configuration
+                  // OAuth Configuration (connector OAuth configs)
                   {
                     path: 'oauth-config',
                     element: <IndividualOnlyRoute component={OAuthConfig} />,
