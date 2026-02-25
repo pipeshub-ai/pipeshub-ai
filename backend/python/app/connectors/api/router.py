@@ -418,16 +418,28 @@ async def stream_record_internal(
         # TODO: Validate scopes ["connector:signedUrl"]
 
         org_id = payload.get("orgId")
-        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-        record_task = graph_provider.get_record_by_id(
-            record_id
-        )
-        org, record = await asyncio.gather(org_task, record_task)
+        if not org_id:
+            raise HTTPException(
+                status_code=HttpStatusCode.UNAUTHORIZED.value,
+                detail="Missing orgId in token"
+            )
 
-        if not org:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
+        record_task = graph_provider.get_record_by_id(record_id)
+        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        record, org = await asyncio.gather(record_task, org_task)
+
         if not record:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
+        # Prefer the org_id stored on the record itself — the JWT org_id may differ
+        # if the token was issued for a slightly different context.
+        effective_org_id = record.org_id or org_id
+        if not org:
+            # Retry with the record's own org_id in case it differs from the JWT claim
+            if effective_org_id != org_id:
+                org = await graph_provider.get_document(effective_org_id, CollectionNames.ORGS.value)
+            if not org:
+                raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
         connector_name = record.connector_name.value.lower().replace(" ", "")
         container: ConnectorAppContainer = request.app.container
@@ -438,7 +450,7 @@ async def stream_record_internal(
             storage_url = endpoints.get("storage").get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
             buffer_url = f"{storage_url}/api/v1/document/internal/{record.external_record_id}/buffer"
             jwt_payload  = {
-                "orgId": org_id,
+                "orgId": effective_org_id,
                 "scopes": ["storage:token"],
             }
             token = await generate_jwt(config_service, jwt_payload)
@@ -471,9 +483,11 @@ async def stream_record_internal(
     except ValidationError as e:
         logger.error("Payload validation error: %s", str(e))
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail="Invalid token payload")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error("Unexpected error during token validation: %s", str(e))
-        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error validating token")
+        logger.error("Unexpected error in stream_record_internal: %s", str(e), exc_info=True)
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Error streaming record")
 
 @router.get("/api/v1/index/{org_id}/{connector}/record/{record_id}", response_model=None)
 @inject

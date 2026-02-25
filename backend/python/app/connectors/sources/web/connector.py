@@ -9,8 +9,10 @@ from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
+import pillow_avif  # noqa: F401
 from bs4 import BeautifulSoup
 from fastapi.responses import StreamingResponse
+from PIL import Image, features
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
@@ -1000,6 +1002,11 @@ class WebConnector(BaseConnector):
         for svg in soup.find_all('svg'):
             self._convert_svg_tag_to_png(soup, svg)
 
+    # Image formats supported by OpenAI vision API
+    OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
+    # Accept header for image requests — deliberately excludes unsupported image types
+    _IMAGE_ACCEPT_HEADER = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/*;q=0.8"
+
     async def _process_single_image(
         self,
         img,
@@ -1024,19 +1031,75 @@ class WebConnector(BaseConnector):
         if "data:image" in src:
             if "," in src:
                 header, existing_b64 = src.split(",", 1)
-                cleaned_b64 = self._clean_base64_string(existing_b64)
-                if cleaned_b64:
-                    img['src'] = f"{header},{cleaned_b64}"
-                else:
-                    self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+
+                # Extract and validate the mime type from the data URI header
+                mime_match = re.match(r'data:([^;,]+)', header)
+                mime_type = mime_match.group(1).lower() if mime_match else ''
+
+                if mime_type == 'image/svg+xml':
+                    if ';base64' not in header:
+                        # URL-encoded SVG, decode directly
+                        svg_bytes = unquote(existing_b64).encode('utf-8')
+                    else:
+                        # base64-encoded SVG
+                        cleaned_b64 = self._clean_base64_string(existing_b64)
+                        if not cleaned_b64:
+                            self.logger.warning("⚠️ Invalid base64 in SVG data URI, removing image")
+                            img.decompose()
+                            return
+                        svg_bytes = base64.b64decode(cleaned_b64)
+
+                    # Common path for both cases
+                    try:
+                        png_b64 = self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
+                        if png_b64:
+                            img['src'] = f"data:image/png;base64,{png_b64}"
+                        else:
+                            self.logger.warning("⚠️ Failed to convert inline SVG data URI to PNG, removing image")
+                            img.decompose()
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Error converting inline SVG data URI: {e}, removing image")
+                        img.decompose()
+
+                elif mime_type == 'image/avif':
+                    self.logger.debug("Converting inline AVIF base64 to PNG base64")
+                    # Inline AVIF data URI — decode and convert to PNG
+                    cleaned_b64 = self._clean_base64_string(existing_b64)
+                    if cleaned_b64:
+                        try:
+                            avif_bytes = base64.b64decode(cleaned_b64)
+                            png_b64 = self._convert_avif_bytes_to_png_base64(avif_bytes, 'inline-avif-data-uri')
+                            if png_b64:
+                                img['src'] = f"data:image/png;base64,{png_b64}"
+                            else:
+                                img.decompose()
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Error converting inline AVIF data URI: {e}, removing image")
+                            img.decompose()
+                    else:
+                        self.logger.warning("⚠️ Invalid base64 in AVIF data URI, removing image")
+                        img.decompose()
+                elif mime_type and mime_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                    self.logger.warning(f"⚠️ Unsupported image format '{mime_type}' in existing data URI, removing image")
                     img.decompose()
+                else:
+                    # Supported format — just clean/validate the base64
+                    cleaned_b64 = self._clean_base64_string(existing_b64)
+                    if cleaned_b64:
+                        img['src'] = f"{header},{cleaned_b64}"
+                    else:
+                        self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+                        img.decompose()
             return
 
         # Download and convert external images
         try:
             absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
 
-            async with self.session.get(absolute_url, headers=headers) as img_response:
+            # Override Accept header so servers don't return unsupported image types
+            img_headers = {**headers, "Accept": self._IMAGE_ACCEPT_HEADER}
+
+            async with self.session.get(absolute_url, headers=img_headers) as img_response:
                 if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
                     self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
                     return
@@ -1047,13 +1110,34 @@ class WebConnector(BaseConnector):
 
                 content_type = self._determine_image_content_type(img_response, absolute_url)
 
-                # Convert to base64 (handle SVG specially)
+                # Convert to base64 (handle SVG and AVIF specially)
                 if content_type == 'image/svg+xml':
                     b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
                     if not b64_str:
                         img.decompose()
                         return
                     content_type = 'image/png'
+                elif content_type == 'image/avif':
+                    self.logger.debug("Converting external AVIF to PNG base64")
+                    b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
+                    if not b64_str:
+                        img.decompose()
+                        return
+                    content_type = 'image/png'
+                elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                    # Server returned an unsupported format — log full metadata then skip.
+                    raw_ct = img_response.headers.get('Content-Type', '<none>')
+                    self.logger.debug(
+                        f"⚠️ Unsupported downloaded image — "
+                        f"resolved_content_type='{content_type}' | "
+                        f"raw_Content-Type='{raw_ct}' | "
+                        f"url='{absolute_url}' | "
+                        f"response_status={img_response.status} | "
+                        f"content_length={len(img_bytes)} bytes | "
+                        f"response_headers={dict(img_response.headers)} — skipping"
+                    )
+                    img.decompose()
+                    return
                 else:
                     b64_str = base64.b64encode(img_bytes).decode('utf-8')
                     b64_str = self._clean_base64_string(b64_str)
@@ -1081,6 +1165,7 @@ class WebConnector(BaseConnector):
                 '.gif': 'image/gif',
                 '.webp': 'image/webp',
                 '.svg': 'image/svg+xml',
+                '.avif': 'image/avif',
             }
 
             for ext, mime in extension_map.items():
@@ -1107,6 +1192,66 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
             return None
+
+    # AVIF files are ISOBMFF containers: bytes 4-7 are the 'ftyp' box type,
+    # bytes 8-11 are the major brand ('avif' or 'avis').
+    _AVIF_FTYP_BRANDS = (b'avif', b'avis')
+
+    def _is_valid_avif(self, data: bytes) -> bool:
+        """Return True if data looks like a valid AVIF container."""
+        return (
+            len(data) >= 12
+            and data[4:8] == b'ftyp'
+            and data[8:12] in self._AVIF_FTYP_BRANDS
+        )
+
+    def _convert_avif_bytes_to_png_base64(self, avif_bytes: bytes, url: str) -> Optional[str]:
+        """
+        Convert AVIF bytes to PNG base64 string.
+
+        Strategy:
+          1. Validate the ISOBMFF ftyp box so we reject bogus payloads early.
+          2. use pillow_avif to convert AVIF to PNG.
+        """
+        size = len(avif_bytes)
+        magic = avif_bytes[:16].hex() if avif_bytes else '<empty>'
+
+        print("features.check:", features.check("avif"))
+
+        # ── 1. Structural validation ──────────────────────────────────────────
+        if not self._is_valid_avif(avif_bytes):
+            try:
+                sniff = avif_bytes[:200].decode('utf-8', errors='replace')
+            except Exception:
+                sniff = repr(avif_bytes[:64])
+            self.logger.warning(
+                f"⚠️ AVIF validation failed for '{url}' — "
+                f"size={size} bytes | magic_hex='{magic}' | "
+                f"ftyp_box='{avif_bytes[4:8]}' (expected b'ftyp') | "
+                f"brand='{avif_bytes[8:12]}' (expected avif/avis) | "
+                f"payload_preview={sniff!r} — skipping"
+            )
+            return None
+
+        # ── 2. Pillow ────────────────────────────────────────────────────
+        try:
+            with Image.open(BytesIO(avif_bytes)) as img:
+                out_mode = "RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB"
+                png_buffer = BytesIO()
+                img.convert(out_mode).save(png_buffer, format="PNG")
+            png_b64_str = self._clean_base64_string(
+                base64.b64encode(png_buffer.getvalue()).decode('utf-8')
+            )
+            if not png_b64_str:
+                self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from AVIF (Pillow): {url}")
+                return None
+            self.logger.debug(f"✅ Converted AVIF→PNG via Pillow: {url}")
+            return png_b64_str
+
+        except Exception as pillow_err:
+            self.logger.debug(
+                f"ℹ️  Pillow could not open AVIF ({pillow_err}), trying ffmpeg fallback — '{url}'"
+            )
 
     async def _process_all_images(
         self,

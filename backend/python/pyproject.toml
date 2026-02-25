@@ -93,6 +93,8 @@ dependencies = [
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
     "pdf2image==1.17.0",
+    "pillow==12.1.0",
+    "pillow-avif==1.5.5",
     "protobuf==3.20.3",
     "pydantic==2.12.5",
     "py-trello==0.20.1",
