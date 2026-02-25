@@ -135,6 +135,9 @@ class ClientFactoryRegistry:
                 for subdir in config.subdirectories:
                     cls.register(subdir, MSGraphClientFactory(subdir))
 
+            elif app_name == "outlook":
+                cls.register(app_name, MSGraphClientFactory(app_name))
+
             elif app_name == "linear":
                 cls.register(app_name, LinearClientFactory())
 
