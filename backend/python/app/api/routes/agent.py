@@ -1034,6 +1034,7 @@ async def create_agent(request: Request) -> JSONResponse:
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
+        org_key = user_context["orgId"]
         time = get_epoch_timestamp_in_ms()
 
         # Parse and validate models
@@ -1101,7 +1102,7 @@ async def create_agent(request: Request) -> JSONResponse:
             logger.debug(f"Created agent node: {agent_key}")
 
             # Step 2: Create permission edge
-            permission_edge = {
+            user_permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
                 "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
                 "role": "OWNER",
@@ -1109,7 +1110,17 @@ async def create_agent(request: Request) -> JSONResponse:
                 "createdAtTimestamp": time,
                 "updatedAtTimestamp": time,
             }
-            await graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value, transaction=transaction_id)
+
+            org_permission_edge = {
+                "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+                "role": "OWNER",
+                "type": "ORG",
+                "createdAtTimestamp": time,
+                "updatedAtTimestamp": time,
+            }
+            permission_edges = [user_permission_edge, org_permission_edge]
+            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
             logger.debug(f"Created permission edge for agent: {agent_key}")
 
             # Step 3: Create toolsets and tools (within same transaction)
@@ -1335,9 +1346,10 @@ async def get_agent(request: Request, agent_id: str) -> JSONResponse:
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1367,9 +1379,10 @@ async def get_agents(request: Request) -> JSONResponse:
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agents = await services["graph_provider"].get_all_agents(user_doc["_key"])
+        agents = await services["graph_provider"].get_all_agents(user_doc["_key"], org_key)
 
         if not agents:
             raise HTTPException(status_code=404, detail="No agents found")
@@ -1400,6 +1413,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
         body = _parse_request_body(await request.body())
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
         user_key = user_doc["_key"]
+        org_key = user_context["orgId"]
 
         # Validate models if provided in update body
         if "models" in body:
@@ -1417,7 +1431,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
 
         # Check permissions
-        agent = await services["graph_provider"].get_agent(agent_id, user_key)
+        agent = await services["graph_provider"].get_agent(agent_id, user_key, org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
@@ -1425,7 +1439,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             raise PermissionDeniedError("edit this agent (only owner can edit)")
 
         # Update agent document
-        result = await services["graph_provider"].update_agent(agent_id, body, user_key)
+        result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent")
 
@@ -1718,9 +1732,10 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1728,7 +1743,7 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_delete", False):
             raise PermissionDeniedError("delete this agent (only owner can delete)")
 
-        result = await services["graph_provider"].delete_agent(agent_id, user_doc["_key"])
+        result = await services["graph_provider"].delete_agent(agent_id, user_doc["_key"], org_key)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to delete agent")
 
@@ -1753,13 +1768,14 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1767,7 +1783,7 @@ async def share_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_share", False):
             raise PermissionDeniedError("share this agent")
 
-        result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].share_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to share agent")
 
@@ -1788,13 +1804,14 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         user_ids = body.get("userIds", [])
         team_ids = body.get("teamIds", [])
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
 
         if not agent:
             raise AgentNotFoundError(agent_id)
@@ -1802,7 +1819,7 @@ async def unshare_agent(request: Request, agent_id: str) -> JSONResponse:
         if not agent.get("can_share", False):
             raise PermissionDeniedError("unshare this agent")
 
-        result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], user_ids, team_ids)
+        result = await services["graph_provider"].unshare_agent(agent_id, user_doc["_key"], org_key, user_ids, team_ids)
         if not result:
             raise HTTPException(status_code=500, detail="Failed to unshare agent")
 
@@ -1823,9 +1840,10 @@ async def get_agent_permissions(request: Request, agent_id: str) -> JSONResponse
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        permissions = await services["graph_provider"].get_agent_permissions(agent_id, user_doc["_key"])
+        permissions = await services["graph_provider"].get_agent_permissions(agent_id, user_doc["_key"], org_key)
 
         # if permissions is None:
             # raise PermissionDeniedError("view permissions for this agent")
@@ -1851,6 +1869,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
     try:
         services = await get_services(request)
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         user_ids = body.get("userIds", [])
@@ -1861,7 +1880,7 @@ async def update_agent_permission(request: Request, agent_id: str) -> JSONRespon
             raise InvalidRequestError("Role is required")
 
         user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], services["logger"])
-        result = await services["graph_provider"].update_agent_permission(agent_id, user_doc["_key"], user_ids, team_ids, role)
+        result = await services["graph_provider"].update_agent_permission(agent_id, user_doc["_key"], org_key, user_ids, team_ids, role)
 
         if not result:
             raise HTTPException(status_code=500, detail="Failed to update agent permission")
@@ -1893,6 +1912,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
 
         # Get user and org info
@@ -1901,7 +1921,7 @@ async def chat(request: Request, agent_id: str, chat_query: ChatQuery) -> JSONRe
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Get agent
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"])
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 
@@ -2020,6 +2040,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
         user_context = _get_user_context(request)
+        org_key = user_context["orgId"]
 
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
@@ -2041,11 +2062,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         org_info = await _get_org_info(user_context, services["graph_provider"], logger)
 
         # Get agent
-        agent = await services["graph_provider"].get_agent(
-            agent_id,
-            user_doc["_key"],
-            allow_unscoped_access=True
-        )
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
         if not agent:
             raise AgentNotFoundError(agent_id)
 

@@ -15437,14 +15437,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset usage: {str(e)}")
             raise
 
-
-    async def get_agent(
-        self,
-        agent_id: str,
-        user_id: str,
-        transaction: Optional[str] = None,
-        allow_unscoped_access: bool = False
-    ) -> Optional[Dict]:
+    async def get_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[Dict]:
         """
         Get an agent by ID with user permissions and linked graph data.
 
@@ -15457,6 +15450,7 @@ class Neo4jProvider(IGraphDBProvider):
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             team_label = collection_to_label(CollectionNames.TEAMS.value)
+            org_label = collection_to_label(CollectionNames.ORGS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
             agent_has_toolset_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_TOOLSET.value)
             toolset_has_tool_rel = edge_collection_to_relationship(CollectionNames.TOOLSET_HAS_TOOL.value)
@@ -15468,6 +15462,7 @@ class Neo4jProvider(IGraphDBProvider):
             # user_id is the user's _key (internal ID), not userId (external ID)
             # This matches ArangoHTTPProvider behavior where user_id is used directly as user_key
             user_key = user_id
+            org_key = org_id
 
             # Get user document by id (which is the _key) to extract userId for team queries
             user_query = f"""
@@ -15550,26 +15545,29 @@ class Neo4jProvider(IGraphDBProvider):
                     agent_data = dict(team_result[0]["agent"])
                     user_role = team_result[0]["role"]
                     access_type = "TEAM"
-
-            if not agent_data and allow_unscoped_access:
-                bypass_query = f"""
-                MATCH (agent:{agent_label} {{id: $agent_id}})
-                WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
-                RETURN agent
+            elif org_key:
+                # Check org permissions (only if no individual or team access)
+                org_query = f"""
+                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                WHERE p.type = 'ORG'
+                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+                RETURN agent, p.role AS role, 'ORG' AS access_type
                 LIMIT 1
                 """
-                bypass_result = await self.client.execute_query(
-                    bypass_query,
-                    parameters={"agent_id": agent_id},
+
+                org_result = await self.client.execute_query(
+                    org_query,
+                    parameters={"org_key": org_key, "agent_id": agent_id},
                     txn_id=transaction
                 )
-                if bypass_result:
-                    agent_data = dict(bypass_result[0]["agent"])
-                    user_role = "OWNER"
-                    access_type = "BYPASS"
+
+                if org_result:
+                    agent_data = dict(org_result[0]["agent"])
+                    user_role = org_result[0]["role"]
+                    access_type = "ORG"
 
             if not agent_data:
-                self.logger.warning(f"No accessible agent found for user {user_key} on agent {agent_id}")
+                self.logger.warning(f"No permissions found for user {user_key} on agent {agent_id}")
                 return None
 
             # Convert to ArangoDB format
@@ -15700,95 +15698,83 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to get agent: {str(e)}")
             return None
 
-    async def get_all_agents(self, user_id: str, transaction: Optional[str] = None) -> List[Dict]:
-        """Get all agents accessible to a user via individual or team access - flattened response"""
+    async def get_all_agents(self, user_id: str, org_id: str, transaction: Optional[str] = None) -> List[Dict]:
+        """Get all agents accessible to a user via individual, team, or org access - flattened response with deduplication"""
         try:
             agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             team_label = collection_to_label(CollectionNames.TEAMS.value)
+            org_label = collection_to_label(CollectionNames.ORGS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
-            # user_id is the internal key (_key in ArangoDB, id in Neo4j)
-            # Use it directly to match the user node
             user_key = user_id
+            org_key = org_id
 
-            # Get user's teams
+            # Get user's teams first (needed for team permission check)
             user_teams_query = f"""
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(t:{team_label})
             WHERE p.type = 'USER'
-            RETURN t.id AS team_id
+            RETURN collect(t.id) AS team_ids
             """
-
+            
             user_teams_result = await self.client.execute_query(
                 user_teams_query,
                 parameters={"user_key": user_key},
                 txn_id=transaction
             )
-            user_team_ids = [r["team_id"] for r in user_teams_result] if user_teams_result else []
+            user_team_ids = user_teams_result[0]["team_ids"] if user_teams_result and user_teams_result[0].get("team_ids") else []
 
-            # Get agents with individual access
-            individual_query = f"""
+            # Optimized query using UNION to combine all permission types in a single query
+            # Priority: INDIVIDUAL > TEAM > ORG (handled by ORDER BY and deduplication)
+            combined_query = f"""
+            // Individual user permissions
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE p.type = 'USER'
             AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-            RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type
+            RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type, 1 AS priority
+            
+            UNION ALL
+            
+            // Team permissions
+            MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE t.id IN $team_ids
+            AND p.type = 'TEAM'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN agent, p.role AS role, 'TEAM' AS access_type, 2 AS priority
+            
+            UNION ALL
+            
+            // Org permissions
+            MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label})
+            WHERE p.type = 'ORG'
+            AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN agent, p.role AS role, 'ORG' AS access_type, 3 AS priority
             """
-
-            individual_result = await self.client.execute_query(
-                individual_query,
-                parameters={"user_key": user_key},
+            
+            result = await self.client.execute_query(
+                combined_query,
+                parameters={"user_key": user_key, "org_key": org_key, "team_ids": user_team_ids},
                 txn_id=transaction
             )
 
-            agents = []
-            individual_agent_keys = set()
-
-            if individual_result:
-                for row in individual_result:
+            # Deduplicate by agent ID, keeping highest priority (lowest priority number)
+            agents_dict = {}
+            if result:
+                for row in result:
                     agent_data = dict(row["agent"])
-                    agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
-                    agent["access_type"] = "INDIVIDUAL"
-                    agent["user_role"] = row["role"]
-                    agent["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
-                    agent["can_delete"] = row["role"] == "OWNER"
-                    agent["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
-                    agent["can_view"] = True
-                    agents.append(agent)
-                    # Store just the key for exclusion
-                    individual_agent_keys.add(agent_data.get("id", ""))
-
-            # Get agents with team access (excluding those already found)
-            if user_team_ids:
-                team_query = f"""
-                MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label})
-                WHERE t.id IN $team_ids
-                AND p.type = 'TEAM'
-                AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
-                AND NOT agent.id IN $excluded_ids
-                RETURN agent, p.role AS role, 'TEAM' AS access_type
-                """
-
-                team_result = await self.client.execute_query(
-                    team_query,
-                    parameters={
-                        "team_ids": user_team_ids,
-                        "excluded_ids": list(individual_agent_keys)  # Convert set to list
-                    },
-                    txn_id=transaction
-                )
-
-                if team_result:
-                    for row in team_result:
-                        agent_data = dict(row["agent"])
+                    agent_id = agent_data.get("id", "")
+                    if agent_id and (agent_id not in agents_dict or agents_dict[agent_id]["priority"] > row["priority"]):
                         agent = self._neo4j_to_arango_node(agent_data, CollectionNames.AGENT_INSTANCES.value)
-                        agent["access_type"] = "TEAM"
+                        agent["access_type"] = row["access_type"]
                         agent["user_role"] = row["role"]
                         agent["can_edit"] = row["role"] in ["OWNER", "WRITER", "ORGANIZER"]
                         agent["can_delete"] = row["role"] == "OWNER"
                         agent["can_share"] = row["role"] in ["OWNER", "ORGANIZER"]
                         agent["can_view"] = True
-                        agents.append(agent)
+                        agents_dict[agent_id] = {"agent": agent, "priority": row["priority"]}
 
+            # Convert dictionary to list (deduplicated)
+            agents = [agents_dict[key]["agent"] for key in agents_dict]
             return agents
 
         except Exception as e:
@@ -15796,7 +15782,7 @@ class Neo4jProvider(IGraphDBProvider):
             return []
 
 
-    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def update_agent(self, agent_id: str, agent_updates: Dict[str, Any], user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[bool]:
         """
         Update an agent.
 
@@ -15805,7 +15791,7 @@ class Neo4jProvider(IGraphDBProvider):
         """
         try:
             # Check if user has permission to update the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -15879,7 +15865,7 @@ class Neo4jProvider(IGraphDBProvider):
             return False
 
 
-    async def delete_agent(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[bool]:
+    async def delete_agent(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[bool]:
         """Delete an agent (soft delete)"""
         try:
             # Check if agent exists
@@ -15889,7 +15875,7 @@ class Neo4jProvider(IGraphDBProvider):
                 return False
 
             # Check if user has permission to delete the agent using the new method
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -15920,12 +15906,11 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to delete agent: {str(e)}")
             return False
 
-
-    async def share_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
+    async def share_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[bool]:
         """Share an agent to users and teams"""
         try:
             # Check if agent exists and user has permission to share it
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return False
@@ -15987,11 +15972,11 @@ class Neo4jProvider(IGraphDBProvider):
             return False
 
 
-    async def unshare_agent(self, agent_id: str, user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[Dict]:
+    async def unshare_agent(self, agent_id: str, user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], transaction: Optional[str] = None) -> Optional[Dict]:
         """Unshare an agent from users and teams - direct deletion without validation"""
         try:
             # Check if user has permission to unshare the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None or not agent_with_permission.get("can_share", False):
                 return {"success": False, "reason": "Insufficient permissions to unshare agent"}
 
@@ -16059,11 +16044,11 @@ class Neo4jProvider(IGraphDBProvider):
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
 
-    async def update_agent_permission(self, agent_id: str, owner_user_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str, transaction: Optional[str] = None) -> Optional[Dict]:
+    async def update_agent_permission(self, agent_id: str, owner_user_id: str, org_id: str, user_ids: Optional[List[str]], team_ids: Optional[List[str]], role: str, transaction: Optional[str] = None) -> Optional[Dict]:
         """Update permission role for users and teams on an agent (only OWNER can do this)"""
         try:
             # Check if the requesting user is the OWNER of the agent
-            agent_with_permission = await self.get_agent(agent_id, owner_user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, owner_user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {owner_user_id} on agent {agent_id}")
                 return {"success": False, "reason": "Agent not found or no permission"}
@@ -16149,11 +16134,11 @@ class Neo4jProvider(IGraphDBProvider):
             return {"success": False, "reason": f"Internal error: {str(e)}"}
 
 
-    async def get_agent_permissions(self, agent_id: str, user_id: str, transaction: Optional[str] = None) -> Optional[List[Dict]]:
+    async def get_agent_permissions(self, agent_id: str, user_id: str, org_id: str, transaction: Optional[str] = None) -> Optional[List[Dict]]:
         """Get all permissions for an agent (only OWNER can view all permissions)"""
         try:
             # Check if user has access to the agent
-            agent_with_permission = await self.get_agent(agent_id, user_id, transaction=transaction)
+            agent_with_permission = await self.get_agent(agent_id, user_id, org_id, transaction=transaction)
             if agent_with_permission is None:
                 self.logger.warning(f"No permission found for user {user_id} on agent {agent_id}")
                 return None
