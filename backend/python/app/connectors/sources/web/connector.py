@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import hashlib
+import random
 import re
 import uuid
 from io import BytesIO
@@ -11,6 +12,7 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 import aiohttp
 import pillow_avif  # noqa: F401
 from bs4 import BeautifulSoup
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from PIL import Image
 
@@ -43,6 +45,15 @@ from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+RETRYABLE_EXCEPTIONS = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ServerTimeoutError,
+    asyncio.TimeoutError,
+)
 
 # MIME type mapping for common file extensions
 FILE_MIME_TYPES = {
@@ -1264,61 +1275,161 @@ class WebConnector(BaseConnector):
             return cleaned_html
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to parse/clean HTML: {e}")
-            return None
+            self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
+            raise
+
+    # ==================== Retryable Fetch Method ====================
+
+    async def _fetch_with_retry(
+        self,
+        url: str,
+        headers: dict,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 10.0,
+    ) -> bytes:
+        """
+        Fetch a URL with exponential backoff retry for transient errors.
+
+        Args:
+            url: The URL to fetch
+            headers: Request headers
+            max_retries: Maximum number of retry attempts
+            base_delay: Initial delay in seconds before first retry
+            max_delay: Maximum delay cap in seconds
+
+        Returns:
+            The response content as bytes
+
+        Raises:
+            HTTPException: On non-retryable HTTP errors or after exhausting retries
+        """
+
+        for attempt in range(max_retries + 1):
+            try:
+                async with self.session.get(url, headers=headers) as response:
+                    # Non-retryable client errors — fail immediately
+                    if (
+                        response.status >= HttpStatusCode.BAD_REQUEST.value
+                        and response.status not in RETRYABLE_STATUS_CODES
+                    ):
+                        raise HTTPException(
+                            status_code=response.status,
+                            detail=f"HTTP {response.status} for {url}",
+                        )
+
+                    # Retryable status codes
+                    if response.status in RETRYABLE_STATUS_CODES:
+                        if attempt == max_retries:
+                            raise HTTPException(
+                                status_code=response.status,
+                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
+                            )
+
+                        delay = self._calculate_retry_delay(
+                            attempt, base_delay, max_delay,
+                            retry_after=response.headers.get("Retry-After"),
+                        )
+                        self.logger.warning(
+                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
+                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # Success
+                    return await response.read()
+
+            except RETRYABLE_EXCEPTIONS as e:
+                if attempt == max_retries:
+                    self.logger.error(
+                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
+                    )
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_GATEWAY.value,
+                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
+                    )
+
+                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
+                self.logger.warning(
+                    f"⚠️ Connection error for {url}: {e}. "
+                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                )
+                await asyncio.sleep(delay)
+
+        # Should not be reached, but just in case
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail=f"Failed to fetch {url} after {max_retries} retries",
+        )
+
+    @staticmethod
+    def _calculate_retry_delay(
+        attempt: int,
+        base_delay: float,
+        max_delay: float,
+        retry_after: Optional[str] = None,
+    ) -> float:
+        """
+        Calculate delay using exponential backoff with jitter,
+        respecting Retry-After header if present.
+        """
+        if retry_after:
+            try:
+                return min(float(retry_after), max_delay)
+            except (ValueError, TypeError):
+                pass
+
+        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+        return min(delay, max_delay)
 
     # ==================== Main Stream Record Method ====================
 
     async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
         """
         Stream the web page content with proper content extraction.
-
-        This method fetches web content, processes HTML (cleaning and converting
-        images to base64), and returns a streaming response.
-
-        Args:
-            record: Record object containing URL and metadata
-
-        Returns:
-            StreamingResponse with the processed content, or None on failure
         """
         if not record.weburl:
-            return None
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Web URL is missing for record {record.record_name} (id:{record.id})",
+            )
 
         try:
             headers = {"Referer": self.url} if self.url else {}
 
-            async with self.session.get(record.weburl, headers=headers) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    return None
+            content_bytes = await self._fetch_with_retry(record.weburl, headers)
 
-                content_bytes = await response.read()
-                mime_type = record.mime_type or "text/html"
+            mime_type = record.mime_type or "text/html"
 
-                # Process HTML content
-                cleaned_html_content = None
-                if "html" in mime_type.lower():
-                    cleaned_html_content = await self._process_html_content(
-                        content_bytes, record, headers
-                    )
-
-                # Prepare response content
-                response_content = (
-                    cleaned_html_content.encode('utf-8')
-                    if cleaned_html_content
-                    else content_bytes
+            # Process HTML content
+            cleaned_html_content = None
+            if "html" in mime_type.lower():
+                cleaned_html_content = await self._process_html_content(
+                    content_bytes, record, headers
                 )
 
-                return create_stream_record_response(
-                    BytesIO(response_content),
-                    filename=record.record_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record.id}"
-                )
+            # Prepare response content
+            response_content = (
+                cleaned_html_content.encode("utf-8")
+                if cleaned_html_content
+                else content_bytes
+            )
 
+            return create_stream_record_response(
+                BytesIO(response_content),
+                filename=record.record_name,
+                mime_type=mime_type,
+                fallback_filename=f"record_{record.id}",
+            )
+
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"❌ Error streaming record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
+            raise
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (same as full sync for web pages)."""

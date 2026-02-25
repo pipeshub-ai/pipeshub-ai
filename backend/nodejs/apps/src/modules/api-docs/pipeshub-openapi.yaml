@@ -20407,8 +20407,36 @@ paths:
               schema:
                 type: string
                 format: binary
+        '401':
+          description: Unauthorized - Missing or invalid Authorization header, or missing orgId in token
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Missing orgId in token
         '404':
-          description: Record not found
+          description: Record or organization not found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Record not found
+        '500':
+          description: Internal server error while streaming record
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  detail:
+                    type: string
+                    example: Error streaming record
 
   /connector/api/v1/record/buffer/convert:
     post:
