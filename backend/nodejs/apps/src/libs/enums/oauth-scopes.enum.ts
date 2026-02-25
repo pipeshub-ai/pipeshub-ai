@@ -24,9 +24,10 @@ export const OAuthScopeNames = Object.freeze({
   KB_DELETE: 'kb:delete',
   KB_UPLOAD: 'kb:upload',
 
-  // Search
-  SEARCH_QUERY: 'search:query',
-  SEARCH_SEMANTIC: 'search:semantic',
+  // Semantic Search
+  SEMANTIC_READ: 'semantic:read',
+  SEMANTIC_WRITE: 'semantic:write',
+  SEMANTIC_DELETE: 'semantic:delete',
 
   // Conversations
   CONVERSATION_READ: 'conversation:read',
