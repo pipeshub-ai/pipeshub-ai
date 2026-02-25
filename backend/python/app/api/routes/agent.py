@@ -1127,7 +1127,7 @@ async def create_agent(request: Request) -> JSONResponse:
                 org_permission_edge = {
                     "_from": f"{CollectionNames.ORGS.value}/{org_key}",
                     "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-                    "role": "VIEWER",
+                    "role": "READER",
                     "type": "ORG",
                     "createdAtTimestamp": time,
                     "updatedAtTimestamp": time,
@@ -1472,7 +1472,7 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 org_permission_edge = {
                     "_from": f"{CollectionNames.ORGS.value}/{org_key}",
                     "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
-                    "role": "VIEWER",
+                    "role": "READER",
                     "type": "ORG",
                     "createdAtTimestamp": time,
                     "updatedAtTimestamp": time,
@@ -2195,50 +2195,60 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             fetch_results = await _asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
 
             configured_toolsets = []
-            missing_toolset_display_names: list[str] = []
+            missing_toolset_display_names: list[str] = []        # no config found at all
+            unauthenticated_toolset_display_names: list[str] = []  # config exists but OAuth not completed
 
             for toolset, config in fetch_results:
                 toolset_name = toolset["name"]
                 normalized_name = normalize_app_name(toolset_name)
-                if config:
+                display_name = toolset.get("displayName") or toolset_name.replace("_", " ").title()
+
+                if config and config.get("isAuthenticated", False):
+                    # Fully configured and authenticated — allow
                     synthetic_id = f"{executing_user_id}_{normalized_name}"
                     toolset_configs[synthetic_id] = config
                     configured_toolsets.append(toolset)
+                elif config:
+                    # Config saved but authentication not completed (e.g. OAuth flow pending)
+                    unauthenticated_toolset_display_names.append(display_name)
+                    logger.warning(
+                        f"Toolset '{toolset_name}' is configured but not authenticated for user "
+                        f"'{executing_user_id}'. User needs to complete the authentication flow."
+                    )
                 else:
-                    display_name = toolset.get("displayName") or toolset_name.replace("_", " ").title()
+                    # No config found at all
                     missing_toolset_display_names.append(display_name)
                     logger.warning(
                         f"Toolset config not found for user '{executing_user_id}' / toolset '{toolset_name}'. "
                         "User needs to configure this integration."
                     )
 
-            # Strategy: if ALL toolsets are unconfigured → block entirely.
-            # If only SOME are missing → proceed with the configured subset (partial execution).
-            if missing_toolset_display_names:
-                if not configured_toolsets:
-                    # No toolset is configured for this user at all — hard block.
+            # Hard-block if ANY toolset is either unconfigured or unauthenticated
+            if missing_toolset_display_names or unauthenticated_toolset_display_names:
+                problem_parts = []
+                if missing_toolset_display_names:
                     missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
-                    error_message = (
-                        f"This agent requires the following toolset(s) to be configured: {missing_list}. "
-                        "Please connect your account(s) in Settings → Toolsets before using this agent."
-                    )
-                    logger.info(
-                        f"Blocking agent {agent_id} execution for user '{executing_user_id}': "
-                        f"all toolset configs missing: {missing_toolset_display_names}"
-                    )
+                    problem_parts.append(f"not configured: {missing_list}")
+                if unauthenticated_toolset_display_names:
+                    unauth_list = ", ".join(f"'{n}'" for n in unauthenticated_toolset_display_names)
+                    problem_parts.append(f"not authenticated: {unauth_list}")
 
-                    async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
-                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+                error_message = (
+                    f"This agent requires the following toolset(s) to be set up — "
+                    f"{'; '.join(problem_parts)}. "
+                    "Please connect your account(s) in Settings → Toolsets before using this agent."
+                )
+                logger.info(
+                    f"Blocking agent {agent_id} execution for user '{executing_user_id}': "
+                    f"toolset issue(s) — {'; '.join(problem_parts)}"
+                )
 
-                    return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
-                else:
-                    # Partial — proceed with only the configured toolsets, warn about the rest.
-                    missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
-                    logger.warning(
-                        f"Agent {agent_id}: proceeding with partial toolsets for user '{executing_user_id}'. "
-                        f"Unconfigured (will be skipped): {missing_list}"
-                    )
-                    agent_toolsets = configured_toolsets
+                async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
+                    yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+
+                return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
+
+            agent_toolsets = configured_toolsets
 
         # Override the stored userId on each toolset with the executing user's ID so that
         # _build_tool_to_toolset_map (in chat_state.py) constructs synthetic IDs that
