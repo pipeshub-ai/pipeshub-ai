@@ -12,7 +12,7 @@ import aiohttp
 import pillow_avif  # noqa: F401
 from bs4 import BeautifulSoup
 from fastapi.responses import StreamingResponse
-from PIL import Image, features
+from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
@@ -1193,47 +1193,11 @@ class WebConnector(BaseConnector):
             self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
             return None
 
-    # AVIF files are ISOBMFF containers: bytes 4-7 are the 'ftyp' box type,
-    # bytes 8-11 are the major brand ('avif' or 'avis').
-    _AVIF_FTYP_BRANDS = (b'avif', b'avis')
-
-    def _is_valid_avif(self, data: bytes) -> bool:
-        """Return True if data looks like a valid AVIF container."""
-        return (
-            len(data) >= 12
-            and data[4:8] == b'ftyp'
-            and data[8:12] in self._AVIF_FTYP_BRANDS
-        )
-
     def _convert_avif_bytes_to_png_base64(self, avif_bytes: bytes, url: str) -> Optional[str]:
         """
-        Convert AVIF bytes to PNG base64 string.
-
-        Strategy:
-          1. Validate the ISOBMFF ftyp box so we reject bogus payloads early.
-          2. use pillow_avif to convert AVIF to PNG.
+        Convert AVIF bytes to PNG base64 string. use pillow_avif to convert AVIF to PNG.
         """
-        size = len(avif_bytes)
-        magic = avif_bytes[:16].hex() if avif_bytes else '<empty>'
 
-        print("features.check:", features.check("avif"))
-
-        # ── 1. Structural validation ──────────────────────────────────────────
-        if not self._is_valid_avif(avif_bytes):
-            try:
-                sniff = avif_bytes[:200].decode('utf-8', errors='replace')
-            except Exception:
-                sniff = repr(avif_bytes[:64])
-            self.logger.warning(
-                f"⚠️ AVIF validation failed for '{url}' — "
-                f"size={size} bytes | magic_hex='{magic}' | "
-                f"ftyp_box='{avif_bytes[4:8]}' (expected b'ftyp') | "
-                f"brand='{avif_bytes[8:12]}' (expected avif/avis) | "
-                f"payload_preview={sniff!r} — skipping"
-            )
-            return None
-
-        # ── 2. Pillow ────────────────────────────────────────────────────
         try:
             with Image.open(BytesIO(avif_bytes)) as img:
                 out_mode = "RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB"
