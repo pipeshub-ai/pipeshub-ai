@@ -279,7 +279,7 @@ export default function SlackBotSettings() {
                       Slack Bots
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Configure Slack credentials and map each bot to your agents.
+                      Configure Slack credentials and optionally map each bot to an agent.
                     </Typography>
                   </Box>
                 </Stack>
@@ -591,7 +591,7 @@ export default function SlackBotSettings() {
                     backgroundColor: alpha(theme.palette.info.main, 0.04),
                   }}
                 >
-                  Configure each bot with its own credentials and agent mapping for clean channel-wise control.
+                  Configure each bot with its own credentials and optional agent mapping for clean channel-wise control.
                 </Alert>
               </Stack>
             </Fade>

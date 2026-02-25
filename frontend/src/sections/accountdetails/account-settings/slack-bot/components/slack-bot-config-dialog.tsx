@@ -109,7 +109,7 @@ export default function SlackBotConfigDialog({
 
   const handleSubmit = async () => {
     if (!isValid) {
-      setError('All fields are required.');
+      setError('Slack bot name, bot token, and signing secret are required.');
       return;
     }
 
@@ -165,7 +165,7 @@ export default function SlackBotConfigDialog({
               {isEdit ? 'Edit Slack Bot' : 'Add Slack Bot'}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              Configure secure Slack credentials and link an agent
+              Configure secure Slack credentials and optionally link an agent
             </Typography>
           </Box>
         </Stack>

@@ -6,13 +6,9 @@ config();
 
 export interface ConversationDocument {
   threadId: string;
-
   conversationId: string;
-
   email: string;
-
   createdAt?: Date;
-
   updatedAt?: Date;
 }
 
@@ -37,9 +33,7 @@ export const connect = async (
 const conversationSchema = new Schema<ConversationDocument>(
   {
     threadId: { type: String, required: true, unique: true },
-
     conversationId: { type: String, required: true },
-
     email: { type: String, required: true },
   },
 

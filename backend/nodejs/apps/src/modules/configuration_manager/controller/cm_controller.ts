@@ -490,7 +490,7 @@ const updateSlackBotStoreWithCAS = async <T>(
 const slackBotConfig = (config: SlackBotConfigEntry) => ({
   id: config.id,
   name: config.name,
-  agentId: config.agentId,
+  agentId: config.agentId ?? null,
   createdAt: config.createdAt,
   updatedAt: config.updatedAt,
   botToken: config.botToken,

@@ -96,13 +96,14 @@ export const iamJwtGenerator = (email: string, scopedJwtSecret: string) => {
   );
 };
 
-export const slackJwtGenerator = (email: string, scopedJwtSecret: string) => {
+export const slackJwtGenerator = (email: string, scopedJwtSecret: string,scopes?: TokenScopes[]) => {
   return jwt.sign(
-    { email: email, scopes: [TokenScopes.CONVERSATION_CREATE] },
+    { email: email, scopes: scopes || [TokenScopes.CONVERSATION_CREATE] },
     scopedJwtSecret,
     { expiresIn: '1h' },
   );
 };
+
 
 export const iamUserLookupJwtGenerator = (
   userId: string,

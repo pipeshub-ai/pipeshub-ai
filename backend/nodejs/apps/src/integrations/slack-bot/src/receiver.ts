@@ -106,7 +106,7 @@ async function verifySlackRequest(
       ) || null;
 
     if (!matchedBot) {
-      res.status(401).send("Slack signature verification failed");
+      res.status(401).send("This bot is not configured on pipeshub platform.");
       return;
     }
 

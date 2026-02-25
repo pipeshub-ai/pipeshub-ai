@@ -550,15 +550,20 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             hide_weburl = meta.get("hideWeburl")
             if hide_weburl is None:
                 hide_weburl = record.get("hide_weburl", False)
+
+            
             
             web_url = meta.get("webUrl") or record.get("weburl", "")
             origin = meta.get("origin") or record.get("origin", "")
-            if web_url and origin != "UPLOAD":
+            recordId = meta.get("recordId") or record.get("id", "")
+            if hide_weburl and recordId:
+                web_url = f"/record/{recordId}"
+            elif web_url and origin != "UPLOAD":
                 web_url = generate_text_fragment_url(web_url, block_text)
             
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
-                        "recordId": meta.get("recordId") or record.get("id", ""),
+                        "recordId": recordId,
                         "virtualRecordId": virtual_record_id,
                         "recordName": meta.get("recordName") or record.get("record_name", ""),
                         "recordType": record.get("record_type", ""),

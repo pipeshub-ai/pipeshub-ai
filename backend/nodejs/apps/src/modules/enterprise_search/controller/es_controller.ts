@@ -118,7 +118,6 @@ const hydrateScopedRequestAsUser = async (
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  
 
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,
