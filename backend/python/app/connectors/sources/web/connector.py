@@ -5,7 +5,7 @@ import re
 import uuid
 from io import BytesIO
 from logging import Logger
-from typing import Dict, List, Optional, Set, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
 from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
@@ -106,6 +106,8 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="3",
+            min_length=1,
+            max_length=10,
             description="Maximum depth for recursive crawling (1-10, only applies to recursive type)"
         ))
         .add_sync_custom_field(CustomField(
@@ -114,6 +116,8 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="100",
+            min_length=1,
+            max_length=1000,
             description="Maximum number of pages to crawl (1-1000)"
         ))
         .add_sync_custom_field(CustomField(
@@ -193,8 +197,8 @@ class WebConnector(BaseConnector):
                 raise ValueError("WebPage url not found")
 
             self.crawl_type = sync_config.get("type", "single")
-            self.max_depth = int(sync_config.get("depth", 3))
-            self.max_pages = int(sync_config.get("max_pages", 1000))
+            self.max_depth = int(sync_config.get("depth") or 3)
+            self.max_pages = int(sync_config.get("max_pages") or 1000)
             self.follow_external = sync_config.get("follow_external", False)
 
 
@@ -328,9 +332,65 @@ class WebConnector(BaseConnector):
             self.logger.error(f"❌ Failed to create record group: {e}", exc_info=True)
             raise
 
+    async def reload_config(self) -> None:
+        """Reload the connector configuration."""
+        try:
+            self.logger.debug("running reload config")
+            config = await self.config_service.get_config(
+                f"/services/connectors/{self.connector_id}/config",
+                use_cache=False
+            )
+
+            if not config:
+                self.logger.error("❌ WebPage config not found")
+                raise ValueError("Web connector configuration not found")
+
+            sync_config = config.get("sync", {})
+            if not sync_config:
+                self.logger.error("❌ WebPage sync config not found")
+                raise ValueError("WebPage sync config not found")
+
+            new_url = sync_config.get("url")
+            if not new_url:
+                self.logger.error("❌ WebPage url not found")
+                raise ValueError("WebPage url not found")
+
+            new_crawl_type = sync_config.get("type", "single")
+            new_max_depth = int(sync_config.get("depth") or 3)
+            new_max_pages = int(sync_config.get("max_pages") or 1000)
+            new_follow_external = sync_config.get("follow_external", False)
+
+
+            # Parse base domain
+            parsed_url = urlparse(new_url)
+            new_base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+            if new_base_domain != self.base_domain:
+                self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
+                raise ValueError("Cannot change base domain for web connector.")
+
+            if new_crawl_type != self.crawl_type:
+                self.logger.info(f"🔄 Crawl type changed from {self.crawl_type} to {new_crawl_type}")
+                self.crawl_type = new_crawl_type
+            if new_max_depth != self.max_depth:
+                self.logger.info(f"🔄 Max depth changed from {self.max_depth} to {new_max_depth}")
+                self.max_depth = new_max_depth
+            if new_max_pages != self.max_pages:
+                self.logger.info(f"🔄 Max pages changed from {self.max_pages} to {new_max_pages}")
+                self.max_pages = new_max_pages
+            if new_follow_external != self.follow_external:
+                self.logger.info(f"🔄 Follow external changed from {self.follow_external} to {new_follow_external}")
+                self.follow_external = new_follow_external
+
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to reload config: {e}", exc_info=True)
+            raise
+
     async def run_sync(self) -> None:
         """Main sync method to crawl and index web pages."""
         try:
+            await self.reload_config()
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
             # Step 1: fetch and sync all active users
@@ -364,6 +424,8 @@ class WebConnector(BaseConnector):
         try:
             file_record, permissions = await self._fetch_and_process_url(url, depth=0)
 
+            self.visited_urls.add(self._normalize_url(url))
+
             if file_record:
                 await self.data_entities_processor.on_new_records([(file_record, permissions)])
                 self.logger.info(f"✅ Indexed single page: {url}")
@@ -374,64 +436,16 @@ class WebConnector(BaseConnector):
     async def _crawl_recursive(self, start_url: str, depth: int) -> None:
         """Recursively crawl pages starting from start_url."""
         try:
-            # Queue for BFS crawling: (url, depth, referer)
-            queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
             batch_records: List[Tuple[FileRecord, List[Permission]]] = []
 
-            while queue and len(self.visited_urls) < self.max_pages:
-                current_url, current_depth, referer = queue.pop(0)
+            async for file_record, permissions in self._crawl_recursive_generator(start_url, depth):
+                batch_records.append((file_record, permissions))
 
-                # Skip if already visited
-                normalized_url = self._normalize_url(current_url)
-                if normalized_url in self.visited_urls:
-                    continue
-
-                # Skip if depth exceeded
-                if current_depth > self.max_depth:
-                    continue
-
-                self.logger.info(
-                    f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
-                    f"(depth {current_depth}): {current_url}"
-                )
-
-                try:
-                    # Fetch and process the page with referer
-                    file_record, permissions = await self._fetch_and_process_url(
-                        current_url, current_depth, referer=referer
-                    )
-
-                    if file_record:
-                        batch_records.append((file_record, permissions))
-                        self.visited_urls.add(normalized_url)
-
-                        # Extract links if we haven't reached max depth
-                        if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
-                            links = await self._extract_links_from_content(
-                                current_url, file_record, referer=referer
-                            )
-
-                            # Add new links to queue with current URL as referer
-                            for link in links:
-                                normalized_link = self._normalize_url(link)
-                                if (
-                                    normalized_link not in self.visited_urls
-                                    and len(self.visited_urls) < self.max_pages
-                                ):
-                                    queue.append((link, current_depth + 1, current_url))
-
-                        # Process batch if it reaches batch size
-                        if len(batch_records) >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
-                            self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
-                            batch_records.clear()
-
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
-                    continue
-
-                # Small delay to be respectful to the server
-                await asyncio.sleep(0.5)
+                # Process batch when it reaches the size limit
+                if len(batch_records) >= self.batch_size:
+                    await self.data_entities_processor.on_new_records(batch_records)
+                    self.logger.info(f"✅ Batch processed: {len(batch_records)} records")
+                    batch_records.clear()
 
             # Process remaining batch
             if batch_records:
@@ -441,6 +455,70 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
             raise
+
+    async def _crawl_recursive_generator(
+        self, start_url: str, depth: int
+    ) -> AsyncGenerator[Tuple[FileRecord, List[Permission]], None]:
+        """
+        BFS crawl generator; yields (FileRecord, permissions) for each successfully
+        fetched page. Allows non-blocking processing of large site crawls.
+
+        Yields:
+            Tuple of (FileRecord, List[Permission])
+        """
+        # Queue for BFS crawling: (url, depth, referer)
+        queue: List[Tuple[str, int, Optional[str]]] = [(start_url, depth, None)]
+
+        while queue and len(self.visited_urls) < self.max_pages:
+            current_url, current_depth, referer = queue.pop(0)
+
+            # Skip if already visited
+            normalized_url = self._normalize_url(current_url)
+            if normalized_url in self.visited_urls:
+                continue
+
+            # Skip if depth exceeded
+            if current_depth > self.max_depth:
+                continue
+
+            self.logger.info(
+                f"📄 Crawling [{len(self.visited_urls) + 1}/{self.max_pages}] "
+                f"(depth {current_depth}): {current_url}"
+            )
+
+            try:
+                # Fetch and process the page with referer
+                file_record, permissions = await self._fetch_and_process_url(
+                    current_url, current_depth, referer=referer
+                )
+
+                if file_record:
+                    self.visited_urls.add(normalized_url)
+
+                    # Extract links if we haven't reached max depth
+                    if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
+                        links = await self._extract_links_from_content(
+                            current_url, file_record, referer=referer
+                        )
+
+                        # Add new links to queue with current URL as referer
+                        for link in links:
+                            normalized_link = self._normalize_url(link)
+                            if (
+                                normalized_link not in self.visited_urls
+                                and len(self.visited_urls) < self.max_pages
+                            ):
+                                queue.append((link, current_depth + 1, current_url))
+
+                    yield (file_record, permissions)
+
+            except Exception as e:
+                self.logger.warning(f"⚠️ Failed to process {current_url}: {e}")
+                continue
+
+            # Small delay to be respectful to the server; also yields control to
+            # other async tasks (mirrors the OneDrive generator pattern).
+            await asyncio.sleep(0.5)
 
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: Optional[str] = None
