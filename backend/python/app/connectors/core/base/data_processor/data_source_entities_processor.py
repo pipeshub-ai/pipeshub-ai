@@ -202,7 +202,17 @@ class DataSourceEntitiesProcessor:
                 f"Unsupported parent record type: {parent_record_type.value}. for _handle_parent_record"
             )
 
-    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_parent_record(self, record: Record, tx_store: TransactionStore, existing_record: Optional[Record] = None) -> None:
+
+        # Delete the old parent-child edge if it exists and the parent external record id has changed
+        if (
+            existing_record
+            and existing_record.parent_external_record_id
+            and record.parent_external_record_id != existing_record.parent_external_record_id
+        ):
+            self.logger.debug(f"Deleting parent-child edge from {existing_record.id} to {record.id}")
+            await tx_store.delete_parent_child_edge_to_record(existing_record.id)
+
         if record.parent_external_record_id:
             parent_record = await tx_store.get_record_by_external_id(
                 connector_id=record.connector_id,
@@ -746,7 +756,7 @@ class DataSourceEntitiesProcessor:
             await self._link_record_to_group(record, record_group_id, tx_store)
 
         # Create a edge between the record and the parent record if it doesn't exist and if parent_record_id is provided
-        await self._handle_parent_record(record, tx_store)
+        await self._handle_parent_record(record, tx_store, existing_record)
 
         # Handle related external records (issue links, project links, etc.)
         # For TicketRecord and ProjectRecord, ALWAYS call this to clean up stale link edges even when related_external_records is empty (handles removed links)
