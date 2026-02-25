@@ -2109,26 +2109,45 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         body = _parse_request_body(await request.body())
         chat_query = ChatQuery(**body)
 
+        # Get user and org info first (needed to fetch agent)
+        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
+        enriched_user_info = await _enrich_user_info(user_context, user_doc)
+        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
+
+        # Get agent before LLM init so we can fall back to its model config
+        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
+        if not agent:
+            raise AgentNotFoundError(agent_id)
+
+        # Determine model key/name: prefer explicit query params, then agent's first model
+        model_key = chat_query.modelKey
+        model_name = chat_query.modelName
+        if not model_key and not model_name:
+            agent_models = agent.get("models", [])
+            if agent_models:
+                first_model = agent_models[0]
+                if isinstance(first_model, str) and "_" in first_model:
+                    parts = first_model.split("_", 1)
+                    model_key = parts[0]
+                    model_name = parts[1] if len(parts) > 1 else None
+                elif isinstance(first_model, str):
+                    model_key = first_model
+                elif isinstance(first_model, dict):
+                    model_key = first_model.get("modelKey")
+                    model_name = first_model.get("modelName")
+            if model_key:
+                logger.info(f"Using agent's first model for LLM: modelKey={model_key}, modelName={model_name}")
+
         # Get LLM for chat
         llm = (await get_llm_for_chat(
             services["config_service"],
-            chat_query.modelKey,
-            chat_query.modelName,
+            model_key,
+            model_name,
             chat_query.chatMode
         ))[0]
 
         if not llm:
             raise LLMInitializationError()
-
-        # Get user and org info
-        user_doc = await _get_user_document(user_context["userId"], services["graph_provider"], logger)
-        enriched_user_info = await _enrich_user_info(user_context, user_doc)
-        org_info = await _get_org_info(user_context, services["graph_provider"], logger)
-
-        # Get agent
-        agent = await services["graph_provider"].get_agent(agent_id, user_doc["_key"], org_key)
-        if not agent:
-            raise AgentNotFoundError(agent_id)
 
         # Get and filter toolsets
         agent_toolsets = agent.get("toolsets", [])
@@ -2146,20 +2165,26 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     filtered_toolsets.append(toolset_copy)
             agent_toolsets = filtered_toolsets
 
-        # Load toolset configs from etcd
+        # Load toolset configs from etcd using the EXECUTING user's ID, not the owner's.
+        # This ensures that when a shared agent is executed, the credentials of the
+        # user making the request are used — not the agent creator's credentials.
+        # All lookups are done concurrently to minimise latency.
         from app.agents.constants.toolset_constants import normalize_app_name
 
-        toolset_configs = {}
-        for toolset in agent_toolsets:
-            toolset_name = toolset.get("name")
-            user_id = toolset.get("userId")
+        executing_user_id = user_context["userId"]
+        toolset_configs: dict = {}
 
-            if toolset_name and user_id:
+        # Filter to toolsets that actually have a name before the concurrent fetch
+        named_toolsets = [t for t in agent_toolsets if t.get("name")]
+
+        if named_toolsets:
+            import asyncio as _asyncio
+
+            async def _fetch_toolset_config(toolset: dict):
+                """Return (toolset, config_or_None) without raising."""
+                toolset_name = toolset["name"]
                 try:
-                    # Normalize toolset name to match etcd path structure
-                    normalized_toolset_name = normalize_app_name(toolset_name)
-                    synthetic_id = f"{user_id}_{normalized_toolset_name}"
-                    etcd_path = get_toolset_config_path(user_id, toolset_name)
+                    etcd_path = get_toolset_config_path(executing_user_id, toolset_name)
                     config = await services["config_service"].get_config(etcd_path)
                     return toolset, config
                 except Exception as exc:
@@ -2221,25 +2246,22 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         for toolset in agent_toolsets:
             toolset["userId"] = executing_user_id
 
-        # Get and filter knowledge
+        # Build filters and knowledge from agent's knowledge sources
         agent_knowledge = agent.get("knowledge", [])
-        if chat_query.filters and chat_query.filters.get("apps"):
-            enabled_apps_set = set(chat_query.filters["apps"])
-            agent_knowledge = [
-                k for k in agent_knowledge
-                if k.get("connectorId") in enabled_apps_set
-            ]
-
-        # Build filters from knowledge array (new format)
         filters = chat_query.filters.copy() if chat_query.filters else {}
 
-        # Extract KB record groups from agent's knowledge array if not in query filters
-        if not chat_query.filters or "kb" not in chat_query.filters:
-            agent_knowledge = agent.get("knowledge", [])
+        if not chat_query.filters:
+            # No explicit filters supplied — derive everything from the agent's knowledge config
+            knowledge_connector_ids = []
             kb_record_groups = []
 
             for k in agent_knowledge:
                 if isinstance(k, dict):
+                    connector_id = k.get("connectorId")
+                    if connector_id:
+                        knowledge_connector_ids.append(connector_id)
+
+                    # Parse nested filters (stored as JSON string or dict)
                     filters_data = k.get("filters", {})
                     if isinstance(filters_data, str):
                         try:
@@ -2251,7 +2273,47 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     if record_groups:
                         kb_record_groups.extend(record_groups)
 
-            filters["kb"] = kb_record_groups if kb_record_groups else (chat_query.filters.get("kb", []) if chat_query.filters else [])
+            filters = {
+                "apps": knowledge_connector_ids,
+                "kb": kb_record_groups,
+            }
+            logger.info(f"Filters: {filters}")
+        else:
+            # Explicit filters supplied — override individual keys where provided,
+            # but fall back to agent's knowledge for keys that are absent.
+            if "apps" not in chat_query.filters or chat_query.filters["apps"] is None:
+                knowledge_connector_ids = [
+                    k.get("connectorId") for k in agent_knowledge
+                    if isinstance(k, dict) and k.get("connectorId")
+                ]
+                filters["apps"] = knowledge_connector_ids
+
+            if "kb" not in chat_query.filters or chat_query.filters["kb"] is None:
+                kb_record_groups = []
+                for k in agent_knowledge:
+                    if isinstance(k, dict):
+                        filters_data = k.get("filters", {})
+                        if isinstance(filters_data, str):
+                            try:
+                                filters_data = json.loads(filters_data)
+                            except json.JSONDecodeError:
+                                filters_data = {}
+                        record_groups = filters_data.get("recordGroups", [])
+                        if record_groups:
+                            kb_record_groups.extend(record_groups)
+                filters["kb"] = kb_record_groups
+            logger.info(f"Filters: {filters}")
+            
+        # Narrow agent_knowledge to only the connectors present in filters["apps"]
+        # so the query_info knowledge list stays consistent with the resolved filters.
+        enabled_apps_set = set(filters.get("apps", []))
+        if enabled_apps_set:
+            agent_knowledge = [
+                k for k in agent_knowledge
+                if isinstance(k, dict) and k.get("connectorId") in enabled_apps_set
+            ]
+
+        logger.info(f"Filters: {filters}")
 
         # Build query info
         query_info = {
