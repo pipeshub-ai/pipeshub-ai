@@ -176,19 +176,24 @@ class LatticeClient(IClient):
         connector_instance_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetch connector config from etcd for Lattice."""
+        config_key = (
+            f"/services/connectors/{connector_instance_id}/config"
+        )
         try:
-            config = await config_service.get_config(
-                f"/services/connectors/{connector_instance_id}/config"
-            )
-            if not config:
-                raise ValueError(
-                    f"Failed to get Lattice connector configuration "
-                    f"for instance {connector_instance_id}"
-                )
-            return config
+            config = await config_service.get_config(config_key)
         except Exception as e:
-            logger.error(f"Failed to get Lattice connector config: {e}")
+            logger.error(
+                f"Failed to fetch Lattice connector config "
+                f"from {config_key}: {e}"
+            )
             raise ValueError(
                 f"Failed to get Lattice connector configuration "
                 f"for instance {connector_instance_id}"
+            ) from e
+
+        if not config:
+            raise ValueError(
+                f"Lattice connector configuration not found or is empty "
+                f"for instance {connector_instance_id}"
             )
+        return config
