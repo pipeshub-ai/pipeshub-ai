@@ -193,8 +193,7 @@ export function OAuth2NewAppView() {
           </Stack>
 
           <Alert severity="warning" sx={{ mb: 3, '& .MuiAlert-message': { fontSize: '0.875rem' } }}>
-            Copy and store the client secret securely. It will not be displayed again. A new secret
-            may be generated from the application settings at a later time.
+            Copy and store it securely. You won&apos;t be able to view it again
           </Alert>
 
           <Stack spacing={2.5}>
