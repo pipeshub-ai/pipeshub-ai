@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import hashlib
+import random
 import re
 import uuid
 from io import BytesIO
@@ -10,7 +11,9 @@ from urllib.parse import unquote, urljoin, urlparse, urlunparse
 
 import aiohttp
 from bs4 import BeautifulSoup
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
+from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AppGroups, Connectors, MimeTypes, OriginTypes
@@ -65,6 +68,16 @@ FILE_MIME_TYPES = {
     '.html': MimeTypes.HTML,
     '.htm': MimeTypes.HTML,
 }
+
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+RETRYABLE_EXCEPTIONS = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ServerTimeoutError,
+    asyncio.TimeoutError,
+)
+
 
 class WebApp(App):
     def __init__(self, connector_id: str) -> None:
@@ -526,17 +539,12 @@ class WebConnector(BaseConnector):
     ) -> Optional[Tuple[FileRecord, List[Permission]]]:
         """Fetch URL content using multi-strategy fallback and create a FileRecord."""
         try:
-            # Extra headers from caller (e.g. referer)
-            extra_headers = {}
-            if referer:
-                extra_headers["Referer"] = referer
 
             result = await fetch_url_with_fallback(
                 url=url,
                 session=self.session,
                 logger=self.logger,
                 referer=referer,
-                extra_headers=extra_headers if extra_headers else None,
                 timeout=15,
             )
 
@@ -623,8 +631,8 @@ class WebConnector(BaseConnector):
             ]
 
             self.logger.debug(
-                f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes) "
-                f"via {result.strategy}"
+                "✅ Processed: %s (%s, %s bytes) via %s",
+                title, mime_type.value, size_in_bytes, result.strategy
             )
 
             return file_record, permissions
@@ -1010,6 +1018,11 @@ class WebConnector(BaseConnector):
         for svg in soup.find_all('svg'):
             self._convert_svg_tag_to_png(soup, svg)
 
+    # Image formats supported by OpenAI vision API
+    OPENAI_SUPPORTED_IMAGE_TYPES = frozenset({'image/png', 'image/jpeg', 'image/gif', 'image/webp'})
+    # Accept header for image requests — deliberately excludes unsupported image types
+    _IMAGE_ACCEPT_HEADER = "image/png,image/jpeg,image/gif,image/webp,image/svg+xml,image/*;q=0.8"
+
     async def _process_single_image(
         self,
         img,
@@ -1034,19 +1047,75 @@ class WebConnector(BaseConnector):
         if "data:image" in src:
             if "," in src:
                 header, existing_b64 = src.split(",", 1)
-                cleaned_b64 = self._clean_base64_string(existing_b64)
-                if cleaned_b64:
-                    img['src'] = f"{header},{cleaned_b64}"
-                else:
-                    self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+
+                # Extract and validate the mime type from the data URI header
+                mime_match = re.match(r'data:([^;,]+)', header)
+                mime_type = mime_match.group(1).lower() if mime_match else ''
+
+                if mime_type == 'image/svg+xml':
+                    if ';base64' not in header:
+                        # URL-encoded SVG, decode directly
+                        svg_bytes = unquote(existing_b64).encode('utf-8')
+                    else:
+                        # base64-encoded SVG
+                        cleaned_b64 = self._clean_base64_string(existing_b64)
+                        if not cleaned_b64:
+                            self.logger.warning("⚠️ Invalid base64 in SVG data URI, removing image")
+                            img.decompose()
+                            return
+                        svg_bytes = base64.b64decode(cleaned_b64)
+
+                    # Common path for both cases
+                    try:
+                        png_b64 = self._convert_svg_bytes_to_png_base64(svg_bytes, 'inline-svg-data-uri')
+                        if png_b64:
+                            img['src'] = f"data:image/png;base64,{png_b64}"
+                        else:
+                            self.logger.warning("⚠️ Failed to convert inline SVG data URI to PNG, removing image")
+                            img.decompose()
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Error converting inline SVG data URI: {e}, removing image")
+                        img.decompose()
+
+                elif mime_type == 'image/avif':
+                    self.logger.debug("Converting inline AVIF base64 to PNG base64")
+                    # Inline AVIF data URI — decode and convert to PNG
+                    cleaned_b64 = self._clean_base64_string(existing_b64)
+                    if cleaned_b64:
+                        try:
+                            avif_bytes = base64.b64decode(cleaned_b64)
+                            png_b64 = self._convert_avif_bytes_to_png_base64(avif_bytes, 'inline-avif-data-uri')
+                            if png_b64:
+                                img['src'] = f"data:image/png;base64,{png_b64}"
+                            else:
+                                img.decompose()
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Error converting inline AVIF data URI: {e}, removing image")
+                            img.decompose()
+                    else:
+                        self.logger.warning("⚠️ Invalid base64 in AVIF data URI, removing image")
+                        img.decompose()
+                elif mime_type and mime_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                    self.logger.warning(f"⚠️ Unsupported image format '{mime_type}' in existing data URI, removing image")
                     img.decompose()
+                else:
+                    # Supported format — just clean/validate the base64
+                    cleaned_b64 = self._clean_base64_string(existing_b64)
+                    if cleaned_b64:
+                        img['src'] = f"{header},{cleaned_b64}"
+                    else:
+                        self.logger.warning("⚠️ Invalid existing base64 data URI, removing image")
+                        img.decompose()
             return
 
         # Download and convert external images
         try:
             absolute_url = src if src.startswith(('http:', 'https:')) else urljoin(base_url, src)
 
-            async with self.session.get(absolute_url, headers=headers) as img_response:
+            # Override Accept header so servers don't return unsupported image types
+            img_headers = {**headers, "Accept": self._IMAGE_ACCEPT_HEADER}
+
+            async with self.session.get(absolute_url, headers=img_headers) as img_response:
                 if img_response.status >= HttpStatusCode.BAD_REQUEST.value:
                     self.logger.warning(f"⚠️ Failed to download image: {absolute_url} (status: {img_response.status})")
                     return
@@ -1057,13 +1126,34 @@ class WebConnector(BaseConnector):
 
                 content_type = self._determine_image_content_type(img_response, absolute_url)
 
-                # Convert to base64 (handle SVG specially)
+                # Convert to base64 (handle SVG and AVIF specially)
                 if content_type == 'image/svg+xml':
                     b64_str = self._convert_svg_bytes_to_png_base64(img_bytes, absolute_url)
                     if not b64_str:
                         img.decompose()
                         return
                     content_type = 'image/png'
+                elif content_type == 'image/avif':
+                    self.logger.debug("Converting external AVIF to PNG base64")
+                    b64_str = self._convert_avif_bytes_to_png_base64(img_bytes, absolute_url)
+                    if not b64_str:
+                        img.decompose()
+                        return
+                    content_type = 'image/png'
+                elif content_type not in self.OPENAI_SUPPORTED_IMAGE_TYPES:
+                    # Server returned an unsupported format — log full metadata then skip.
+                    raw_ct = img_response.headers.get('Content-Type', '<none>')
+                    self.logger.debug(
+                        f"⚠️ Unsupported downloaded image — "
+                        f"resolved_content_type='{content_type}' | "
+                        f"raw_Content-Type='{raw_ct}' | "
+                        f"url='{absolute_url}' | "
+                        f"response_status={img_response.status} | "
+                        f"content_length={len(img_bytes)} bytes | "
+                        f"response_headers={dict(img_response.headers)} — skipping"
+                    )
+                    img.decompose()
+                    return
                 else:
                     b64_str = base64.b64encode(img_bytes).decode('utf-8')
                     b64_str = self._clean_base64_string(b64_str)
@@ -1091,6 +1181,7 @@ class WebConnector(BaseConnector):
                 '.gif': 'image/gif',
                 '.webp': 'image/webp',
                 '.svg': 'image/svg+xml',
+                '.avif': 'image/avif',
             }
 
             for ext, mime in extension_map.items():
@@ -1117,6 +1208,30 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.warning(f"⚠️ Failed to convert SVG to PNG: {e}. Removing image.")
             return None
+
+    def _convert_avif_bytes_to_png_base64(self, avif_bytes: bytes, url: str) -> Optional[str]:
+        """
+        Convert AVIF bytes to PNG base64 string. use pillow_avif to convert AVIF to PNG.
+        """
+
+        try:
+            with Image.open(BytesIO(avif_bytes)) as img:
+                out_mode = "RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB"
+                png_buffer = BytesIO()
+                img.convert(out_mode).save(png_buffer, format="PNG")
+            png_b64_str = self._clean_base64_string(
+                base64.b64encode(png_buffer.getvalue()).decode('utf-8')
+            )
+            if not png_b64_str:
+                self.logger.warning(f"⚠️ Failed to clean/validate PNG base64 from AVIF (Pillow): {url}")
+                return None
+            self.logger.debug(f"✅ Converted AVIF→PNG via Pillow: {url}")
+            return png_b64_str
+
+        except Exception as pillow_err:
+            self.logger.debug(
+                f"ℹ️  Pillow could not open AVIF ({pillow_err}), trying ffmpeg fallback — '{url}'"
+            )
 
     async def _process_all_images(
         self,
@@ -1165,61 +1280,161 @@ class WebConnector(BaseConnector):
             return cleaned_html
 
         except Exception as e:
-            self.logger.warning(f"⚠️ Failed to parse/clean HTML: {e}")
-            return None
+            self.logger.error(f"⚠️ Failed to parse/clean HTML: {e}")
+            raise
+
+    # ==================== Retryable Fetch Method ====================
+
+    async def _fetch_with_retry(
+        self,
+        url: str,
+        headers: dict,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+        max_delay: float = 10.0,
+    ) -> bytes:
+        """
+        Fetch a URL with exponential backoff retry for transient errors.
+
+        Args:
+            url: The URL to fetch
+            headers: Request headers
+            max_retries: Maximum number of retry attempts
+            base_delay: Initial delay in seconds before first retry
+            max_delay: Maximum delay cap in seconds
+
+        Returns:
+            The response content as bytes
+
+        Raises:
+            HTTPException: On non-retryable HTTP errors or after exhausting retries
+        """
+
+        for attempt in range(max_retries + 1):
+            try:
+                async with self.session.get(url, headers=headers) as response:
+                    # Non-retryable client errors — fail immediately
+                    if (
+                        response.status >= HttpStatusCode.BAD_REQUEST.value
+                        and response.status not in RETRYABLE_STATUS_CODES
+                    ):
+                        raise HTTPException(
+                            status_code=response.status,
+                            detail=f"HTTP {response.status} for {url}",
+                        )
+
+                    # Retryable status codes
+                    if response.status in RETRYABLE_STATUS_CODES:
+                        if attempt == max_retries:
+                            raise HTTPException(
+                                status_code=response.status,
+                                detail=f"HTTP {response.status} for {url} after {max_retries} retries",
+                            )
+
+                        delay = self._calculate_retry_delay(
+                            attempt, base_delay, max_delay,
+                            retry_after=response.headers.get("Retry-After"),
+                        )
+                        self.logger.warning(
+                            f"\n\n\n⚠️ Retryable HTTP {response.status} for {url}. "
+                            f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+
+                    # Success
+                    return await response.read()
+
+            except RETRYABLE_EXCEPTIONS as e:
+                if attempt == max_retries:
+                    self.logger.error(
+                        f"❌ Failed to fetch {url} after {max_retries} retries: {e}"
+                    )
+                    raise HTTPException(
+                        status_code=HttpStatusCode.BAD_GATEWAY.value,
+                        detail=f"Failed to fetch {url} after {max_retries} retries: {e}",
+                    )
+
+                delay = self._calculate_retry_delay(attempt, base_delay, max_delay)
+                self.logger.warning(
+                    f"⚠️ Connection error for {url}: {e}. "
+                    f"Attempt {attempt + 1}/{max_retries + 1}, retrying in {delay:.2f}s"
+                )
+                await asyncio.sleep(delay)
+
+        # Should not be reached, but just in case
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_GATEWAY.value,
+            detail=f"Failed to fetch {url} after {max_retries} retries",
+        )
+
+    @staticmethod
+    def _calculate_retry_delay(
+        attempt: int,
+        base_delay: float,
+        max_delay: float,
+        retry_after: Optional[str] = None,
+    ) -> float:
+        """
+        Calculate delay using exponential backoff with jitter,
+        respecting Retry-After header if present.
+        """
+        if retry_after:
+            try:
+                return min(float(retry_after), max_delay)
+            except (ValueError, TypeError):
+                pass
+
+        delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+        return min(delay, max_delay)
 
     # ==================== Main Stream Record Method ====================
 
     async def stream_record(self, record: Record) -> Optional[StreamingResponse]:
         """
         Stream the web page content with proper content extraction.
-
-        This method fetches web content, processes HTML (cleaning and converting
-        images to base64), and returns a streaming response.
-
-        Args:
-            record: Record object containing URL and metadata
-
-        Returns:
-            StreamingResponse with the processed content, or None on failure
         """
         if not record.weburl:
-            return None
+            raise HTTPException(
+                status_code=HttpStatusCode.NOT_FOUND.value,
+                detail=f"Web URL is missing for record {record.record_name} (id:{record.id})",
+            )
 
         try:
             headers = {"Referer": self.url} if self.url else {}
 
-            async with self.session.get(record.weburl, headers=headers) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    return None
+            content_bytes = await self._fetch_with_retry(record.weburl, headers)
 
-                content_bytes = await response.read()
-                mime_type = record.mime_type or "text/html"
+            mime_type = record.mime_type or "text/html"
 
-                # Process HTML content
-                cleaned_html_content = None
-                if "html" in mime_type.lower():
-                    cleaned_html_content = await self._process_html_content(
-                        content_bytes, record, headers
-                    )
-
-                # Prepare response content
-                response_content = (
-                    cleaned_html_content.encode('utf-8')
-                    if cleaned_html_content
-                    else content_bytes
+            # Process HTML content
+            cleaned_html_content = None
+            if "html" in mime_type.lower():
+                cleaned_html_content = await self._process_html_content(
+                    content_bytes, record, headers
                 )
 
-                return create_stream_record_response(
-                    BytesIO(response_content),
-                    filename=record.record_name,
-                    mime_type=mime_type,
-                    fallback_filename=f"record_{record.id}"
-                )
+            # Prepare response content
+            response_content = (
+                cleaned_html_content.encode("utf-8")
+                if cleaned_html_content
+                else content_bytes
+            )
 
+            return create_stream_record_response(
+                BytesIO(response_content),
+                filename=record.record_name,
+                mime_type=mime_type,
+                fallback_filename=f"record_{record.id}",
+            )
+
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"❌ Error streaming record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
+            raise
 
     async def run_incremental_sync(self) -> None:
         """Run incremental sync (same as full sync for web pages)."""

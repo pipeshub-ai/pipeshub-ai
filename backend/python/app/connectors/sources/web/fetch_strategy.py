@@ -20,10 +20,14 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from app.config.constants.http_status_code import HttpStatusCode
+
 # ---------------------------------------------------------------------------
 # Unified response wrapper
 # ---------------------------------------------------------------------------
 
+MAX_429_RETRIES = 3
+REQUEST_TIMEOUT = 15
 
 @dataclass
 class FetchResponse:
@@ -70,7 +74,7 @@ def build_stealth_headers(url: str, referer: Optional[str] = None, extra: Option
 # ---------------------------------------------------------------------------
 
 
-def _get_supported_profiles() -> list:
+def _get_supported_profiles() -> list[str]:
     try:
         from curl_cffi.requests import Session
     except ImportError:
@@ -133,7 +137,7 @@ async def _try_aiohttp(
                 strategy="aiohttp",
             )
     except asyncio.TimeoutError:
-        logger.warning(f"⚠️ [aiohttp] Timeout fetching {url}")
+        logger.warning("⚠️ [aiohttp] Timeout fetching %s", url)
         return None
     except (aiohttp.ClientError, OSError) as e:
         logger.warning(f"⚠️ [aiohttp] Connection error for {url}: {e}")
@@ -199,7 +203,7 @@ async def _try_curl_cffi(
     """Strategy 2/3: curl_cffi with browser impersonation (run in executor to avoid blocking)."""
     label = f"curl_cffi(h2={use_http2})"
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             _sync_curl_cffi_fetch,
@@ -251,7 +255,7 @@ async def _try_cloudscraper(
 ) -> Optional[FetchResponse]:
     """Strategy 4: cloudscraper with JS challenge solving (run in executor)."""
     try:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             None,
             _sync_cloudscraper_fetch,
@@ -271,9 +275,6 @@ async def _try_cloudscraper(
 # Main fallback orchestrator
 # ---------------------------------------------------------------------------
 
-MAX_429_RETRIES = 3
-
-
 async def fetch_url_with_fallback(
     url: str,
     session: aiohttp.ClientSession,
@@ -281,7 +282,7 @@ async def fetch_url_with_fallback(
     *,
     referer: Optional[str] = None,
     extra_headers: Optional[dict] = None,
-    timeout: int = 15,
+    timeout: int = REQUEST_TIMEOUT,
     max_429_retries: int = MAX_429_RETRIES,
 ) -> Optional[FetchResponse]:
     """
@@ -337,17 +338,17 @@ async def fetch_url_with_fallback(
             status = result.status_code
 
             # ---- SUCCESS ----
-            if status < 400:
+            if status < HttpStatusCode.BAD_REQUEST.value:
                 logger.info(f"✅ Fetched {url} via {result.strategy}")
                 return result
 
             # ---- 403: Bot detection -> try next strategy ----
-            if status == 403:
+            if status == HttpStatusCode.FORBIDDEN.value:
                 logger.warning(f"⚠️ [{strategy_name}] 403 Forbidden for {url}, trying next strategy")
                 break
 
             # ---- 429: Rate limited -> retry with backoff on SAME strategy ----
-            if status == 429:
+            if status == HttpStatusCode.TOO_MANY_REQUESTS.value:
                 if retry_429 >= max_429_retries:
                     logger.warning(
                         f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} retries for {url}, "
@@ -378,12 +379,12 @@ async def fetch_url_with_fallback(
                 return result
 
             # ---- Other 4xx: Unknown client error -> stop entirely ----
-            if 400 <= status < 500:
+            if HttpStatusCode.BAD_REQUEST.value <= status < HttpStatusCode.INTERNAL_SERVER_ERROR.value:
                 logger.warning(f"⚠️ [{strategy_name}] HTTP {status} for {url}, skipping")
                 return result
 
             # ---- 5xx: Server error -> stop entirely ----
-            if status >= 500:
+            if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value:
                 logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
                 return result
 
