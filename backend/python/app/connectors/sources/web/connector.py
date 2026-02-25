@@ -28,6 +28,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -523,101 +524,110 @@ class WebConnector(BaseConnector):
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: Optional[str] = None
     ) -> Optional[Tuple[FileRecord, List[Permission]]]:
-        """Fetch URL content and create a FileRecord."""
+        """Fetch URL content using multi-strategy fallback and create a FileRecord."""
         try:
-            # Add referer header if provided (mimics browser behavior)
-            headers = {}
+            # Extra headers from caller (e.g. referer)
+            extra_headers = {}
             if referer:
-                headers["Referer"] = referer
+                extra_headers["Referer"] = referer
 
-            async with self.session.get(url, headers=headers, allow_redirects=True) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.warning(f"⚠️ HTTP {response.status} for {url}")
-                    return None
+            result = await fetch_url_with_fallback(
+                url=url,
+                session=self.session,
+                logger=self.logger,
+                referer=referer,
+                extra_headers=extra_headers if extra_headers else None,
+                timeout=15,
+            )
 
-                content_type = response.headers.get("Content-Type", "").lower()
-                final_url = str(response.url)
+            if result is None:
+                return None
 
-                # Read content
-                content_bytes = await response.read()
+            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                # Already logged inside fetch_url_with_fallback
+                return None
 
-                # Determine MIME type and file extension
-                mime_type, extension = self._determine_mime_type(url, content_type)
+            content_type = result.headers.get("Content-Type", "").lower()
+            final_url = result.final_url
+            content_bytes = result.content_bytes
 
-                # Generate unique ID
-                record_id = str(uuid.uuid4())
-                external_id = final_url
+            # Determine MIME type and file extension
+            mime_type, extension = self._determine_mime_type(url, content_type)
 
-                # Get title and clean content for HTML
-                title = self._extract_title_from_url(final_url)
-                size_in_bytes = len(content_bytes)
-                timestamp = get_epoch_timestamp_in_ms()
+            # Generate unique ID
+            record_id = str(uuid.uuid4())
+            external_id = final_url
 
-                # For HTML pages, extract clean content
-                if mime_type == MimeTypes.HTML:
-                    try:
-                        soup = BeautifulSoup(content_bytes, 'html.parser')
-                        title = self._extract_title(soup, final_url)
+            # Get title and clean content for HTML
+            title = self._extract_title_from_url(final_url)
+            size_in_bytes = len(content_bytes)
+            timestamp = get_epoch_timestamp_in_ms()
 
-                        # Remove script and style elements
-                        for script in soup(["script", "style", "noscript", "iframe"]):
-                            script.decompose()
+            # For HTML pages, extract clean content
+            if mime_type == MimeTypes.HTML:
+                try:
+                    soup = BeautifulSoup(content_bytes, "html.parser")
+                    title = self._extract_title(soup, final_url)
 
-                        # Get text content
-                        text_content = soup.get_text(separator='\n', strip=True)
+                    # Remove script and style elements
+                    for script in soup(["script", "style", "noscript", "iframe"]):
+                        script.decompose()
 
-                        # Store cleaned HTML for indexing
-                        content_bytes = text_content.encode('utf-8')
-                        size_in_bytes = len(content_bytes)
+                    # Get text content
+                    text_content = soup.get_text(separator="\n", strip=True)
 
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
+                    # Store cleaned HTML for indexing
+                    content_bytes = text_content.encode("utf-8")
+                    size_in_bytes = len(content_bytes)
 
-                # Calculate MD5 hash once
-                content_md5_hash = hashlib.md5(content_bytes).hexdigest()
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
 
-                # Create FileRecord
-                file_record = FileRecord(
-                    id=record_id,
-                    record_name=title,
-                    record_type=RecordType.FILE,
-                    record_group_type=RecordGroupType.WEB,
-                    external_record_id=external_id,
-                    external_revision_id=content_md5_hash,
-                    external_record_group_id=self.url,
-                    version=0,
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    created_at=timestamp,
-                    updated_at=timestamp,
-                    source_created_at=timestamp,
-                    source_updated_at=timestamp,
-                    weburl=final_url,
-                    size_in_bytes=size_in_bytes,
-                    is_file=True,
-                    extension=extension,
-                    path=urlparse(final_url).path,
-                    mime_type=mime_type.value,
-                    md5_hash=content_md5_hash,
-                    preview_renderable=False,
+            # Calculate MD5 hash once
+            content_md5_hash = hashlib.md5(content_bytes).hexdigest()
+
+            # Create FileRecord
+            file_record = FileRecord(
+                id=record_id,
+                record_name=title,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.WEB,
+                external_record_id=external_id,
+                external_revision_id=content_md5_hash,
+                external_record_group_id=self.url,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                created_at=timestamp,
+                updated_at=timestamp,
+                source_created_at=timestamp,
+                source_updated_at=timestamp,
+                weburl=final_url,
+                size_in_bytes=size_in_bytes,
+                is_file=True,
+                extension=extension,
+                path=urlparse(final_url).path,
+                mime_type=mime_type.value,
+                md5_hash=content_md5_hash,
+                preview_renderable=False,
+            )
+
+            # Create permissions (org-level access for web pages)
+            permissions = [
+                Permission(
+                    external_id=self.data_entities_processor.org_id,
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
                 )
+            ]
 
-                # Create permissions (org-level access for web pages)
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
+            self.logger.debug(
+                f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes) "
+                f"via {result.strategy}"
+            )
 
-                    )
-                ]
-
-                self.logger.debug(
-                    f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes)"
-                )
-
-                return file_record, permissions
+            return file_record, permissions
 
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
