@@ -470,20 +470,6 @@ export const dashboardRoutes = [
                     path: 'prompts',
                     element: <AdminProtectedRoute component={PromptsSettings} />,
                   },
-
-                  // OAuth 2.0 (Pipeshub OAuth provider apps - admin only enforced by API)
-                  {
-                    path: 'oauth2',
-                    element: <AdminProtectedRoute component={OAuth2Page} />,
-                  },
-                  {
-                    path: 'oauth2/new',
-                    element: <AdminProtectedRoute component={OAuth2NewAppPage} />,
-                  },
-                  {
-                    path: 'oauth2/:appId',
-                    element: <AdminProtectedRoute component={OAuth2AppDetailPage} />,
-                  },
                 ],
               },
             ],

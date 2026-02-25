@@ -1,11 +1,13 @@
 import { z } from 'zod';
+import { Icon } from '@iconify/react';
 import cogIcon from '@iconify-icons/mdi/cog';
 import gridIcon from '@iconify-icons/mdi/grid';
 import lockIcon from '@iconify-icons/mdi/lock';
 import refreshIcon from '@iconify-icons/mdi/refresh';
+import keyRemoveIcon from '@iconify-icons/mdi/key-remove';
 import contentCopyIcon from '@iconify-icons/mdi/content-copy';
+import trashCanIcon from '@iconify-icons/mdi/trash-can-outline';
 import { useRef, useState, useEffect, useCallback } from 'react';
-import deleteForeverIcon from '@iconify-icons/mdi/delete-forever';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 
 import {
@@ -34,7 +36,6 @@ import {
   ListItemButton,
   CircularProgress,
   FormControlLabel,
-  DialogContentText,
 } from '@mui/material';
 
 import { getOAuth2Paths } from 'src/routes/paths';
@@ -84,6 +85,9 @@ export function OAuth2AppDetailView() {
     severity: 'success' | 'error';
   }>({ open: false, message: '', severity: 'success' });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteConfirmText, setDeleteConfirmText] = useState('');
+  const [revokeDialogOpen, setRevokeDialogOpen] = useState(false);
+  const [revokeConfirmText, setRevokeConfirmText] = useState('');
   const [regenerating, setRegenerating] = useState(false);
   const [newSecret, setNewSecret] = useState<string | null>(null);
   const [section, setSection] = useState<DetailSection>('general');
@@ -833,7 +837,10 @@ export function OAuth2AppDetailView() {
                     <Button
                       variant="outlined"
                       color="warning"
-                      onClick={handleRevokeAllTokens}
+                      onClick={() => {
+                        setRevokeConfirmText('');
+                        setRevokeDialogOpen(true);
+                      }}
                       sx={{ textTransform: 'none' }}
                     >
                       Revoke all tokens
@@ -841,8 +848,11 @@ export function OAuth2AppDetailView() {
                     <Button
                       variant="outlined"
                       color="error"
-                      startIcon={<Iconify icon={deleteForeverIcon} width={18} height={18} />}
-                      onClick={() => setDeleteDialogOpen(true)}
+                      startIcon={<Icon icon={trashCanIcon} width={18} height={18} />}
+                      onClick={() => {
+                        setDeleteConfirmText('');
+                        setDeleteDialogOpen(true);
+                      }}
                       sx={{ textTransform: 'none' }}
                     >
                       Delete application
@@ -855,25 +865,206 @@ export function OAuth2AppDetailView() {
         </Box>
       </Box>
 
-      <Dialog open={deleteDialogOpen} onClose={() => setDeleteDialogOpen(false)}>
-        <DialogTitle>Delete OAuth application?</DialogTitle>
-        <DialogContent>
-          <DialogContentText>
-            This will delete &quot;{app.name}&quot; and revoke all tokens. This action cannot be
-            undone.
-          </DialogContentText>
+      {/* Revoke all tokens confirmation */}
+      <Dialog
+        open={revokeDialogOpen}
+        onClose={() => {
+          setRevokeDialogOpen(false);
+          setRevokeConfirmText('');
+        }}
+        maxWidth="sm"
+        fullWidth
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            p: 3,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+          }}
+        >
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 40,
+              height: 40,
+              borderRadius: 1,
+              bgcolor: alpha(theme.palette.warning.main, 0.1),
+              color: theme.palette.warning.main,
+            }}
+          >
+            <Icon icon={keyRemoveIcon} fontSize={24} />
+          </Box>
+          <Typography variant="h6" fontWeight={500}>
+            Revoke all tokens
+          </Typography>
+        </DialogTitle>
+        <Divider />
+        <DialogContent sx={{ p: 3 }}>
+          <Typography sx={{ fontWeight: 600, fontSize: '0.9375rem', mb: 1 }}>
+            Are you sure you want to revoke all tokens for <strong>{app.name}</strong>? This action
+            cannot be undone.
+          </Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: 'text.secondary', mb: 2 }}>
+            All access and refresh tokens issued for this application will be invalidated
+            immediately. Users will need to re-authorize to obtain new tokens.
+          </Typography>
+          <Typography sx={{ fontSize: '0.875rem', mb: 1 }}>
+            Type <strong>{app.name}</strong> to confirm:
+          </Typography>
+          <TextField
+            fullWidth
+            size="small"
+            value={revokeConfirmText}
+            onChange={(e) => setRevokeConfirmText(e.target.value)}
+            placeholder={`Type "${app.name}" to confirm`}
+            sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+          />
         </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDeleteDialogOpen(false)} sx={{ textTransform: 'none' }}>
+        <DialogActions
+          sx={{
+            p: 2.5,
+            bgcolor: (t) => alpha(t.palette.background.default, 0.5),
+          }}
+        >
+          <Button
+            onClick={() => {
+              setRevokeDialogOpen(false);
+              setRevokeConfirmText('');
+            }}
+            sx={{ borderRadius: 1, fontWeight: 500, textTransform: 'none' }}
+          >
             Cancel
           </Button>
           <Button
-            onClick={handleDelete}
-            color="error"
             variant="contained"
-            sx={{ textTransform: 'none' }}
+            color="warning"
+            disabled={revokeConfirmText.trim() !== app.name}
+            onClick={() => {
+              setRevokeDialogOpen(false);
+              setRevokeConfirmText('');
+              handleRevokeAllTokens();
+            }}
+            startIcon={<Icon icon={keyRemoveIcon} />}
+            sx={{ borderRadius: 1, fontWeight: 500, textTransform: 'none' }}
           >
-            Delete
+            Revoke all tokens
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Delete OAuth application confirmation */}
+      <Dialog
+        open={deleteDialogOpen}
+        onClose={() => {
+          setDeleteDialogOpen(false);
+          setDeleteConfirmText('');
+        }}
+        maxWidth="sm"
+        fullWidth
+        BackdropProps={{
+          sx: {
+            backdropFilter: 'blur(1px)',
+            backgroundColor: alpha(theme.palette.common.black, 0.3),
+          },
+        }}
+        PaperProps={{
+          sx: {
+            borderRadius: 1,
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
+          },
+        }}
+      >
+        <DialogTitle
+          sx={{
+            p: 3,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+          }}
+        >
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 40,
+              height: 40,
+              borderRadius: 1,
+              bgcolor: alpha(theme.palette.error.main, 0.1),
+              color: theme.palette.error.main,
+            }}
+          >
+            <Icon icon={trashCanIcon} fontSize={24} />
+          </Box>
+          <Typography variant="h6" fontWeight={500}>
+            Delete OAuth application
+          </Typography>
+        </DialogTitle>
+        <Divider />
+        <DialogContent sx={{ p: 3 }}>
+          <Typography sx={{ fontWeight: 600, fontSize: '0.9375rem', mb: 1 }}>
+            Are you sure you want to delete <strong>{app.name}</strong>? This action cannot be
+            undone.
+          </Typography>
+          <Typography sx={{ fontSize: '0.875rem', color: 'text.secondary', mb: 2 }}>
+            All data associated with this application will be permanently removed. This includes
+            client credentials, tokens, and any authorization records.
+          </Typography>
+          <Typography sx={{ fontSize: '0.875rem', mb: 1 }}>
+            Type <strong>{app.name}</strong> to confirm deletion:
+          </Typography>
+          <TextField
+            fullWidth
+            size="small"
+            value={deleteConfirmText}
+            onChange={(e) => setDeleteConfirmText(e.target.value)}
+            placeholder={`Type "${app.name}" to confirm`}
+            sx={{ '& .MuiInputBase-input': { fontSize: '0.875rem' } }}
+          />
+        </DialogContent>
+        <DialogActions
+          sx={{
+            p: 2.5,
+            bgcolor: (t) => alpha(t.palette.background.default, 0.5),
+          }}
+        >
+          <Button
+            onClick={() => {
+              setDeleteDialogOpen(false);
+              setDeleteConfirmText('');
+            }}
+            sx={{ borderRadius: 1, fontWeight: 500, textTransform: 'none' }}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="contained"
+            color="error"
+            disabled={deleteConfirmText.trim() !== app.name}
+            onClick={() => {
+              setDeleteDialogOpen(false);
+              setDeleteConfirmText('');
+              handleDelete();
+            }}
+            startIcon={<Icon icon={trashCanIcon} />}
+            sx={{ borderRadius: 1, fontWeight: 500, textTransform: 'none' }}
+          >
+            Delete application
           </Button>
         </DialogActions>
       </Dialog>
