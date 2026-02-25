@@ -483,7 +483,8 @@ export const extractAgentConfigFromFlow = (
   agentName: string,
   nodes: any[],
   edges: any[],
-  currentAgent?: Agent | null
+  currentAgent?: Agent | null,
+  shareWithOrg?: boolean
 ) => {
   const toolsetsInternal: ToolsetDataInternal[] = []; // Toolset objects with nested tools
   const knowledgeInternal: KnowledgeDataInternal[] = []; // Knowledge objects with connectorId and filters (includes both apps and KBs)
@@ -872,7 +873,8 @@ export const extractAgentConfigFromFlow = (
     toolsets, // ToolsetReference[] with id
     knowledge, // KnowledgeReference[] with id (includes both apps and KBs)
     models,
-    tags: currentAgent?.tags || ['flow-based', 'visual-workflow']
+    tags: currentAgent?.tags || ['flow-based', 'visual-workflow'],
+    shareWithOrg: shareWithOrg !== undefined ? shareWithOrg : (currentAgent?.shareWithOrg ?? false),
   };
 };
 

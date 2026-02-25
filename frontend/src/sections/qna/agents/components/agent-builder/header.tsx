@@ -18,6 +18,8 @@ import {
   useMediaQuery,
   ButtonGroup,
   Chip,
+  FormControlLabel,
+  Switch,
 } from '@mui/material';
 import { Icon } from '@iconify/react';
 import saveIcon from '@iconify-icons/mdi/content-save';
@@ -46,6 +48,9 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
   setTemplateDialogOpen,
   templatesLoading,
   agentId,
+  shareWithOrg,
+  setShareWithOrg,
+  hasToolsets,
 }) => {
   const theme = useTheme();
   const [shareAgentDialogOpen, setShareAgentDialogOpen] = useState(false);
@@ -249,6 +254,62 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
       />
 
       <Box sx={{ flexGrow: 1 }} />
+
+      {/* Share with Org Toggle */}
+      {!isMobile && (
+        <Tooltip
+          title={
+            hasToolsets
+              ? 'Cannot share with organization: this agent has toolsets that require personal authentication'
+              : shareWithOrg
+              ? 'Click to stop sharing this agent with the entire organization'
+              : 'Share this agent with all members of your organization (not allowed when toolsets are configured)'
+          }
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={shareWithOrg}
+                  onChange={(e) => {
+                    if (hasToolsets && e.target.checked) {
+                      setSnackbar({
+                        open: true,
+                        message:
+                          'Cannot share with organization: remove all toolsets first. Toolsets require personal authentication.',
+                        severity: 'warning',
+                      });
+                      return;
+                    }
+                    setShareWithOrg(e.target.checked);
+                  }}
+                  disabled={saving || hasToolsets}
+                  size="small"
+                  color="primary"
+                />
+              }
+              label={
+                <Typography
+                  variant="caption"
+                  sx={{
+                    fontWeight: 600,
+                    fontSize: '0.75rem',
+                    color: hasToolsets
+                      ? theme.palette.text.disabled
+                      : shareWithOrg
+                      ? theme.palette.primary.main
+                      : theme.palette.text.secondary,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {isTablet ? 'Share Org' : 'Share with Org'}
+                </Typography>
+              }
+              sx={{ mr: 0, ml: 0 }}
+            />
+          </Box>
+        </Tooltip>
+      )}
 
       {/* Action Buttons - Responsive layout */}
       <Stack direction="row" spacing={1} alignItems="center">

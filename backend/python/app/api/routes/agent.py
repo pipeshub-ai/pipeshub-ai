@@ -1055,6 +1055,15 @@ async def create_agent(request: Request) -> JSONResponse:
         toolsets_with_tools = _parse_toolsets(body.get("toolsets", []), logger)
         knowledge_sources = _parse_knowledge_sources(body.get("knowledge", []), logger)
 
+        # Validate shareWithOrg + toolsets combination BEFORE starting transaction
+        share_with_org = body.get("shareWithOrg", False)
+        if share_with_org and toolsets_with_tools:
+            raise InvalidRequestError(
+                "Agents shared with the organization cannot have toolsets. "
+                "Toolsets require personal authentication and cannot be shared org-wide. "
+                "Please remove all toolsets before enabling organization sharing."
+            )
+
         # Create agent document
         agent_key = str(uuid.uuid4())
         agent = {
@@ -1101,7 +1110,8 @@ async def create_agent(request: Request) -> JSONResponse:
             await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id)
             logger.debug(f"Created agent node: {agent_key}")
 
-            # Step 2: Create permission edge
+            # Step 2: Create permission edge(s)
+            # share_with_org already validated above before starting transaction
             user_permission_edge = {
                 "_from": f"{CollectionNames.USERS.value}/{user_key}",
                 "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
@@ -1110,18 +1120,22 @@ async def create_agent(request: Request) -> JSONResponse:
                 "createdAtTimestamp": time,
                 "updatedAtTimestamp": time,
             }
+            permission_edges = [user_permission_edge]
 
-            org_permission_edge = {
-                "_from": f"{CollectionNames.ORGS.value}/{org_key}",
-                "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-                "role": "OWNER",
-                "type": "ORG",
-                "createdAtTimestamp": time,
-                "updatedAtTimestamp": time,
-            }
-            permission_edges = [user_permission_edge, org_permission_edge]
+            # Only create org permission edge if shareWithOrg is explicitly set to True
+            if share_with_org:
+                org_permission_edge = {
+                    "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                    "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+                    "role": "VIEWER",
+                    "type": "ORG",
+                    "createdAtTimestamp": time,
+                    "updatedAtTimestamp": time,
+                }
+                permission_edges.append(org_permission_edge)
+
             await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
-            logger.debug(f"Created permission edge for agent: {agent_key}")
+            logger.debug(f"Created permission edge(s) for agent: {agent_key} (shareWithOrg={share_with_org})")
 
             # Step 3: Create toolsets and tools (within same transaction)
             if toolsets_with_tools:
@@ -1437,6 +1451,56 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
 
         if not agent.get("can_edit", False):
             raise PermissionDeniedError("edit this agent (only owner can edit)")
+
+        # Handle shareWithOrg flag changes
+        if "shareWithOrg" in body:
+            new_share_with_org = bool(body.get("shareWithOrg", False))
+            current_share_with_org = bool(agent.get("shareWithOrg", False))
+
+            if new_share_with_org:
+                # Turning ON org sharing: validate no toolsets exist or being added
+                has_existing_toolsets = bool(agent.get("toolsets", []))
+                has_new_toolsets = bool(body.get("toolsets", None) is not None and body.get("toolsets", []))
+                if has_existing_toolsets or has_new_toolsets:
+                    raise InvalidRequestError(
+                        "Agents shared with the organization cannot have toolsets. "
+                        "Toolsets require personal authentication and cannot be shared org-wide. "
+                        "Please remove all toolsets before enabling organization sharing."
+                    )
+                # Create the org permission edge
+                time = get_epoch_timestamp_in_ms()
+                org_permission_edge = {
+                    "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                    "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_id}",
+                    "role": "VIEWER",
+                    "type": "ORG",
+                    "createdAtTimestamp": time,
+                    "updatedAtTimestamp": time,
+                }
+                await services["graph_provider"].batch_create_edges(
+                    [org_permission_edge], CollectionNames.PERMISSION.value
+                )
+                logger.info(f"Created org permission edge for agent {agent_id}")
+
+            elif not new_share_with_org and current_share_with_org:
+                # Turning OFF org sharing: delete the org permission edge using the standard delete_edge method
+                await services["graph_provider"].delete_edge(
+                    from_id=org_key,
+                    from_collection=CollectionNames.ORGS.value,
+                    to_id=agent_id,
+                    to_collection=CollectionNames.AGENT_INSTANCES.value,
+                    collection=CollectionNames.PERMISSION.value
+                )
+                logger.info(f"Deleted org permission edge for agent {agent_id}")
+
+        # Also validate: if adding toolsets to an org-shared agent, block it
+        if "toolsets" in body and body.get("toolsets"):
+            is_org_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
+            if is_org_shared:
+                raise InvalidRequestError(
+                    "Cannot add toolsets to an agent that is shared with the organization. "
+                    "Disable organization sharing first, or remove the toolsets."
+                )
 
         # Update agent document
         result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)

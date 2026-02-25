@@ -15692,6 +15692,22 @@ class Neo4jProvider(IGraphDBProvider):
 
             agent["knowledge"] = knowledge_list
 
+            # Check if the agent is shared with the org (edge-based, not stored in doc)
+            agent["shareWithOrg"] = False
+            if org_key:
+                org_share_query = f"""
+                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label} {{id: $agent_id}})
+                WHERE p.type = 'ORG'
+                RETURN true AS share_with_org
+                LIMIT 1
+                """
+                org_share_result = await self.client.execute_query(
+                    org_share_query,
+                    parameters={"org_key": org_key, "agent_id": agent_id},
+                    txn_id=transaction
+                )
+                agent["shareWithOrg"] = bool(org_share_result)
+
             return agent
 
         except Exception as e:
@@ -15775,6 +15791,28 @@ class Neo4jProvider(IGraphDBProvider):
 
             # Convert dictionary to list (deduplicated)
             agents = [agents_dict[key]["agent"] for key in agents_dict]
+
+            # Bulk-check which agents are shared with the org (edge-based, not stored in doc)
+            if agents and org_key:
+                agent_ids = list(agents_dict.keys())
+                org_share_query = f"""
+                MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label})
+                WHERE p.type = 'ORG'
+                AND agent.id IN $agent_ids
+                RETURN collect(agent.id) AS org_shared_ids
+                """
+                org_share_result = await self.client.execute_query(
+                    org_share_query,
+                    parameters={"org_key": org_key, "agent_ids": agent_ids},
+                    txn_id=transaction
+                )
+                org_shared_ids = set(org_share_result[0]["org_shared_ids"]) if org_share_result and org_share_result[0].get("org_shared_ids") else set()
+                for agent in agents:
+                    agent["shareWithOrg"] = agent.get("_key", "") in org_shared_ids
+            else:
+                for agent in agents:
+                    agent["shareWithOrg"] = False
+
             return agents
 
         except Exception as e:

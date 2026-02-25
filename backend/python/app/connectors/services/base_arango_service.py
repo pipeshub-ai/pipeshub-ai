@@ -16498,10 +16498,23 @@ class BaseArangoService:
                     }}
             ) : []
 
+            // Check if the agent is shared with the org (edge-based, not stored in doc)
+            LET share_with_org = base_agent != null && org_key != null ? (
+                LENGTH(
+                    FOR perm IN {CollectionNames.PERMISSION.value}
+                        FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                        FILTER perm._to == agent_path
+                        FILTER perm.type == "ORG"
+                        LIMIT 1
+                        RETURN 1
+                ) > 0
+            ) : false
+
             // Return agent with linked data
             RETURN base_agent != null ? MERGE(base_agent, {{
                 toolsets: linked_toolsets,
-                knowledge: linked_knowledge
+                knowledge: linked_knowledge,
+                shareWithOrg: share_with_org
             }}) : null
             """
 
@@ -16659,6 +16672,15 @@ class BaseArangoService:
                     }}
             ) : []
             
+            // Pre-compute set of agent paths shared with the org (edge-based, not stored in doc)
+            LET org_shared_agent_paths = org_key != null ? (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == CONCAT('{CollectionNames.ORGS.value}/', org_key)
+                    FILTER perm.type == "ORG"
+                    FILTER STARTS_WITH(perm._to, '{CollectionNames.AGENT_INSTANCES.value}/')
+                    RETURN perm._to
+            ) : []
+
             // Combine all permissions and deduplicate by agent_id, keeping highest priority
             LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
             
@@ -16677,7 +16699,8 @@ class BaseArangoService:
                     can_edit: best_entry.role IN ["OWNER", "WRITER", "ORGANIZER"],
                     can_delete: best_entry.role == "OWNER",
                     can_share: best_entry.role IN ["OWNER", "ORGANIZER"],
-                    can_view: true
+                    can_view: true,
+                    shareWithOrg: best_entry.agent._id IN org_shared_agent_paths
                 }})
             """
 
