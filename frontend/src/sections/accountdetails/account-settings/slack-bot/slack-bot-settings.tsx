@@ -144,7 +144,11 @@ export default function SlackBotSettings() {
 
 
   const totalBots = configs.length;
-  const linkedAgents = new Set(configs.map((config) => config.agentId)).size;
+  const linkedAgents = new Set(
+    configs
+      .map((config) => config.agentId)
+      .filter((agentId): agentId is string => Boolean(agentId)),
+  ).size;
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>
@@ -227,7 +231,7 @@ export default function SlackBotSettings() {
                       Slack Bots
                     </Typography>
                     <Typography variant="body2" color="text.secondary">
-                      Configure Slack credentials and map each bot to your agents.
+                      Configure Slack credentials and optionally map each bot to an agent.
                     </Typography>
                   </Box>
                 </Stack>
@@ -415,7 +419,11 @@ export default function SlackBotSettings() {
                           <Chip
                             size="small"
                             icon={<Iconify icon={accountTieIcon} width={14} />}
-                            label={`Agent : ${agentMap.get(config.agentId) || config.agentId}`}
+                            label={
+                              config.agentId
+                                ? `Agent : ${agentMap.get(config.agentId) || config.agentId}`
+                                : 'Agent : Default (global chatbot)'
+                            }
                             sx={{
                               maxWidth: '100%',
                               borderRadius: 1,
@@ -433,7 +441,11 @@ export default function SlackBotSettings() {
                                 whiteSpace: 'nowrap',
                               },
                             }}
-                            title={agentMap.get(config.agentId) || config.agentId}
+                            title={
+                              config.agentId
+                                ? agentMap.get(config.agentId) || config.agentId
+                                : 'Default (global chatbot)'
+                            }
                           />
                         </Stack>
 
@@ -496,7 +508,7 @@ export default function SlackBotSettings() {
                     backgroundColor: alpha(theme.palette.info.main, 0.04),
                   }}
                 >
-                  Configure each bot with its own credentials and agent mapping for clean channel-wise control.
+                  Configure each bot with its own credentials and optional agent mapping for clean channel-wise control.
                 </Alert>
               </Stack>
             </Fade>

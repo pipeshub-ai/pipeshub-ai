@@ -5,7 +5,7 @@ export type SlackBotConfig = {
   name: string;
   botToken: string;
   signingSecret: string;
-  agentId: string;
+  agentId: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -14,7 +14,7 @@ export type SlackBotConfigPayload = {
   name: string;
   botToken: string;
   signingSecret: string;
-  agentId: string;
+  agentId?: string | null;
 };
 
 export type AgentOption = {
