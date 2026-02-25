@@ -33,9 +33,10 @@ class TokenScopes(Enum):
 class OAuthScopes(str, Enum):
     """OAuth scopes for external API access control"""
 
-    # Search
-    SEARCH_QUERY = "search:query"
-    SEARCH_SEMANTIC = "search:semantic"
+    # Semantic Search
+    SEMANTIC_WRITE = "semantic:write"
+    SEMANTIC_READ = "semantic:read"
+    SEMANTIC_DELETE = "semantic:delete"
 
     # Conversations
     CONVERSATION_READ = "conversation:read"

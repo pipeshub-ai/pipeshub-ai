@@ -381,7 +381,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.post(
     '/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchSearchSchema),
     search(appConfig),
@@ -390,7 +390,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.get(
     '/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(enterpriseSearchSearchHistorySchema),
     searchHistory,
@@ -399,7 +399,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.get(
     '/:searchId',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_READ),
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     getSearchById,
@@ -408,7 +408,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.delete(
     '/:searchId',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_DELETE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     deleteSearchById,
@@ -417,7 +417,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.delete(
     '/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_DELETE),
     metricsMiddleware(container),
     deleteSearchHistory,
   );
@@ -425,7 +425,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.patch(
     '/:searchId/share',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchShareParamsSchema),
     shareSearch(appConfig),
@@ -434,7 +434,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.patch(
     '/:searchId/unshare',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchShareParamsSchema),
     unshareSearch(appConfig),
@@ -443,7 +443,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.patch(
     '/:searchId/archive',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     archiveSearch,
@@ -452,7 +452,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.patch(
     '/:searchId/unarchive',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEARCH_QUERY, OAuthScopeNames.SEARCH_SEMANTIC),
+    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
     metricsMiddleware(container),
     ValidationMiddleware.validate(searchIdParamsSchema),
     unarchiveSearch,

@@ -53,7 +53,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return config_service
 
 
-@router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEARCH_QUERY, OAuthScopes.SEARCH_SEMANTIC))])
+@router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
     request: Request,

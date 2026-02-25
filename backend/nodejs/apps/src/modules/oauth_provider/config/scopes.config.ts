@@ -106,17 +106,23 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
-  // Search
-  'search:query': {
-    name: 'search:query',
-    description: 'Execute search queries',
-    category: 'Search',
+  // Semantic Search
+  'semantic:read': {
+    name: 'semantic:read',
+    description: 'Read semantic search results and history',
+    category: 'Semantic',
     requiresUserConsent: true,
   },
-  'search:semantic': {
-    name: 'search:semantic',
-    description: 'Execute semantic search',
-    category: 'Search',
+  'semantic:write': {
+    name: 'semantic:write',
+    description: 'Execute semantic search queries',
+    category: 'Semantic',
+    requiresUserConsent: true,
+  },
+  'semantic:delete': {
+    name: 'semantic:delete',
+    description: 'Delete semantic search history',
+    category: 'Semantic',
     requiresUserConsent: true,
   },
 
@@ -277,7 +283,7 @@ export const ScopeCategories = [
   'User Groups',
   'Teams',
   'Knowledge Base',
-  'Search',
+  'Semantic',
   'Conversations',
   'Agents',
   'Connectors',

@@ -440,8 +440,9 @@ components:
             kb:write: Create and update knowledge bases
             kb:delete: Delete knowledge bases and records
             kb:upload: Upload files to knowledge bases
-            search:query: Execute search queries
-            search:semantic: Execute semantic search
+            semantic:read: Read semantic search results and history
+            semantic:write: Execute semantic search
+            semantic:delete: Delete semantic search history
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
@@ -482,8 +483,9 @@ components:
             kb:write: Create and update knowledge bases
             kb:delete: Delete knowledge bases and records
             kb:upload: Upload files to knowledge bases
-            search:query: Execute search queries
-            search:semantic: Execute semantic search
+            semantic:write: Execute semantic search
+            semantic:read: Read semantic search results and history
+            semantic:delete: Delete semantic search history
             conversation:read: Read conversations
             conversation:write: Create and manage conversations
             conversation:chat: Send messages in conversations
@@ -10901,6 +10903,7 @@ paths:
       operationId: updateDocumentBuffer
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       parameters:
         - name: documentId
           in: path
@@ -14045,7 +14048,7 @@ paths:
       operationId: search
       security:
         - bearerAuth: []
-        - oauth2: [search:query, search:semantic]
+        - oauth2: [semantic:write]
       requestBody:
         required: true
         description: "Request payload"
@@ -14094,6 +14097,7 @@ paths:
       operationId: searchHistory
       security:
         - bearerAuth: []
+        - oauth2: [semantic:read]
       parameters:
         - name: limit
           in: query
@@ -14143,6 +14147,7 @@ paths:
       operationId: deleteAllSearchHistory
       security:
         - bearerAuth: []
+        - oauth2: [semantic:delete]
       responses:
         '200':
           description: Search history cleared
@@ -14170,7 +14175,7 @@ paths:
       operationId: getSearchById
       security:
         - bearerAuth: []
-        - oauth2: [search:query]
+        - oauth2: [semantic:read]
       parameters:
         - name: searchId
           in: path
@@ -14202,6 +14207,7 @@ paths:
       operationId: deleteSearch
       security:
         - bearerAuth: []
+        - oauth2: [semantic:delete]
       parameters:
         - name: searchId
           in: path
@@ -14230,7 +14236,7 @@ paths:
       operationId: shareSearch
       security:
         - bearerAuth: []
-        - oauth2: [search:query]
+        - oauth2: [semantic:write]
       parameters:
         - name: searchId
           in: path
@@ -14266,7 +14272,7 @@ paths:
       operationId: unshareSearch
       security:
         - bearerAuth: []
-        - oauth2: [search:query]
+        - oauth2: [semantic:write]
       parameters:
         - name: searchId
           in: path
@@ -14311,7 +14317,7 @@ paths:
       operationId: archiveSearch
       security:
         - bearerAuth: []
-        - oauth2: [search:query]
+        - oauth2: [semantic:write]
       parameters:
         - name: searchId
           in: path
@@ -14340,7 +14346,7 @@ paths:
       operationId: unarchiveSearch
       security:
         - bearerAuth: []
-        - oauth2: [search:query]
+        - oauth2: [semantic:write]
       parameters:
         - name: searchId
           in: path
