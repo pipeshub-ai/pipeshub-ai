@@ -10903,6 +10903,7 @@ paths:
       operationId: updateDocumentBuffer
       security:
         - bearerAuth: []
+        - oauth2: [document:write]
       parameters:
         - name: documentId
           in: path
