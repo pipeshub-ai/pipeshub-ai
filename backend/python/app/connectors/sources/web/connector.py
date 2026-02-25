@@ -106,6 +106,8 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="3",
+            min_length=1,
+            max_length=10,
             description="Maximum depth for recursive crawling (1-10, only applies to recursive type)"
         ))
         .add_sync_custom_field(CustomField(
@@ -114,6 +116,8 @@ class WebApp(App):
             field_type="NUMBER",
             required=False,
             default_value="100",
+            min_length=1,
+            max_length=1000,
             description="Maximum number of pages to crawl (1-1000)"
         ))
         .add_sync_custom_field(CustomField(
@@ -193,8 +197,8 @@ class WebConnector(BaseConnector):
                 raise ValueError("WebPage url not found")
 
             self.crawl_type = sync_config.get("type", "single")
-            self.max_depth = int(sync_config.get("depth", 3))
-            self.max_pages = int(sync_config.get("max_pages", 1000))
+            self.max_depth = int(sync_config.get("depth") or 3)
+            self.max_pages = int(sync_config.get("max_pages") or 1000)
             self.follow_external = sync_config.get("follow_external", False)
 
 
