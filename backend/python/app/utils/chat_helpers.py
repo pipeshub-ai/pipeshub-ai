@@ -9,7 +9,7 @@ from jinja2 import Template
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.blocks import BlockType, GroupSubType, GroupType, SemanticMetadata
 from app.models.entities import (
     Connectors,
     FileRecord,
@@ -593,8 +593,27 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         block_groups = block_container.get("block_groups",[])
 
         if is_block_group:
+            if index >= len(block_groups):
+                logger.warning(
+                    "Block group index %d out of bounds (len=%d), vrid=%s",
+                    index, len(block_groups), virtual_record_id,
+                )
+                continue
             block = block_groups[index]
         else:
+            if index >= len(blocks):
+                qdrant_content = result.get("content", "")
+                sql_bg_index = 0
+                if sql_bg_index is not None and qdrant_content:
+                    rows_to_be_included[f"{virtual_record_id}_{sql_bg_index}"].append(
+                        (index, float(result.get("score", 0.0)), qdrant_content)
+                    )
+                else:
+                    logger.warning(
+                        "Block index %d out of bounds (len=%d), vrid=%s",
+                        index, len(blocks), virtual_record_id,
+                    )
+                continue
             block = blocks[index]
 
         block_type = block.get("type")
@@ -626,7 +645,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
             block_group_index = block.get("parent_index")
-            rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append((index,float(result.get("score",0.0))))
+            rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append((index,float(result.get("score",0.0)), None))
             continue
         elif block_type == GroupType.TABLE.value:
             table_data = block.get("data",{})
@@ -750,19 +769,38 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if ddl:
             table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
         child_results = []
-        for row_index,row_score in sorted_rows_tuple:
-            block = blocks[row_index]
-            block_type = block.get("type")
-            if block_type == BlockType.TABLE_ROW.value:
-                block_text = block.get("data",{}).get("row_natural_language_text","")
-                enhanced_metadata = get_enhanced_metadata(record,block,{})
+        for row_index, row_score, qdrant_content in sorted_rows_tuple:
+            if row_index < len(blocks):
+                block = blocks[row_index]
+                block_type = block.get("type")
+                if block_type == BlockType.TABLE_ROW.value:
+                    block_text = block.get("data",{}).get("row_natural_language_text","")
+                    enhanced_metadata = get_enhanced_metadata(record,block,{})
+                    child_results.append({
+                        "content": block_text,
+                        "block_type": block_type,
+                        "metadata": enhanced_metadata,
+                        "virtual_record_id": virtual_record_id,
+                        "block_index": row_index,
+                        "citationType": "vectordb|document",
+                        "score": row_score,
+                    })
+            elif qdrant_content:
+                # Block not in blob (SQL row limit) — use Qdrant page_content
+                logger.info(f"Using Qdrant page_content for row {row_index} of virtual record {virtual_record_id}")
+                synthetic_block = {
+                    "type": BlockType.TABLE_ROW.value,
+                    "data": {"row_natural_language_text": qdrant_content},
+                    "index": row_index,
+                }
+                enhanced_metadata = get_enhanced_metadata(record, synthetic_block, {})
                 child_results.append({
-                    "content": block_text,
-                    "block_type": block_type,
+                    "content": qdrant_content,
+                    "block_type": BlockType.TABLE_ROW.value,
                     "metadata": enhanced_metadata,
                     "virtual_record_id": virtual_record_id,
                     "block_index": row_index,
-                    "citationType": "vectordb|document",
+                    "citationType": "vectordb",
                     "score": row_score,
                 })
         if sorted_rows_tuple:
@@ -1687,7 +1725,7 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                                 source_col = rel.get("sourceColumn", "")
                                 target_col = rel.get("targetColumn", "")
                                 record_id = rel.get("record_id", "")
-                                fk_info += f"\n    - {parent_table} (via {source_col} -> {target_col}) [record_id: {record_id}]"
+                                fk_info += f"\n    - {parent_table} (via source column:{source_col} -> target column:{target_col}) [record_id: {record_id}]"
                         if fk_child_relations:
                             fk_info += "\n  - Child Tables (reference this table):"
                             for rel in fk_child_relations:
@@ -1695,8 +1733,8 @@ def get_message_content(flattened_results: List[Dict[str, Any]], virtual_record_
                                 source_col = rel.get("sourceColumn", "")
                                 target_col = rel.get("targetColumn", "")
                                 record_id = rel.get("record_id", "")
-                                fk_info += f"\n    - {child_table} (via {source_col} -> {target_col}) [record_id: {record_id}]"
-                    
+                                fk_info += f"\n    - {child_table} (via source column:{source_col} -> target column:{target_col}) [record_id: {record_id}]"
+                        logger.debug(f"FK info: {fk_info}")
                     if child_results:
                         template = Template(table_prompt)
                         rendered_form = template.render(
