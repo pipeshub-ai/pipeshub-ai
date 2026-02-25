@@ -1057,12 +1057,6 @@ async def create_agent(request: Request) -> JSONResponse:
 
         # Validate shareWithOrg + toolsets combination BEFORE starting transaction
         share_with_org = body.get("shareWithOrg", False)
-        if share_with_org and toolsets_with_tools:
-            raise InvalidRequestError(
-                "Agents shared with the organization cannot have toolsets. "
-                "Toolsets require personal authentication and cannot be shared org-wide. "
-                "Please remove all toolsets before enabling organization sharing."
-            )
 
         # Create agent document
         agent_key = str(uuid.uuid4())
@@ -1457,16 +1451,9 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
             new_share_with_org = bool(body.get("shareWithOrg", False))
             current_share_with_org = bool(agent.get("shareWithOrg", False))
 
-            if new_share_with_org:
+            if new_share_with_org and not current_share_with_org:
                 # Turning ON org sharing: validate no toolsets exist or being added
-                has_existing_toolsets = bool(agent.get("toolsets", []))
-                has_new_toolsets = bool(body.get("toolsets", None) is not None and body.get("toolsets", []))
-                if has_existing_toolsets or has_new_toolsets:
-                    raise InvalidRequestError(
-                        "Agents shared with the organization cannot have toolsets. "
-                        "Toolsets require personal authentication and cannot be shared org-wide. "
-                        "Please remove all toolsets before enabling organization sharing."
-                    )
+
                 # Create the org permission edge
                 time = get_epoch_timestamp_in_ms()
                 org_permission_edge = {
@@ -1493,14 +1480,6 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 )
                 logger.info(f"Deleted org permission edge for agent {agent_id}")
 
-        # Also validate: if adding toolsets to an org-shared agent, block it
-        if "toolsets" in body and body.get("toolsets"):
-            is_org_shared = bool(body.get("shareWithOrg", agent.get("shareWithOrg", False)))
-            if is_org_shared:
-                raise InvalidRequestError(
-                    "Cannot add toolsets to an agent that is shared with the organization. "
-                    "Disable organization sharing first, or remove the toolsets."
-                )
 
         # Update agent document
         result = await services["graph_provider"].update_agent(agent_id, body, user_key, org_key)
