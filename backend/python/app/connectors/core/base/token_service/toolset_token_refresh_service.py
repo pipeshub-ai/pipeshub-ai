@@ -480,9 +480,14 @@ class ToolsetTokenRefreshService:
             self.logger.info(f"✅ Successfully refreshed token for toolset {config_path}")
 
             # 6. Update stored credentials
-            config["credentials"] = new_token.to_dict()
-            config["updatedAt"] = int(datetime.now().timestamp() * 1000)  # Epoch timestamp in ms
-            await self.configuration_service.set_config(config_path, config)
+            # NOTE: OAuthProvider.refresh_access_token() already persists credentials to config_path.
+            # We reload the latest config and save only the credentials field to avoid
+            # overwriting concurrent saves with stale data (matches token_refresh_service behaviour).
+            latest_config = await self.configuration_service.get_config(config_path)
+            if not isinstance(latest_config, dict):
+                latest_config = config  # fall back to the config we already have
+            latest_config["credentials"] = new_token.to_dict()
+            await self.configuration_service.set_config(config_path, latest_config)
             self.logger.info(f"💾 Updated stored credentials for toolset {config_path}")
 
             return new_token

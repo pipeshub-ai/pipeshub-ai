@@ -231,6 +231,37 @@ def _validate_auth_config(auth_config: Dict[str, Any]) -> str:
     return auth_type
 
 
+def _apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: Optional[str]) -> str:
+    """Substitute the tenant segment in a Microsoft login URL.
+
+    Microsoft OAuth URLs are of the form:
+        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize
+        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
+
+    If *tenant_id* is provided and is not empty / "common" / "organizations",
+    we replace the current tenant segment with the supplied value so that
+    single-tenant Azure AD applications (which cannot use the /common endpoint)
+    can authenticate successfully.
+    """
+    if not url or "login.microsoftonline.com" not in url:
+        return url
+
+    # Normalise – treat blank or "common" as no-op
+    tenant = (tenant_id or "").strip()
+    if not tenant or tenant.lower() == "common":
+        return url
+
+    # Replace the tenant segment — URL looks like:
+    #   https://login.microsoftonline.com/<current_tenant>/oauth2/...
+    import re as _re
+    return _re.sub(
+        r"(https://login\.microsoftonline\.com/)[^/]+(/)",
+        rf"\g<1>{tenant}\2",
+        url,
+        count=1,
+    )
+
+
 def _get_oauth_config_from_registry(toolset_type: str, registry: ToolsetRegistry) -> OAuthConfig:
     """Get OAuth config from toolset registry (returns dataclass instance)"""
     # Get metadata without serialization to preserve dataclass instances
@@ -320,12 +351,18 @@ async def _prepare_toolset_auth_config(
     from app.connectors.core.registry.auth_builder import OAuthScopeType
     scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
+    # If a tenantId is supplied in the auth config, substitute it into the
+    # Microsoft OAuth URLs so single-tenant Azure AD applications can authenticate.
+    tenant_id = auth_config.get("tenantId", "").strip()
+    effective_authorize_url = _apply_tenant_to_microsoft_oauth_url(oauth_config.authorize_url, tenant_id)
+    effective_token_url = _apply_tenant_to_microsoft_oauth_url(oauth_config.token_url, tenant_id)
+
     # Enrich auth_config with OAuth infrastructure fields
     # Always update these fields to ensure they're current
     enriched_auth = {
         **auth_config,
-        "authorizeUrl": oauth_config.authorize_url,
-        "tokenUrl": oauth_config.token_url,
+        "authorizeUrl": effective_authorize_url,
+        "tokenUrl": effective_token_url,
         "redirectUri": redirect_uri,  # Always refreshed based on current base_url
         "scopes": scopes,
     }
@@ -376,14 +413,22 @@ async def _build_oauth_config(
     if not scopes:
         scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
 
+    # If a tenantId is supplied in the auth config, substitute it into the
+    # Microsoft OAuth URLs so single-tenant Azure AD applications can authenticate.
+    tenant_id = auth_config.get("tenantId", "").strip()
+    base_authorize_url = auth_config.get("authorizeUrl") or oauth_config.authorize_url
+    base_token_url = auth_config.get("tokenUrl") or oauth_config.token_url
+    effective_authorize_url = _apply_tenant_to_microsoft_oauth_url(base_authorize_url, tenant_id)
+    effective_token_url = _apply_tenant_to_microsoft_oauth_url(base_token_url, tenant_id)
+
     # Build config - prefer stored values from auth_config
     config = {
         "clientId": client_id,
         "clientSecret": client_secret,
         "redirectUri": redirect_uri,
         "scopes": scopes,
-        "authorizeUrl": auth_config.get("authorizeUrl") or oauth_config.authorize_url,
-        "tokenUrl": auth_config.get("tokenUrl") or oauth_config.token_url,
+        "authorizeUrl": effective_authorize_url,
+        "tokenUrl": effective_token_url,
         "name": toolset_type,
     }
 
