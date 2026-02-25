@@ -70,7 +70,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-POSTGRES_TABLE_ROW_LIMIT = int(os.getenv("POSTGRES_TABLE_ROW_LIMIT", "50"))
+POSTGRES_TABLE_ROW_LIMIT = int(os.getenv("POSTGRES_TABLE_ROW_LIMIT", "1000"))
 
 
 @dataclass

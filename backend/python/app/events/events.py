@@ -1,4 +1,5 @@
 import hashlib
+import json
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
@@ -15,6 +16,7 @@ from app.config.constants.arangodb import (
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
 
 
 class EventProcessor:
@@ -59,6 +61,31 @@ class EventProcessor:
 
 
 
+    def _normalize_content_for_dedup(self, content: bytes, record_type: str) -> bytes:
+        if record_type not in {"SQL_TABLE", "SQL_VIEW", "WEBPAGE", "DATASOURCE", "TICKET", "PROJECT"}:
+            return content
+        try:
+            parsed = json.loads(content)
+            if not isinstance(parsed, dict):
+                return content
+
+            # BlocksContainer structure (WEBPAGE, DATASOURCE, TICKET, PROJECT)
+            if "block_groups" in parsed or "blocks" in parsed:
+                parts: list[str] = []
+                for bg in parsed.get("block_groups", []):
+                    if bg.get("data") is not None:
+                        parts.append(json.dumps(bg["data"], sort_keys=True, default=str))
+                for b in parsed.get("blocks", []):
+                    if b.get("data") is not None:
+                        parts.append(json.dumps(b["data"], sort_keys=True, default=str))
+                if parts:
+                    return "\n".join(parts).encode("utf-8")
+                return content
+
+            return json.dumps(parsed, sort_keys=True, default=str).encode("utf-8")
+        except (json.JSONDecodeError, Exception):
+            return content
+
     async def _check_duplicate_by_md5(
         self,
         content: bytes | str,
@@ -83,7 +110,8 @@ class EventProcessor:
         if md5_checksum is None and content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
-            md5_checksum = hashlib.md5(content).hexdigest()
+            content_for_hash = self._normalize_content_for_dedup(content, record_type)
+            md5_checksum = hashlib.md5(content_for_hash).hexdigest()
             doc.update({"md5Checksum": md5_checksum})
             self.logger.info(f"🚀 Calculated md5_checksum: {md5_checksum} for record type: {record_type}")
             await self.graph_provider.batch_upsert_nodes([doc], CollectionNames.RECORDS.value)

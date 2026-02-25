@@ -9,3 +9,4 @@ celerybeat-schedule.*
 .env
 cleanup.sh
 __pycache__/
+test_scripts/
