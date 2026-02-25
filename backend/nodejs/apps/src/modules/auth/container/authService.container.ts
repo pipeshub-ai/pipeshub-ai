@@ -102,7 +102,6 @@ export class AuthServiceContainer {
         .toConstantValue(jitProvisioningService);
 
       container.bind<SamlController>('SamlController').toDynamicValue(() => {
-        // return new SamlController(iamService, appConfig, logger, configurationService, sessionService);
         return new SamlController(appConfig, logger);
       });
 

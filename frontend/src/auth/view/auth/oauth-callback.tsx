@@ -12,12 +12,12 @@ export default function OAuthCallback() {
   const [processing, setProcessing] = useState(true);
 
 
-  const hasExchanged = useRef(false); 
+  const hasExchanged = useRef(false);
 
   useEffect(() => {
     const handleCallback = async () => {
       if (hasExchanged.current) return;
-      hasExchanged.current = true; 
+      hasExchanged.current = true;
 
       try {
         const urlParams = new URLSearchParams(window.location.search);
@@ -40,7 +40,6 @@ export default function OAuthCallback() {
 
         const requestBody = {
           code,
-          email, 
           provider,
           redirectUri: `${window.location.origin}/auth/oauth/callback`,
         };
@@ -81,7 +80,7 @@ export default function OAuthCallback() {
     };
 
     handleCallback();
-  }, []); 
+  }, []);
 
   if (error) {
     return (

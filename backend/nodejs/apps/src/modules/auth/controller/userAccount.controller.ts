@@ -303,7 +303,7 @@ export class UserAccountController {
         orgId: orgAuthConfig ? orgAuthConfig.orgId.toString() : '',
         authConfig: orgAuthConfig?.authSteps ?? [{ order: 1, allowedMethods: [{ type: 'password' }] }],
         currentStep: 0,
-       
+
         jitConfig: jitEnabledMethods.length > 0 ? jitConfig : undefined,
       });
 
@@ -315,7 +315,7 @@ export class UserAccountController {
         message: 'Authentication initialized',
         authProviders,
         jitEnabled: jitEnabledMethods.length > 0,
-        
+
       });
 
     } catch (error) {
@@ -1327,7 +1327,7 @@ export class UserAccountController {
             method === AuthMethodType.MICROSOFT ? 'microsoft' :
               method === AuthMethodType.GOOGLE ? 'google' : 'oauth';
 
-          if (user?.message === "Account not found") {
+          if (!user || user?.message === "Account not found") {
             if (jitConfig && jitConfig[methodKey] && userDetails) {
               user = await this.jitProvisioningService.provisionUser(
                 providerEmail, userDetails, orgId!, methodKey as any
@@ -1494,14 +1494,13 @@ export class UserAccountController {
 
       // 2. Get bootstrap config to perform the exchange
       // Using the first available org context to get the client credentials
-      const initialOrg = await Org.findOne({ isDeleted: false });
+      const initialOrg = await Org.findOne({ isDeleted: false }).lean().exec();;
       if (!initialOrg) throw new BadRequestError('Organization not found');
 
       const configResponse = await this.configurationManagerService.getConfig(
         this.config.cmBackend,
         OAUTH_AUTH_CONFIG_PATH,
-        { orgId: (initialOrg._id as any).toString() },
-        this.config.scopedJwtSecret,
+        { orgId: initialOrg._id.toString() }, this.config.scopedJwtSecret,
       );
 
       const oauthConfig = configResponse.data;

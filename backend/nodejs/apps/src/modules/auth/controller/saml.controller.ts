@@ -39,9 +39,22 @@ export class SamlController {
   constructor(
     @inject('AppConfig') private config: AppConfig,
     @inject('Logger') private logger: Logger,
-  ) {
-    this.updateSamlStrategiesWithCallback();
-  }
+  ) { }
+  // this.updateSamlStrategiesWithCallback();
+
+  // public async init(): Promise<void> {
+  //   try {
+  //     await this.updateSamlStrategiesWithCallback();
+  //     this.logger.info('SAML strategies initialized');
+  //   } catch (error) {
+  //     this.logger.warn(
+  //       'SAML initialization failed. Application will start without SAML.',
+  //     );
+  //     // this.logger.error('Failed to initialize SAML strategies', error);
+  //     // throw error; // prevent app from starting in broken state
+  //   }
+  // }
+
   async updateSamlStrategiesWithCallback(): Promise<void> {
 
 
@@ -95,6 +108,7 @@ export class SamlController {
 
     this.updateOrgIdToSamlEmailKey(org._id.toString(), samlEmailKey);
     this.updateSAMLStrategy(samlCertificate, samlEntryPoint);
+    console.log("Mai Chal gya tha na")
   }
 
   // update the mapping
@@ -168,19 +182,19 @@ export class SamlController {
     try {
       const email = req.query.email as string || "";
       const sessionToken = req.query.sessionToken as string;
-     
+
 
       this.logger.debug(email);
-      
+
       const orgAuthConfig = await OrgAuthConfig.findOne({
-        
+
         isDeleted: false,
       }).lean().exec();
 
       if (!orgAuthConfig) {
         throw new NotFoundError('Organisation configuration not found');
       }
-      
+
       const relayStateObj = { orgId: orgAuthConfig.orgId, sessionToken };
       const relayStateEncoded = Buffer.from(
         JSON.stringify(relayStateObj),

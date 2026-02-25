@@ -157,8 +157,18 @@ export function createSamlRouter(container: Container) {
         const accessToken = await generateAuthToken(user, config.jwtSecret);
         const refreshToken = refreshTokenJwtGenerator(user._id, session.orgId, config.scopedJwtSecret);
 
-        res.cookie("accessToken", accessToken, { secure: true, sameSite: "none", maxAge: 3600000 });
-        res.cookie("refreshToken", refreshToken, { secure: true, sameSite: "none", maxAge: 604800000 });
+        res.cookie("accessToken", accessToken, {
+          secure: true,
+          sameSite: "none",
+          maxAge: 60 * 60 * 1000,
+        });
+
+        res.cookie("refreshToken", refreshToken, {
+          secure: true,
+          sameSite: "none",
+          maxAge: 7 * 24 * 60 * 60 * 1000,
+        });
+
 
         res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
       } catch (error) {
