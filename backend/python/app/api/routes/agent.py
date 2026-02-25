@@ -2161,10 +2161,65 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     synthetic_id = f"{user_id}_{normalized_toolset_name}"
                     etcd_path = get_toolset_config_path(user_id, toolset_name)
                     config = await services["config_service"].get_config(etcd_path)
-                    if config:
-                        toolset_configs[synthetic_id] = config
-                except Exception as e:
-                    logger.warning(f"Failed to load config for {toolset_name}: {e}")
+                    return toolset, config
+                except Exception as exc:
+                    logger.warning(f"Failed to load config for toolset '{toolset_name}': {exc}")
+                    return toolset, None
+
+            # Fetch ALL toolset configs in parallel
+            fetch_results = await _asyncio.gather(*[_fetch_toolset_config(t) for t in named_toolsets])
+
+            configured_toolsets = []
+            missing_toolset_display_names: list[str] = []
+
+            for toolset, config in fetch_results:
+                toolset_name = toolset["name"]
+                normalized_name = normalize_app_name(toolset_name)
+                if config:
+                    synthetic_id = f"{executing_user_id}_{normalized_name}"
+                    toolset_configs[synthetic_id] = config
+                    configured_toolsets.append(toolset)
+                else:
+                    display_name = toolset.get("displayName") or toolset_name.replace("_", " ").title()
+                    missing_toolset_display_names.append(display_name)
+                    logger.warning(
+                        f"Toolset config not found for user '{executing_user_id}' / toolset '{toolset_name}'. "
+                        "User needs to configure this integration."
+                    )
+
+            # Strategy: if ALL toolsets are unconfigured → block entirely.
+            # If only SOME are missing → proceed with the configured subset (partial execution).
+            if missing_toolset_display_names:
+                if not configured_toolsets:
+                    # No toolset is configured for this user at all — hard block.
+                    missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
+                    error_message = (
+                        f"This agent requires the following toolset(s) to be configured: {missing_list}. "
+                        "Please connect your account(s) in Settings → Toolsets before using this agent."
+                    )
+                    logger.info(
+                        f"Blocking agent {agent_id} execution for user '{executing_user_id}': "
+                        f"all toolset configs missing: {missing_toolset_display_names}"
+                    )
+
+                    async def _toolset_config_error_stream() -> AsyncGenerator[str, None]:
+                        yield f"event: error\ndata: {json.dumps({'message': error_message, 'type': 'toolset_config_missing'})}\n\n"
+
+                    return StreamingResponse(_toolset_config_error_stream(), media_type="text/event-stream")
+                else:
+                    # Partial — proceed with only the configured toolsets, warn about the rest.
+                    missing_list = ", ".join(f"'{n}'" for n in missing_toolset_display_names)
+                    logger.warning(
+                        f"Agent {agent_id}: proceeding with partial toolsets for user '{executing_user_id}'. "
+                        f"Unconfigured (will be skipped): {missing_list}"
+                    )
+                    agent_toolsets = configured_toolsets
+
+        # Override the stored userId on each toolset with the executing user's ID so that
+        # _build_tool_to_toolset_map (in chat_state.py) constructs synthetic IDs that
+        # match the keys we just stored in toolset_configs above.
+        for toolset in agent_toolsets:
+            toolset["userId"] = executing_user_id
 
         # Get and filter knowledge
         agent_knowledge = agent.get("knowledge", [])
