@@ -47,7 +47,7 @@ export const slackBotConfigService = {
   async getAgents(): Promise<AgentOption[]> {
     const response = await axios.get('/api/v1/agents');
     const agents = response.data?.agents || [];
-    return agents.map((agent: any) => ({
+    return agents.map((agent: { _key: string; name?: string }) => ({
       id: agent._key,
       name: agent.name || agent._key,
     }));

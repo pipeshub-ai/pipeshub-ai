@@ -1,10 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import plusIcon from '@iconify-icons/mdi/plus-circle-outline';
 import robotIcon from '@iconify-icons/mdi/robot';
-import pencilIcon from '@iconify-icons/mdi/pencil-outline';
 import deleteIcon from '@iconify-icons/mdi/delete-outline';
-import shieldIcon from '@iconify-icons/mdi/shield-lock-outline';
-import calendarIcon from '@iconify-icons/mdi/calendar-clock-outline';
 import accountTieIcon from '@iconify-icons/mdi/account-tie-outline';
 import refreshIcon from '@iconify-icons/mdi/refresh';
 import eyeIcon from '@iconify-icons/mdi/eye-outline';
@@ -14,7 +11,6 @@ import {
   Box,
   Button,
   Chip,
-  CircularProgress,
   Container,
   Dialog,
   DialogActions,
@@ -146,23 +142,9 @@ export default function SlackBotSettings() {
     setDeleteDialogConfig(null);
   };
 
-  const formatDate = (value?: string) => {
-    if (!value) return '-';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return '-';
-    return date.toLocaleString();
-  };
-
-  const maskSecret = (value?: string) => {
-    if (!value) return '********';
-    if (value.length <= 4) return '********';
-    return `${value.slice(0, 2)}****${value.slice(-2)}`;
-  };
 
   const totalBots = configs.length;
   const linkedAgents = new Set(configs.map((config) => config.agentId)).size;
-  const isConfigured = (config: SlackBotConfig) =>
-    Boolean(config.botToken && config.signingSecret && config.agentId);
 
   return (
     <Container maxWidth="xl" sx={{ py: 2 }}>

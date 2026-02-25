@@ -415,15 +415,12 @@ export const getSmtpConfig =
       next(error);
     }
   };
+const SLACK_BOT_CAS_MAX_RETRIES = 5;
 
-
-
-const getSlackBotStore = async (
-  keyValueStoreService: KeyValueStoreService,
-): Promise<SlackBotStore> => {
-  const configManagerConfig = loadConfigurationManagerConfig();
-  const encrypted = await keyValueStoreService.get<string>(configPaths.slackBot);
-
+const parseSlackBotStore = (
+  encrypted: string | null | undefined,
+  configManagerConfig: ReturnType<typeof loadConfigurationManagerConfig>,
+): SlackBotStore => {
   if (!encrypted) {
     return { configs: [] };
   }
@@ -444,20 +441,53 @@ const getSlackBotStore = async (
   }
 };
 
-const saveSlackBotStore = async (
+const getSlackBotStore = async (
   keyValueStoreService: KeyValueStoreService,
-  store: SlackBotStore,
-): Promise<void> => {
+): Promise<SlackBotStore> => {
   const configManagerConfig = loadConfigurationManagerConfig();
-  const encrypted = EncryptionService.getInstance(
-    configManagerConfig.algorithm,
-    configManagerConfig.secretKey,
-  ).encrypt(JSON.stringify(store));
-
-  await keyValueStoreService.set<string>(configPaths.slackBot, encrypted);
+  const encrypted = await keyValueStoreService.get<string>(configPaths.slackBot);
+  return parseSlackBotStore(encrypted, configManagerConfig);
 };
 
-const sanitizeSlackBotConfig = (config: SlackBotConfigEntry) => ({
+const updateSlackBotStoreWithCAS = async <T>(
+  keyValueStoreService: KeyValueStoreService,
+  updater: (store: SlackBotStore) => T,
+): Promise<T> => {
+  const configManagerConfig = loadConfigurationManagerConfig();
+
+  for (let attempt = 0; attempt < SLACK_BOT_CAS_MAX_RETRIES; attempt++) {
+    const encryptedCurrent = await keyValueStoreService.get<string>(configPaths.slackBot);
+    const store = parseSlackBotStore(encryptedCurrent, configManagerConfig);
+    const result = updater(store);
+
+    const encryptedUpdated = EncryptionService.getInstance(
+      configManagerConfig.algorithm,
+      configManagerConfig.secretKey,
+    ).encrypt(JSON.stringify(store));
+
+    const casSuccess = await keyValueStoreService.compareAndSet<string>(
+      configPaths.slackBot,
+      encryptedCurrent ?? null,
+      encryptedUpdated,
+    );
+
+    if (casSuccess) {
+      return result;
+    }
+
+    if (attempt === SLACK_BOT_CAS_MAX_RETRIES - 1) {
+      throw new Error(
+        'Failed to update Slack bot config due to concurrent modification. Please try again.',
+      );
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 50 * (attempt + 1)));
+  }
+
+  throw new Error('Failed to update Slack bot config.');
+};
+
+const slackBotConfig = (config: SlackBotConfigEntry) => ({
   id: config.id,
   name: config.name,
   agentId: config.agentId,
@@ -476,7 +506,7 @@ export const getSlackBotConfigs =
         .status(HTTP_STATUS.OK)
         .json({
           status: 'success',
-          configs: store.configs.map(sanitizeSlackBotConfig),
+          configs: store.configs.map(slackBotConfig),
         })
         .end();
     } catch (error: any) {
@@ -490,27 +520,30 @@ export const createSlackBotConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { name, botToken, signingSecret, agentId } = req.body;
-      const store = await getSlackBotStore(keyValueStoreService);
-      const timestamp = new Date().toISOString();
+      const config = await updateSlackBotStoreWithCAS(
+        keyValueStoreService,
+        (store): SlackBotConfigEntry => {
+          const timestamp = new Date().toISOString();
+          const createdConfig: SlackBotConfigEntry = {
+            id: uuidv4(),
+            name,
+            botToken,
+            signingSecret,
+            agentId,
+            createdAt: timestamp,
+            updatedAt: timestamp,
+          };
 
-      const config: SlackBotConfigEntry = {
-        id: uuidv4(),
-        name,
-        botToken,
-        signingSecret,
-        agentId,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      };
-
-      store.configs.push(config);
-      await saveSlackBotStore(keyValueStoreService, store);
+          store.configs.push(createdConfig);
+          return createdConfig;
+        },
+      );
 
       res
         .status(HTTP_STATUS.OK)
         .json({
           status: 'success',
-          config: sanitizeSlackBotConfig(config),
+          config: slackBotConfig(config),
         })
         .end();
     } catch (error: any) {
@@ -525,33 +558,38 @@ export const updateSlackBotConfig =
     try {
       const { configId } = req.params;
       const { name, botToken, signingSecret, agentId } = req.body;
-      const store = await getSlackBotStore(keyValueStoreService);
-      const configIndex = store.configs.findIndex((config) => config.id === configId);
+      const updatedConfig = await updateSlackBotStoreWithCAS(
+        keyValueStoreService,
+        (store): SlackBotConfigEntry => {
+          const configIndex = store.configs.findIndex((config) => config.id === configId);
 
-      if (configIndex === -1) {
-        throw new NotFoundError('Slack Bot configuration not found');
-      }
+          if (configIndex === -1) {
+            throw new NotFoundError('Slack Bot configuration not found');
+          }
 
-      const previousConfig = store.configs[configIndex];
-      const updatedConfig: SlackBotConfigEntry = {
-        ...previousConfig,
-        id: previousConfig?.id || uuidv4(),
-        name,
-        botToken,
-        signingSecret,
-        agentId,
-        createdAt: previousConfig?.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+          const previousConfig = store.configs[configIndex];
+          if (!previousConfig) {
+            throw new Error("Config not found");
+          }
+          const nextConfig: SlackBotConfigEntry = {
+            ...previousConfig,
+            name,
+            botToken,
+            signingSecret,
+            agentId,
+            updatedAt: new Date().toISOString(),
+          };
 
-      store.configs[configIndex] = updatedConfig;
-      await saveSlackBotStore(keyValueStoreService, store);
+          store.configs[configIndex] = nextConfig;
+          return nextConfig;
+        },
+      );
 
       res
         .status(HTTP_STATUS.OK)
         .json({
           status: 'success',
-          config: sanitizeSlackBotConfig(updatedConfig),
+          config: slackBotConfig(updatedConfig),
         })
         .end();
     } catch (error: any) {
@@ -565,15 +603,15 @@ export const deleteSlackBotConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { configId } = req.params;
-      const store = await getSlackBotStore(keyValueStoreService);
-      const configIndex = store.configs.findIndex((config) => config.id === configId);
+      await updateSlackBotStoreWithCAS(keyValueStoreService, (store) => {
+        const configIndex = store.configs.findIndex((config) => config.id === configId);
 
-      if (configIndex === -1) {
-        throw new NotFoundError('Slack Bot configuration not found');
-      }
+        if (configIndex === -1) {
+          throw new NotFoundError('Slack Bot configuration not found');
+        }
 
-      store.configs.splice(configIndex, 1);
-      await saveSlackBotStore(keyValueStoreService, store);
+        store.configs.splice(configIndex, 1);
+      });
 
       res
         .status(HTTP_STATUS.OK)

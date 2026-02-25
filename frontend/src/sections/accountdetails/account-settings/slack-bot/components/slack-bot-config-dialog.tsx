@@ -283,6 +283,14 @@ export default function SlackBotConfigDialog({
               label="Agent"
               sx={{ marginBottom: 2 }}
               onChange={(e) => handleChange('agentId', e.target.value)}
+              MenuProps={{
+                PaperProps: {
+                  sx: {
+                    maxHeight: 320,
+                    overflowY: 'auto',
+                  },
+                },
+              }}
             >
               {agents.map((agent) => (
                 <MenuItem key={agent.id} value={agent.id}>

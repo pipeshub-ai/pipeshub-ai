@@ -18525,7 +18525,6 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: success
                   configs:
                     type: array
                     items:
@@ -18533,27 +18532,20 @@ paths:
                       properties:
                         id:
                           type: string
-                          example: 3c6a0454-52e8-42ac-99f1-ec52e2fcdf17
                         name:
                           type: string
-                          example: Customer Support Bot
                         botToken:
                           type: string
-                          example: xoxb-************
                         signingSecret:
                           type: string
-                          example: ************
                         agentId:
                           type: string
-                          example: agent_123abc
                         createdAt:
                           type: string
                           format: date-time
-                          example: "2026-02-24T10:30:00.000Z"
                         updatedAt:
                           type: string
                           format: date-time
-                          example: "2026-02-24T10:45:00.000Z"
         '401':
           description: Unauthorized
         '403':
@@ -18583,16 +18575,12 @@ paths:
               properties:
                 name:
                   type: string
-                  example: Customer Support Bot
                 botToken:
                   type: string
-                  example: xoxb-1234567890-abcdefghijklmnop
                 signingSecret:
                   type: string
-                  example: 1a2b3c4d5e6f7g8h9i0j
                 agentId:
                   type: string
-                  example: agent_123abc
       responses:
         '200':
           description: Slack bot configuration created successfully
@@ -18635,16 +18623,12 @@ paths:
               properties:
                 name:
                   type: string
-                  example: Customer Support Bot
                 botToken:
                   type: string
-                  example: xoxb-1234567890-abcdefghijklmnop
                 signingSecret:
                   type: string
-                  example: 1a2b3c4d5e6f7g8h9i0j
                 agentId:
                   type: string
-                  example: agent_123abc
       responses:
         '200':
           description: Slack bot configuration updated successfully
@@ -18704,7 +18688,6 @@ paths:
                 properties:
                   status:
                     type: string
-                    example: success
                   configs:
                     type: array
                     items:
@@ -18712,32 +18695,24 @@ paths:
                       properties:
                         id:
                           type: string
-                          example: 3c6a0454-52e8-42ac-99f1-ec52e2fcdf17
                         name:
                           type: string
-                          example: Customer Support Bot
                         botToken:
                           type: string
-                          example: xoxb-************
                         signingSecret:
                           type: string
-                          example: ************
                         agentId:
                           type: string
-                          example: agent_123abc
                         createdAt:
                           type: string
                           format: date-time
-                          example: "2026-02-24T10:30:00.000Z"
                         updatedAt:
                           type: string
                           format: date-time
-                          example: "2026-02-24T10:45:00.000Z"
         '401':
           description: Unauthorized
         '403':
           description: Missing required `fetch:config` scope
-
   /configurationManager/prompts/system:
     put:
       tags:
