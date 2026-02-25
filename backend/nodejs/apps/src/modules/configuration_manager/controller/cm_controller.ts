@@ -63,7 +63,7 @@ type SlackBotConfigEntry = {
   name: string;
   botToken: string;
   signingSecret: string;
-  agentId: string;
+  agentId?: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -520,16 +520,31 @@ export const createSlackBotConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { name, botToken, signingSecret, agentId } = req.body;
+      const normalizedAgentId =
+        typeof agentId === 'string' && agentId.trim().length > 0
+          ? agentId.trim()
+          : undefined;
       const config = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
+          if (normalizedAgentId) {
+            const duplicate = store.configs.find(
+              (configItem) => configItem.agentId === normalizedAgentId,
+            );
+            if (duplicate) {
+              throw new BadRequestError(
+                'Selected agent is already linked to another Slack Bot configuration',
+              );
+            }
+          }
+
           const timestamp = new Date().toISOString();
           const createdConfig: SlackBotConfigEntry = {
             id: uuidv4(),
             name,
             botToken,
             signingSecret,
-            agentId,
+            agentId: normalizedAgentId,
             createdAt: timestamp,
             updatedAt: timestamp,
           };
@@ -558,6 +573,10 @@ export const updateSlackBotConfig =
     try {
       const { configId } = req.params;
       const { name, botToken, signingSecret, agentId } = req.body;
+      const normalizedAgentId =
+        typeof agentId === 'string' && agentId.trim().length > 0
+          ? agentId.trim()
+          : undefined;
       const updatedConfig = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
@@ -565,6 +584,18 @@ export const updateSlackBotConfig =
 
           if (configIndex === -1) {
             throw new NotFoundError('Slack Bot configuration not found');
+          }
+
+          if (normalizedAgentId) {
+            const duplicate = store.configs.find(
+              (configItem) =>
+                configItem.agentId === normalizedAgentId && configItem.id !== configId,
+            );
+            if (duplicate) {
+              throw new BadRequestError(
+                'Selected agent is already linked to another Slack Bot configuration',
+              );
+            }
           }
 
           const previousConfig = store.configs[configIndex];
@@ -576,7 +607,7 @@ export const updateSlackBotConfig =
             name,
             botToken,
             signingSecret,
-            agentId,
+            agentId: normalizedAgentId,
             updatedAt: new Date().toISOString(),
           };
 

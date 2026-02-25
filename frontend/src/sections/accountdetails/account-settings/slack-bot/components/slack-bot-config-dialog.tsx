@@ -99,8 +99,7 @@ export default function SlackBotConfigDialog({
     () =>
       form.name.trim().length > 0 &&
       form.botToken.trim().length > 0 &&
-      form.signingSecret.trim().length > 0 &&
-      form.agentId.trim().length > 0,
+      form.signingSecret.trim().length > 0,
     [form],
   );
 
@@ -119,7 +118,7 @@ export default function SlackBotConfigDialog({
       name: form.name.trim(),
       botToken: form.botToken.trim(),
       signingSecret: form.signingSecret.trim(),
-      agentId: form.agentId,
+      ...(form.agentId.trim() ? { agentId: form.agentId.trim() } : {}),
     });
   };
 
@@ -275,12 +274,12 @@ export default function SlackBotConfigDialog({
             </Stack>
           </Paper>
 
-          <FormControl fullWidth required>
-            <InputLabel id="slack-agent-select-label">Agent</InputLabel>
+          <FormControl fullWidth>
+            <InputLabel id="slack-agent-select-label">Agent (optional)</InputLabel>
             <Select
               labelId="slack-agent-select-label"
               value={form.agentId}
-              label="Agent"
+              label="Agent (optional)"
               sx={{ marginBottom: 2 }}
               onChange={(e) => handleChange('agentId', e.target.value)}
               MenuProps={{
@@ -292,6 +291,11 @@ export default function SlackBotConfigDialog({
                 },
               }}
             >
+              <MenuItem value="">
+                <Typography variant="body2" color="text.secondary">
+                  No agent selected (optional)
+                </Typography>
+              </MenuItem>
               {agents.map((agent) => (
                 <MenuItem key={agent.id} value={agent.id}>
                   <Box>
