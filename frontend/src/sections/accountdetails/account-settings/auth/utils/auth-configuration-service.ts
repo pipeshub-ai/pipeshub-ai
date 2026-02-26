@@ -24,6 +24,7 @@ export interface SamlSsoConfig {
   emailKey?: string;        
   logoutUrl?: string;       
   entityId?: string;
+  samlPlatform?: string;
   enableJit?: boolean;       
 }
 

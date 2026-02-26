@@ -31,6 +31,7 @@ import { useAdmin } from 'src/context/AdminContext';
 import { Iconify } from 'src/components/iconify';
 
 import { useAuthContext } from 'src/auth/hooks';
+import { CONFIG } from 'src/config-global';
 
 import { getSamlSsoConfig, updateSamlSsoConfig } from '../utils/auth-configuration-service';
 
@@ -38,27 +39,52 @@ import type { SamlSsoConfig } from '../utils/auth-configuration-service';
 
 const getAcsUrls = async () => {
   // Get the current window URL without hash and search parameters
-  const currentAcsUrl = `${window.location.origin}/api/v1/auth/saml/callback`;
+  let currentAcsUrl: string = '';
+  let recommendedAcsUrl = '';
 
-  // Get the frontend URL from the backend
   try {
-    const response = await axios.get(`/api/v1/configurationManager/frontendPublicUrl`);
-    const frontendBaseUrl = response.data.url;
-    // Ensure the URL ends with a slash if needed
-    const frontendUrl = frontendBaseUrl.endsWith('/')
-      ? `${frontendBaseUrl}api/v1/auth/saml/callback`
-      : `${frontendBaseUrl}/api/v1/auth/saml/callback`;
+    let baseUrl = window.location.origin;
+    const authBaseUrl = (import.meta.env.VITE_AUTH_URL as string | undefined)?.trim();
+
+
+    if (authBaseUrl) {
+      const normalizedBase = authBaseUrl.endsWith('/')
+        ? authBaseUrl.slice(0, -1)
+        : authBaseUrl;
+      baseUrl = normalizedBase;
+      currentAcsUrl = `${baseUrl}/api/v1/saml/signIn/callback`;
+      recommendedAcsUrl = currentAcsUrl;
+    } else {
+      const response = await axios.get(`/api/v1/configurationManager/frontendPublicUrl`);
+      const frontendBaseUrl = response.data.url;
+      // Ensure the URL ends with a slash if needed
+      let frontendUrl = frontendBaseUrl.trim();
+
+      // If protocol is missing, prepend https://
+      if (!/^https?:\/\//i.test(frontendUrl)) {
+        frontendUrl = `https://${frontendUrl}`;
+      }
+
+      // Ensure no trailing slash before appending
+      frontendUrl = frontendUrl.replace(/\/+$/, '');
+
+      frontendUrl = `${frontendUrl}/api/v1/saml/signIn/callback`;
+
+
+      currentAcsUrl = `${baseUrl}/api/v1/saml/signIn/callback`;
+      recommendedAcsUrl = frontendUrl;
+    }
 
     return {
       currentAcsUrl,
-      recommendedAcsUrl: frontendUrl,
-      urisMismatch: currentAcsUrl !== frontendUrl,
+      recommendedAcsUrl,
+      urisMismatch: currentAcsUrl !== recommendedAcsUrl,
     };
   } catch (error) {
     console.error('Error fetching frontend URL:', error);
     return {
       currentAcsUrl,
-      recommendedAcsUrl: currentAcsUrl,
+      recommendedAcsUrl,
       urisMismatch: false,
     };
   }
@@ -77,6 +103,7 @@ const DEFAULT_SAML_CONFIG: SamlSsoConfig = {
   certificate: '',
   emailKey: '',
   enableJit: true,
+  samlPlatform:'',
 };
 
 const SamlSsoConfigPage = () => {
@@ -212,8 +239,8 @@ const SamlSsoConfigPage = () => {
               // Using reduce to build formatted certificate rather than for loop
               const formattedCert = `-----BEGIN CERTIFICATE-----
 ${Array.from({ length: Math.ceil(certContent.length / 64) })
-  .map((_, i) => certContent.substring(i * 64, (i + 1) * 64))
-  .join('\n')}
+                  .map((_, i) => certContent.substring(i * 64, (i + 1) * 64))
+                  .join('\n')}
 -----END CERTIFICATE-----`;
 
               updatedConfig.certificate = formattedCert;
@@ -322,6 +349,7 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
         entityId: configuration.entityId,
         logoutUrl: configuration.logoutUrl,
         enableJit: configuration.enableJit,
+        samlPlatform: configuration.samlPlatform,
       };
 
       // Send to API
@@ -535,6 +563,23 @@ ${Array.from({ length: Math.ceil(certContent.length / 64) })
                 >
                   The attribute that contains the user&apos;s email address (default is nameID)
                 </Typography>
+              </Grid>
+              <Grid item xs={12}>
+                <Typography variant="subtitle2">SAML SSO Provider</Typography>
+                <TextField
+                  fullWidth
+                  name="samlPlatform"
+                  value={configuration.samlPlatform}
+                  onChange={handleChange}
+                  size="small"
+                  sx={{
+                    '& .MuiOutlinedInput-root': {
+                      '& fieldset': {
+                        borderColor: alpha(theme.palette.text.primary, 0.15),
+                      },
+                    },
+                  }}
+                />
               </Grid>
 
               <Grid item xs={12}>

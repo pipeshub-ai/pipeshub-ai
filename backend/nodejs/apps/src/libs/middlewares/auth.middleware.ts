@@ -84,6 +84,14 @@ export class AuthMiddleware {
     // search for user activities for this user
     const userId = decoded?.userId;
     const orgId = decoded?.orgId;
+    const user = await Users.findOne({
+      _id: userId,
+      isDeleted: false,
+    }).lean()
+      .exec();
+    if (!user) {
+      throw new UnauthorizedError('User not found, please login again');
+    }
 
     if (userId && orgId) {
       let userActivity: IUserActivity | null = null;
@@ -268,7 +276,7 @@ export class AuthMiddleware {
           if (userActivity) {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
-            if (activityTimestamp > tokenIssuedAt ) {
+            if (activityTimestamp > tokenIssuedAt) {
               throw new UnauthorizedError('Password reset link expired, please request for a new link');
             }
           }
