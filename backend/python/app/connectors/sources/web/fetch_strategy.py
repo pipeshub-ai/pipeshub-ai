@@ -103,12 +103,18 @@ _CURL_PROFILES: list = _get_supported_profiles()
 # Status code classification
 # ---------------------------------------------------------------------------
 
-# 403 -> bot detection, try next strategy
+# 403, 999, 520-530 -> bot detection / anti-scraping, retry then next strategy
 # 429 -> rate limited, retry with backoff on SAME strategy
 # 404, 410, 405 -> non-retryable client errors, stop entirely
-# 5xx -> server error, stop entirely
+# 5xx (except Cloudflare 520-530) -> server error, stop entirely
 
 _NON_RETRYABLE_CLIENT_ERRORS = {404, 405, 410}
+
+# Status codes that indicate bot detection / anti-scraping blocks
+# 403: Standard forbidden (Cloudflare, Akamai, etc.)
+# 999: LinkedIn's custom bot detection code
+# 520-530: Cloudflare-specific error codes (often masking bot blocks)
+_BOT_DETECTION_CODES = {403, 999, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530}
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +159,7 @@ def _sync_curl_cffi_fetch(
     timeout: int,
     use_http2: bool,
     profiles: Optional[list] = None,
+    logger: logging.Logger = None,
 ) -> Optional[FetchResponse]:
     """
     Synchronous curl_cffi fetch with profile rotation.
@@ -162,6 +169,7 @@ def _sync_curl_cffi_fetch(
         from curl_cffi import CurlOpt
         from curl_cffi.requests import Session
     except ImportError:
+        logger.error("❌ [curl_cffi] Not installed")
         return None
 
     pool = profiles or _CURL_PROFILES
@@ -211,6 +219,8 @@ async def _try_curl_cffi(
             headers,
             timeout,
             use_http2,
+            None,  # profiles parameter (5th)
+            logger,  # logger parameter (6th)
         )
         if result is None:
             logger.warning(f"⚠️ [{label}] All profiles exhausted for {url}")
@@ -224,11 +234,13 @@ def _sync_cloudscraper_fetch(
     url: str,
     headers: dict,
     timeout: int,
+    logger: logging.Logger,
 ) -> Optional[FetchResponse]:
     """Synchronous cloudscraper fetch. Meant to be called via run_in_executor."""
     try:
         import cloudscraper
     except ImportError:
+        logger.error("❌ [cloudscraper] Not installed")
         return None
 
     try:
@@ -262,9 +274,10 @@ async def _try_cloudscraper(
             url,
             headers,
             timeout,
+            logger,
         )
         if result is None:
-            logger.warning(f"⚠️ [cloudscraper] Failed or not installed for {url}")
+            logger.warning(f"⚠️ [cloudscraper] Failed for {url}")
         return result
     except Exception as e:
         logger.error(f"❌ [cloudscraper] Unexpected error for {url}: {e}", exc_info=True)
@@ -324,7 +337,7 @@ async def fetch_url_with_fallback(
     strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
         ("aiohttp", lambda: _try_aiohttp(session, url, headers, timeout, logger)),
         ("curl_cffi(H2)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=True, logger=logger)),
-        ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
+        # ("curl_cffi(H1)", lambda: _try_curl_cffi(url, headers, timeout, use_http2=False, logger=logger)),
         ("cloudscraper", lambda: _try_cloudscraper(url, headers, timeout, logger=logger)),
     ]
 
@@ -359,10 +372,10 @@ async def fetch_url_with_fallback(
                     logger.info(f"✅ Fetched {url} via {result.strategy}")
                     return result
 
-                # ---- 403: Bot detection -> retry this strategy, then next ----
-                if status == HttpStatusCode.FORBIDDEN.value:
+                # ---- Bot detection (403, 999, 520-530) -> retry this strategy,
+                if status in _BOT_DETECTION_CODES or status > HttpStatusCode.CLOUDFLARE_NETWORK_ERROR.value:
                     logger.warning(
-                        f"⚠️ [{strategy_name}] 403 Forbidden for {url} "
+                        f"⚠️ [{strategy_name}] Bot blocked (HTTP {status}) for {url} "
                         f"(attempt {attempt + 1}/{max_retries_per_strategy})"
                     )
                     break  # break 429 loop, go to next attempt
@@ -401,12 +414,15 @@ async def fetch_url_with_fallback(
                     return result
 
                 # ---- Other 4xx: Unknown client error -> stop entirely ----
-                if HttpStatusCode.BAD_REQUEST.value <= status < HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+                if (
+                    HttpStatusCode.BAD_REQUEST.value <= status < HttpStatusCode.INTERNAL_SERVER_ERROR.value
+                    and status not in _BOT_DETECTION_CODES
+                ):
                     logger.warning(f"⚠️ [{strategy_name}] HTTP {status} for {url}, skipping")
                     return result
 
                 # ---- 5xx: Server error -> stop entirely ----
-                if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+                if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value and status not in _BOT_DETECTION_CODES:
                     logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
                     return result
 
