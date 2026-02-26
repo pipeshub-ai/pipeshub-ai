@@ -259,9 +259,7 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
       {!isMobile && (
         <Tooltip
           title={
-            hasToolsets
-              ? 'Cannot share with organization: this agent has toolsets that require personal authentication'
-              : shareWithOrg
+            shareWithOrg
               ? 'Click to stop sharing this agent with the entire organization'
               : 'Share this agent with all members of your organization (not allowed when toolsets are configured)'
           }
@@ -272,18 +270,9 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
                 <Switch
                   checked={shareWithOrg}
                   onChange={(e) => {
-                    if (hasToolsets && e.target.checked) {
-                      setSnackbar({
-                        open: true,
-                        message:
-                          'Cannot share with organization: remove all toolsets first. Toolsets require personal authentication.',
-                        severity: 'warning',
-                      });
-                      return;
-                    }
                     setShareWithOrg(e.target.checked);
                   }}
-                  disabled={saving || hasToolsets}
+                  disabled={saving}
                   size="small"
                   color="primary"
                 />

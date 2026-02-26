@@ -584,16 +584,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       setSaving(true);
       setError(null);
 
-      // Guard: org-shared agents cannot have toolsets
-      if (shareWithOrg && hasToolsets) {
-        setError(
-          'Cannot share with organization: this agent has toolsets. ' +
-          'Remove all toolsets before enabling organization sharing.'
-        );
-        setSaving(false);
-        return;
-      }
-
       const currentAgent = loadedAgent || editingAgent;
       // extractAgentConfigFromFlow now returns properly typed ToolsetReference[] and KnowledgeReference[]
       const agentConfig: AgentFormData = extractAgentConfigFromFlow(
@@ -626,7 +616,6 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     loadedAgent,
     editingAgent,
     shareWithOrg,
-    hasToolsets,
     onSuccess,
     setSaving,
     setError,
