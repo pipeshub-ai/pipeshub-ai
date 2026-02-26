@@ -420,7 +420,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     metricsMiddleware(container),
     ValidationMiddleware.validate(ssoConfigSchema),
     setSsoAuthConfig(keyValueStoreService, samlController),
-    // setSsoAuthConfig(keyValueStoreService),
   );
 
   // OAuth config routes

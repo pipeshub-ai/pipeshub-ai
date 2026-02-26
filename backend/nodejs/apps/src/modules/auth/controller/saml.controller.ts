@@ -40,20 +40,7 @@ export class SamlController {
     @inject('AppConfig') private config: AppConfig,
     @inject('Logger') private logger: Logger,
   ) { }
-  // this.updateSamlStrategiesWithCallback();
 
-  // public async init(): Promise<void> {
-  //   try {
-  //     await this.updateSamlStrategiesWithCallback();
-  //     this.logger.info('SAML strategies initialized');
-  //   } catch (error) {
-  //     this.logger.warn(
-  //       'SAML initialization failed. Application will start without SAML.',
-  //     );
-  //     // this.logger.error('Failed to initialize SAML strategies', error);
-  //     // throw error; // prevent app from starting in broken state
-  //   }
-  // }
 
   async updateSamlStrategiesWithCallback(): Promise<void> {
 
@@ -108,7 +95,6 @@ export class SamlController {
 
     this.updateOrgIdToSamlEmailKey(org._id.toString(), samlEmailKey);
     this.updateSAMLStrategy(samlCertificate, samlEntryPoint);
-    console.log("Mai Chal gya tha na")
   }
 
   // update the mapping

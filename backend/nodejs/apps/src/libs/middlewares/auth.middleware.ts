@@ -85,8 +85,10 @@ export class AuthMiddleware {
     const userId = decoded?.userId;
     const orgId = decoded?.orgId;
     const user = await Users.findOne({
-      _id: userId
-    })
+      _id: userId,
+      isDeleted: false,
+    }).lean()
+      .exec();
     if (!user) {
       throw new UnauthorizedError('User not found, please login again');
     }
