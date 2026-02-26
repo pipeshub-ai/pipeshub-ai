@@ -3845,6 +3845,15 @@ components:
           type: string
           description: SAML attribute name for user email
           example: "email"
+        enableJit:
+          type: boolean
+          description: Enable Just-In-Time (JIT) user provisioning
+          default: true
+          example: true
+        samlPlatform:
+          type: string
+          description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
+          example: "Okta"
 
     GenericOAuthConfig:
       type: object
@@ -6413,24 +6422,27 @@ paths:
         - SAML
       summary: SAML authentication callback
       description: |
-        Handle the callback from SAML Identity Provider after user authentication.
-        This endpoint processes the SAML response and completes the authentication flow.
-        <br><br>
-        <b>Note:</b> This endpoint is called by the IDP, not directly by the client.
-        The IDP posts the SAML response to this URL after user authentication.
-        <br><br>
-        <b>Flow:</b><br>
-        1. IDP posts SAMLResponse and RelayState<br>
-        2. Server validates SAML assertion signature<br>
-        3. Server extracts user identity from assertion<br>
-        4. Server completes the authentication step<br>
-        5. Redirects to frontend with success/error status
-        <br><br>
-        <b>RelayState:</b> Contains the session token to resume the authentication flow.
+        Handles the callback from the SAML Identity Provider (IDP)
+        after successful user authentication.
+
+        This endpoint is invoked by the IDP and not directly by clients.
+
+        Flow:
+        1. IDP posts SAMLResponse and RelayState
+        2. Server validates the SAML assertion signature
+        3. Server extracts user identity
+        4. Server completes authentication
+        5. Redirects to frontend with authentication result
+
+        RelayState contains the session token or state used to resume
+        the authentication process.
+
       operationId: samlCallback
       security: []
+
       requestBody:
-        description: "Request payload"
+        required: true
+        description: SAML response posted by the Identity Provider
         content:
           application/x-www-form-urlencoded:
             schema:
@@ -6438,34 +6450,50 @@ paths:
               properties:
                 SAMLResponse:
                   type: string
-                  description: Base64-encoded SAML Response from IDP
+                  description: Base64-encoded SAML response from the IDP
                 RelayState:
                   type: string
                   description: State parameter containing session information
               required:
                 - SAMLResponse
+                - RelayState
+
       responses:
         '302':
           description: Redirect to frontend with authentication result
           headers:
             Location:
-              description: Frontend URL with auth result parameters
+              description: Frontend URL containing authentication result parameters
               schema:
                 type: string
+
         '400':
-          description: Invalid SAML response format
+          description: Invalid or malformed SAML response
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
         '401':
-          description: SAML assertion validation failed (invalid signature, expired, etc.)
+          description: SAML assertion validation failed
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
         '404':
           description: Session expired or user not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
+
+        '500':
+          description: Internal server error during SAML processing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthError'
 
   /saml/updateAppConfig:
     post:

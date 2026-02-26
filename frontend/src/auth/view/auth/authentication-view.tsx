@@ -263,10 +263,10 @@ export const AuthenticationView = () => {
             jitEnabledMethods: response.jitEnabledMethods,
           };
 
-          const noEmailRequired = response.allowedMethods.includes('password') ||
+          const emailRequired = response.allowedMethods.includes('password') ||
             response.allowedMethods.includes('otp');
 
-          if (!noEmailRequired) {
+          if (!emailRequired) {
             // If SAML is available, we initialize the steps immediately
             setAuthSteps([newStep]);
             setCurrentStepIndex(0);
