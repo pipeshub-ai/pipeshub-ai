@@ -7,6 +7,7 @@ import upIcon from '@iconify-icons/mdi/chevron-up';
 import accountIcon from '@iconify-icons/mdi/account';
 import keyLinkIcon from '@iconify-icons/mdi/key-link';
 import downIcon from '@iconify-icons/mdi/chevron-down';
+import codeTagsIcon from '@iconify-icons/mdi/code-tags';
 import { useLocation, useNavigate } from 'react-router';
 import shieldLockIcon from '@iconify-icons/mdi/shield-lock';
 import linkVariantIcon from '@iconify-icons/mdi/link-variant';
@@ -30,13 +31,14 @@ import { Iconify } from 'src/components/iconify';
 
 import { useAuthContext } from 'src/auth/hooks';
 
-const drawerWidth = 240;
+const drawerWidth = 280;
 
 export default function Sidebar() {
   const theme = useTheme();
   const { pathname } = useLocation();
   const navigate = useNavigate();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [developerSettingsOpen, setDeveloperSettingsOpen] = useState(false);
   const { user } = useAuthContext();
   const { isAdmin } = useAdmin();
 
@@ -46,8 +48,11 @@ export default function Sidebar() {
   // Base URL for routing depends on account type
   const baseUrl = isBusiness ? '/account/company-settings' : '/account/individual';
 
-  // Check if current path is any settings path
-  const isSettingsPath = pathname.includes(`${baseUrl}/settings/`);
+  // Check if current path is a developer settings path
+  const isDeveloperSettingsPath = pathname.includes(`${baseUrl}/settings/oauth2`);
+
+  // Check if current path is any settings path (excluding developer settings)
+  const isSettingsPath = pathname.includes(`${baseUrl}/settings/`) && !isDeveloperSettingsPath;
 
   // Set settings open by default if we're on a settings page
   useEffect(() => {
@@ -56,9 +61,21 @@ export default function Sidebar() {
     }
   }, [isSettingsPath]);
 
+  // Set developer settings open by default if we're on a developer settings page
+  useEffect(() => {
+    if (isDeveloperSettingsPath) {
+      setDeveloperSettingsOpen(true);
+    }
+  }, [isDeveloperSettingsPath]);
+
   // Toggle settings submenu
   const handleToggleSettings = () => {
     setSettingsOpen(!settingsOpen);
+  };
+
+  // Toggle developer settings submenu
+  const handleToggleDeveloperSettings = () => {
+    setDeveloperSettingsOpen(!developerSettingsOpen);
   };
 
   // Settings submenu items - common for both account types
@@ -87,12 +104,6 @@ export default function Sidebar() {
       adminOnly: false, // Available to all business users
     },
     {
-      name: 'OAuth 2.0',
-      icon: keyLinkIcon,
-      path: `${baseUrl}/settings/oauth2`,
-      adminOnly: true,
-    },
-    {
       name: 'AI Models',
       icon: robotIcon,
       path: `${baseUrl}/settings/ai-models`,
@@ -112,11 +123,25 @@ export default function Sidebar() {
     },
   ];
 
+  // Developer settings options
+  const allDeveloperSettingsOptions = [
+    {
+      name: 'OAuth 2.0 Apps',
+      icon: keyLinkIcon,
+      path: `${baseUrl}/settings/oauth2`,
+      adminOnly: true,
+    },
+  ];
+
   // Filter settings options based on admin status for business accounts
   // For individual accounts, show all options
   const settingsOptions = isBusiness
     ? allSettingsOptions.filter((option) => !option.adminOnly || isAdmin)
     : allSettingsOptions;
+
+  const developerSettingsOptions = allDeveloperSettingsOptions.filter(
+    (option) => !option.adminOnly || isAdmin
+  );
 
   return (
     <Drawer
@@ -340,6 +365,114 @@ export default function Sidebar() {
                 </Collapse>
               </>
             )}
+
+            {/* Developer Settings - visible based on admin status */}
+            {developerSettingsOptions.length > 0 && (
+              <>
+                <ListItem disablePadding>
+                  <ListItemButton
+                    onClick={handleToggleDeveloperSettings}
+                    selected={isDeveloperSettingsPath || developerSettingsOpen}
+                    sx={{
+                      py: 1,
+                      borderRadius: '0',
+                      '&.Mui-selected': {
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.15)
+                            : alpha(theme.palette.primary.main, 0.08),
+                        borderRight: `3px solid ${theme.palette.primary.main}`,
+                        '&:hover': {
+                          bgcolor:
+                            theme.palette.mode === 'dark'
+                              ? alpha(theme.palette.primary.main, 0.2)
+                              : alpha(theme.palette.primary.main, 0.12),
+                        },
+                      },
+                      '&:hover': {
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.action.hover, 0.1)
+                            : alpha(theme.palette.action.hover, 0.05),
+                      },
+                    }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                      <Iconify icon={codeTagsIcon} width={22} height={22} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="Developer Settings"
+                      sx={{ minWidth: 0, overflow: 'hidden' }}
+                      primaryTypographyProps={{
+                        fontSize: '0.9375rem',
+                        fontWeight: isDeveloperSettingsPath || developerSettingsOpen ? 600 : 400,
+                        noWrap: true,
+                      }}
+                    />
+                    <Iconify
+                      icon={developerSettingsOpen ? upIcon : downIcon}
+                      sx={{ flexShrink: 0, color: theme.palette.text.secondary }}
+                      width={18}
+                      height={18}
+                    />
+                  </ListItemButton>
+                </ListItem>
+                <Collapse in={developerSettingsOpen} timeout="auto" unmountOnExit>
+                  <List
+                    component="div"
+                    disablePadding
+                    sx={{
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.background.default, 0.3)
+                          : alpha(theme.palette.background.default, 0.5),
+                    }}
+                  >
+                    {developerSettingsOptions.map((option) => (
+                      <ListItemButton
+                        key={option.name}
+                        sx={{
+                          pl: 5,
+                          py: 0.75,
+                          '&.Mui-selected': {
+                            bgcolor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.primary.main, 0.15)
+                                : alpha(theme.palette.primary.main, 0.08),
+                            borderRight: `3px solid ${theme.palette.primary.main}`,
+                            '&:hover': {
+                              bgcolor:
+                                theme.palette.mode === 'dark'
+                                  ? alpha(theme.palette.primary.main, 0.2)
+                                  : alpha(theme.palette.primary.main, 0.12),
+                            },
+                          },
+                          '&:hover': {
+                            bgcolor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.action.hover, 0.1)
+                                : alpha(theme.palette.action.hover, 0.05),
+                          },
+                        }}
+                        onClick={() => navigate(option.path)}
+                        selected={pathname === option.path}
+                      >
+                        <ListItemIcon sx={{ minWidth: 32, color: theme.palette.text.secondary }}>
+                          <Iconify icon={option.icon} width={20} height={20} />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={option.name}
+                          primaryTypographyProps={{
+                            fontSize: '0.875rem',
+                            fontWeight: pathname === option.path ? 600 : 400,
+                          }}
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                </Collapse>
+              </>
+            )}
           </List>
           <Divider sx={{ borderColor: theme.palette.divider }} />
         </>
@@ -510,6 +643,114 @@ export default function Sidebar() {
                 ))}
               </List>
             </Collapse>
+
+            {/* Developer Settings for individual accounts */}
+            {developerSettingsOptions.length > 0 && (
+              <>
+                <ListItem disablePadding>
+                  <ListItemButton
+                    onClick={handleToggleDeveloperSettings}
+                    selected={isDeveloperSettingsPath || developerSettingsOpen}
+                    sx={{
+                      py: 1,
+                      borderRadius: '0',
+                      '&.Mui-selected': {
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.primary.main, 0.15)
+                            : alpha(theme.palette.primary.main, 0.08),
+                        borderRight: `3px solid ${theme.palette.primary.main}`,
+                        '&:hover': {
+                          bgcolor:
+                            theme.palette.mode === 'dark'
+                              ? alpha(theme.palette.primary.main, 0.2)
+                              : alpha(theme.palette.primary.main, 0.12),
+                        },
+                      },
+                      '&:hover': {
+                        bgcolor:
+                          theme.palette.mode === 'dark'
+                            ? alpha(theme.palette.action.hover, 0.1)
+                            : alpha(theme.palette.action.hover, 0.05),
+                      },
+                    }}
+                  >
+                    <ListItemIcon sx={{ minWidth: 40, color: theme.palette.text.secondary }}>
+                      <Iconify icon={codeTagsIcon} width={22} height={22} />
+                    </ListItemIcon>
+                    <ListItemText
+                      primary="Developer Settings"
+                      sx={{ minWidth: 0, overflow: 'hidden' }}
+                      primaryTypographyProps={{
+                        fontSize: '0.9375rem',
+                        fontWeight: isDeveloperSettingsPath || developerSettingsOpen ? 600 : 400,
+                        noWrap: true,
+                      }}
+                    />
+                    <Iconify
+                      icon={developerSettingsOpen ? upIcon : downIcon}
+                      sx={{ flexShrink: 0, color: theme.palette.text.secondary }}
+                      width={18}
+                      height={18}
+                    />
+                  </ListItemButton>
+                </ListItem>
+                <Collapse in={developerSettingsOpen} timeout="auto" unmountOnExit>
+                  <List
+                    component="div"
+                    disablePadding
+                    sx={{
+                      bgcolor:
+                        theme.palette.mode === 'dark'
+                          ? alpha(theme.palette.background.default, 0.3)
+                          : alpha(theme.palette.background.default, 0.5),
+                    }}
+                  >
+                    {developerSettingsOptions.map((option) => (
+                      <ListItemButton
+                        key={option.name}
+                        sx={{
+                          pl: 5,
+                          py: 0.75,
+                          '&.Mui-selected': {
+                            bgcolor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.primary.main, 0.15)
+                                : alpha(theme.palette.primary.main, 0.08),
+                            borderRight: `3px solid ${theme.palette.primary.main}`,
+                            '&:hover': {
+                              bgcolor:
+                                theme.palette.mode === 'dark'
+                                  ? alpha(theme.palette.primary.main, 0.2)
+                                  : alpha(theme.palette.primary.main, 0.12),
+                            },
+                          },
+                          '&:hover': {
+                            bgcolor:
+                              theme.palette.mode === 'dark'
+                                ? alpha(theme.palette.action.hover, 0.1)
+                                : alpha(theme.palette.action.hover, 0.05),
+                          },
+                        }}
+                        onClick={() => navigate(option.path)}
+                        selected={pathname === option.path}
+                      >
+                        <ListItemIcon sx={{ minWidth: 32, color: theme.palette.text.secondary }}>
+                          <Iconify icon={option.icon} width={20} height={20} />
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={option.name}
+                          primaryTypographyProps={{
+                            fontSize: '0.875rem',
+                            fontWeight: pathname === option.path ? 600 : 400,
+                          }}
+                        />
+                      </ListItemButton>
+                    ))}
+                  </List>
+                </Collapse>
+              </>
+            )}
           </>
         )}
       </List>
