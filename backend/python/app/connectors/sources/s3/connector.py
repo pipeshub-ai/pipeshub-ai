@@ -149,9 +149,9 @@ class S3Connector(S3CompatibleBaseConnector):
             self.logger.error("S3 access key or secret key not found in configuration.")
             return False
 
-        # Get connector scope
+        # Get connector scope and creator (support both camelCase and snake_case for compatibility)
         self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
+        self.created_by = config.get("createdBy") or config.get("created_by")
 
         scope_from_config = config.get("scope")
         if scope_from_config:
