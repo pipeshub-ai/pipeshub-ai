@@ -6441,7 +6441,7 @@ paths:
       security: []
 
       requestBody:
-        required: true
+        required: false
         description: SAML response posted by the Identity Provider
         content:
           application/x-www-form-urlencoded:
