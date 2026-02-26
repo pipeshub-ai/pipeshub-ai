@@ -25,7 +25,9 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
+from app.connectors.core.registry.auth_builder import AuthBuilder, AuthField, AuthType
 from app.connectors.core.registry.connector_builder import (
+    CommonFields,
     ConnectorBuilder,
     ConnectorScope,
     CustomField,
@@ -33,9 +35,21 @@ from app.connectors.core.registry.connector_builder import (
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
+from app.connectors.core.registry.filters import (
+    FilterCategory,
+    FilterCollection,
+    FilterField,
+    FilterOperator,
+    FilterOptionsResponse,
+    FilterType,
+    IndexingFilterKey,
+    SyncFilterKey,
+    load_connector_filters,
+)
 from app.models.entities import (
     AppUser,
     FileRecord,
+    IndexingStatus,
     Record,
     RecordGroup,
     RecordGroupType,
@@ -67,6 +81,7 @@ FILE_MIME_TYPES = {
     '.pptx': MimeTypes.PPTX,
     '.txt': MimeTypes.TEXT,
     '.csv': MimeTypes.CSV,
+    '.tsv': MimeTypes.TSV,
     '.json': MimeTypes.JSON,
     '.xml': MimeTypes.XML,
     '.zip': MimeTypes.ZIP,
@@ -75,8 +90,13 @@ FILE_MIME_TYPES = {
     '.png': MimeTypes.PNG,
     '.gif': MimeTypes.GIF,
     '.svg': MimeTypes.SVG,
+    '.webp': MimeTypes.WEBP,
+    '.heic': MimeTypes.HEIC,
+    '.heif': MimeTypes.HEIF,
     '.html': MimeTypes.HTML,
     '.htm': MimeTypes.HTML,
+    '.md': MimeTypes.MARKDOWN,
+    '.mdx': MimeTypes.MDX,
 }
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
@@ -88,6 +108,22 @@ RETRYABLE_EXCEPTIONS = (
     asyncio.TimeoutError,
 )
 
+DOCUMENT_MIME_TYPES = [
+    MimeTypes.PDF.value,
+    MimeTypes.DOC.value,
+    MimeTypes.DOCX.value,
+    MimeTypes.XLS.value,
+    MimeTypes.XLSX.value,
+    MimeTypes.PPT.value,
+    MimeTypes.PPTX.value,
+]
+
+IMAGE_MIME_TYPES = [
+    MimeTypes.PNG.value,
+    MimeTypes.JPEG.value,
+    MimeTypes.JPG.value,
+    MimeTypes.GIF.value,
+]
 
 class WebApp(App):
     def __init__(self, connector_id: str) -> None:
@@ -99,6 +135,18 @@ class WebApp(App):
     .with_description("Crawl and sync data from web pages")\
     .with_categories(["Web"])\
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])\
+    .with_auth([
+        AuthBuilder.type(AuthType.CUSTOM).fields([
+            AuthField(
+                name="url",
+                display_name="Website URL",
+                field_type="URL",
+                required=True,
+                max_length=2000,
+                description="The URL of the website to crawl (e.g., https://example.com)"
+            )
+        ])
+    ])\
     .configure(lambda builder: builder
         .with_icon("/assets/icons/connectors/web.svg")
         .with_realtime_support(False)
@@ -108,13 +156,13 @@ class WebApp(App):
             "setup"
         ))
         .with_scheduled_config(True, 1440)  # Daily sync
-        .add_sync_custom_field(CustomField(
-            name="url",
-            display_name="Website URL",
-            field_type="TEXT",
-            required=True,
-            description="The URL of the website to crawl (e.g., https://example.com)"
-        ))
+        # .add_sync_custom_field(CustomField(
+        #     name="url",
+        #     display_name="Website URL",
+        #     field_type="TEXT",
+        #     required=True,
+        #     description="The URL of the website to crawl (e.g., https://example.com)"
+        # ))
         .add_sync_custom_field(CustomField(
             name="type",
             display_name="Crawl Type",
@@ -151,6 +199,48 @@ class WebApp(App):
             required=False,
             default_value="false",
             description="Follow links to external domains"
+        ))
+        .add_filter_field(CommonFields.enable_manual_sync_filter())
+        .add_filter_field(CommonFields.file_extension_filter())
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.WEBPAGES.value,
+            display_name="Index Webpages",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of webpages",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.IMAGES.value,
+            display_name="Index Images",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of images",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.VIDEOS.value,
+            display_name="Index Videos",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of videos",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.DOCUMENTS.value,
+            display_name="Index Documents",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of documents",
+            default_value=True
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.ATTACHMENTS.value,
+            display_name="Index Attachments",
+            filter_type=FilterType.BOOLEAN,
+            category=FilterCategory.INDEXING,
+            description="Enable indexing of attachments",
+            default_value=True
         ))
         .with_sync_support(True)
         .with_agent_support(False)
@@ -198,6 +288,10 @@ class WebConnector(BaseConnector):
         # Batch processing
         self.batch_size: int = 50
 
+        # Filter collections
+        self.sync_filters: FilterCollection = FilterCollection()
+        self.indexing_filters: FilterCollection = FilterCollection()
+
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
@@ -211,11 +305,16 @@ class WebConnector(BaseConnector):
                 raise ValueError("Web connector configuration not found")
 
             sync_config = config.get("sync", {})
+            auth_config = config.get("auth", {})
+            if not auth_config:
+                self.logger.error("❌ WebPage auth config not found")
+                raise ValueError("WebPage auth config not found")
+
             if not sync_config:
                 self.logger.error("❌ WebPage sync config not found")
                 raise ValueError("WebPage sync config not found")
 
-            self.url = sync_config.get("url")
+            self.url = auth_config.get("url")
             if not self.url:
                 self.logger.error("❌ WebPage url not found")
                 raise ValueError("WebPage url not found")
@@ -386,11 +485,16 @@ class WebConnector(BaseConnector):
                 raise ValueError("Web connector configuration not found")
 
             sync_config = config.get("sync", {})
+            auth_config = config.get("auth", {})
+            if not auth_config:
+                self.logger.error("❌ WebPage auth config not found")
+                raise ValueError("WebPage auth config not found")
+
             if not sync_config:
                 self.logger.error("❌ WebPage sync config not found")
                 raise ValueError("WebPage sync config not found")
 
-            new_url = sync_config.get("url")
+            new_url = auth_config.get("url")
             if not new_url:
                 self.logger.error("❌ WebPage url not found")
                 raise ValueError("WebPage url not found")
@@ -431,6 +535,12 @@ class WebConnector(BaseConnector):
         """Main sync method to crawl and index web pages."""
         try:
             await self.reload_config()
+
+            # Load filters
+            self.sync_filters, self.indexing_filters = await load_connector_filters(
+                self.config_service, "web", self.connector_id, self.logger
+            )
+
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
             # Step 1: fetch and sync all active users
@@ -467,6 +577,10 @@ class WebConnector(BaseConnector):
             self.visited_urls.add(self._normalize_url(url))
 
             if file_record:
+                webpages_disabled = file_record.mime_type == MimeTypes.HTML.value and not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
+                if webpages_disabled:
+                    file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                 await self.data_entities_processor.on_new_records([(file_record, permissions)])
                 self.logger.info(f"✅ Indexed single page: {url}")
 
@@ -540,6 +654,13 @@ class WebConnector(BaseConnector):
                 if file_record:
                     self.visited_urls.add(normalized_url)
 
+                    webpages_disabled = file_record.mime_type == MimeTypes.HTML.value and not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
+                    documents_disabled = file_record.mime_type in DOCUMENT_MIME_TYPES and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
+                    images_disabled = file_record.mime_type in IMAGE_MIME_TYPES and not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
+                    disabled = webpages_disabled or documents_disabled or images_disabled
+                    if disabled:
+                        file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
+
                     # Extract links if we haven't reached max depth
                     if current_depth < self.max_depth and file_record.mime_type == MimeTypes.HTML.value:
                         links = await self._extract_links_from_content(
@@ -592,6 +713,12 @@ class WebConnector(BaseConnector):
 
             # Determine MIME type and file extension
             mime_type, extension = self._determine_mime_type(url, content_type)
+            if not self._pass_extension_filter(extension):
+                return None
+
+            # Generate unique ID
+            record_id = str(uuid.uuid4())
+            external_id = final_url
 
             # Generate unique ID
             record_id = str(uuid.uuid4())
@@ -769,16 +896,56 @@ class WebConnector(BaseConnector):
         """Determine MIME type and extension from URL and content-type header."""
         # First, try to get from content-type header
         if content_type:
-            if 'html' in content_type:
+            content_type_lower = content_type.lower()
+            if 'html' in content_type_lower:
                 return MimeTypes.HTML, 'html'
-            elif 'pdf' in content_type:
+            elif 'pdf' in content_type_lower:
                 return MimeTypes.PDF, 'pdf'
-            elif 'json' in content_type:
+            elif 'json' in content_type_lower:
                 return MimeTypes.JSON, 'json'
-            elif 'xml' in content_type:
+            elif 'xml' in content_type_lower:
                 return MimeTypes.XML, 'xml'
-            elif 'plain' in content_type:
+            elif 'plain' in content_type_lower:
                 return MimeTypes.TEXT, 'txt'
+            elif 'csv' in content_type_lower:
+                return MimeTypes.CSV, 'csv'
+            elif 'tab-separated' in content_type_lower or 'tsv' in content_type_lower:
+                return MimeTypes.TSV, 'tsv'
+            elif 'markdown' in content_type_lower or 'md' in content_type_lower:
+                return MimeTypes.MARKDOWN, 'md'
+            elif 'mdx' in content_type_lower:
+                return MimeTypes.MDX, 'mdx'
+            elif 'image/webp' in content_type_lower:
+                return MimeTypes.WEBP, 'webp'
+            elif 'image/heic' in content_type_lower:
+                return MimeTypes.HEIC, 'heic'
+            elif 'image/heif' in content_type_lower:
+                return MimeTypes.HEIF, 'heif'
+            elif 'image/png' in content_type_lower:
+                return MimeTypes.PNG, 'png'
+            elif 'image/jpeg' in content_type_lower or 'image/jpg' in content_type_lower:
+                return MimeTypes.JPEG, 'jpeg'
+            elif 'image/gif' in content_type_lower:
+                return MimeTypes.GIF, 'gif'
+            elif 'image/svg' in content_type_lower:
+                return MimeTypes.SVG, 'svg'
+            elif 'wordprocessingml' in content_type_lower or 'msword' in content_type_lower:
+                if 'openxml' in content_type_lower:
+                    return MimeTypes.DOCX, 'docx'
+                else:
+                    return MimeTypes.DOC, 'doc'
+            elif 'spreadsheetml' in content_type_lower or 'ms-excel' in content_type_lower:
+                if 'openxml' in content_type_lower:
+                    return MimeTypes.XLSX, 'xlsx'
+                else:
+                    return MimeTypes.XLS, 'xls'
+            elif 'presentationml' in content_type_lower or 'ms-powerpoint' in content_type_lower:
+                if 'openxml' in content_type_lower:
+                    return MimeTypes.PPTX, 'pptx'
+                else:
+                    return MimeTypes.PPT, 'ppt'
+            elif 'zip' in content_type_lower or 'compressed' in content_type_lower:
+                return MimeTypes.ZIP, 'zip'
 
         # Try to get from URL extension
         parsed_url = urlparse(url)
@@ -790,6 +957,60 @@ class WebConnector(BaseConnector):
 
         # Default to HTML
         return MimeTypes.HTML, 'html'
+
+    def _pass_extension_filter(self, extension: str) -> bool:
+        """
+        Checks if the file extension passes the configured file extensions filter.
+
+        For MULTISELECT filters:
+        - Operator IN: Only allow files with extensions in the selected list
+        - Operator NOT_IN: Allow files with extensions NOT in the selected list
+
+        Args:
+            extension: File extension (e.g., "pdf", "docx", "html") without leading dot
+
+        Returns:
+            True if the extension passes the filter (should be kept), False otherwise
+        """
+        # 1. Get the extensions filter
+        extensions_filter = self.sync_filters.get(SyncFilterKey.FILE_EXTENSIONS)
+
+        # If no filter configured or filter is empty, allow all files
+        if extensions_filter is None or extensions_filter.is_empty():
+            return True
+
+        # 2. Handle files without extensions
+        if extension is None or extension == '':
+            operator = extensions_filter.get_operator()
+            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+            # If using NOT_IN operator, files without extensions pass (not in excluded list)
+            # If using IN operator, files without extensions fail (not in allowed list)
+            return operator_str == FilterOperator.NOT_IN
+
+        # 3. Normalize extension (lowercase, without dots)
+        file_extension = extension.lower().lstrip(".")
+
+        # 4. Get the list of extensions from the filter value
+        allowed_extensions = extensions_filter.value
+        if not isinstance(allowed_extensions, list):
+            return True  # Invalid filter value, allow the file
+
+        # 5. Normalize extensions (lowercase, without dots)
+        normalized_extensions = [ext.lower().lstrip(".") for ext in allowed_extensions]
+
+        # 6. Apply the filter based on operator
+        operator = extensions_filter.get_operator()
+        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
+
+        if operator_str == FilterOperator.IN:
+            # Only allow files with extensions in the list
+            return file_extension in normalized_extensions
+        elif operator_str == FilterOperator.NOT_IN:
+            # Allow files with extensions NOT in the list
+            return file_extension not in normalized_extensions
+
+        # Unknown operator, default to allowing the file
+        return True
 
     def _extract_title(self, soup: BeautifulSoup, url: str) -> str:
         """Extract page title from BeautifulSoup object."""
@@ -1018,6 +1239,16 @@ class WebConnector(BaseConnector):
         """Remove script, style, noscript, and iframe tags from the soup."""
         for tag in soup(["script", "style", "noscript", "iframe"]):
             tag.decompose()
+
+    def _remove_image_tags(self, soup: BeautifulSoup) -> None:
+        """Remove all image and SVG tags from the soup."""
+        # Remove all img tags
+        for img in soup.find_all('img'):
+            img.decompose()
+
+        # Remove all svg tags
+        for svg in soup.find_all('svg'):
+            svg.decompose()
 
     def _convert_svg_tag_to_png(self, soup: BeautifulSoup, svg) -> bool:
         """
@@ -1312,11 +1543,18 @@ class WebConnector(BaseConnector):
             # Remove unwanted tags
             self._remove_unwanted_tags(soup)
 
-            # Convert SVG tags to PNG img tags
-            self._process_svg_tags(soup)
+            # Check if image indexing is enabled
+            images_enabled = self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
 
-            # Process all images: download and convert to base64
-            await self._process_all_images(soup, record.weburl, headers)
+            if images_enabled:
+                # Convert SVG tags to PNG img tags
+                self._process_svg_tags(soup)
+
+                # Process all images: download and convert to base64
+                await self._process_all_images(soup, record.weburl, headers)
+            else:
+                # Remove all image and SVG tags when image indexing is disabled
+                self._remove_image_tags(soup)
 
             # Serialize and clean data URIs
             cleaned_html = str(soup)

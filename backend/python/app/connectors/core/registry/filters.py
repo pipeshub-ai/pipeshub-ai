@@ -271,6 +271,9 @@ class IndexingFilterKey(str, Enum):
     ISSUES = "issues"
     TICKETS = "tickets"
     GROUP_CONVERSATIONS = "group_conversations"
+    WEBPAGES = "webpages"
+    IMAGES = "images"
+    VIDEOS = "videos"
 
     # Child content types (generic)
     COMMENTS = "comments"
