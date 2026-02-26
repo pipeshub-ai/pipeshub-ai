@@ -59,23 +59,15 @@ function normalizeBotEntry(entry: unknown): SlackBotConfig | null {
     return null;
   }
 
-  const botId = getStringField(record.botId) || getStringField(record.bot_id);
-  const botUserId =
-    getStringField(record.botUserId) || getStringField(record.bot_user_id);
-  const teamId = getStringField(record.teamId) || getStringField(record.team_id);
+  const botId = getStringField(record.id) ;
   const agentId =
     getStringField(record.agentId) ||
-    getStringField(record.agent_id) ||
-    getStringField(record.agentKey) ||
-    getStringField(record.agent_key) ||
     null;
 
   return {
     botToken,
     signingSecret,
     botId,
-    botUserId,
-    teamId,
     agentId,
   };
 }
@@ -101,24 +93,6 @@ const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
 
 
 async function fetchAvailableSlackBots(): Promise<SlackBotConfig[]> {
-
-  // return [
-  //   {
-  //     botToken: process.env.AGENT1_BOT_TOKEN || "",
-  //     signingSecret: process.env.AGENT1_SLACK_SIGNING_SECRET || "",
-  //     agentId: "2213a0ea-31dd-4db9-93d3-6a46ed3fcd9a", //linear agent
-  //   },
-  //   {
-  //     botToken: process.env.AGENT2_BOT_TOKEN || "",
-  //     signingSecret: process.env.AGENT2_SLACK_SIGNING_SECRET || "",
-  //     agentId: "8537137f-5dd6-4d8c-b87b-0250fe15b504",
-  //   },
-  //   {
-  //     botToken: process.env.BOT_TOKEN || "",
-  //     signingSecret: process.env.SLACK_SIGNING_SECRET || "",
-  //     agentId: process.env.SLACK_DEFAULT_AGENT_ID || "",
-  //   }
-  // ];
   
   const configService = ConfigService.getInstance();
   const staticToken = slackJwtGenerator("", await configService.getScopedJwtSecret(),[TokenScopes.FETCH_CONFIG]);

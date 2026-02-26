@@ -232,12 +232,7 @@ export const streamChat =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -1225,12 +1220,7 @@ export const addMessageStream =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -4664,12 +4654,7 @@ export const unshareAgent =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -5553,12 +5538,7 @@ export const addMessageStreamToAgentConversation =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 

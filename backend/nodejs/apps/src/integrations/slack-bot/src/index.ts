@@ -119,15 +119,31 @@ interface SlackMessagePayload {
   channel?: string;
 }
 
+interface SlackConversationsRepliesResponse {
+  messages?: SlackMessagePayload[];
+  response_metadata?: {
+    next_cursor?: string;
+  };
+}
+
+interface SlackUserProfile {
+  email?: string;
+  display_name?: string;
+  real_name?: string;
+}
+
+interface SlackUserRecord {
+  id?: string;
+  name?: string;
+  real_name?: string;
+  profile?: SlackUserProfile;
+}
+
 interface TypedSlackClient {
   botUserId?: string;
   users: {
     info: (params: { user: string }) => Promise<{
-      user?: {
-        profile?: {
-          email?: string;
-        };
-      };
+      user?: SlackUserRecord;
     }>;
   };
   chat: {
@@ -383,6 +399,193 @@ function splitByLength(text: string, limit: number): string[] {
   return chunks;
 }
 
+function parseSlackTimestamp(ts?: string): number | null {
+  if (!ts) {
+    return null;
+  }
+
+  const parsed = Number(ts);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sanitizeSlackThreadMessageText(text?: string): string {
+  if (!text) {
+    return "";
+  }
+
+  return text.replace(SLACK_MENTION_REGEX, "").replace(/\s+/g, " ").trim();
+}
+
+function isThreadFollowUpMessage(message: SlackMessagePayload): boolean {
+  return Boolean(message.thread_ts && message.thread_ts !== message.ts);
+}
+
+function sanitizeSlackLabelValue(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: string): string {
+  const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
+  const displayNameCandidates = [
+    userRecord?.profile?.display_name,
+    userRecord?.real_name,
+    userRecord?.profile?.real_name,
+    userRecord?.name,
+  ];
+  const displayName =
+    displayNameCandidates
+      .map((nameCandidate) => sanitizeSlackLabelValue(nameCandidate))
+      .find((nameCandidate) => Boolean(nameCandidate)) || "";
+
+  if (displayName && email) {
+    return `${displayName} (${email})`;
+  }
+  if (displayName) {
+    return displayName;
+  }
+  if (email) {
+    return email;
+  }
+  return `User (${userId})`;
+}
+
+function inferThreadMessageSpeaker(
+  message: SlackMessagePayload,
+  userLabelsById: Map<string, string>,
+): string {
+  if (message.bot_id || message.subtype === "bot_message") {
+    return "Assistant";
+  }
+  if (message.user) {
+    return userLabelsById.get(message.user) || `User (${message.user})`;
+  }
+  return "User";
+}
+
+async function resolveThreadUserLabels(
+  typedClient: TypedSlackClient,
+  priorMessages: SlackMessagePayload[],
+): Promise<Map<string, string>> {
+  const userLabelsById = new Map<string, string>();
+  const userIds = Array.from(
+    new Set(
+      priorMessages
+        .filter((message) => !message.bot_id && Boolean(message.user))
+        .map((message) => message.user as string),
+    ),
+  );
+
+  for (const userId of userIds) {
+    try {
+      const userInfoResult = await typedClient.users.info({ user: userId });
+      const userLabel = formatSlackUserLabel(userInfoResult.user, userId);
+      userLabelsById.set(userId, userLabel);
+    } catch (error) {
+      console.error(`Failed to resolve Slack user info for ${userId}:`, error);
+      userLabelsById.set(userId, `User (${userId})`);
+    }
+  }
+
+  return userLabelsById;
+}
+
+async function fetchPriorThreadMessages(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+): Promise<SlackMessagePayload[]> {
+  if (!typedMessage.channel || !typedMessage.thread_ts) {
+    return [];
+  }
+
+  const allThreadMessages: SlackMessagePayload[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const apiOptions: Record<string, unknown> = {
+      channel: typedMessage.channel,
+      ts: typedMessage.thread_ts,
+      limit: 200,
+    };
+    if (cursor) {
+      apiOptions.cursor = cursor;
+    }
+
+    const rawResponse = await typedClient.apiCall("conversations.replies", apiOptions);
+    const response = rawResponse as SlackConversationsRepliesResponse;
+    if (Array.isArray(response.messages)) {
+      allThreadMessages.push(...response.messages);
+    }
+
+    const nextCursor = response.response_metadata?.next_cursor?.trim();
+    cursor = nextCursor || undefined;
+  } while (cursor);
+
+  const currentMessageTs = parseSlackTimestamp(typedMessage.ts);
+
+  return allThreadMessages.filter((threadMessage) => {
+    const normalizedText = sanitizeSlackThreadMessageText(threadMessage.text);
+    if (!normalizedText) {
+      return false;
+    }
+
+    if (threadMessage.ts === typedMessage.ts) {
+      return false;
+    }
+
+    if (currentMessageTs === null) {
+      return true;
+    }
+
+    const threadMessageTs = parseSlackTimestamp(threadMessage.ts);
+    return threadMessageTs !== null && threadMessageTs < currentMessageTs;
+  });
+}
+
+function buildThreadContextualQuery(
+  query: string,
+  priorMessages: SlackMessagePayload[],
+  userLabelsById: Map<string, string>,
+): string {
+  const contextLines = priorMessages
+    .map((message) => {
+      const normalizedText = sanitizeSlackThreadMessageText(message.text);
+      if (!normalizedText) {
+        return null;
+      }
+      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      return `${speaker}: ${normalizedText}`;
+    })
+    .filter((line): line is string => Boolean(line));
+
+  if (contextLines.length === 0) {
+    return query;
+  }
+
+  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message: ${query}`;
+}
+
+async function buildQueryWithThreadContext(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  query: string,
+): Promise<string> {
+  if (!isThreadFollowUpMessage(typedMessage)) {
+    return query;
+  }
+
+  try {
+    const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
+    const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
+    return buildThreadContextualQuery(query, priorMessages, userLabelsById);
+  } catch (error) {
+    console.error("Failed to fetch Slack thread context:", error);
+    return query;
+  }
+}
+
 function getCitationWebUrl(webUrl?: string): string {
   if (!webUrl) {
     return "";
@@ -552,9 +755,15 @@ async function processSlackMessage(
   const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
+  console.log("currentAgentId", currentAgentId);
+  const currentBotId = resolvedSlackBot?.botId;
+  if (!currentBotId) {
+    throw new Error("Unable to resolve Slack bot id for conversation persistence.");
+  }
+
   const conversation = await getFromDatabase(
     threadId,
-    email,
+    currentBotId,
   );
   let streamTs: string | null = null;
   let streamStopped = false;
@@ -659,7 +868,7 @@ async function processSlackMessage(
     let queuedStreamAppend: Promise<void> = Promise.resolve();
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
-      if (!text) {
+      if (!text || !text.trim()) {
         return;
       }
 
@@ -668,16 +877,25 @@ async function processSlackMessage(
         return;
       }
 
-      let chunksToAppend = markdownChunks;
+      const processedChunks = markdownChunks
+        .map(chunk => toMrkdwn(chunk))
+        .filter(chunk => chunk.length > 0);
+      if (processedChunks.length === 0) {
+        return;
+      }
+
+      let chunksToAppend = processedChunks;
       if (!streamTs) {
-        const [firstChunk, ...restChunks] = markdownChunks;
-        const processedFirstChunk = toMrkdwn(firstChunk || "");
+        const [firstChunk, ...restChunks] = processedChunks;
+        if (!firstChunk) {
+          return;
+        }
         const startStreamResult = (await typedClient.apiCall(
           "chat.startStream",
           {
             channel: typedMessage.channel!,
             thread_ts: threadId,
-            markdown_text: processedFirstChunk,
+            markdown_text: firstChunk,
             ...streamRecipientPayload,
           },
         )) as StreamStartResult;
@@ -702,11 +920,10 @@ async function processSlackMessage(
       }
 
       for (const appendChunk of chunksToAppend) {
-        const processedChunk = toMrkdwn(appendChunk);
         await typedClient.apiCall("chat.appendStream", {
           channel: typedMessage.channel!,
           ts: streamTs,
-          markdown_text: processedChunk,
+          markdown_text: appendChunk,
         });
       }
     };
@@ -738,7 +955,7 @@ async function processSlackMessage(
         for (const evt of events) {
           if (evt.event === "answer_chunk" || evt.event === "chunk") {
             const nextChunk = extractStreamChunk(evt.data);
-            if (!nextChunk) {
+            if (!nextChunk || !nextChunk.trim()) {
               continue;
             }
 
@@ -802,7 +1019,7 @@ async function processSlackMessage(
       await saveToDatabase({
         threadId: threadId,
         conversationId,
-        email,
+        botId: currentBotId
       });
     }
 
@@ -920,7 +1137,6 @@ app.event("app_mention", async ({ event, client, context }) => {
   const typedMessage = event as unknown as SlackMessagePayload;
   const typedClient = client as unknown as TypedSlackClient;
   const typedContext = context as TypedSlackContext;
-
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
@@ -931,12 +1147,17 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   try {
+    const contextualQuery = await buildQueryWithThreadContext(
+      typedClient,
+      typedMessage,
+      query,
+    );
     const resolvedSlackBot = await resolveSlackBotForEvent();
     await processSlackMessage(
       typedMessage,
       typedClient,
       typedContext,
-      query,
+      contextualQuery,
       resolvedSlackBot,
     );
   } catch (error) {
