@@ -12,9 +12,7 @@ import {
 import { IamService } from '../services/iam.service';
 import {
   BadRequestError,
-  InternalServerError,
   NotFoundError,
-  UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import { SessionService } from '../services/session.service';
 import { SamlController } from '../controller/saml.controller';
@@ -26,17 +24,15 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { UserAccountController } from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
-import { ConfigurationManagerService } from '../services/cm.service';
+import { ConfigurationManagerService, SSO_AUTH_CONFIG_PATH } from '../services/cm.service';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
-import { UserActivities } from '../schema/userActivities.schema';
-import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
+import { OrgAuthConfig } from '../schema/orgAuthConfiguration.schema';
+import { Org } from '../../user_management/schema/org.schema';
 
-const isValidEmail = (email: string) => {
+export const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
 };
-const {
-  LOGIN
-} = userActivitiesType;
+
 
 export function createSamlRouter(container: Container) {
   const router = Router();
@@ -47,6 +43,8 @@ export function createSamlRouter(container: Container) {
   const iamService = container.get<IamService>('IamService');
   const samlController = container.get<SamlController>('SamlController');
   const jitProvisioningService = container.get<JitProvisioningService>('JitProvisioningService');
+  const configurationManagerService = container.get<ConfigurationManagerService>('ConfigurationManagerService');
+
   const logger = container.get<Logger>('Logger');
   router.use(attachContainerMiddleware(container));
   router.use(
@@ -76,208 +74,88 @@ export function createSamlRouter(container: Container) {
     },
   );
 
+
+
+
+  // Helper: Parse RelayState from Base64
+
+
   router.post(
     "/signIn/callback",
     passport.authenticate("saml", { failureRedirect: "/" }),
-    async (
-      req: AuthSessionRequest,
-      res: Response,
-      next: NextFunction
-    ): Promise<void> => {
-      let session: any;
-      let samlUser: Record<string, any>;
-      let user: any = null;
-      let userDetails: any;
-
+    async (req: AuthSessionRequest, res: Response, next: NextFunction): Promise<void> => {
       try {
-        /* ---------------- RelayState ---------------- */
-        if (!req.user) {
-          throw new NotFoundError("User not available in SAML response");
-        }
-        const relayStateBase64 =
-          (req.body?.RelayState as string) ||
-          (req.query?.RelayState as string);
+        const samlProfile = req.user;
+        if (!samlProfile) throw new NotFoundError("SAML profile missing");
 
-        const relayState: {
-          orgId?: string;
-          sessionToken?: string;
-        } = relayStateBase64
-            ? JSON.parse(
-              Buffer.from(relayStateBase64, "base64").toString("utf8")
-            )
-            : {};
-
-        const { orgId, sessionToken } = relayState;
-
-        if (!sessionToken) {
-          throw new UnauthorizedError("Invalid session token");
+        if (!samlProfile.orgId) {
+          const defaultOrg = await Org.findOne({ isDeleted: false }).lean().exec();
+          samlProfile.orgId = defaultOrg?._id?.toString();
         }
 
-        /* ---------------- Session ---------------- */
+        const relayState = samlController.parseRelayState(req);
+        const orgId = relayState.orgId || samlProfile.orgId;
 
-        session = await sessionService.getSession(sessionToken);
+        const verifiedEmail = samlController.getSamlEmail(samlProfile, orgId);
+        if (!verifiedEmail) throw new BadRequestError("Invalid email in SAML attributes");
 
+        samlProfile.email = verifiedEmail;
 
-
+        let sessionToken = relayState.sessionToken;
+        let session = sessionToken ? await sessionService.getSession(sessionToken) : null;
+        let user: any = null; // Defined here to be accessible at the end
+        const cm = await configurationManagerService.getConfig(config.cmBackend, SSO_AUTH_CONFIG_PATH, samlProfile, config.scopedJwtSecret);
+        const userDetails = jitProvisioningService.extractSamlUserDetails(samlProfile, verifiedEmail);
 
         if (!session) {
-          throw new UnauthorizedError("Invalid session");
-        }
+          const iamToken = iamJwtGenerator(verifiedEmail, config.scopedJwtSecret);
+          const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
 
-        req.sessionInfo = session;
+          if (iamResponse.data.message === "Account not found") {
+            if (!cm.data?.enableJit) return res.redirect(`${config.frontendUrl}/auth/sign-in?error=jit_Disabled`);
 
-        const method = "samlSso";
-
-        const currentStepConfig =
-          session.authConfig[session.currentStep];
-
-        if (
-          !currentStepConfig.allowedMethods.find(
-            (m: { type: string }) => m.type === method
-          )
-        ) {
-          throw new BadRequestError(
-            "Invalid authentication method for this step"
-          );
-        }
-
-        /* ---------------- SAML Email ---------------- */
-
-        samlUser = req.user as Record<string, any>;
-
-        if (!orgId) {
-          throw new BadRequestError(
-            "Organization ID not found in session"
-          );
-        }
-
-        const emailKey =
-          samlController.getSamlEmailKeyByOrgId(orgId);
-
-
-        samlUser.email = samlUser[emailKey];
-
-
-        const fallbackKeys: string[] = [
-          "email",
-          "mail",
-          "userPrincipalName",
-          "nameID",
-          "primaryEmail",
-          "contactEmail",
-          "preferred_username",
-          "mailPrimaryAddress",
-        ];
-
-        if (!isValidEmail(samlUser.email)) {
-          for (const k of fallbackKeys) {
-            if (samlUser[k] && isValidEmail(samlUser[k])) {
-              samlUser.email = samlUser[k];
-              break;
-            }
+            user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
+          } else {
+            user = iamResponse.data;
           }
+
+          const orgAuthConfig = await OrgAuthConfig.findOne({ orgId, isDeleted: false });
+          session = await sessionService.createSession({
+            userId: user._id,
+            email: user.email,
+            orgId,
+            authConfig: orgAuthConfig?.authSteps || [],
+            currentStep: 0,
+          });
+        } else {
+
+          const iamToken = iamJwtGenerator(verifiedEmail, config.scopedJwtSecret);
+          const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
+          user = iamResponse.data;
+
         }
 
-        if (session?.email !== samlUser?.email) {
-          res.redirect(
-            `${config.frontendUrl}/auth/sign-in?error=incorrect_email`
-          );
-
-        }
-
-        if (!samlUser.email) {
-          throw new InternalServerError(
-            "Valid email not found in SAML response"
-          );
-        }
-
-        /* ================= JIT ================= */
-
-        if (session.userId === "NOT_FOUND") {
+        if (session?.userId === "NOT_FOUND" && user?.message === "Account not found") {
           const jitConfig = session.jitConfig as
             | Record<string, boolean>
             | undefined;
 
-          const methodKey = method;
 
-          if (!jitConfig || !jitConfig[methodKey]) {
-            if (!session.orgId) {
-              throw new BadRequestError(
-                "Organization not found for JIT provisioning"
-              );
+          if (!jitConfig) {
+            if (session.userId === "NOT_FOUND") {
+
+              return res.redirect(`${config.frontendUrl}/auth/sign-in?error=jit_Disabled`);
             }
           }
-
-          userDetails =
-            jitProvisioningService.extractSamlUserDetails(
-              samlUser,
-              samlUser.email
-            );
-
-          user = await jitProvisioningService.provisionUser(
-            samlUser.email,
-            userDetails,
-            session.orgId,
-            "saml"
-          );
-
-          await UserActivities.create({
-            email: samlUser.email,
-            activityType: LOGIN,
-            ipAddress: req.ip,
-            loginMode: "SSO",
-          });
+          user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
         }
 
-        /* ============ Existing User ============ */
+        if (!user) throw new NotFoundError("User not found");
 
-        if (!user) {
-          const authToken = iamJwtGenerator(
-            samlUser.email,
-            config.scopedJwtSecret
-          );
-
-          const result =
-            await iamService.getUserByEmail(
-              samlUser.email,
-              authToken
-            );
-
-          if (!result) {
-            throw new NotFoundError("User not found");
-          }
-
-          user = result.data;
-        }
-
-        /* -------------- Finalize -------------- */
-
-        if (!session) {
-          throw new UnauthorizedError("Session not found");
-        }
-
-        await sessionService.completeAuthentication(
-          session
-        );
-
-        const accessToken = await generateAuthToken(
-          user,
-          config.jwtSecret
-        );
-
-        const refreshToken = refreshTokenJwtGenerator(
-          user._id,
-          session.orgId,
-          config.scopedJwtSecret
-        );
-
-        if (!user.hasLoggedIn && user._id) {
-          await iamService.updateUser(
-            user._id,
-            { hasLoggedIn: true },
-            accessToken
-          );
-        }
+        await sessionService.completeAuthentication(session);
+        // Now 'user' is guaranteed to be available here
+        const accessToken = await generateAuthToken(user, config.jwtSecret);
+        const refreshToken = refreshTokenJwtGenerator(user._id, session.orgId, config.scopedJwtSecret);
 
         res.cookie("accessToken", accessToken, {
           secure: true,
@@ -291,9 +169,8 @@ export function createSamlRouter(container: Container) {
           maxAge: 7 * 24 * 60 * 60 * 1000,
         });
 
-        res.redirect(
-          `${config.frontendUrl}/auth/sign-in/samlSso/success`
-        );
+
+        res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
       } catch (error) {
         next(error);
       }
@@ -332,14 +209,8 @@ export function createSamlRouter(container: Container) {
           .rebind<SamlController>('SamlController')
           .toDynamicValue(() => {
             return new SamlController(
-              container.get<IamService>('IamService'),
               config,
               logger,
-              container.get<ConfigurationManagerService>(
-                'ConfigurationManagerService'),
-              container.get<SessionService>('SessionService'),
-
-
             );
           });
         res.status(200).json({

@@ -29,9 +29,9 @@ const otpGenerationValidationSchema = z.object({
 const initAuthBody = z.object({
   email: z
     .string()
-    .min(1, 'Email is required')
+    // .min(1, 'Email is required')
     .max(254, 'Email address is too long') // RFC 5321 limit
-    .email('Invalid email format'),
+    .email('Invalid email format').optional(),
 });
 
 const initAuthValidationSchema = z.object({
