@@ -229,20 +229,6 @@ async def recover_in_progress_records(app_container: IndexingAppContainer, graph
         # Don't raise - we want to continue starting the service even if recovery fails
         logger.warning("⚠️ Continuing to start Kafka consumers despite recovery errors")
 
-async def _reconnect_graph_provider_in_worker_loop(app_container, consumer, logger):
-    """Reconnect the graph provider's Neo4j client in the worker thread's event loop.
-
-    The Neo4j async driver binds its internal connections to the event loop where
-    it was initialized. Since the graph provider is created in the main loop but
-    message processing runs in the worker thread's loop, we reconnect here so the
-    driver binds to the worker loop and avoids cross-loop Future errors.
-    """
-
-
-
-
-
-
 
 
 
