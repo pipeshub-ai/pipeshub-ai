@@ -805,6 +805,7 @@ class SharePointConnector(BaseConnector):
             # Get all sites using search
             # Pagination: fetch all sites using nextLink (same pattern as groups/users)
             total_found = 0
+            existing_site_ids = {s.id for s in sites}
             try:
                 async with self.rate_limiter:
                     search_results = await self._safe_api_call(
@@ -834,8 +835,9 @@ class SharePointConnector(BaseConnector):
 
                         self.logger.debug(f"Site found: '{site.display_name or site.name}' - ID: '{site.id}'")
                         # Avoid duplicates
-                        if not any(existing_site.id == site.id for existing_site in sites):
+                        if site.id not in existing_site_ids:
                             sites.append(site)
+                            existing_site_ids.add(site.id)
                             self.site_cache[site.id] = SiteMetadata(
                                 site_id=site.id,
                                 site_url=site.web_url,
@@ -4533,13 +4535,9 @@ class SharePointConnector(BaseConnector):
                             continue
 
                         # === FILTERING LOGIC ===
-                        # 1. Allow if summary contains 'DocumentLibrary',
-                        #    OR if summary is empty but name/display_name/web_url deuten auf Dokumentbibliothek hin
-                        is_document_library = False
-                        if 'DocumentLibrary' in summary:
-                            is_document_library = True
-                        elif not summary:
-                            is_document_library = True
+                        # 1. Must be a document library: summary contains 'DocumentLibrary',
+                        #    or summary is empty (treat as document library by default)
+                        is_document_library = 'DocumentLibrary' in summary or not summary
                         if not is_document_library:
                             continue
                         # 2. Skip SharePoint Lists (URL contains /Lists/)
