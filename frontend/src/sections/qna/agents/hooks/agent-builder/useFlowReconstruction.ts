@@ -197,7 +197,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           const isKnowledgeBase = isKB || hasKBIds;
           
           if (isKnowledgeBase) {
-            const kbName = knowledgeItem.name || knowledgeItem.displayName || 'Knowledge Base';
+            const kbName = knowledgeItem.name || knowledgeItem.displayName || 'Collection';
             const kbDisplayName = knowledgeItem.displayName || knowledgeItem.name || kbName;
             const kbId = kbIdsInRecordGroups[0] || recordGroups[0] || knowledgeItem._key || '';
             
@@ -216,8 +216,8 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
               data: {
                 id: nodeId,
                 type: `kb-${finalKbId}`,
-                label: `KB: ${truncateText(finalKbName, 18)}`,
-                description: 'Knowledge base for contextual information retrieval',
+                label: `${truncateText(finalKbName, 18)}`,
+                description: 'Collection for contextual information retrieval',
                 icon: collectionIcon,
                 config: {
                   kbId: finalKbId,

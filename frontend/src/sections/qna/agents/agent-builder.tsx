@@ -143,6 +143,11 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   // Create initial flow when resources are loaded
   useEffect(() => {
     if (!loading && availableModels.length > 0 && nodes.length === 0) {
+      // Extract agent config values early, before control flow narrowing
+      const systemPrompt: string = (loadedAgent?.systemPrompt ?? editingAgent?.systemPrompt) || 'You are a helpful assistant.';
+      const instructions: string = loadedAgent?.instructions ?? editingAgent?.instructions ?? '';
+      const startMessage: string = (loadedAgent?.startMessage ?? editingAgent?.startMessage) || 'Hello! I am ready to assist you. How can I help you today?';
+      
       const agentToUse = loadedAgent || editingAgent;
 
       // If editing an existing agent, load its flow configuration
@@ -227,18 +232,9 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
             description: 'Central orchestrator receiving inputs and producing responses',
             icon: sparklesIcon,
             config: {
-              systemPrompt:
-                (loadedAgent as any)?.systemPrompt ||
-                (editingAgent as any)?.systemPrompt ||
-                'You are a helpful assistant.',
-              instructions:
-                (loadedAgent as any)?.instructions ??
-                (editingAgent as any)?.instructions ??
-                '',
-              startMessage:
-                (loadedAgent as any)?.startMessage ||
-                (editingAgent as any)?.startMessage ||
-                'Hello! I am ready to assist you. How can I help you today?',
+              systemPrompt,
+              instructions,
+              startMessage,
               routing: 'auto',
               allowMultipleLLMs: true,
             },

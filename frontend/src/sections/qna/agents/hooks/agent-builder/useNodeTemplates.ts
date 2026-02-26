@@ -226,7 +226,7 @@ export const useAgentBuilderNodeTemplates = (
       // Individual Knowledge Base Nodes (for granular control)
       ...availableKnowledgeBases.map((kb) => ({
         type: `kb-${kb.id}`,
-        label: `KB: ${truncateText(kb.name, 20)}`,
+        label: `${truncateText(kb.name, 20)}`,
         description: truncateText(`Collection for information retrieval`, 40),
         icon: collectionIcon,
         defaultConfig: {

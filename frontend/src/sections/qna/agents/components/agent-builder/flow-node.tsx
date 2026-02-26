@@ -827,9 +827,9 @@ const FlowNode: React.FC<FlowNodeProps> = ({ id: reactFlowId, data, selected, on
                             }}
                           >
                             {knowledgeNode.type.startsWith('kb-')
-                              ? 'Knowledge Base'
+                              ? 'Collections'
                               : knowledgeNode.type.startsWith('knowledge-hub')
-                                ? 'Knowledge Hub'
+                                ? 'Collections Hub'
                                 : 'Knowledge'}
                           </Typography>
                         </Box>

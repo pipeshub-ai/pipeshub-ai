@@ -342,7 +342,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
       .map((kb) => ({
         id: kb.id, // Use KB ID for API
         name: kb.name,
-        description: `Knowledge Base: ${kb.name}`,
+        description: `Collection  : ${kb.name}`,
       }));
   }, [availableKBs, agent?.knowledge]);
 
@@ -1074,7 +1074,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
                 <>
                   <TextField
                     fullWidth
-                    placeholder="Search knowledge bases..."
+                    placeholder="Search collections..."
                     value={kbSearchTerm}
                     onChange={(e) => setKbSearchTerm(e.target.value)}
                     size="small"
@@ -1147,7 +1147,7 @@ const AgentChatInput: React.FC<ChatInputProps> = ({
               ) : (
                 <Box sx={{ textAlign: 'center', py: 3 }}>
                   <Typography variant="body2" color="text.secondary">
-                    No knowledge bases configured for this agent
+                    No collections configured for this agent
                   </Typography>
                 </Box>
               )}
