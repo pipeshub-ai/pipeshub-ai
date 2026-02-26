@@ -68,7 +68,7 @@ EDGE_DEFINITIONS = [
     },
     {
         "edge_collection": CollectionNames.USER_APP_RELATION.value,
-        "from_vertex_collections": [CollectionNames.USERS.value],
+        "from_vertex_collections": [CollectionNames.USERS.value, CollectionNames.TEAMS.value],
         "to_vertex_collections": [CollectionNames.APPS.value],
     },
     {

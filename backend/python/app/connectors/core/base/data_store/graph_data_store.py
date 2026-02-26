@@ -348,6 +348,13 @@ class GraphTransactionStore(TransactionStore):
         """
         return await self.graph_provider.batch_upsert_app_users(users, transaction=self.txn)
 
+    async def ensure_team_app_edge(self, connector_id: str, org_id: str) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent. Used by TEAM-scope connectors.
+        """
+        return await self.graph_provider.ensure_team_app_edge(connector_id, org_id, transaction=self.txn)
+
     async def batch_upsert_orgs(self, orgs: List[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
 

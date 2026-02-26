@@ -3470,15 +3470,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
 
     async def get_user_apps(self, user_key: str) -> List[Dict]:
-        """Get all apps (connectors) associated with a user by user document key (_key)."""
+        """Get all apps (connectors) associated with a user: direct User->App and via User->Team->App."""
         try:
+            user_from = f"{CollectionNames.USERS.value}/{user_key}"
             query = f"""
-            FOR app IN OUTBOUND CONCAT('{CollectionNames.USERS.value}/', @user_key) {CollectionNames.USER_APP_RELATION.value}
-                RETURN app
+            LET user_apps = (
+                FOR app IN OUTBOUND @user_from {CollectionNames.USER_APP_RELATION.value}
+                    RETURN app
+            )
+            LET team_apps = (
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == @user_from
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR app IN OUTBOUND perm._to {CollectionNames.USER_APP_RELATION.value}
+                        RETURN app
+            )
+            LET combined = APPEND(user_apps, team_apps)
+            FOR app IN combined
+                COLLECT key = app._key INTO grouped KEEP app
+                RETURN grouped[0].app
             """
             results = await self.execute_query(
                 query,
-                bind_vars={"user_key": user_key},
+                bind_vars={"user_from": user_from},
             )
             return list(results) if results else []
         except Exception as e:
@@ -4726,6 +4741,48 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+            raise
+
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates teams/all_{org_id} -> apps/{connector_id} if not present.
+        """
+        try:
+            team_key = f"all_{org_id}"
+            existing = await self.get_edge(
+                from_id=team_key,
+                from_collection=CollectionNames.TEAMS.value,
+                to_id=connector_id,
+                to_collection=CollectionNames.APPS.value,
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=transaction
+            )
+            if existing:
+                return
+            ts = get_epoch_timestamp_in_ms()
+            edge = {
+                "_from": f"{CollectionNames.TEAMS.value}/{team_key}",
+                "_to": f"{CollectionNames.APPS.value}/{connector_id}",
+                "sourceUserId": team_key,
+                "syncState": "NOT_STARTED",
+                "lastSyncUpdate": ts,
+                "createdAtTimestamp": ts,
+                "updatedAtTimestamp": ts,
+            }
+            await self.batch_create_edges(
+                [edge],
+                collection=CollectionNames.USER_APP_RELATION.value,
+                transaction=transaction
+            )
+            self.logger.debug(f"Created team->app edge: teams/{team_key} -> apps/{connector_id}")
+        except Exception as e:
+            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
     async def batch_upsert_user_groups(
@@ -13217,14 +13274,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
         user_key: str,
         transaction: Optional[str] = None
     ) -> List[str]:
-        """Get list of app IDs the user has access to."""
-        query = """
-        FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
-            FILTER app != null
-            RETURN app._key
-        """
-        result = await self.http_client.execute_aql(query, bind_vars={"user_key": user_key}, txn_id=transaction)
-        return result if result else []
+        """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
+        try:
+            apps = await self.get_user_apps(user_key)
+            return [a.get("_key") or a.get("id") for a in apps if a and (a.get("_key") or a.get("id"))]
+        except Exception as e:
+            self.logger.error("❌ Failed to get user app ids: %s", str(e))
+            return []
 
     async def get_knowledge_hub_context_permissions(
         self,
@@ -13798,11 +13854,26 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN { id: kb._key, name: kb.groupName }
         )
 
-        // Get connector apps the user has access to
-        // Apps don't have orgId field - they're scoped via user relationship
-        LET apps = (
-            FOR app IN OUTBOUND CONCAT("users/", @user_key) userAppRelation
+        // Get connector apps the user has access to: direct User->App and User->Team->App
+        LET user_apps_raw = (
+            FOR app IN OUTBOUND user_from userAppRelation
                 FILTER app != null
+                RETURN app
+        )
+        LET team_apps_raw = (
+            FOR perm IN permission
+                FILTER perm._from == user_from
+                FILTER perm.type == "USER"
+                FILTER STARTS_WITH(perm._to, "teams/")
+                FOR app IN OUTBOUND perm._to userAppRelation
+                    FILTER app != null
+                    RETURN app
+        )
+        LET combined_apps = APPEND(user_apps_raw, team_apps_raw)
+        LET apps = (
+            FOR app IN combined_apps
+                COLLECT key = app._key INTO grouped KEEP app
+                LET app = grouped[0].app
                 RETURN { id: app._key, name: app.name, type: app.type }
         )
 
@@ -15595,6 +15666,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN rel
             )
 
+            // Check if user has path User->Team->App (user in team, team has userAppRelation to app)
+            LET team_app_rel = FIRST(
+                FOR perm IN {CollectionNames.PERMISSION.value}
+                    FILTER perm._from == {user_var}._id
+                    FILTER perm.type == "USER"
+                    FILTER STARTS_WITH(perm._to, "{CollectionNames.TEAMS.value}/")
+                    FOR rel IN userAppRelation
+                        FILTER rel._from == perm._to AND rel._to == {node_var}._id
+                        LIMIT 1
+                        RETURN rel
+            )
+
             // Check if user is admin
             LET is_admin = ({user_var}.role == "ADMIN" OR {user_var}.orgRole == "ADMIN")
 
@@ -15605,8 +15688,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
             // Determine role based on conditions
             RETURN CASE
-                // If no USER_APP_RELATION, no access
-                WHEN user_app_rel == null THEN null
+                // No direct user->app and no team->app: no access
+                WHEN user_app_rel == null AND team_app_rel == null THEN null
+                // Access via team (All)->app: READER; admin gets EDITOR for team apps
+                WHEN user_app_rel == null AND team_app_rel != null THEN (is_admin == true ? "EDITOR" : "READER")
                 // Admin users: Team apps get EDITOR, Personal apps get OWNER
                 WHEN is_admin == true AND app_scope == "team" THEN "EDITOR"
                 WHEN is_admin == true AND app_scope == "personal" THEN "OWNER"

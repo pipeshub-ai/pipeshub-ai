@@ -174,6 +174,9 @@ class WebConnector(BaseConnector):
         # Batch processing
         self.batch_size: int = 50
 
+        self.connector_scope: Optional[str] = None
+        self.created_by: Optional[str] = None
+
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
@@ -201,6 +204,9 @@ class WebConnector(BaseConnector):
             self.max_pages = int(sync_config.get("max_pages") or 1000)
             self.follow_external = sync_config.get("follow_external", False)
 
+            scope_from_config = config.get("scope")
+            self.connector_scope = scope_from_config if scope_from_config else ConnectorScope.PERSONAL.value
+            self.created_by = config.get("createdBy") or config.get("created_by")
 
             # Parse base domain
             parsed_url = urlparse(self.url)
@@ -310,16 +316,25 @@ class WebConnector(BaseConnector):
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Create READ permissions for all app_users
-            permissions = [
-                Permission(
-                    email=app_user.email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                )
-                for app_user in app_users
-                if app_user.email
-            ]
+            # Create READ permissions: TEAM scope uses org; PERSONAL uses app_users
+            if not app_users and getattr(self, "connector_scope", None) == ConnectorScope.TEAM.value:
+                permissions = [
+                    Permission(
+                        type=PermissionType.READ,
+                        entity_type=EntityType.ORG,
+                        external_id=self.data_entities_processor.org_id,
+                    )
+                ]
+            else:
+                permissions = [
+                    Permission(
+                        email=app_user.email,
+                        type=PermissionType.READ,
+                        entity_type=EntityType.USER,
+                    )
+                    for app_user in app_users
+                    if app_user.email
+                ]
 
             # Create/update record group with permissions
             await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
@@ -344,6 +359,13 @@ class WebConnector(BaseConnector):
             if not config:
                 self.logger.error("❌ WebPage config not found")
                 raise ValueError("Web connector configuration not found")
+
+            scope_from_config = config.get("scope")
+            if scope_from_config:
+                self.connector_scope = scope_from_config
+            else:
+                self.connector_scope = ConnectorScope.PERSONAL.value
+            self.created_by = config.get("createdBy") or config.get("created_by")
 
             sync_config = config.get("sync", {})
             if not sync_config:
@@ -393,11 +415,31 @@ class WebConnector(BaseConnector):
             await self.reload_config()
             self.logger.info(f"🚀 Starting web crawl: {self.url}")
 
-            # Step 1: fetch and sync all active users
-            self.logger.info("Syncing users...")
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.connector_scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                app_users = []
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                        app_users = []
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
+                    app_users = []
 
             # Step 2: create record group with permissions
             await self.create_record_group(app_users)

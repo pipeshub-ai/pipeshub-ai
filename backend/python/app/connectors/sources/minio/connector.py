@@ -223,9 +223,9 @@ class MinIOConnector(S3CompatibleBaseConnector):
         # Keep data_entities_processor in sync with updated console URL
         self.data_entities_processor.base_console_url = self.base_console_url
 
-        # Get connector scope
+        # Get connector scope and creator (support both camelCase and snake_case for compatibility)
         self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
+        self.created_by = config.get("createdBy") or config.get("created_by")
 
         scope_from_config = config.get("scope")
         if scope_from_config:

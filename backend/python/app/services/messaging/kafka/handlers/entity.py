@@ -136,6 +136,9 @@ class EntityEventService(BaseEventService):
             # Automatically create Knowledge Base connector instance for the new org
             await self.__create_kb_connector_app_instance(payload['orgId'], payload.get('userId'))
 
+            # Create "All" team for the org (first user will be added with OWNER in userAdded)
+            await self.__create_all_team_for_org(payload['orgId'], payload.get('userId'))
+
             return True
 
         except Exception as e:
@@ -268,6 +271,9 @@ class EntityEventService(BaseEventService):
 
             # Create user-app relation edge for KB app
             await self.__create_user_kb_app_relation(user_key, payload["orgId"])
+
+            # Get or create "All" team for org and add user with PERMISSION edge
+            await self.__get_or_create_all_team_and_add_user(payload["orgId"], user_key)
 
             # Only proceed with app connections if syncAction is 'immediate'
             if payload["syncAction"] == "immediate":
@@ -478,6 +484,111 @@ class EntityEventService(BaseEventService):
         if email:
             return f"{email}'s Private"
         return "Private"
+
+    async def __create_all_team_for_org(self, org_id: str, created_by_user_id: Optional[str] = None) -> None:
+        """
+        Create the "All" team when an org is created. Called from __handle_org_created.
+        created_by_user_id is the external userId (e.g. MongoDB id); graph user key is set when first user is added.
+        """
+        try:
+            current_timestamp = get_epoch_timestamp_in_ms()
+            team_key = f"all_{org_id}"
+            created_by = created_by_user_id if created_by_user_id else "system"
+            team_node = {
+                "id": team_key,
+                "name": "All",
+                "description": "All organization members",
+                "createdBy": created_by,
+                "orgId": org_id,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+            await self.graph_provider.batch_upsert_nodes(
+                [team_node], CollectionNames.TEAMS.value
+            )
+            self.logger.info(f"Created 'All' team for org {org_id}")
+        except Exception as e:
+            self.logger.error(f"Failed to create 'All' team for org {org_id}: {str(e)}", exc_info=True)
+
+    async def __get_or_create_all_team_and_add_user(self, org_id: str, user_key: str) -> None:
+        """
+        Add the user to the org's "All" team with a PERMISSION edge.
+        Team is created in __handle_org_created; if missing (e.g. legacy org), create it here.
+        First user gets OWNER; subsequent users get READER. Skips if user already in team.
+        """
+        try:
+            current_timestamp = get_epoch_timestamp_in_ms()
+            existing = await self.graph_provider.get_nodes_by_filters(
+                collection=CollectionNames.TEAMS.value,
+                filters={"orgId": org_id, "name": "All"},
+            )
+            if not existing:
+                team_key = f"all_{org_id}"
+                team_node = {
+                    "id": team_key,
+                    "name": "All",
+                    "description": "All organization members",
+                    "createdBy": user_key,
+                    "orgId": org_id,
+                    "createdAtTimestamp": current_timestamp,
+                    "updatedAtTimestamp": current_timestamp,
+                }
+                await self.graph_provider.batch_upsert_nodes(
+                    [team_node], CollectionNames.TEAMS.value
+                )
+                self.logger.info(f"Created 'All' team for org {org_id} (fallback, team was missing)")
+            else:
+                team_key = existing[0].get("_key") or existing[0].get("id")
+
+            existing_edge = await self.graph_provider.get_edge(
+                from_id=user_key,
+                from_collection=CollectionNames.USERS.value,
+                to_id=team_key,
+                to_collection=CollectionNames.TEAMS.value,
+                collection=CollectionNames.PERMISSION.value,
+            )
+            if existing_edge:
+                self.logger.debug(
+                    f"User {user_key} already in 'All' team for org {org_id}, skipping"
+                )
+                return
+
+            team_with_users = await self.graph_provider.get_team_with_users(
+                team_id=team_key, user_key=user_key
+            )
+            members = (team_with_users or {}).get("members", [])
+            role = "OWNER" if len(members) == 0 else "READER"
+
+            if role == "OWNER" and existing:
+                try:
+                    await self.graph_provider.update_node(
+                        team_key,
+                        CollectionNames.TEAMS.value,
+                        {"createdBy": user_key, "updatedAtTimestamp": current_timestamp},
+                    )
+                except Exception:
+                    pass
+
+            permission_edge = {
+                "from_id": user_key,
+                "from_collection": CollectionNames.USERS.value,
+                "to_id": team_key,
+                "to_collection": CollectionNames.TEAMS.value,
+                "type": "USER",
+                "role": role,
+                "createdAtTimestamp": current_timestamp,
+                "updatedAtTimestamp": current_timestamp,
+            }
+            await self.graph_provider.batch_create_edges(
+                [permission_edge], CollectionNames.PERMISSION.value
+            )
+            self.logger.info(
+                f"Added user {user_key} to 'All' team for org {org_id} with role {role}"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to add user to 'All' team: {str(e)}", exc_info=True
+            )
 
     async def __get_or_create_knowledge_base(
         self,

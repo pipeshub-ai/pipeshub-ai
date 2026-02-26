@@ -2271,6 +2271,20 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates teams/all_{org_id} -> apps/{connector_id} if not present.
+        Used by TEAM-scope connectors so all org members get app access via the team.
+        """
+        pass
+
+    @abstractmethod
     async def batch_upsert_user_groups(
         self,
         user_groups: List,
