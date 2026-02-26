@@ -1083,7 +1083,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           />
         </MenuItem>
         <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
-        <MenuItem
+        {/* <MenuItem
           onClick={() => {
             if (activeAgent) handleOpenPermissions(activeAgent);
             handleMenuClose();
@@ -1110,7 +1110,7 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
             }}
           />
         </MenuItem>
-        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
+        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} /> */}
         <MenuItem
           onClick={() => {
             if (activeAgent) setDeleteDialog({ open: true, agent: activeAgent });
