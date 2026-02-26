@@ -34,9 +34,16 @@ class IndexingPipeline:
                 )
                 if old_metadata_dict:
                     old_metadata = ReconciliationMetadata.from_dict(old_metadata_dict)
-                    blocks_to_index_ids, block_ids_to_delete = reconciliation_service.compute_diff(
+                    blocks_to_index_ids, block_ids_to_delete, unchanged_id_map = reconciliation_service.compute_diff(
                         old_metadata, new_metadata
                     )
+
+                    if unchanged_id_map:
+                        reconciliation_service.apply_preserved_ids(
+                            block_containers, unchanged_id_map
+                        )
+                        new_metadata = reconciliation_service.build_metadata(block_containers)
+
                     self.logger.info(
                         f"📊 Reconciliation (1:1): {len(blocks_to_index_ids)} to index, "
                         f"{len(block_ids_to_delete)} to delete"

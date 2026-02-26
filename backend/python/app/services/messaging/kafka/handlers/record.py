@@ -123,7 +123,7 @@ class RecordEventHandler(BaseEventService):
             if not record_id:
                 self.logger.error(f"Missing record_id in message {payload}")
                 return
-
+            asyncio.get_event_loop
             record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )

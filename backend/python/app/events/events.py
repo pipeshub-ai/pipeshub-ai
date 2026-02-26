@@ -62,7 +62,7 @@ class EventProcessor:
 
 
     def _normalize_content_for_dedup(self, content: bytes, record_type: str) -> bytes:
-        if record_type not in {"SQL_TABLE", "SQL_VIEW", "WEBPAGE", "DATASOURCE", "TICKET", "PROJECT"}:
+        if record_type not in {"SQL_TABLE", "SQL_VIEW", "WEBPAGE", "DATASOURCE", "TICKET", "PROJECT", "COMMENT", "INLINE_COMMENT", "CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST"}:
             return content
         try:
             parsed = json.loads(content)
