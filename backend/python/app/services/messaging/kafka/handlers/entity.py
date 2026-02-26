@@ -566,8 +566,8 @@ class EntityEventService(BaseEventService):
                         CollectionNames.TEAMS.value,
                         {"createdBy": user_key, "updatedAtTimestamp": current_timestamp},
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.logger.warning(f"Failed to update createdBy for team {team_key}: {e}")
 
             permission_edge = {
                 "from_id": user_key,
