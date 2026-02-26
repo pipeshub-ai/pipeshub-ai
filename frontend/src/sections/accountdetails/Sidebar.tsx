@@ -14,6 +14,7 @@ import linkVariantIcon from '@iconify-icons/mdi/link-variant';
 import messageTextIcon from '@iconify-icons/mdi/message-text';
 import accountGroupIcon from '@iconify-icons/mdi/account-group';
 import officeBuildingIcon from '@iconify-icons/mdi/office-building';
+import slackIcon from '@iconify-icons/logos/slack-icon';
 
 import List from '@mui/material/List';
 import Drawer from '@mui/material/Drawer';
@@ -111,7 +112,7 @@ export default function Sidebar() {
     },
      {
       name: 'Slack Bot',
-      icon: accountServiceIcon,
+      icon: slackIcon,
       path: `${baseUrl}/settings/slack-bot`,
       adminOnly: true,
     },
