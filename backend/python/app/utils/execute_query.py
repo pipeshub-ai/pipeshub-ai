@@ -5,7 +5,6 @@ like PostgreSQL and Snowflake. The tool takes a SQL query and source name,
 determines the appropriate client to use, executes the query, and returns
 results as markdown.
 """
-
 from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
@@ -21,6 +20,7 @@ if TYPE_CHECKING:
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = create_logger("execute_query")
+
 
 
 class ExecuteQueryArgs(BaseModel):
@@ -49,17 +49,24 @@ def _detect_source_type(source_name: str) -> str:
     else:
         return "unknown"
 
+import re
+def _is_keyword_present(keyword: str, query: str) -> bool:
+    """Check if a keyword exists as a standalone word/phrase, not as part of another word."""
+    pattern = r'\b' + re.escape(keyword) + r'\b'
+    return bool(re.search(pattern, query))
+
+
 def _is_query_safe(query: str) -> tuple[bool, str]:
     """Validate that query is read-only across all SQL dialects.
-    
+
     Returns:
         (is_safe, error_message) tuple
     """
     query_upper = query.upper().strip()
-    
+
     # Remove comments and extra whitespace
     query_clean = ' '.join(query_upper.split())
-    
+
     # Dangerous keywords that should never appear (cross-dialect)
     dangerous_keywords = [
         # DML write operations
@@ -67,7 +74,7 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         # DDL operations
         'DROP', 'CREATE', 'ALTER', 'TRUNCATE', 'RENAME',
         # DCL operations
-        'GRANT', 'REVOKE', 
+        'GRANT', 'REVOKE',
         # Procedure/function execution
         'EXEC', 'EXECUTE', 'CALL', 'DO',
         # File operations (MySQL, PostgreSQL)
@@ -93,64 +100,47 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         # Security bypass attempts
         'PRAGMA', 'SET SQL_LOG_BIN', 'SET GLOBAL',
     ]
-    
+
     for keyword in dangerous_keywords:
-        if keyword in query_clean:
+        if _is_keyword_present(keyword, query_clean):
             return False, f"Blocked: Query contains prohibited keyword '{keyword}'"
-    
+
     # Check for semicolon followed by dangerous statements (stacked queries)
     if ';' in query_clean:
-        # Split by semicolon and check each statement
         statements = query_clean.split(';')
         for stmt in statements:
             stmt = stmt.strip()
             if not stmt:
                 continue
-            # Each statement must start with allowed keyword
             if not any(stmt.startswith(start) for start in [
                 'SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'WITH'
             ]):
                 return False, "Blocked: Multi-statement queries must all be read-only"
-    
+
     # Ensure query starts with allowed read-only operations
     allowed_starts = [
         # Standard SQL
-        'SELECT',      # Standard queries
-        'SHOW',        # Show tables, databases, etc.
-        'DESCRIBE',    # Describe table structure
-        'DESC',        # Short form of DESCRIBE
-        'EXPLAIN',     # Query execution plan
-        'WITH',        # CTEs (Common Table Expressions)
-        
+        'SELECT', 'SHOW', 'DESCRIBE', 'DESC', 'EXPLAIN', 'WITH',
         # PostgreSQL specific
-        'TABLE',       # TABLE table_name (equivalent to SELECT *)
-        
+        'TABLE',
         # MySQL specific
-        'CHECK',       # CHECK TABLE (diagnostic)
-        
+        'CHECK',
         # Snowflake specific
-        'LIST',        # List stages
-        
+        'LIST',
         # SQL Server specific
-        'DBCC',        # Database Console Commands (some are read-only)
-        
+        'DBCC',
         # Oracle specific
-        'DUMP',        # DUMP (memory inspection, read-only)
-        
+        'DUMP',
         # BigQuery specific
-        'DECLARE',     # Variable declaration (for scripting)
-        'SET',         # Variable assignment in scripts
-        
+        'DECLARE', 'SET',
         # Multiple dialects
-        'USE',         # Switch database/schema context (read-only)
-        'VALUES',      # VALUES clause (can be used standalone for SELECT)
+        'USE', 'VALUES',
     ]
-    
+
     if not any(query_clean.startswith(start) for start in allowed_starts):
         return False, f"Blocked: Query must start with read-only operation. Got: {query_clean.split()[0] if query_clean else 'empty'}"
-    
+
     # Additional check: Detect write operations even inside CTEs or subqueries
-    # Look for patterns like "INSERT INTO", "UPDATE SET", "DELETE FROM"
     dangerous_patterns = [
         'INSERT INTO',
         'INSERT OVERWRITE',  # Hive/Spark
@@ -161,21 +151,21 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         'MERGE INTO',
         'REPLACE INTO',
     ]
-    
+
     for pattern in dangerous_patterns:
-        if pattern in query_clean:
+        if _is_keyword_present(pattern, query_clean):
             return False, f"Blocked: Query contains write operation pattern '{pattern}'"
-    
+
     # Detect xp_ stored procedures (SQL Server - can be dangerous)
-    if 'XP_' in query_clean:
+    if _is_keyword_present('XP_', query_clean):
         return False, "Blocked: SQL Server extended stored procedures (xp_) are not allowed"
-    
+
     # Detect eval/execute dynamic SQL attempts
     dynamic_sql_patterns = ['EXEC(', 'EXECUTE(', 'SP_EXECUTESQL', 'EXEC @', 'EXECUTE @']
     for pattern in dynamic_sql_patterns:
         if pattern in query_clean:
-            return False, f"Blocked: Dynamic SQL execution is not allowed"
-    
+            return False, "Blocked: Dynamic SQL execution is not allowed"
+
     return True, ""
 
 def _source_type_to_connector_type(source_type: str) -> Optional[str]:

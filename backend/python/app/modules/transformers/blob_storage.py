@@ -1215,7 +1215,7 @@ class BlobStorage(Transformer):
             org_id: Organization ID
 
         Returns:
-            dict | None: Metadata dict (hash_to_block_id, block_id_to_index with block_id -> index int) if found, None otherwise
+            dict | None: Metadata dict (hash_to_block_ids, block_id_to_index with block_id -> index int) if found, None otherwise
         """
         try:
             self.logger.info("🔍 Retrieving reconciliation metadata for virtual_record_id: %s", virtual_record_id)

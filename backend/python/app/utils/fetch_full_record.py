@@ -157,14 +157,45 @@ async def _fetch_record_by_id(
         return None
     
     try:
-        # Resolve record_id to virtual_record_id
+        # Resolve record_id to virtual_record_id (may already be a vrid from context)
         record_id_to_vrid = await graph_provider.get_virtual_record_ids_for_record_ids([record_id])
         vrid = record_id_to_vrid.get(record_id)
-        
+
         if not vrid:
-            logger.debug("Could not resolve record_id %s to virtual_record_id", record_id)
+            # LLM often passes virtual_record_id; try treating record_id as vrid
+            if record_id in virtual_record_id_to_result:
+                existing = virtual_record_id_to_result[record_id]
+                if existing:
+                    return existing
+            record_by_vrid = await blob_store.get_record_from_storage(virtual_record_id=record_id, org_id=org_id)
+            if record_by_vrid:
+                vrid = record_id
+                record = record_by_vrid
+                try:
+                    graph_record = await graph_provider.get_record_by_id(record.get("id") or record.get("record_id"))
+                    if graph_record:
+                        meta = (
+                            graph_record.model_dump()
+                            if hasattr(graph_record, "model_dump")
+                            else graph_record
+                        )
+                        if isinstance(meta, dict):
+                            record["id"] = meta.get("id") or meta.get("_key") or record.get("id")
+                            record["org_id"] = org_id
+                            record["record_name"] = meta.get("record_name") or meta.get("recordName")
+                            record["record_type"] = meta.get("record_type") or meta.get("recordType")
+                            record["version"] = meta.get("version")
+                            record["origin"] = meta.get("origin")
+                            record["connector_name"] = meta.get("connector_name") or meta.get("connectorName")
+                            record["weburl"] = meta.get("weburl") or meta.get("webUrl")
+                except Exception as e:
+                    logger.warning("Could not fetch graph metadata for record %s: %s", record_id, str(e))
+                record["virtual_record_id"] = vrid
+                virtual_record_id_to_result[vrid] = record
+                return record
+            logger.debug("Could not resolve record_id %s to virtual_record_id or fetch by vrid", record_id)
             return None
-        
+
         # Check if already in map by vrid
         if vrid in virtual_record_id_to_result:
             existing_record = virtual_record_id_to_result[vrid]
