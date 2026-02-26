@@ -259,18 +259,34 @@ class WebConnector(BaseConnector):
             return False
 
     async def test_connection_and_access(self) -> bool:
-        """Test if the website is accessible."""
+        """Test if the website is accessible using the multi-strategy fallback."""
         if not self.url or not self.session:
             return False
 
         try:
-            async with self.session.head(self.url, allow_redirects=True) as response:
-                if response.status < HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.info(f"✅ Website accessible: {self.url} (status: {response.status})")
-                    return True
-                else:
-                    self.logger.warning(f"⚠️ Website returned status {response.status}: {self.url}")
-                    return False
+            result = await fetch_url_with_fallback(
+                url=self.url,
+                session=self.session,
+                logger=self.logger,
+                max_retries_per_strategy=1,  # keep it fast for a connection test
+            )
+
+            if result is None:
+                self.logger.warning(f"⚠️ Website not accessible: {self.url}")
+                return False
+
+            if result.status_code < HttpStatusCode.BAD_REQUEST.value:
+                self.logger.info(
+                    f"✅ Website accessible: {self.url} "
+                    f"(status: {result.status_code}, via {result.strategy})"
+                )
+                return True
+            else:
+                self.logger.warning(
+                    f"⚠️ Website returned status {result.status_code}: {self.url}"
+                )
+                return False
+
         except Exception as e:
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
@@ -499,9 +515,14 @@ class WebConnector(BaseConnector):
 
             try:
                 # Fetch and process the page with referer
-                file_record, permissions = await self._fetch_and_process_url(
+                file_record_with_permissions = await self._fetch_and_process_url(
                     current_url, current_depth, referer=referer
                 )
+
+                if file_record_with_permissions is None:
+                    continue
+
+                file_record, permissions = file_record_with_permissions
 
                 if file_record:
                     self.visited_urls.add(normalized_url)
@@ -590,6 +611,14 @@ class WebConnector(BaseConnector):
 
             # Calculate MD5 hash once
             content_md5_hash = hashlib.md5(content_bytes).hexdigest()
+
+            # Ensure title is never empty (schema requirement)
+            if not title or not title.strip():
+                title = self._extract_title_from_url(final_url)
+                # Final fallback: use URL if title extraction still fails
+                if not title or not title.strip():
+                    parsed = urlparse(final_url)
+                    title = parsed.netloc or final_url
 
             # Create FileRecord
             file_record = FileRecord(
@@ -753,17 +782,23 @@ class WebConnector(BaseConnector):
         """Extract page title from BeautifulSoup object."""
         # Try <title> tag
         if soup.title and soup.title.string:
-            return soup.title.string.strip()
+            title = soup.title.string.strip()
+            if title:
+                return title
 
         # Try <h1> tag
         h1 = soup.find('h1')
         if h1:
-            return h1.get_text(strip=True)
+            title = h1.get_text(strip=True)
+            if title:
+                return title
 
         # Try og:title meta tag
         og_title = soup.find('meta', property='og:title')
         if og_title and og_title.get('content'):
-            return og_title['content'].strip()
+            title = og_title['content'].strip()
+            if title:
+                return title
 
         # Fallback to URL
         return self._extract_title_from_url(url)

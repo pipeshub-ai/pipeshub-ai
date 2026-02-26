@@ -284,6 +284,7 @@ async def fetch_url_with_fallback(
     extra_headers: Optional[dict] = None,
     timeout: int = REQUEST_TIMEOUT,
     max_429_retries: int = MAX_429_RETRIES,
+    max_retries_per_strategy: int = 2,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -294,21 +295,25 @@ async def fetch_url_with_fallback(
       3. curl_cffi H1   — bypasses HTTP/2 fingerprint detection
       4. cloudscraper    — JS challenge solver
 
+    Each strategy is attempted up to max_retries_per_strategy times before
+    moving to the next. Within each attempt, 429s are retried with backoff.
+
     Status code handling:
       - 200-399 : success, return immediately
-      - 403     : bot blocked, try next strategy
-      - 429     : rate limited, retry same strategy with incremental backoff
+      - 403     : bot blocked, retry same strategy, then move to next
+      - 429     : rate limited, retry same attempt with incremental backoff
       - 404/410/405 : non-retryable, stop and return
       - 5xx     : server error, stop and return
 
     Args:
-        url:              Target URL.
-        session:          aiohttp session for strategy 1.
-        logger:           Logger instance.
-        referer:          Referer header (auto-generated if None).
-        extra_headers:    Additional headers to merge in.
-        timeout:          Per-request timeout in seconds.
-        max_429_retries:  Max retries on 429 per strategy.
+        url:                       Target URL.
+        session:                   aiohttp session for strategy 1.
+        logger:                    Logger instance.
+        referer:                   Referer header (auto-generated if None).
+        extra_headers:             Additional headers to merge in.
+        timeout:                   Per-request timeout in seconds.
+        max_429_retries:           Max retries on 429 per attempt.
+        max_retries_per_strategy:  Max attempts per strategy before moving to next (default 2).
 
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
@@ -326,67 +331,86 @@ async def fetch_url_with_fallback(
     for strategy_name, strategy_fn in strategies:
         logger.debug(f"🔄 [{strategy_name}] Attempting {url}")
 
-        # -- 429 retry loop for this strategy --
-        for retry_429 in range(max_429_retries + 1):
-            result = await strategy_fn()
-
-            # Strategy returned nothing (import missing, all profiles exhausted, connection error)
-            if result is None:
-                logger.debug(f"🔄 [{strategy_name}] No result, moving to next strategy")
-                break
-
-            status = result.status_code
-
-            # ---- SUCCESS ----
-            if status < HttpStatusCode.BAD_REQUEST.value:
-                logger.info(f"✅ Fetched {url} via {result.strategy}")
-                return result
-
-            # ---- 403: Bot detection -> try next strategy ----
-            if status == HttpStatusCode.FORBIDDEN.value:
-                logger.warning(f"⚠️ [{strategy_name}] 403 Forbidden for {url}, trying next strategy")
-                break
-
-            # ---- 429: Rate limited -> retry with backoff on SAME strategy ----
-            if status == HttpStatusCode.TOO_MANY_REQUESTS.value:
-                if retry_429 >= max_429_retries:
-                    logger.warning(
-                        f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} retries for {url}, "
-                        f"trying next strategy"
-                    )
-                    break
-
-                # Check Retry-After header first
-                retry_after = result.headers.get("Retry-After") or result.headers.get("retry-after")
-                if retry_after:
-                    try:
-                        delay = int(retry_after)
-                    except ValueError:
-                        delay = 2 ** (retry_429 + 1)
-                else:
-                    delay = 2 ** (retry_429 + 1)  # 2s, 4s, 8s
-
-                logger.warning(
-                    f"⚠️ [{strategy_name}] 429 Rate Limited for {url}, "
-                    f"retrying in {delay}s ({retry_429 + 1}/{max_429_retries})"
+        for attempt in range(max_retries_per_strategy):
+            if attempt > 0:
+                # Backoff between retries of same strategy: 1s, 2s, ...
+                retry_delay = attempt + random.uniform(0, 0.5)
+                logger.debug(
+                    f"🔄 [{strategy_name}] Retry {attempt + 1}/{max_retries_per_strategy} "
+                    f"for {url} after {retry_delay:.1f}s"
                 )
-                await asyncio.sleep(delay)
-                continue
+                await asyncio.sleep(retry_delay)
 
-            # ---- 404, 410, 405: Non-retryable client errors -> stop entirely ----
-            if status in _NON_RETRYABLE_CLIENT_ERRORS:
-                logger.warning(f"⚠️ [{strategy_name}] HTTP {status} for {url}, skipping (non-retryable)")
-                return result
+            # -- 429 retry loop within this attempt --
+            for retry_429 in range(max_429_retries + 1):
+                result = await strategy_fn()
 
-            # ---- Other 4xx: Unknown client error -> stop entirely ----
-            if HttpStatusCode.BAD_REQUEST.value <= status < HttpStatusCode.INTERNAL_SERVER_ERROR.value:
-                logger.warning(f"⚠️ [{strategy_name}] HTTP {status} for {url}, skipping")
-                return result
+                # Strategy returned nothing (import missing, all profiles exhausted, connection error)
+                if result is None:
+                    logger.debug(
+                        f"🔄 [{strategy_name}] No result on attempt {attempt + 1}/{max_retries_per_strategy}"
+                    )
+                    break  # break 429 loop, go to next attempt
 
-            # ---- 5xx: Server error -> stop entirely ----
-            if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value:
-                logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
-                return result
+                status = result.status_code
+
+                # ---- SUCCESS ----
+                if status < HttpStatusCode.BAD_REQUEST.value:
+                    logger.info(f"✅ Fetched {url} via {result.strategy}")
+                    return result
+
+                # ---- 403: Bot detection -> retry this strategy, then next ----
+                if status == HttpStatusCode.FORBIDDEN.value:
+                    logger.warning(
+                        f"⚠️ [{strategy_name}] 403 Forbidden for {url} "
+                        f"(attempt {attempt + 1}/{max_retries_per_strategy})"
+                    )
+                    break  # break 429 loop, go to next attempt
+
+                # ---- 429: Rate limited -> retry with backoff on SAME attempt ----
+                if status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+                    if retry_429 >= max_429_retries:
+                        logger.warning(
+                            f"⚠️ [{strategy_name}] 429 persists after {max_429_retries} "
+                            f"retries for {url}, trying next strategy"
+                        )
+                        break
+
+                    # Check Retry-After header first
+                    retry_after = result.headers.get("Retry-After") or result.headers.get("retry-after")
+                    if retry_after:
+                        try:
+                            delay = int(retry_after)
+                        except ValueError:
+                            delay = 2 ** (retry_429 + 1)
+                    else:
+                        delay = 2 ** (retry_429 + 1)  # 2s, 4s, 8s
+
+                    logger.warning(
+                        f"⚠️ [{strategy_name}] 429 Rate Limited for {url}, "
+                        f"retrying in {delay}s ({retry_429 + 1}/{max_429_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                # ---- 404, 410, 405: Non-retryable client errors -> stop entirely ----
+                if status in _NON_RETRYABLE_CLIENT_ERRORS:
+                    logger.warning(
+                        f"⚠️ [{strategy_name}] HTTP {status} for {url}, skipping (non-retryable)"
+                    )
+                    return result
+
+                # ---- Other 4xx: Unknown client error -> stop entirely ----
+                if HttpStatusCode.BAD_REQUEST.value <= status < HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+                    logger.warning(f"⚠️ [{strategy_name}] HTTP {status} for {url}, skipping")
+                    return result
+
+                # ---- 5xx: Server error -> stop entirely ----
+                if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+                    logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
+                    return result
+
+        logger.debug(f"🔄 [{strategy_name}] Exhausted all {max_retries_per_strategy} attempts for {url}")
 
     # All strategies exhausted
     logger.error(f"❌ All fetch strategies failed for {url}")
