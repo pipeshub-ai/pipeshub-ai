@@ -231,6 +231,10 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
                 (loadedAgent as any)?.systemPrompt ||
                 (editingAgent as any)?.systemPrompt ||
                 'You are a helpful assistant.',
+              instructions:
+                (loadedAgent as any)?.instructions ??
+                (editingAgent as any)?.instructions ??
+                '',
               startMessage:
                 (loadedAgent as any)?.startMessage ||
                 (editingAgent as any)?.startMessage ||

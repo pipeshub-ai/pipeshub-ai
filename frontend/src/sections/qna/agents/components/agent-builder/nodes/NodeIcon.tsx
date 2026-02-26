@@ -59,7 +59,7 @@ const DualToolIcon: React.FC<{
           objectFit: 'contain',
         }}
         onError={(e) => {
-          e.currentTarget.src = '/assets/icons/connectors/default.svg';
+          e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
         }}
       />
       
@@ -172,7 +172,7 @@ export const ConnectorIcon: React.FC<{
       objectFit: 'contain',
     }}
     onError={(e) => {
-      e.currentTarget.src = '/assets/icons/connectors/default.svg';
+      e.currentTarget.src = '/assets/icons/connectors/collections-gray.svg';
     }}
   />
 );

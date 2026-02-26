@@ -5,7 +5,7 @@ import { Node, Edge } from '@xyflow/react';
 import type { Agent, ConnectorInstance } from 'src/types/agent';
 import brainIcon from '@iconify-icons/mdi/brain';
 import chatIcon from '@iconify-icons/mdi/chat';
-import databaseIcon from '@iconify-icons/mdi/database';
+import collectionIcon from '@iconify-icons/mdi/folder-multiple';
 import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import replyIcon from '@iconify-icons/mdi/reply';
 import {
@@ -218,7 +218,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
                 type: `kb-${finalKbId}`,
                 label: `KB: ${truncateText(finalKbName, 18)}`,
                 description: 'Knowledge base for contextual information retrieval',
-                icon: databaseIcon,
+                icon: collectionIcon,
                 config: {
                   kbId: finalKbId,
                   kbName: finalKbName,
@@ -546,7 +546,7 @@ export const useAgentBuilderReconstruction = (): UseAgentBuilderReconstructionRe
           icon: sparklesIcon,
           config: {
             systemPrompt: agent.systemPrompt || 'You are a helpful assistant.',
-            instructions: agent.instructions || '',
+            instructions: agent.instructions ?? '',
             startMessage:
               agent.startMessage || 'Hello! I am ready to assist you. How can I help you today?',
             routing: 'auto',
