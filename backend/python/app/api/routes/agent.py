@@ -2247,7 +2247,9 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
             for k in agent_knowledge:
                 if isinstance(k, dict):
                     connector_id = k.get("connectorId")
-                    if connector_id:
+                    # knowledgeBase_* connectors represent KB sources — they should NOT
+                    # go into apps; their record groups are collected into kb instead.
+                    if connector_id and not connector_id.startswith("knowledgeBase_"):
                         knowledge_connector_ids.append(connector_id)
 
                     # Parse nested filters (stored as JSON string or dict)
@@ -2274,6 +2276,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 knowledge_connector_ids = [
                     k.get("connectorId") for k in agent_knowledge
                     if isinstance(k, dict) and k.get("connectorId")
+                    and not k.get("connectorId", "").startswith("knowledgeBase_")
                 ]
                 filters["apps"] = knowledge_connector_ids
 
