@@ -39,10 +39,10 @@ from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
     FilterField,
-    FilterOperator,
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
+    MultiselectOperator,
     SyncFilterKey,
     load_connector_filters,
 )
@@ -108,7 +108,8 @@ RETRYABLE_EXCEPTIONS = (
     asyncio.TimeoutError,
 )
 
-DOCUMENT_MIME_TYPES = [
+
+DOCUMENT_MIME_TYPES = {
     MimeTypes.PDF.value,
     MimeTypes.DOC.value,
     MimeTypes.DOCX.value,
@@ -116,14 +117,14 @@ DOCUMENT_MIME_TYPES = [
     MimeTypes.XLSX.value,
     MimeTypes.PPT.value,
     MimeTypes.PPTX.value,
-]
+}
 
-IMAGE_MIME_TYPES = [
+IMAGE_MIME_TYPES = {
     MimeTypes.PNG.value,
     MimeTypes.JPEG.value,
     MimeTypes.JPG.value,
     MimeTypes.GIF.value,
-]
+}
 
 class WebApp(App):
     def __init__(self, connector_id: str) -> None:
@@ -295,39 +296,14 @@ class WebConnector(BaseConnector):
     async def init(self) -> bool:
         """Initialize the web connector with configuration."""
         try:
-            # Try to get config from different paths
-            config = await self.config_service.get_config(
-                f"/services/connectors/{self.connector_id}/config"
-            )
+            config_values = await self._fetch_and_parse_config(use_cache=True)
 
-            if not config:
-                self.logger.error("❌ WebPage config not found")
-                raise ValueError("Web connector configuration not found")
-
-            sync_config = config.get("sync", {})
-            auth_config = config.get("auth", {})
-            if not auth_config:
-                self.logger.error("❌ WebPage auth config not found")
-                raise ValueError("WebPage auth config not found")
-
-            if not sync_config:
-                self.logger.error("❌ WebPage sync config not found")
-                raise ValueError("WebPage sync config not found")
-
-            self.url = auth_config.get("url")
-            if not self.url:
-                self.logger.error("❌ WebPage url not found")
-                raise ValueError("WebPage url not found")
-
-            self.crawl_type = sync_config.get("type", "single")
-            self.max_depth = int(sync_config.get("depth") or 3)
-            self.max_pages = int(sync_config.get("max_pages") or 1000)
-            self.follow_external = sync_config.get("follow_external", False)
-
-
-            # Parse base domain
-            parsed_url = urlparse(self.url)
-            self.base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            self.url = config_values["url"]
+            self.crawl_type = config_values["crawl_type"]
+            self.max_depth = config_values["max_depth"]
+            self.max_pages = config_values["max_pages"]
+            self.follow_external = config_values["follow_external"]
+            self.base_domain = config_values["base_domain"]
 
             # Initialize aiohttp session with realistic browser headers
             # These headers mimic a real Chrome browser to avoid being blocked by websites
@@ -369,6 +345,71 @@ class WebConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize web connector: {e}", exc_info=True)
             return False
+
+    async def _fetch_and_parse_config(self, use_cache: bool = True) -> Dict:
+        """
+        Fetch and parse connector configuration.
+
+        Args:
+            use_cache: Whether to use cached config (default: True)
+
+        Returns:
+            Dictionary containing parsed config values:
+            - url: str
+            - crawl_type: str
+            - max_depth: int
+            - max_pages: int
+            - follow_external: bool
+            - base_domain: str
+
+        Raises:
+            ValueError: If config is invalid or missing required fields
+        """
+        try:
+            config = await self.config_service.get_config(
+                f"/services/connectors/{self.connector_id}/config",
+                use_cache=use_cache
+            )
+
+            if not config:
+                self.logger.error("❌ WebPage config not found")
+                raise ValueError("Web connector configuration not found")
+
+            sync_config = config.get("sync", {})
+            auth_config = config.get("auth", {})
+            if not auth_config:
+                self.logger.error("❌ WebPage auth config not found")
+                raise ValueError("WebPage auth config not found")
+
+            if not sync_config:
+                self.logger.error("❌ WebPage sync config not found")
+                raise ValueError("WebPage sync config not found")
+
+            url = auth_config.get("url")
+            if not url:
+                self.logger.error("❌ WebPage url not found")
+                raise ValueError("WebPage url not found")
+
+            crawl_type = sync_config.get("type", "single")
+            max_depth = int(sync_config.get("depth") or 3)
+            max_pages = int(sync_config.get("max_pages") or 1000)
+            follow_external = sync_config.get("follow_external", False)
+
+            # Parse base domain
+            parsed_url = urlparse(url)
+            base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+
+            return {
+                "url": url,
+                "crawl_type": crawl_type,
+                "max_depth": max_depth,
+                "max_pages": max_pages,
+                "follow_external": follow_external,
+                "base_domain": base_domain,
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Failed to fetch and parse config: {e}")
+            raise
 
     async def test_connection_and_access(self) -> bool:
         """Test if the website is accessible using the multi-strategy fallback."""
@@ -475,39 +516,14 @@ class WebConnector(BaseConnector):
         """Reload the connector configuration."""
         try:
             self.logger.debug("running reload config")
-            config = await self.config_service.get_config(
-                f"/services/connectors/{self.connector_id}/config",
-                use_cache=False
-            )
+            config_values = await self._fetch_and_parse_config(use_cache=False)
 
-            if not config:
-                self.logger.error("❌ WebPage config not found")
-                raise ValueError("Web connector configuration not found")
-
-            sync_config = config.get("sync", {})
-            auth_config = config.get("auth", {})
-            if not auth_config:
-                self.logger.error("❌ WebPage auth config not found")
-                raise ValueError("WebPage auth config not found")
-
-            if not sync_config:
-                self.logger.error("❌ WebPage sync config not found")
-                raise ValueError("WebPage sync config not found")
-
-            new_url = auth_config.get("url")
-            if not new_url:
-                self.logger.error("❌ WebPage url not found")
-                raise ValueError("WebPage url not found")
-
-            new_crawl_type = sync_config.get("type", "single")
-            new_max_depth = int(sync_config.get("depth") or 3)
-            new_max_pages = int(sync_config.get("max_pages") or 1000)
-            new_follow_external = sync_config.get("follow_external", False)
-
-
-            # Parse base domain
-            parsed_url = urlparse(new_url)
-            new_base_domain = f"{parsed_url.scheme}://{parsed_url.netloc}"
+            config_values["url"]
+            new_crawl_type = config_values["crawl_type"]
+            new_max_depth = config_values["max_depth"]
+            new_max_pages = config_values["max_pages"]
+            new_follow_external = config_values["follow_external"]
+            new_base_domain = config_values["base_domain"]
 
             if new_base_domain != self.base_domain:
                 self.logger.error(f"❌ Cannot change base domain from {self.base_domain} to {new_base_domain}. Please create a new connector for {new_base_domain}")
@@ -654,11 +670,16 @@ class WebConnector(BaseConnector):
                 if file_record:
                     self.visited_urls.add(normalized_url)
 
-                    webpages_disabled = file_record.mime_type == MimeTypes.HTML.value and not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
-                    documents_disabled = file_record.mime_type in DOCUMENT_MIME_TYPES and not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
-                    images_disabled = file_record.mime_type in IMAGE_MIME_TYPES and not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
-                    disabled = webpages_disabled or documents_disabled or images_disabled
-                    if disabled:
+                    mime_type = file_record.mime_type
+                    is_disabled = False
+                    if mime_type == MimeTypes.HTML.value:
+                        is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.WEBPAGES, default=True)
+                    elif mime_type in DOCUMENT_MIME_TYPES:
+                        is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.DOCUMENTS, default=True)
+                    elif mime_type in IMAGE_MIME_TYPES:
+                        is_disabled = not self.indexing_filters.is_enabled(IndexingFilterKey.IMAGES, default=True)
+
+                    if is_disabled:
                         file_record.indexing_status = IndexingStatus.AUTO_INDEX_OFF.value
 
                     # Extract links if we haven't reached max depth
@@ -982,10 +1003,9 @@ class WebConnector(BaseConnector):
         # 2. Handle files without extensions
         if extension is None or extension == '':
             operator = extensions_filter.get_operator()
-            operator_str = operator.value if hasattr(operator, 'value') else str(operator)
             # If using NOT_IN operator, files without extensions pass (not in excluded list)
             # If using IN operator, files without extensions fail (not in allowed list)
-            return operator_str == FilterOperator.NOT_IN
+            return operator== MultiselectOperator.NOT_IN
 
         # 3. Normalize extension (lowercase, without dots)
         file_extension = extension.lower().lstrip(".")
@@ -1000,12 +1020,11 @@ class WebConnector(BaseConnector):
 
         # 6. Apply the filter based on operator
         operator = extensions_filter.get_operator()
-        operator_str = operator.value if hasattr(operator, 'value') else str(operator)
 
-        if operator_str == FilterOperator.IN:
+        if operator == MultiselectOperator.IN:
             # Only allow files with extensions in the list
             return file_extension in normalized_extensions
-        elif operator_str == FilterOperator.NOT_IN:
+        elif operator == MultiselectOperator.NOT_IN:
             # Allow files with extensions NOT in the list
             return file_extension not in normalized_extensions
 
@@ -1553,6 +1572,7 @@ class WebConnector(BaseConnector):
                 # Process all images: download and convert to base64
                 await self._process_all_images(soup, record.weburl, headers)
             else:
+                self.logger.debug("Removing all image tags: image indexing is disabled")
                 # Remove all image and SVG tags when image indexing is disabled
                 self._remove_image_tags(soup)
 
