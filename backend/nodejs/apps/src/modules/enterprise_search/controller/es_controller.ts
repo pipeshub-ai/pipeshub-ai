@@ -118,7 +118,6 @@ const hydrateScopedRequestAsUser = async (
   if (!user) {
     throw new NotFoundError('User not found');
   }
-  
 
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,
@@ -233,12 +232,7 @@ export const streamChat =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -1226,12 +1220,7 @@ export const addMessageStream =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -4665,12 +4654,7 @@ export const unshareAgent =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -4970,6 +4954,24 @@ export const unshareAgent =
       if (session) {
         session.endSession();
       }
+    }
+  };
+
+export const streamAgentConversationInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await streamAgentConversation(appConfig)(
+        req as AuthenticatedUserRequest,
+        res,
+      );
+    } catch (error) {
+      next(error);
     }
   };
 
@@ -5536,12 +5538,7 @@ export const addMessageStreamToAgentConversation =
 
     const modelInfo = extractModelInfo(req.body);
 
-    // Validate query parameter for XSS and format specifiers
-    if (req.body.query && typeof req.body.query === 'string') {
-      validateNoXSS(req.body.query, 'query');
-      validateNoFormatSpecifiers(req.body.query, 'query');
-      
-    } else if (!req.body.query) {
+    if (!req.body.query) {
       throw new BadRequestError('Query is required');
     }
 
@@ -6034,6 +6031,24 @@ export const addMessageStreamToAgentConversation =
       if (session) {
         session.endSession();
       }
+    }
+  };
+
+export const addMessageStreamToAgentConversationInternal =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ) => {
+    try {
+      await hydrateScopedRequestAsUser(req, appConfig);
+      await addMessageStreamToAgentConversation(appConfig)(
+        req as AuthenticatedUserRequest,
+        res,
+      );
+    } catch (error) {
+      next(error);
     }
   };
 

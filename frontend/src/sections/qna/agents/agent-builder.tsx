@@ -83,6 +83,16 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
   const [templates, setTemplates] = useState<AgentTemplate[]>([]);
   const [templatesLoading, setTemplatesLoading] = useState(false);
 
+  // Share with org state - initialized from loaded agent data
+  const [shareWithOrg, setShareWithOrg] = useState<boolean>(false);
+
+  // Sync shareWithOrg from loaded agent
+  useEffect(() => {
+    if (loadedAgent) {
+      setShareWithOrg(loadedAgent.shareWithOrg ?? false);
+    }
+  }, [loadedAgent]);
+
   // Node templates hook - receives data instead of fetching
   const { nodeTemplates } = useAgentBuilderNodeTemplates(
     availableTools,
@@ -565,6 +575,9 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     // This will be handled by the FlowBuilderCanvas component
   }, []);
 
+  // Compute whether the current flow has any toolsets connected to the agent
+  const hasToolsets = nodes.some((node) => node.data?.type?.startsWith('toolset-'));
+
   // Save agent
   const handleSave = useCallback(async () => {
     try {
@@ -577,7 +590,8 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         agentName,
         nodes,
         edges,
-        currentAgent
+        currentAgent,
+        shareWithOrg
       );
 
       const agent = currentAgent
@@ -588,8 +602,9 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
       setTimeout(() => {
         onSuccess(agent);
       }, 1000);
-    } catch (err) {
-      setError(editingAgent ? 'Failed to update agent' : 'Failed to create agent');
+    } catch (err: any) {
+      const message = err?.response?.data?.detail || (editingAgent ? 'Failed to update agent' : 'Failed to create agent');
+      setError(message);
       console.error('Error saving agent:', err);
     } finally {
       setSaving(false);
@@ -600,6 +615,7 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
     edges,
     loadedAgent,
     editingAgent,
+    shareWithOrg,
     onSuccess,
     setSaving,
     setError,
@@ -623,6 +639,9 @@ const AgentBuilder: React.FC<AgentBuilderProps> = ({ editingAgent, onSuccess, on
         setTemplateDialogOpen={setTemplateDialogOpen}
         templatesLoading={templatesLoading}
         agentId={editingAgent?._key || ''}
+        shareWithOrg={shareWithOrg}
+        setShareWithOrg={setShareWithOrg}
+        hasToolsets={hasToolsets}
       />
 
       {/* Main Content */}

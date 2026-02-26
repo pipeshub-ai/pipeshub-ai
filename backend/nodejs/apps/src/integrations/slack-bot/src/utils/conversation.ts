@@ -3,21 +3,20 @@ import { Conversation } from './db';
 interface SaveToDatabaseParams {
   threadId: string;
   conversationId: string;
-  email: string;
+  botId: string;
 }
 
 export const saveToDatabase = async ({
   threadId,
   conversationId,
-  email,
+  botId,
 }: SaveToDatabaseParams): Promise<void> => {
   try {
     await Conversation.updateOne(
-      { threadId, email },
+      { threadId, botId },
       { $set: { conversationId } },
       { upsert: true },
     );
-
   } catch (error) {
     console.error('Error saving to database:', error);
     throw new Error('Failed to save to database');
@@ -26,10 +25,10 @@ export const saveToDatabase = async ({
 
 export const getFromDatabase = async (
   threadId: string,
-  email: string,
+  botId: string,
 ): Promise<string | null> => {
   try {
-    const record = await Conversation.findOne({ threadId, email });
+    const record = await Conversation.findOne({ threadId, botId });
     if (record) {
       return record.conversationId;
     } else {

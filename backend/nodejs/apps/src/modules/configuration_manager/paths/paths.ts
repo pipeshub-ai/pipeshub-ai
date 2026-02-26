@@ -37,6 +37,7 @@ export const configPaths = {
     oauth: '/services/auth/oauth',
   },
   aiModels: '/services/aiModels',
+  slackBot: '/services/slackBot',
   db: {
     mongodb: '/services/mongodb',
     arangodb: '/services/arangodb',

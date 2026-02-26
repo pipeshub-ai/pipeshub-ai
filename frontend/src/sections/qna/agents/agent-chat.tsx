@@ -1241,25 +1241,7 @@ const AgentChat = () => {
           apps: getEnabledApps(),
 
           // Knowledge bases: KB IDs to use (extract from knowledge array if not selected)
-          kb: selectedKBs && selectedKBs.length > 0 ? selectedKBs : (() => {
-            const kbIds: string[] = [];
-            if (agent?.knowledge && Array.isArray(agent.knowledge)) {
-              agent.knowledge.forEach((k: any) => {
-                const filters = k.filtersParsed || k.filters || {};
-                let filtersParsed = filters;
-                if (typeof filters === 'string') {
-                  try {
-                    filtersParsed = JSON.parse(filters);
-                  } catch {
-                    filtersParsed = {};
-                  }
-                }
-                const recordGroups = filtersParsed.recordGroups || [];
-                kbIds.push(...recordGroups);
-              });
-            }
-            return [...new Set(kbIds)]; // Remove duplicates
-          })(),
+          kb: selectedKBs || [],
         },
 
         // Chat mode specific parameters
@@ -1310,7 +1292,6 @@ const AgentChat = () => {
       handleStreamingResponse,
       isNavigationBlocked,
       isCurrentConversationLoading,
-      agent,
       agentKey,
       setSelectedChat,
     ]

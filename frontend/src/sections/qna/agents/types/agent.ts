@@ -48,6 +48,9 @@ export interface AgentBuilderHeaderProps {
   setTemplateDialogOpen: (open: boolean) => void;
   templatesLoading: boolean;
   agentId?: string;
+  shareWithOrg: boolean;
+  setShareWithOrg: (value: boolean) => void;
+  hasToolsets: boolean; // Whether the current flow has toolsets (blocks org sharing)
 }
 
 export interface AgentBuilderCanvasWrapperProps {

@@ -11,6 +11,13 @@ import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
+import {
+  type SlackBotConfig,
+  // findSlackBotByIdentity,
+  // getCachedSlackBots,
+  getCurrentMatchedSlackBot,
+  refreshSlackBotRegistry,
+} from "./botRegistry";
 
 
 interface CitationData {
@@ -27,7 +34,7 @@ interface CitationData {
       webUrl?: string;
     };
     chunkIndex?: string;
-  };
+  }
 }
 
 interface BotResponse {
@@ -53,15 +60,52 @@ const STREAM_UPDATE_THROTTLE_MS = 900;
 const SLACK_MAX_TEXT_LENGTH = 39000;
 const SLACK_STREAM_MARKDOWN_LIMIT = 12000;
 const DEFAULT_SLACK_ERROR_MESSAGE = "Something went wrong! Please try again later.";
+const MAX_USER_VISIBLE_ERROR_LENGTH = 320;
 const SLACK_MENTION_REGEX = /<@[A-Z0-9]+>/g;
+const STREAM_FAILURE_MESSAGE =
+  "I ran into an issue while streaming the response. Please try again.";
+
+const SLACK_FRIENDLY_ERROR_MAPPINGS: Array<{
+  pattern: RegExp;
+  message: string;
+}> = [
+  {
+    pattern: /no results found/i,
+    message: "I couldn't find relevant information for that query.",
+  },
+  {
+    pattern: /failed to (initialize|start).*(llm|model)/i,
+    message: "I couldn't initialize the AI service right now. Please try again shortly.",
+  },
+  {
+    pattern: /(stream error|error in llm streaming|failed to start slack stream)/i,
+    message: "I hit an issue while generating the response. Please try again.",
+  },
+  {
+    pattern: /(econnrefused|etimedout|enotfound|service unavailable|network error)/i,
+    message: "I couldn't reach the backend service right now. Please try again in a moment.",
+  },
+  {
+    pattern: /back(end)?_url environment variable is not set/i,
+    message: "This service is temporarily unavailable. Please try again later.",
+  },
+];
+
+const SLACK_TECHNICAL_ERROR_PATTERNS: RegExp[] = [
+  /traceback/i,
+  /\bat\s+[^\n]+:\d+:\d+/i,
+  /file\s+"[^"]+",\s+line\s+\d+/i,
+  /(internalservererror|httpexception|typeerror|referenceerror|valueerror|syntaxerror)/i,
+  /(mongodb|redis|neo4j|postgres|sql|kafka)/i,
+  /(stack|stack trace)/i,
+  /(status code\s*\d{3}|\b5\d{2}\b)/i,
+  /(api\/v1\/|https?:\/\/[^\s]+)/i,
+  /(bearer\s+[a-z0-9\.\-_]+)/i,
+  /(back(end)?_url|slack_bot|jwt|token|secret)/i,
+];
 
 interface StreamStartResult {
   ts?: string;
-}
-
-interface NormalizedCitations {
-  citationLinks: string[];
-  chunkIndexToCitationNumber: Record<string, string>;
 }
 
 interface SlackMessagePayload {
@@ -75,15 +119,31 @@ interface SlackMessagePayload {
   channel?: string;
 }
 
+interface SlackConversationsRepliesResponse {
+  messages?: SlackMessagePayload[];
+  response_metadata?: {
+    next_cursor?: string;
+  };
+}
+
+interface SlackUserProfile {
+  email?: string;
+  display_name?: string;
+  real_name?: string;
+}
+
+interface SlackUserRecord {
+  id?: string;
+  name?: string;
+  real_name?: string;
+  profile?: SlackUserProfile;
+}
+
 interface TypedSlackClient {
   botUserId?: string;
   users: {
     info: (params: { user: string }) => Promise<{
-      user?: {
-        profile?: {
-          email?: string;
-        };
-      };
+      user?: SlackUserRecord;
     }>;
   };
   chat: {
@@ -107,6 +167,10 @@ interface TypedSlackClient {
 interface TypedSlackContext {
   botUserId?: string;
   teamId?: string;
+  matchedBotId?: string;
+  matchedBotUserId?: string;
+  matchedBotTeamId?: string;
+  matchedBotAgentId?: string | null;
 }
 
 
@@ -189,7 +253,7 @@ function readMessageFromObject(value: unknown): string | null {
   return null;
 }
 
-function resolveSlackErrorMessage(error: unknown): string {
+function extractSlackErrorMessage(error: unknown): string {
   if (!error) {
     return DEFAULT_SLACK_ERROR_MESSAGE;
   }
@@ -217,11 +281,111 @@ function resolveSlackErrorMessage(error: unknown): string {
   return DEFAULT_SLACK_ERROR_MESSAGE;
 }
 
+function normalizeSlackErrorMessage(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function mapFriendlySlackErrorMessage(message: string): string | null {
+  for (const mapping of SLACK_FRIENDLY_ERROR_MAPPINGS) {
+    if (mapping.pattern.test(message)) {
+      return mapping.message;
+    }
+  }
+  return null;
+}
+
+function isTechnicalSlackErrorMessage(message: string): boolean {
+  return SLACK_TECHNICAL_ERROR_PATTERNS.some((pattern) => pattern.test(message));
+}
+
+function resolveSlackErrorMessage(error: unknown): string {
+  const rawMessage = extractSlackErrorMessage(error);
+  const normalizedMessage = normalizeSlackErrorMessage(rawMessage);
+
+  if (!normalizedMessage) {
+    return DEFAULT_SLACK_ERROR_MESSAGE;
+  }
+
+  const mappedMessage = mapFriendlySlackErrorMessage(normalizedMessage);
+  if (mappedMessage) {
+    return mappedMessage;
+  }
+
+  if (isTechnicalSlackErrorMessage(normalizedMessage)) {
+    return DEFAULT_SLACK_ERROR_MESSAGE;
+  }
+
+  return truncateFromEnd(normalizedMessage, MAX_USER_VISIBLE_ERROR_LENGTH);
+}
+
 function truncateForSlack(text: string): string {
   if (text.length <= SLACK_MAX_TEXT_LENGTH) {
     return text;
   }
   return `...${text.slice(-(SLACK_MAX_TEXT_LENGTH - 3))}`;
+}
+
+function resolveThreadId(typedMessage: SlackMessagePayload): string {
+  return typedMessage.thread_ts || typedMessage.ts;
+}
+
+async function sendUserFacingSlackErrorMessage(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  errorOrMessage: unknown,
+): Promise<void> {
+  if (!typedMessage.channel) {
+    return;
+  }
+
+  const errorMessage = resolveSlackErrorMessage(errorOrMessage);
+  const threadId = resolveThreadId(typedMessage);
+
+  try {
+    await typedClient.chat.postMessage({
+      channel: typedMessage.channel,
+      thread_ts: threadId,
+      text: truncateForSlack(errorMessage),
+    });
+  } catch (sendError) {
+    console.error("Failed to send Slack user-facing error message:", sendError);
+  }
+}
+
+function truncateForSlackStreamMarkdown(text: string): string {
+  if (text.length <= SLACK_STREAM_MARKDOWN_LIMIT) {
+    return text;
+  }
+  return `...${text.slice(-(SLACK_STREAM_MARKDOWN_LIMIT - 3))}`;
+}
+
+function truncateFromEnd(text: string, limit: number): string {
+  if (limit <= 0) {
+    return "";
+  }
+  if (text.length <= limit) {
+    return text;
+  }
+  if (limit <= 3) {
+    return text.slice(0, limit);
+  }
+  return `${text.slice(0, limit - 3)}...`;
+}
+
+function buildFinalStreamOverwriteMessage(
+  answerBody: string,
+  sourcesLine: string,
+): string {
+  if (!sourcesLine) {
+    return truncateFromEnd(answerBody, SLACK_STREAM_MARKDOWN_LIMIT);
+  }
+
+  if (sourcesLine.length >= SLACK_STREAM_MARKDOWN_LIMIT) {
+    return truncateFromEnd(sourcesLine, SLACK_STREAM_MARKDOWN_LIMIT);
+  }
+
+  const bodyLimit = SLACK_STREAM_MARKDOWN_LIMIT - sourcesLine.length;
+  return `${truncateFromEnd(answerBody, bodyLimit)}${sourcesLine}`;
 }
 
 function splitByLength(text: string, limit: number): string[] {
@@ -235,6 +399,193 @@ function splitByLength(text: string, limit: number): string[] {
   return chunks;
 }
 
+function parseSlackTimestamp(ts?: string): number | null {
+  if (!ts) {
+    return null;
+  }
+
+  const parsed = Number(ts);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function sanitizeSlackThreadMessageText(text?: string): string {
+  if (!text) {
+    return "";
+  }
+
+  return text.replace(SLACK_MENTION_REGEX, "").replace(/\s+/g, " ").trim();
+}
+
+function isThreadFollowUpMessage(message: SlackMessagePayload): boolean {
+  return Boolean(message.thread_ts && message.thread_ts !== message.ts);
+}
+
+function sanitizeSlackLabelValue(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function formatSlackUserLabel(userRecord: SlackUserRecord | undefined, userId: string): string {
+  const email = sanitizeSlackLabelValue(userRecord?.profile?.email);
+  const displayNameCandidates = [
+    userRecord?.profile?.display_name,
+    userRecord?.real_name,
+    userRecord?.profile?.real_name,
+    userRecord?.name,
+  ];
+  const displayName =
+    displayNameCandidates
+      .map((nameCandidate) => sanitizeSlackLabelValue(nameCandidate))
+      .find((nameCandidate) => Boolean(nameCandidate)) || "";
+
+  if (displayName && email) {
+    return `${displayName} (${email})`;
+  }
+  if (displayName) {
+    return displayName;
+  }
+  if (email) {
+    return email;
+  }
+  return `User (${userId})`;
+}
+
+function inferThreadMessageSpeaker(
+  message: SlackMessagePayload,
+  userLabelsById: Map<string, string>,
+): string {
+  if (message.bot_id || message.subtype === "bot_message") {
+    return "Assistant";
+  }
+  if (message.user) {
+    return userLabelsById.get(message.user) || `User (${message.user})`;
+  }
+  return "User";
+}
+
+async function resolveThreadUserLabels(
+  typedClient: TypedSlackClient,
+  priorMessages: SlackMessagePayload[],
+): Promise<Map<string, string>> {
+  const userLabelsById = new Map<string, string>();
+  const userIds = Array.from(
+    new Set(
+      priorMessages
+        .filter((message) => !message.bot_id && Boolean(message.user))
+        .map((message) => message.user as string),
+    ),
+  );
+
+  for (const userId of userIds) {
+    try {
+      const userInfoResult = await typedClient.users.info({ user: userId });
+      const userLabel = formatSlackUserLabel(userInfoResult.user, userId);
+      userLabelsById.set(userId, userLabel);
+    } catch (error) {
+      console.error(`Failed to resolve Slack user info for ${userId}:`, error);
+      userLabelsById.set(userId, `User (${userId})`);
+    }
+  }
+
+  return userLabelsById;
+}
+
+async function fetchPriorThreadMessages(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+): Promise<SlackMessagePayload[]> {
+  if (!typedMessage.channel || !typedMessage.thread_ts) {
+    return [];
+  }
+
+  const allThreadMessages: SlackMessagePayload[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const apiOptions: Record<string, unknown> = {
+      channel: typedMessage.channel,
+      ts: typedMessage.thread_ts,
+      limit: 200,
+    };
+    if (cursor) {
+      apiOptions.cursor = cursor;
+    }
+
+    const rawResponse = await typedClient.apiCall("conversations.replies", apiOptions);
+    const response = rawResponse as SlackConversationsRepliesResponse;
+    if (Array.isArray(response.messages)) {
+      allThreadMessages.push(...response.messages);
+    }
+
+    const nextCursor = response.response_metadata?.next_cursor?.trim();
+    cursor = nextCursor || undefined;
+  } while (cursor);
+
+  const currentMessageTs = parseSlackTimestamp(typedMessage.ts);
+
+  return allThreadMessages.filter((threadMessage) => {
+    const normalizedText = sanitizeSlackThreadMessageText(threadMessage.text);
+    if (!normalizedText) {
+      return false;
+    }
+
+    if (threadMessage.ts === typedMessage.ts) {
+      return false;
+    }
+
+    if (currentMessageTs === null) {
+      return true;
+    }
+
+    const threadMessageTs = parseSlackTimestamp(threadMessage.ts);
+    return threadMessageTs !== null && threadMessageTs < currentMessageTs;
+  });
+}
+
+function buildThreadContextualQuery(
+  query: string,
+  priorMessages: SlackMessagePayload[],
+  userLabelsById: Map<string, string>,
+): string {
+  const contextLines = priorMessages
+    .map((message) => {
+      const normalizedText = sanitizeSlackThreadMessageText(message.text);
+      if (!normalizedText) {
+        return null;
+      }
+      const speaker = inferThreadMessageSpeaker(message, userLabelsById);
+      return `${speaker}: ${normalizedText}`;
+    })
+    .filter((line): line is string => Boolean(line));
+
+  if (contextLines.length === 0) {
+    return query;
+  }
+
+  return `Slack thread context:\n${contextLines.join("\n")}\n\nCurrent slack message: ${query}`;
+}
+
+async function buildQueryWithThreadContext(
+  typedClient: TypedSlackClient,
+  typedMessage: SlackMessagePayload,
+  query: string,
+): Promise<string> {
+  if (!isThreadFollowUpMessage(typedMessage)) {
+    return query;
+  }
+
+  try {
+    const priorMessages = await fetchPriorThreadMessages(typedClient, typedMessage);
+    const userLabelsById = await resolveThreadUserLabels(typedClient, priorMessages);
+    return buildThreadContextualQuery(query, priorMessages, userLabelsById);
+  } catch (error) {
+    console.error("Failed to fetch Slack thread context:", error);
+    return query;
+  }
+}
+
 function getCitationWebUrl(webUrl?: string): string {
   if (!webUrl) {
     return "";
@@ -245,58 +596,27 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
 }
 
-function normalizeCitations(citations?: CitationData[]): NormalizedCitations {
-  const uniqueUrls: string[] = [];
-  const urlToCitationNumber = new Map<string, string>();
-  const chunkIndexToCitationNumber: Record<string, string> = {};
+function buildCitationSources(citations?: CitationData[]): string[] {
+  const citationLinks: string[] = [];
 
   for (const citation of citations || []) {
-    const chunkIndex = citation.citationData.chunkIndex;
-    if (!chunkIndex) {
-      continue;
-    }
-
     const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
     if (!webUrl) {
       continue;
     }
 
-    let citationNumber = urlToCitationNumber.get(webUrl);
-    if (!citationNumber) {
-      citationNumber = String(uniqueUrls.length + 1);
-      uniqueUrls.push(webUrl);
-      urlToCitationNumber.set(webUrl, citationNumber);
+    const chunkIndex = citation.citationData.chunkIndex;
+    if (chunkIndex) {
+      citationLinks.push(`<${webUrl}|[${chunkIndex}]>`);
+      continue;
     }
-
-    if (!chunkIndexToCitationNumber[chunkIndex]) {
-      chunkIndexToCitationNumber[chunkIndex] = citationNumber;
-    }
+    citationLinks.push(`<${webUrl}|${webUrl}>`);
   }
 
-  return {
-    chunkIndexToCitationNumber,
-    citationLinks: uniqueUrls.map((link, idx) => `<${link}|[${idx + 1}]>`),
-  };
+  return citationLinks;
 }
 
-function remapCitationMarkers(text: string, citationMap: Record<string, string>): string {
-  const remappedText = text.replace(/\[(\d+)\]/g, (match, chunkIndex: string) => {
-    const mappedCitation = citationMap[chunkIndex];
-    return mappedCitation ? `[${mappedCitation}]` : match;
-  });
 
-  return remappedText.replace(/(\[\d+\])(?:\s*)\1+/g, "$1");
-}
-
-// const processMarkdownContent = (content: string): string => {
-//   if (!content) return '';
-
-//   return content
-//     // Fix escaped newlines
-//     .replace(/\\n/g, '\n').replace(/\n/g, '  ')
-//     // Clean up trailing whitespace but preserve structure
-//     .trim();
-// };
 
 function toMrkdwn(input: string): string {
   if (!input) return "";
@@ -313,6 +633,73 @@ function toMrkdwn(input: string): string {
     .trim();
 }
 
+function buildChatStreamUrl(
+  conversationId: string | null,
+  agentId: string | null,
+): string {
+  const backendUrl = process.env.BACKEND_URL || "http://localhost:3000";
+  if (!backendUrl) {
+    throw new Error("BACKEND_URL environment variable is not set.");
+  }
+
+  if (agentId) {
+    const encodedAgentId = encodeURIComponent(agentId);
+    return conversationId
+      ? `${backendUrl}/api/v1/agents/${encodedAgentId}/conversations/internal/${conversationId}/messages/stream`
+      : `${backendUrl}/api/v1/agents/${encodedAgentId}/conversations/internal/stream`;
+  }
+  
+  return conversationId
+    ? `${backendUrl}/api/v1/conversations/internal/${conversationId}/messages/stream`
+    : `${backendUrl}/api/v1/conversations/internal/stream`;
+}
+
+async function resolveSlackBotForEvent(
+  // typedMessage: SlackMessagePayload,
+  // typedContext: TypedSlackContext,
+): Promise<SlackBotConfig | null> {
+  // let latestBots: SlackBotConfig[] = [];
+  // try {
+  //   latestBots = await refreshSlackBotRegistry({ force: true });
+  // } catch (error) {
+  //   console.error("Failed to refresh Slack bot registry for event routing:", error);
+  //   latestBots = getCachedSlackBots();
+  // }
+
+  // if (latestBots.length === 0) {
+  //   return null;
+  // }
+
+  const matchedFromRequestContext = getCurrentMatchedSlackBot();
+  if (matchedFromRequestContext) {
+    return matchedFromRequestContext;
+    // const refreshedMatchedBot = findSlackBotByIdentity(latestBots, {
+    //   teamId: matchedFromRequestContext.teamId,
+    //   botId: matchedFromRequestContext.botId,
+    //   botUserId: matchedFromRequestContext.botUserId,
+    // });
+    // if (refreshedMatchedBot) {
+    //   return refreshedMatchedBot;
+    // }
+  }
+
+  // const matchedFromContext = findSlackBotByIdentity(latestBots, {
+  //   teamId: typedContext.matchedBotTeamId || typedContext.teamId,
+  //   botId: typedContext.matchedBotId || typedMessage.bot_id,
+  //   botUserId: typedContext.matchedBotUserId || typedContext.botUserId,
+  // });
+  // if (matchedFromContext) {
+  //   return matchedFromContext;
+  // }
+
+  // return findSlackBotByIdentity(latestBots, {
+  //   teamId: typedContext.teamId,
+  //   botId: typedMessage.bot_id,
+  //   botUserId: typedContext.botUserId,
+  // });
+  return null;
+}
+
 // Middleware setup
 receiver.router.use(json());
 receiver.router.use(urlencoded());
@@ -325,7 +712,6 @@ receiver.router.get("/", (req: Request, res: Response) => {
 
 
 receiver.router.post("slack/command", (req: Request, res: Response) => {
-  console.log("request");
   if (req.body.type === "url_verification") {
     res.send({ challenge: req.body.challenge });
   } else {
@@ -339,19 +725,28 @@ async function processSlackMessage(
   typedClient: TypedSlackClient,
   typedContext: TypedSlackContext,
   query: string,
+  resolvedSlackBot: SlackBotConfig | null,
 ): Promise<void> {
+
   if (!typedMessage.user || !typedMessage.channel) {
     return;
   }
 
-  const threadId = typedMessage.thread_ts || typedMessage.ts;
-
+  const threadId = resolveThreadId(typedMessage);
+  
   const lookupResult = await typedClient.users.info({
     user: typedMessage.user,
   });
+  
+
 
   if (!lookupResult.user?.profile?.email) {
     console.error("Failed to get user email");
+    await sendUserFacingSlackErrorMessage(
+      typedClient,
+      typedMessage,
+      "I couldn't verify your Slack profile details right now. Please try again in a moment.",
+    );
     return;
   }
 
@@ -359,8 +754,19 @@ async function processSlackMessage(
   const configService = ConfigService.getInstance();
   const accessToken = slackJwtGenerator(email, await configService.getScopedJwtSecret());
 
-  const conversation = await getFromDatabase(threadId, email);
+  const currentAgentId = resolvedSlackBot?.agentId || null;
+  console.log("currentAgentId", currentAgentId);
+  const currentBotId = resolvedSlackBot?.botId;
+  if (!currentBotId) {
+    throw new Error("Unable to resolve Slack bot id for conversation persistence.");
+  }
+
+  const conversation = await getFromDatabase(
+    threadId,
+    currentBotId,
+  );
   let streamTs: string | null = null;
+  let streamStopped = false;
   let waitingMessageTs: string | null = null;
 
   const sendOrUpdateNonStreamMessage = async (text: string): Promise<void> => {
@@ -385,6 +791,39 @@ async function processSlackMessage(
     });
   };
 
+  const stopSlackStream = async (markdownText?: string): Promise<boolean> => {
+    if (!streamTs || streamStopped) {
+      return true;
+    }
+
+    const payload: Record<string, unknown> = {
+      channel: typedMessage.channel!,
+      ts: streamTs,
+    };
+    if (typeof markdownText === "string" && markdownText.length > 0) {
+      payload.markdown_text = truncateForSlackStreamMarkdown(markdownText);
+    }
+
+    try {
+      await typedClient.apiCall("chat.stopStream", payload);
+      streamStopped = true;
+      return true;
+    } catch (error) {
+      if (
+        error &&
+        typeof error === "object" &&
+        "data" in error &&
+        (error as { data?: { error?: string } }).data?.error ===
+          "message_not_in_streaming_state"
+      ) {
+        streamStopped = true;
+        return true;
+      }
+      console.error("Error stopping Slack stream:", error);
+      return false;
+    }
+  };
+
   try {
     const streamRecipientPayload: Record<string, unknown> = {};
     streamRecipientPayload.recipient_user_id = typedMessage.user;
@@ -403,8 +842,7 @@ async function processSlackMessage(
       console.error("Error posting Slack waiting message:", error);
     }
 
-    const url = `http://localhost:3000/api/v1/conversations/internal/stream`;
-
+    const url = buildChatStreamUrl(conversation, currentAgentId);
     const response = await axios.post(
       url,
       {
@@ -430,7 +868,7 @@ async function processSlackMessage(
     let queuedStreamAppend: Promise<void> = Promise.resolve();
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
-      if (!text) {
+      if (!text || !text.trim()) {
         return;
       }
 
@@ -439,16 +877,25 @@ async function processSlackMessage(
         return;
       }
 
-      let chunksToAppend = markdownChunks;
+      const processedChunks = markdownChunks
+        .map(chunk => toMrkdwn(chunk))
+        .filter(chunk => chunk.length > 0);
+      if (processedChunks.length === 0) {
+        return;
+      }
+
+      let chunksToAppend = processedChunks;
       if (!streamTs) {
-        const [firstChunk, ...restChunks] = markdownChunks;
-        const processedFirstChunk = toMrkdwn(firstChunk || "");
+        const [firstChunk, ...restChunks] = processedChunks;
+        if (!firstChunk) {
+          return;
+        }
         const startStreamResult = (await typedClient.apiCall(
           "chat.startStream",
           {
             channel: typedMessage.channel!,
             thread_ts: threadId,
-            markdown_text: processedFirstChunk,
+            markdown_text: firstChunk,
             ...streamRecipientPayload,
           },
         )) as StreamStartResult;
@@ -473,11 +920,10 @@ async function processSlackMessage(
       }
 
       for (const appendChunk of chunksToAppend) {
-        const processedChunk = toMrkdwn(appendChunk);
         await typedClient.apiCall("chat.appendStream", {
           channel: typedMessage.channel!,
           ts: streamTs,
-          markdown_text: processedChunk,
+          markdown_text: appendChunk,
         });
       }
     };
@@ -493,6 +939,9 @@ async function processSlackMessage(
         .then(async () => pushTextToSlackStream(textToAppend))
         .catch((error) => {
           console.error("Error appending Slack stream text:", error);
+          if (!streamErrorMessage) {
+            streamErrorMessage = STREAM_FAILURE_MESSAGE;
+          }
         });
     };
 
@@ -506,7 +955,7 @@ async function processSlackMessage(
         for (const evt of events) {
           if (evt.event === "answer_chunk" || evt.event === "chunk") {
             const nextChunk = extractStreamChunk(evt.data);
-            if (!nextChunk) {
+            if (!nextChunk || !nextChunk.trim()) {
               continue;
             }
 
@@ -539,11 +988,10 @@ async function processSlackMessage(
 
     if (streamErrorMessage) {
       if (streamTs) {
-        await typedClient.apiCall("chat.stopStream", {
-          channel: typedMessage.channel!,
-          ts: streamTs,
-          markdown_text: truncateForSlack(streamErrorMessage),
-        });
+        const stopStreamSucceeded = await stopSlackStream(streamErrorMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(streamErrorMessage);
+        }
       } else {
         await sendOrUpdateNonStreamMessage(streamErrorMessage);
       }
@@ -556,11 +1004,10 @@ async function processSlackMessage(
       const incompleteResponseMessage =
         "Received an incomplete response from the backend. Please try again later.";
       if (streamTs) {
-        await typedClient.apiCall("chat.stopStream", {
-          channel: typedMessage.channel!,
-          ts: streamTs,
-          markdown_text: incompleteResponseMessage,
-        });
+        const stopStreamSucceeded = await stopSlackStream(incompleteResponseMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(incompleteResponseMessage);
+        }
       } else {
         await sendOrUpdateNonStreamMessage(incompleteResponseMessage);
       }
@@ -569,7 +1016,11 @@ async function processSlackMessage(
 
     if (!conversation) {
       const conversationId = conversationData._id;
-      await saveToDatabase({ threadId: threadId, conversationId, email });
+      await saveToDatabase({
+        threadId: threadId,
+        conversationId,
+        botId: currentBotId
+      });
     }
 
     const botResponses = conversationData.messages;
@@ -578,11 +1029,10 @@ async function processSlackMessage(
       const invalidResponseMessage =
         "Received an unexpected response format from the backend. Please try again later.";
       if (streamTs) {
-        await typedClient.apiCall("chat.stopStream", {
-          channel: typedMessage.channel!,
-          ts: streamTs,
-          markdown_text: invalidResponseMessage,
-        });
+        const stopStreamSucceeded = await stopSlackStream(invalidResponseMessage);
+        if (!stopStreamSucceeded) {
+          await sendOrUpdateNonStreamMessage(invalidResponseMessage);
+        }
       } else {
         await sendOrUpdateNonStreamMessage(invalidResponseMessage);
       }
@@ -590,51 +1040,41 @@ async function processSlackMessage(
     }
 
     if (!streamTs && botResponse.content) {
-      console.log("pushed all content to slack stream");
       await pushTextToSlackStream(botResponse.content);
     }
 
-    const { citationLinks, chunkIndexToCitationNumber } = normalizeCitations(
-      botResponse.citations,
-    );
+    const citationLinks = buildCitationSources(botResponse.citations);
 
-    const convertedFinalText = truncateForSlack(
-      markdownToSlackMrkdwn(botResponse.content || ""),
-    );
-    const remappedFinalText = remapCitationMarkers(
-      convertedFinalText,
-      chunkIndexToCitationNumber,
-    );
+    const convertedFinalText = markdownToSlackMrkdwn(botResponse.content || "");
     const sourcesLine =
       citationLinks.length > 0
         ? `\n\n*Sources:* ${citationLinks.join(" ")}`
         : "";
-    const finalMessageText = truncateForSlack(`${remappedFinalText}${sourcesLine}`);
+
+    const finalMessageText = `${convertedFinalText}${sourcesLine}`;
+    const finalStreamMessageText = buildFinalStreamOverwriteMessage(
+      convertedFinalText,
+      sourcesLine,
+    );
 
     if (streamTs) {
-      await typedClient.apiCall("chat.stopStream", {
+      await stopSlackStream();
+      await typedClient.apiCall("chat.update", {
         channel: typedMessage.channel!,
         ts: streamTs,
-      });
-
-      // Overwrite streamed content with fully converted mrkdwn text.
-      await typedClient.chat.update({
-        channel: typedMessage.channel!,
-        ts: streamTs,
-        text: finalMessageText,
+        markdown_text: finalStreamMessageText,
       });
     } else {
-      await sendOrUpdateNonStreamMessage(finalMessageText);
+      await sendOrUpdateNonStreamMessage(truncateForSlack(finalMessageText));
     }
   } catch (error) {
     console.error("Error calling the Chat API:", error);
     const errorMessage = resolveSlackErrorMessage(error);
     if (streamTs) {
-      await typedClient.apiCall("chat.stopStream", {
-        channel: typedMessage.channel!,
-        ts: streamTs,
-        markdown_text: truncateForSlack(errorMessage),
-      });
+      const stopStreamSucceeded = await stopSlackStream(errorMessage);
+      if (!stopStreamSucceeded) {
+        await sendOrUpdateNonStreamMessage(errorMessage);
+      }
     } else {
       await sendOrUpdateNonStreamMessage(errorMessage);
     }
@@ -658,7 +1098,7 @@ app.message(async ({ message, client, context }) => {
   if (!message || typeof message !== "object") {
     return;
   }
-
+  
   const typedMessage = message as SlackMessagePayload;
   const typedClient = client as unknown as TypedSlackClient;
   const typedContext = context as TypedSlackContext;
@@ -678,9 +1118,17 @@ app.message(async ({ message, client, context }) => {
   }
 
   try {
-    await processSlackMessage(typedMessage, typedClient, typedContext, query);
+    const resolvedSlackBot = await resolveSlackBotForEvent();
+    await processSlackMessage(
+      typedMessage,
+      typedClient,
+      typedContext,
+      query,
+      resolvedSlackBot,
+    );
   } catch (error) {
     console.error("Error handling DM message:", error);
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
   }
 });
 
@@ -689,7 +1137,6 @@ app.event("app_mention", async ({ event, client, context }) => {
   const typedMessage = event as unknown as SlackMessagePayload;
   const typedClient = client as unknown as TypedSlackClient;
   const typedContext = context as TypedSlackContext;
-
   if (isIgnoredSlackMessage(typedMessage, typedContext)) {
     return;
   }
@@ -700,9 +1147,22 @@ app.event("app_mention", async ({ event, client, context }) => {
   }
 
   try {
-    await processSlackMessage(typedMessage, typedClient, typedContext, query);
+    const contextualQuery = await buildQueryWithThreadContext(
+      typedClient,
+      typedMessage,
+      query,
+    );
+    const resolvedSlackBot = await resolveSlackBotForEvent();
+    await processSlackMessage(
+      typedMessage,
+      typedClient,
+      typedContext,
+      contextualQuery,
+      resolvedSlackBot,
+    );
   } catch (error) {
     console.error("Error handling app mention:", error);
+    await sendUserFacingSlackErrorMessage(typedClient, typedMessage, error);
   }
 });
 
@@ -710,6 +1170,11 @@ app.event("app_mention", async ({ event, client, context }) => {
 
 (async () => {
   await connect();
+  try {
+    await refreshSlackBotRegistry({ force: true });
+  } catch (error) {
+    console.error("Initial Slack bot registry refresh failed:", error);
+  }
   await app.start(process.env.SLACK_BOT_PORT || 3020);
   console.log("Bolt app is running on 3020.");
 })();

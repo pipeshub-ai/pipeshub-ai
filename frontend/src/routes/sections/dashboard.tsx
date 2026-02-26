@@ -39,6 +39,7 @@ const MailSettings = lazy(() => import('src/pages/dashboard/account/mail-setting
 const AiModelsSettings = lazy(() => import('src/pages/dashboard/account/ai-models-settings'));
 const PlatformSettings = lazy(() => import('src/pages/dashboard/account/platform-settings'));
 const PromptsSettings = lazy(() => import('src/pages/dashboard/account/prompts-settings'));
+const SlackBotSettings = lazy(() => import('src/pages/dashboard/account/slack-bot-settings'));
 const SamlSsoConfigPage = lazy(() => import('src/pages/dashboard/account/saml-sso-config'));
 const OAuthConfig = lazy(() => import('src/pages/dashboard/account/oauth-config'));
 const OAuth2Page = lazy(() => import('src/pages/dashboard/account/oauth2'));
@@ -469,6 +470,10 @@ export const dashboardRoutes = [
                   {
                     path: 'prompts',
                     element: <AdminProtectedRoute component={PromptsSettings} />,
+                  },
+                  {
+                    path: 'slack-bot',
+                    element: <AdminProtectedRoute component={SlackBotSettings} />,
                   },
                 ],
               },

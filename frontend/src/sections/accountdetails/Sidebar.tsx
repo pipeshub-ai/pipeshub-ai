@@ -109,6 +109,12 @@ export default function Sidebar() {
       path: `${baseUrl}/settings/ai-models`,
       adminOnly: true,
     },
+     {
+      name: 'Slack Bot',
+      icon: accountServiceIcon,
+      path: `${baseUrl}/settings/slack-bot`,
+      adminOnly: true,
+    },
     {
       name: 'Platform',
       icon: cogIcon,
@@ -120,7 +126,7 @@ export default function Sidebar() {
       icon: messageTextIcon,
       path: `${baseUrl}/settings/prompts`,
       adminOnly: true,
-    },
+    }
   ];
 
   // Developer settings options

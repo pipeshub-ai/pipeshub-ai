@@ -64,6 +64,7 @@ export interface Agent {
   icon?: string;
   isActive?: boolean;
   isDeleted?: boolean;
+  shareWithOrg?: boolean; // Whether agent is shared with the whole organization
   flow?: {
     nodes: any[];
     edges: any[];
@@ -306,6 +307,7 @@ export interface AgentFormData {
   vectorDBs?: string[];
   tags: string[];
   templateId?: string;
+  shareWithOrg?: boolean; // Whether to share this agent with the whole organization
   flow?: {
     nodes: any[];
     edges: any[];
