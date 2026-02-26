@@ -34,7 +34,7 @@ interface CitationData {
       webUrl?: string;
     };
     chunkIndex?: string;
-  };
+  }
 }
 
 interface BotResponse {
@@ -106,11 +106,6 @@ const SLACK_TECHNICAL_ERROR_PATTERNS: RegExp[] = [
 
 interface StreamStartResult {
   ts?: string;
-}
-
-interface NormalizedCitations {
-  citationLinks: string[];
-  chunkIndexToCitationNumber: Record<string, string>;
 }
 
 interface SlackMessagePayload {
@@ -398,47 +393,24 @@ function getCitationWebUrl(webUrl?: string): string {
   return `${process.env.FRONTEND_PUBLIC_URL || ""}${webUrl}`;
 }
 
-function normalizeCitations(citations?: CitationData[]): NormalizedCitations {
-  const uniqueUrls: string[] = [];
-  const urlToCitationNumber = new Map<string, string>();
-  const chunkIndexToCitationNumber: Record<string, string> = {};
+function buildCitationSources(citations?: CitationData[]): string[] {
+  const citationLinks: string[] = [];
 
   for (const citation of citations || []) {
-    const chunkIndex = citation.citationData.chunkIndex;
-    if (!chunkIndex) {
-      continue;
-    }
-
     const webUrl = getCitationWebUrl(citation.citationData.metadata.webUrl);
     if (!webUrl) {
       continue;
     }
 
-    let citationNumber = urlToCitationNumber.get(webUrl);
-    if (!citationNumber) {
-      citationNumber = String(uniqueUrls.length + 1);
-      uniqueUrls.push(webUrl);
-      urlToCitationNumber.set(webUrl, citationNumber);
+    const chunkIndex = citation.citationData.chunkIndex;
+    if (chunkIndex) {
+      citationLinks.push(`<${webUrl}|[${chunkIndex}]>`);
+      continue;
     }
-
-    if (!chunkIndexToCitationNumber[chunkIndex]) {
-      chunkIndexToCitationNumber[chunkIndex] = citationNumber;
-    }
+    citationLinks.push(`<${webUrl}|${webUrl}>`);
   }
 
-  return {
-    chunkIndexToCitationNumber,
-    citationLinks: uniqueUrls.map((link, idx) => `<${link}|[${idx + 1}]>`),
-  };
-}
-
-function remapCitationMarkers(text: string, citationMap: Record<string, string>): string {
-  const remappedText = text.replace(/\[(\d+)\]/g, (match, chunkIndex: string) => {
-    const mappedCitation = citationMap[chunkIndex];
-    return mappedCitation ? `[${mappedCitation}]` : match;
-  });
-
-  return remappedText.replace(/(\[\d+\])(?:\s*)\1+/g, "$1");
+  return citationLinks;
 }
 
 
@@ -468,14 +440,12 @@ function buildChatStreamUrl(
   }
 
   if (agentId) {
-    console.log("using agent id", agentId);
     const encodedAgentId = encodeURIComponent(agentId);
     return conversationId
       ? `${backendUrl}/api/v1/agents/${encodedAgentId}/conversations/internal/${conversationId}/messages/stream`
       : `${backendUrl}/api/v1/agents/${encodedAgentId}/conversations/internal/stream`;
   }
   
-  console.log("using default agent id");
   return conversationId
     ? `${backendUrl}/api/v1/conversations/internal/${conversationId}/messages/stream`
     : `${backendUrl}/api/v1/conversations/internal/stream`;
@@ -494,13 +464,11 @@ async function resolveSlackBotForEvent(
   // }
 
   // if (latestBots.length === 0) {
-  //   console.log("no bots found");
   //   return null;
   // }
 
   const matchedFromRequestContext = getCurrentMatchedSlackBot();
   if (matchedFromRequestContext) {
-    console.log("matchedFromRequestContext", matchedFromRequestContext);
     return matchedFromRequestContext;
     // const refreshedMatchedBot = findSlackBotByIdentity(latestBots, {
     //   teamId: matchedFromRequestContext.teamId,
@@ -526,7 +494,6 @@ async function resolveSlackBotForEvent(
   //   botId: typedMessage.bot_id,
   //   botUserId: typedContext.botUserId,
   // });
-  console.log("no matched bot found");
   return null;
 }
 
@@ -542,7 +509,6 @@ receiver.router.get("/", (req: Request, res: Response) => {
 
 
 receiver.router.post("slack/command", (req: Request, res: Response) => {
-  console.log("request");
   if (req.body.type === "url_verification") {
     res.send({ challenge: req.body.challenge });
   } else {
@@ -559,14 +525,12 @@ async function processSlackMessage(
   resolvedSlackBot: SlackBotConfig | null,
 ): Promise<void> {
 
-  console.log("processSlackMessage", resolvedSlackBot);
   if (!typedMessage.user || !typedMessage.channel) {
     return;
   }
 
   const threadId = resolveThreadId(typedMessage);
   
-  console.log("typedMessage", typedMessage);
   const lookupResult = await typedClient.users.info({
     user: typedMessage.user,
   });
@@ -574,7 +538,6 @@ async function processSlackMessage(
 
 
   if (!lookupResult.user?.profile?.email) {
-    console.log("lookupResult", lookupResult);
     console.error("Failed to get user email");
     await sendUserFacingSlackErrorMessage(
       typedClient,
@@ -860,27 +823,20 @@ async function processSlackMessage(
     }
 
     if (!streamTs && botResponse.content) {
-      console.log("pushed all content to slack stream");
       await pushTextToSlackStream(botResponse.content);
     }
 
-    const { citationLinks, chunkIndexToCitationNumber } = normalizeCitations(
-      botResponse.citations,
-    );
+    const citationLinks = buildCitationSources(botResponse.citations);
 
     const convertedFinalText = markdownToSlackMrkdwn(botResponse.content || "");
-    const remappedFinalText = remapCitationMarkers(
-      convertedFinalText,
-      chunkIndexToCitationNumber,
-    );
     const sourcesLine =
       citationLinks.length > 0
         ? `\n\n*Sources:* ${citationLinks.join(" ")}`
         : "";
 
-    const finalMessageText = `${remappedFinalText}${sourcesLine}`;
+    const finalMessageText = `${convertedFinalText}${sourcesLine}`;
     const finalStreamMessageText = buildFinalStreamOverwriteMessage(
-      remappedFinalText,
+      convertedFinalText,
       sourcesLine,
     );
 

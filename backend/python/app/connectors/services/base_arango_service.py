@@ -16635,7 +16635,7 @@ class BaseArangoService:
                         priority: 1
                     }}
             )
-            
+
             LET team_permissions = (
                 // Team permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
@@ -16653,7 +16653,7 @@ class BaseArangoService:
                         priority: 2
                     }}
             )
-            
+
             LET org_permissions = org_key != null ? (
                 // Org permissions
                 FOR perm IN {CollectionNames.PERMISSION.value}
@@ -16671,7 +16671,7 @@ class BaseArangoService:
                         priority: 3
                     }}
             ) : []
-            
+
             // Pre-compute set of agent paths shared with the org (edge-based, not stored in doc)
             LET org_shared_agent_paths = org_key != null ? (
                 FOR perm IN {CollectionNames.PERMISSION.value}
@@ -16683,7 +16683,7 @@ class BaseArangoService:
 
             // Combine all permissions and deduplicate by agent_id, keeping highest priority
             LET combined = APPEND(APPEND(all_permissions, team_permissions), org_permissions)
-            
+
             // Deduplicate: group by agent_id and keep entry with lowest priority number
             FOR perm_entry IN combined
                 COLLECT agent_id = perm_entry.agent_id INTO groups

@@ -1,7 +1,8 @@
 import asyncio
-from collections import defaultdict
 import re
+from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple, Union
+from urllib.parse import quote
 from uuid import uuid4
 
 from jinja2 import Template
@@ -33,8 +34,6 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import VECTOR_DB_COLLECTION_NAME
 from app.utils.logger import create_logger
 from app.utils.mimetype_to_extension import get_extension_from_mimetype
-from urllib.parse import quote
-
 
 group_types = [GroupType.LIST.value,GroupType.ORDERED_LIST.value,GroupType.FORM_AREA.value,GroupType.INLINE.value,GroupType.KEY_VALUE_AREA.value,GroupType.TEXT_SECTION.value]
 
@@ -551,8 +550,8 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
             if hide_weburl is None:
                 hide_weburl = record.get("hide_weburl", False)
 
-            
-            
+
+
             web_url = meta.get("webUrl") or record.get("weburl", "")
             origin = meta.get("origin") or record.get("origin", "")
             recordId = meta.get("recordId") or record.get("id", "")
@@ -560,7 +559,7 @@ def get_enhanced_metadata(record:Dict[str, Any],block:Dict[str, Any],meta:Dict[s
                 web_url = f"/record/{recordId}"
             elif web_url and origin != "UPLOAD":
                 web_url = generate_text_fragment_url(web_url, block_text)
-            
+
             enhanced_metadata = {
                         "orgId": meta.get("orgId") or record.get("org_id", ""),
                         "recordId": recordId,
@@ -1565,7 +1564,10 @@ def count_tokens(messages: List[Any], message_contents: List[str]) -> Tuple[int,
 
 
 
-def extract_start_end_text(snippet):
+FRAGMENT_WORD_COUNT = 4
+
+
+def extract_start_end_text(snippet: str) -> Tuple[str, str]:
     if not snippet:
         return "", ""
 
@@ -1581,7 +1583,7 @@ def extract_start_end_text(snippet):
         return "", ""
 
     words = first_text.split()
-    start_text = " ".join(words[:4])
+    start_text = " ".join(words[:FRAGMENT_WORD_COUNT])
     start_text_end = first_match.start() + len(first_text.split()[0])  # not needed yet
 
     # Compute exact end position of start_text in snippet
@@ -1604,11 +1606,11 @@ def extract_start_end_text(snippet):
 
     if last_text:
         words = last_text.split()
-        end_text = " ".join(words[-4:])
-    elif len(first_text.split()) > 4:
+        end_text = " ".join(words[-FRAGMENT_WORD_COUNT:])
+    elif len(first_text.split()) > FRAGMENT_WORD_COUNT:
         word_count = len(first_text.split())
-        diff = word_count - 4
-        diff = min(4, diff)
+        diff = word_count - FRAGMENT_WORD_COUNT
+        diff = min(FRAGMENT_WORD_COUNT, diff)
         # Fall back to last 4 words of the first segment
         end_text = " ".join(first_text.split()[-diff:])
     else:
@@ -1619,39 +1621,39 @@ def extract_start_end_text(snippet):
 def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
     """
     Generate a URL with text fragment for direct navigation to specific text.
-    
+
     Format: url#:~:text=start_text,end_text
-    
+
     Args:
         base_url: The base URL of the page
         text_snippet: The text to highlight/navigate to
-    
+
     Returns:
         URL with text fragment, or base_url if encoding fails
     """
     if not base_url or not text_snippet:
         return base_url
-    
+
     try:
         snippet = text_snippet.strip()
         if not snippet:
             return base_url
-        
+
         start_text, end_text = extract_start_end_text(snippet)
 
         if not start_text:
             return base_url
-       
+
         encoded_start = quote(start_text, safe='')
         encoded_end = None
         if end_text:
             encoded_end = quote(end_text, safe='')
-        
+
         if '#' in base_url:
             base_url = base_url.split('#')[0]
-        
+
         return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
-        
+
     except Exception:
         return base_url
 

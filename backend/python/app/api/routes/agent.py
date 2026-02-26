@@ -2159,7 +2159,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         if named_toolsets:
             import asyncio as _asyncio
 
-            async def _fetch_toolset_config(toolset: dict):
+            async def _fetch_toolset_config(toolset: dict) -> tuple[dict, Any]:
                 """Return (toolset, config_or_None) without raising."""
                 toolset_name = toolset["name"]
                 try:
@@ -2295,7 +2295,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                             kb_record_groups.extend(record_groups)
                 filters["kb"] = kb_record_groups
             logger.info(f"Filters: {filters}")
-            
+
         # Narrow agent_knowledge to only the connectors present in filters["apps"]
         # so the query_info knowledge list stays consistent with the resolved filters.
         enabled_apps_set = set(filters.get("apps", []))

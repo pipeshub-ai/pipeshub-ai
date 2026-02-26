@@ -15732,7 +15732,7 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE p.type = 'USER'
             RETURN collect(t.id) AS team_ids
             """
-            
+
             user_teams_result = await self.client.execute_query(
                 user_teams_query,
                 parameters={"user_key": user_key},
@@ -15748,25 +15748,25 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE p.type = 'USER'
             AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
             RETURN agent, p.role AS role, 'INDIVIDUAL' AS access_type, 1 AS priority
-            
+
             UNION ALL
-            
+
             // Team permissions
             MATCH (t:{team_label})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE t.id IN $team_ids
             AND p.type = 'TEAM'
             AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
             RETURN agent, p.role AS role, 'TEAM' AS access_type, 2 AS priority
-            
+
             UNION ALL
-            
+
             // Org permissions
             MATCH (o:{org_label} {{id: $org_key}})-[p:{permission_rel}]->(agent:{agent_label})
             WHERE p.type = 'ORG'
             AND (agent.isDeleted IS NULL OR agent.isDeleted = false)
             RETURN agent, p.role AS role, 'ORG' AS access_type, 3 AS priority
             """
-            
+
             result = await self.client.execute_query(
                 combined_query,
                 parameters={"user_key": user_key, "org_key": org_key, "team_ids": user_team_ids},

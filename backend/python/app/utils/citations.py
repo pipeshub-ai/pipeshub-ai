@@ -3,6 +3,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import get_enhanced_metadata
 
