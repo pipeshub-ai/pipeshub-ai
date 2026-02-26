@@ -265,7 +265,7 @@ async def start_kafka_consumers(app_container: IndexingAppContainer) -> List:
                 if graph_provider.client.driver:
                     try:
                         await graph_provider.client.driver.close()
-                    except Exception:
+                    except Exception as e:
                         logger.warning("Failed to close existing Neo4j driver, proceeding with reconnection: %s", e) 
                     graph_provider.client.driver = None
                 await graph_provider.client.connect()
