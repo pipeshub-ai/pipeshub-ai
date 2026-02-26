@@ -6456,8 +6456,6 @@ paths:
                   description: State parameter containing session information
               required:
                 - SAMLResponse
-                - RelayState
-
       responses:
         '302':
           description: Redirect to frontend with authentication result
