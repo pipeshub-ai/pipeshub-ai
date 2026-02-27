@@ -992,11 +992,6 @@ class AzureFilesConnector(BaseConnector):
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
-                if current_revision_id and stored_revision and current_revision_id == stored_revision:
-                    self.logger.debug(
-                        f"Skipping {normalized_path}: externalRecordId and externalRevisionId unchanged"
-                    )
-                    return None, []
 
                 # Content changed or missing revision - sync properly from Azure Files
                 if current_revision_id and stored_revision and current_revision_id != stored_revision:
