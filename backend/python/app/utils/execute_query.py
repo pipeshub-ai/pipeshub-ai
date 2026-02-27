@@ -22,7 +22,6 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 logger = create_logger("execute_query")
 
 
-
 class ExecuteQueryArgs(BaseModel):
     """Required tool args for executing SQL queries."""
     
