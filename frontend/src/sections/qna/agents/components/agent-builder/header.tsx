@@ -30,7 +30,6 @@ import fileIcon from '@iconify-icons/mdi/file-document-outline';
 import shareIcon from '@iconify-icons/mdi/share-outline';
 import closeIcon from '@iconify-icons/eva/close-outline';
 import type { AgentBuilderHeaderProps } from '../../types/agent';
-import AgentPermissionsDialog from './agent-permissions-dialog';
 
 type SnackbarSeverity = 'success' | 'error' | 'warning' | 'info';
 
@@ -476,14 +475,6 @@ const AgentBuilderHeader: React.FC<AgentBuilderHeaderProps> = ({
           </Button>
         </Stack>
       </Stack>
-
-      {/* Permissions Dialog */}
-      <AgentPermissionsDialog
-        open={shareAgentDialogOpen}
-        onClose={() => setShareAgentDialogOpen(false)}
-        agentId={agentId || ''}
-        agentName={agentName}
-      />
 
       {/* Snackbar */}
       <Snackbar
