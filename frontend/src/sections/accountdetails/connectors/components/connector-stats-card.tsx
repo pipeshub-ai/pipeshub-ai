@@ -285,6 +285,17 @@ export const ConnectorStatsCard = ({
           },
         ]
       : []),
+    ...(indexingStatus.CONNECTOR_DISABLED > 0
+      ? [
+          {
+            label: 'Connector Disabled',
+            count: indexingStatus.CONNECTOR_DISABLED,
+            icon: alertCircleOutlineIcon,
+            tooltip: 'Connector was disabled',
+            key: 'connectorDisabled' as const,
+          },
+        ]
+      : []),
   ];
 
   const allStatusItems = [...statusItems, ...optionalStatusItems];

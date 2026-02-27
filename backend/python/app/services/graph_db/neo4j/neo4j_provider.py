@@ -4966,39 +4966,43 @@ class Neo4jProvider(IGraphDBProvider):
         node_ids: List[str],
         edge_collections: List[str]
     ) -> Tuple[int, List[str]]:
-        """Delete all relationships connected to nodes."""
+        """Delete relationships of the given types connected to nodes. Requires a non-empty edge_collections list (same as Arango: empty list = nothing to delete)."""
         if not node_ids:
+            return (0, [])
+
+        if not edge_collections:
             return (0, [])
 
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
-        query = """
-        UNWIND $node_ids AS node_id_str
-        WITH split(node_id_str, '/')[1] AS node_id
-        MATCH (n {id: node_id})-[r]-()
+        node_keys = [sid.split("/", 1)[1] for sid in node_ids if "/" in sid]
+        if not node_keys:
+            return (0, [])
+
+        rel_types = [edge_collection_to_relationship(ec) for ec in edge_collections]
+        rel_pattern = "|".join(rel_types)
+        query = f"""
+        MATCH (n)
+        WHERE n.id IN $node_keys
+        MATCH (n)-[r:{rel_pattern}]-()
         DELETE r
-        RETURN count(DISTINCT r) AS deleted_count
+        RETURN count(r) AS deleted_count
         """
+        parameters = {"node_keys": node_keys}
 
         try:
-            total_deleted = 0
-            total_batches = (len(node_ids) + EDGE_DELETE_BATCH_SIZE - 1) // EDGE_DELETE_BATCH_SIZE
-
-            for i in range(0, len(node_ids), EDGE_DELETE_BATCH_SIZE):
-                batch_node_ids = node_ids[i:i + EDGE_DELETE_BATCH_SIZE]
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"node_ids": batch_node_ids},
-                    txn_id=transaction
-                )
-                deleted_in_batch = results[0]["deleted_count"] if results else 0
-                total_deleted += deleted_in_batch
-
-            self.logger.info(
-                f"✅ Deleted {total_deleted} relationships for {len(node_ids)} nodes in {total_batches} batch(es)"
+            results = await self.client.execute_query(
+                query,
+                parameters=parameters,
+                txn_id=transaction
             )
-            return (total_deleted, [])
+
+            deleted_count = sum(row.get("deleted_count", 0) for row in results) if results else 0
+
+            self.logger.info(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
+
+            return (deleted_count, [])
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete relationships: {str(e)}")
@@ -5211,6 +5215,38 @@ class Neo4jProvider(IGraphDBProvider):
             connector_id=connector_id,
             collection=CollectionNames.SYNC_POINTS.value
         )
+
+    async def delete_connector_sync_edges(
+        self,
+        connector_id: str,
+        transaction: Optional[str] = None
+    ) -> Tuple[int, bool]:
+        """Delete only sync-created edges for this connector. Leaves nodes and isOfType intact."""
+        try:
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            node_ids = collected.get("all_node_ids") or []
+            if not node_ids:
+                self.logger.info(f"No connector entities found for {connector_id}, nothing to delete")
+                return (0, True)
+
+            sync_edge_collections = [
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.PERMISSION.value,
+                CollectionNames.INHERIT_PERMISSIONS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            ]
+            deleted_count, failed = await self._delete_all_edges_for_nodes(
+                transaction or "", node_ids, sync_edge_collections
+            )
+            if failed:
+                self.logger.warning(f"Failed to delete some sync edges for connector {connector_id}")
+                return (deleted_count, False)
+            self.logger.info(f"Deleted {deleted_count} sync edges for connector {connector_id}")
+            return (deleted_count, True)
+        except Exception as e:
+            self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
+            return (0, False)
 
     async def delete_connector_instance(
         self,
