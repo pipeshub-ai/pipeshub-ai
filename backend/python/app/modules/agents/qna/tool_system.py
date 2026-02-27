@@ -444,6 +444,48 @@ def get_agent_tools(state: ChatState) -> List[RegistryToolWrapper]:
             if state_logger:
                 state_logger.warning(f"Failed to add agent fetch_full_record tool: {e}")
 
+    # Add dynamic execute_sql_query tool for database queries
+    config_service = state.get("config_service")
+    if config_service:
+        try:
+            from app.utils.execute_query import create_execute_query_tool
+            graph_provider = state.get("graph_provider")
+            org_id = state.get("org_id")
+            execute_query_tool = create_execute_query_tool(
+                config_service=config_service,
+                graph_provider=graph_provider,
+                org_id=org_id,
+            )
+            tools.append(execute_query_tool)
+            state_logger = state.get("logger")
+            if state_logger:
+                state_logger.debug("✅ Added execute_sql_query_tool for database queries")
+        except Exception as e:
+            state_logger = state.get("logger")
+            if state_logger:
+                state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
+
+    # Add dynamic execute_sql_query tool for database queries
+    config_service = state.get("config_service")
+    if config_service:
+        try:
+            from app.utils.execute_query import create_execute_query_tool
+            graph_provider = state.get("graph_provider")
+            org_id = state.get("org_id")
+            execute_query_tool = create_execute_query_tool(
+                config_service=config_service,
+                graph_provider=graph_provider,
+                org_id=org_id,
+            )
+            tools.append(execute_query_tool)
+            state_logger = state.get("logger")
+            if state_logger:
+                state_logger.debug("✅ Added execute_sql_query_tool for database queries")
+        except Exception as e:
+            state_logger = state.get("logger")
+            if state_logger:
+                state_logger.warning(f"Failed to add execute_sql_query_tool: {e}")
+
     return tools
 
 

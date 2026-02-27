@@ -20,6 +20,8 @@ from app.modules.parsers.markdown.markdown_parser import MarkdownParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
+from app.modules.parsers.sql.sql_table_parser import SQLTableParser
+from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.arango import Arango
 from app.modules.transformers.blob_storage import BlobStorage
@@ -156,6 +158,8 @@ class ContainerUtils:
             ExtensionTypes.SVG.value: image_parser,
             ExtensionTypes.HEIC.value: image_parser,
             ExtensionTypes.HEIF.value: image_parser,
+            ExtensionTypes.SQL_TABLE.value: SQLTableParser(),
+            ExtensionTypes.SQL_VIEW.value: SQLViewParser(),
         }
         return parsers
 

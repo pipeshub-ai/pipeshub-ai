@@ -121,6 +121,7 @@ dependencies = [
     "uuid==1.30",
     "uvicorn==0.30.6",
     "zstandard==0.25.0",
+    "psycopg2-binary==2.9.11",
 ]
 
 [tool.setuptools.packages.find]

@@ -245,6 +245,10 @@ record_schema = {
             "isInternal": {"type": "boolean", "default": False},
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
+            # SQL record fields (tables/views)
+            "definition": {"type": ["string", "null"]},
+            "sourceTables": {"type": ["array", "null"], "items": {"type": "string"}},
+            "rowCount": {"type": ["number", "null"]},
         },
         "required": [
             "recordName",
@@ -417,6 +421,60 @@ project_record_schema = {
             "leadEmail": {"type": ["string", "null"]},
         },
     },
+}
+
+sql_table_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "databaseName": {"type": ["string", "null"]},
+            "schemaName": {"type": ["string", "null"]},
+            "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.table
+            "rowCount": {"type": ["number", "null"]},
+            "sizeInBytes": {"type": ["number", "null"]},
+            "columnCount": {"type": ["number", "null"]},
+            "ddl": {"type": ["string", "null"]},  # CREATE TABLE statement
+            "primaryKeys": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "foreignKeys": {
+                "type": ["array", "null"],
+                "items": {"type": "object"},
+            },
+            "comment": {"type": ["string", "null"]},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL table record schema.",
+}
+
+sql_view_record_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "name": {"type": "string", "minLength": 1},
+            "databaseName": {"type": ["string", "null"]},
+            "schemaName": {"type": ["string", "null"]},
+            "fqn": {"type": ["string", "null"]},  # fully qualified name: database.schema.view
+            "definition": {"type": ["string", "null"]},  # CREATE VIEW statement
+            "sourceTables": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "isSecure": {"type": "boolean", "default": False},
+            "comment": {"type": ["string", "null"]},
+        },
+        "required": ["name"],
+        "additionalProperties": False,
+    },
+    "level": "strict",
+    "message": "Document does not match the SQL view record schema.",
 }
 
 record_group_schema = {

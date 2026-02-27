@@ -1,4 +1,5 @@
 import uuid
+from typing import Dict, List, Optional, Set
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -26,12 +27,110 @@ class Arango(Transformer):
         is_vlm_ocr_processed = getattr(record, 'is_vlm_ocr_processed', False)
         await self.save_metadata_to_db(record_id, metadata, virtual_record_id, is_vlm_ocr_processed)
 
-    async def save_metadata_to_db(
-        self,  record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
+    # ------------------------------------------------------------------
+    # helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _node_key(doc: Dict) -> str:
+        """Extract the node key from a document returned by the graph provider."""
+        return doc.get("_key") or doc.get("id")
+
+    async def _find_or_create_node(
+        self,
+        tx_store,
+        collection: str,
+        filter_field: str,
+        filter_value: str,
+    ) -> str:
+        """
+        Look up a node by a single field; create it if it does not exist.
+        Returns the node key.
+        """
+        results = await tx_store.get_nodes_by_filters(
+            collection, {filter_field: filter_value}
+        )
+        if results:
+            return self._node_key(results[0])
+
+        new_key = str(uuid.uuid4())
+        await tx_store.batch_upsert_nodes(
+            [{"id": new_key, "name": filter_value}],
+            collection,
+        )
+        return new_key
+
+    async def _reconcile_edges(
+        self,
+        tx_store,
+        record_id: str,
+        record_from: str,
+        edge_collection: str,
+        new_tos: Dict[str, str],
+        label: str,
     ) -> None:
         """
-        Extract metadata from a document and create department relationships
+        Generic reconciliation: create new edges, delete stale ones.
+
+        Args:
+            tx_store: Transaction store (handles transaction passing automatically)
+            record_id: record key (for logging)
+            record_from: full from-id, e.g. "records/<key>"
+            edge_collection: the edge collection name
+            new_tos: mapping of full-to-id -> human-readable name
+            label: label for log messages (e.g. "department")
         """
+        # 1. Fetch existing edges for this record
+        existing_edges = await tx_store.get_edges_from_node(
+            record_from, edge_collection
+        )
+        existing_by_to: Dict[str, Dict] = {e["_to"]: e for e in existing_edges}
+
+        # 2. Create edges that are new (in new but not in existing)
+        edges_to_create: List[Dict] = []
+        for to_full, name in new_tos.items():
+            if to_full not in existing_by_to:
+                to_collection, to_id = to_full.split("/", 1)
+                edges_to_create.append({
+                    "from_id": record_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": to_id,
+                    "to_collection": to_collection,
+                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+                })
+                self.logger.info(f"🔗 Created {label} edge: {record_id} -> {name}")
+        if edges_to_create:
+            await tx_store.batch_create_edges(
+                edges_to_create, edge_collection
+            )
+
+        # 3. Delete edges that are stale (in existing but not in new)
+        stale_tos = [
+            to_full for to_full in existing_by_to
+            if to_full not in new_tos
+        ]
+        for to_full in stale_tos:
+            to_collection, to_id = to_full.split("/", 1)
+            from_collection, from_id = record_from.split("/", 1)
+            await tx_store.delete_edge(
+                from_id, from_collection,
+                to_id, to_collection,
+                edge_collection,
+            )
+            self.logger.info(f"🗑️ Deleted stale {label} edge: {record_id} -> {to_full}")
+
+    # ------------------------------------------------------------------
+    # main persistence logic
+    # ------------------------------------------------------------------
+
+    async def save_metadata_to_db(
+        self, record_id: str, metadata: SemanticMetadata, virtual_record_id: str, is_vlm_ocr_processed: bool = False
+    ) -> None:
+        """
+        Extract metadata from a document and create department relationships.
+        Uses reconciliation logic: fetch existing edges, compare with new, create new ones, delete stale ones.
+        """
+
         self.logger.info("🚀 Saving metadata to graph database")
         async with self.graph_data_store.transaction() as tx_store:
             try:
@@ -44,281 +143,120 @@ class Arango(Transformer):
                     self.logger.error(f"❌ Record {record_id} not found in database")
                     raise Exception(f"Record {record_id} not found in database")
 
+                record_from = f"{CollectionNames.RECORDS.value}/{record_id}"
 
-                # Create relationships with departments
+                # --- Reconcile department edges ---
+                new_dept_tos: Dict[str, str] = {}
                 for department in metadata.departments:
                     try:
-                        # Find department by name using graph_provider
-                        dept_nodes = await tx_store.get_nodes_by_filters(
+                        results = await tx_store.get_nodes_by_filters(
                             CollectionNames.DEPARTMENTS.value,
-                            {"departmentName": department}
+                            {"departmentName": department},
                         )
-
-                        if not dept_nodes:
+                        if results:
+                            dept_key = self._node_key(results[0])
+                            dept_to = f"{CollectionNames.DEPARTMENTS.value}/{dept_key}"
+                            new_dept_tos[dept_to] = department
+                        else:
                             self.logger.warning(f"⚠️ No department found for: {department}")
-                            continue
-
-                        dept_doc = dept_nodes[0]
-                        # Handle both id and _key formats
-                        dept_key = dept_doc.get("_key") or dept_doc.get("id")
-                        self.logger.info(f"🚀 Department: {dept_doc}")
-
-                        if dept_key:
-                            # Check if edge already exists
-                            existing_edge = await tx_store.get_edge(
-                                from_id=record_id,
-                                from_collection=CollectionNames.RECORDS.value,
-                                to_id=dept_key,
-                                to_collection=CollectionNames.DEPARTMENTS.value,
-                                collection=CollectionNames.BELONGS_TO_DEPARTMENT.value
-                            )
-
-                            if not existing_edge:
-                                edge = {
-                                    "from_id": record_id,
-                                    "from_collection": CollectionNames.RECORDS.value,
-                                    "to_id": dept_key,
-                                    "to_collection": CollectionNames.DEPARTMENTS.value,
-                                    "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                                }
-                                await tx_store.batch_create_edges(
-                                    [edge], CollectionNames.BELONGS_TO_DEPARTMENT.value
-                                )
-                                self.logger.info(
-                                    f"🔗 Created relationship between document {record_id} and department {department}"
-                                )
-                            else:
-                                self.logger.info(
-                                    f"🔗 Relationship between document {record_id} and department {department} already exists"
-                                )
-
                     except Exception as e:
-                        self.logger.error(
-                            f"❌ Error creating relationship with department {department}: {str(e)}"
-                        )
-                        continue
+                        self.logger.error(f"❌ Error resolving department {department}: {str(e)}")
 
-                # Handle single category
-                category_nodes = await tx_store.get_nodes_by_filters(
-                    CollectionNames.CATEGORIES.value,
-                    {"name": metadata.categories[0]}
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_DEPARTMENT.value,
+                    new_dept_tos, "department",
                 )
 
-                if category_nodes:
-                    category_doc = category_nodes[0]
-                    category_key = category_doc.get("_key") or category_doc.get("id")
-                else:
-                    category_key = str(uuid.uuid4())
-                    # Create category node
-                    category_node = {
-                        "id": category_key,
-                        "name": metadata.categories[0],
-                    }
-                    await tx_store.batch_upsert_nodes(
-                        [category_node],
-                        CollectionNames.CATEGORIES.value
-                    )
+                # --- Reconcile category edges ---
+                new_cat_tos: Set[str] = set()
 
-                # Create category relationship if it doesn't exist
-                existing_category_edge = await tx_store.get_edge(
-                    from_id=record_id,
-                    from_collection=CollectionNames.RECORDS.value,
-                    to_id=category_key,
-                    to_collection=CollectionNames.CATEGORIES.value,
-                    collection=CollectionNames.BELONGS_TO_CATEGORY.value
+                # Handle primary category
+                category_key = await self._find_or_create_node(
+                    tx_store, CollectionNames.CATEGORIES.value, "name", metadata.categories[0]
                 )
+                new_cat_tos.add(f"{CollectionNames.CATEGORIES.value}/{category_key}")
 
-                if not existing_category_edge:
-                    category_edge = {
-                        "from_id": record_id,
-                        "from_collection": CollectionNames.RECORDS.value,
-                        "to_id": category_key,
-                        "to_collection": CollectionNames.CATEGORIES.value,
-                        "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                    }
-                    await tx_store.batch_create_edges(
-                        [category_edge],
-                        CollectionNames.BELONGS_TO_CATEGORY.value
-                    )
+                # Handle subcategories
+                async def handle_subcategory(
+                    name: str, level: str, parent_key: str, parent_collection: str
+                ) -> str:
+                    collection_name = getattr(CollectionNames, f"SUBCATEGORIES{level}").value
+                    key = await self._find_or_create_node(tx_store, collection_name, "name", name)
 
-                # Handle subcategories with similar pattern
-                async def handle_subcategory(name, level, parent_key, parent_collection) -> str:
-                    collection_name = getattr(
-                        CollectionNames, f"SUBCATEGORIES{level}"
-                    ).value
+                    sub_to = f"{collection_name}/{key}"
+                    new_cat_tos.add(sub_to)
 
-                    # Find subcategory by name
-                    subcategory_nodes = await tx_store.get_nodes_by_filters(
-                        collection_name,
-                        {"name": name}
-                    )
-
-                    if subcategory_nodes:
-                        doc = subcategory_nodes[0]
-                        key = doc.get("_key") or doc.get("id")
-                    else:
-                        key = str(uuid.uuid4())
-                        # Create subcategory node
-                        subcategory_node = {
-                            "id": key,
-                            "name": name,
-                        }
-                        await tx_store.batch_upsert_nodes(
-                            [subcategory_node],
-                            collection_name
-                        )
-
-                    # Create belongs_to relationship if it doesn't exist
-                    existing_belongs_edge = await tx_store.get_edge(
-                        from_id=record_id,
-                        from_collection=CollectionNames.RECORDS.value,
-                        to_id=key,
-                        to_collection=collection_name,
-                        collection=CollectionNames.BELONGS_TO_CATEGORY.value
-                    )
-
-                    if not existing_belongs_edge:
-                        belongs_edge = {
-                            "from_id": record_id,
-                            "from_collection": CollectionNames.RECORDS.value,
-                            "to_id": key,
-                            "to_collection": collection_name,
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        }
-                        await tx_store.batch_create_edges(
-                            [belongs_edge],
-                            CollectionNames.BELONGS_TO_CATEGORY.value
-                        )
-
-                    # Create hierarchy relationship if parent exists
+                    # Create hierarchy relationship (inter-category)
+                    # batch_create_edges uses UPSERT so this is idempotent
                     if parent_key:
-                        existing_hierarchy_edge = await tx_store.get_edge(
-                            from_id=key,
-                            from_collection=collection_name,
-                            to_id=parent_key,
-                            to_collection=parent_collection,
-                            collection=CollectionNames.INTER_CATEGORY_RELATIONS.value
-                        )
-
-                        if not existing_hierarchy_edge:
-                            hierarchy_edge = {
+                        await tx_store.batch_create_edges(
+                            [{
                                 "from_id": key,
                                 "from_collection": collection_name,
                                 "to_id": parent_key,
                                 "to_collection": parent_collection,
                                 "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                            }
-                            await tx_store.batch_create_edges(
-                                [hierarchy_edge],
-                                CollectionNames.INTER_CATEGORY_RELATIONS.value
-                            )
+                            }],
+                            CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                        )
                     return key
 
                 # Process subcategories
-                sub1_key = None
-                sub2_key = None
+                sub1_key: Optional[str] = None
+                sub2_key: Optional[str] = None
                 if metadata.sub_category_level_1:
                     sub1_key = await handle_subcategory(
-                        metadata.sub_category_level_1, "1", category_key, "categories"
+                        metadata.sub_category_level_1, "1",
+                        category_key, CollectionNames.CATEGORIES.value,
                     )
                 if metadata.sub_category_level_2 and sub1_key:
                     sub2_key = await handle_subcategory(
-                        metadata.sub_category_level_2, "2", sub1_key, "subcategories1"
+                        metadata.sub_category_level_2, "2",
+                        sub1_key, CollectionNames.SUBCATEGORIES1.value,
                     )
                 if metadata.sub_category_level_3 and sub2_key:
                     await handle_subcategory(
-                        metadata.sub_category_level_3, "3", sub2_key, "subcategories2"
+                        metadata.sub_category_level_3, "3",
+                        sub2_key, CollectionNames.SUBCATEGORIES2.value,
                     )
 
-                # Handle languages
+                # Reconcile category edges (convert set to dict for _reconcile_edges)
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_CATEGORY.value,
+                    {to: to for to in new_cat_tos}, "category",
+                )
+
+                # --- Reconcile language edges ---
+                new_lang_tos: Dict[str, str] = {}
                 for language in metadata.languages:
-                    # Find language by name
-                    language_nodes = await tx_store.get_nodes_by_filters(
-                        CollectionNames.LANGUAGES.value,
-                        {"name": language}
+                    lang_key = await self._find_or_create_node(
+                        tx_store, CollectionNames.LANGUAGES.value, "name", language
                     )
+                    lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_key}"
+                    new_lang_tos[lang_to] = language
 
-                    if language_nodes:
-                        lang_doc = language_nodes[0]
-                        lang_key = lang_doc.get("_key") or lang_doc.get("id")
-                    else:
-                        lang_key = str(uuid.uuid4())
-                        # Create language node
-                        language_node = {
-                            "id": lang_key,
-                            "name": language,
-                        }
-                        await tx_store.batch_upsert_nodes(
-                            [language_node],
-                            CollectionNames.LANGUAGES.value
-                        )
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_LANGUAGE.value,
+                    new_lang_tos, "language",
+                )
 
-                    # Create relationship if it doesn't exist
-                    existing_lang_edge = await tx_store.get_edge(
-                        from_id=record_id,
-                        from_collection=CollectionNames.RECORDS.value,
-                        to_id=lang_key,
-                        to_collection=CollectionNames.LANGUAGES.value,
-                        collection=CollectionNames.BELONGS_TO_LANGUAGE.value
-                    )
-
-                    if not existing_lang_edge:
-                        lang_edge = {
-                            "from_id": record_id,
-                            "from_collection": CollectionNames.RECORDS.value,
-                            "to_id": lang_key,
-                            "to_collection": CollectionNames.LANGUAGES.value,
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        }
-                        await tx_store.batch_create_edges(
-                            [lang_edge],
-                            CollectionNames.BELONGS_TO_LANGUAGE.value
-                        )
-
-                # Handle topics
+                # --- Reconcile topic edges ---
+                new_topic_tos: Dict[str, str] = {}
                 for topic in metadata.topics:
-                    # Find topic by name
-                    topic_nodes = await tx_store.get_nodes_by_filters(
-                        CollectionNames.TOPICS.value,
-                        {"name": topic}
+                    topic_key = await self._find_or_create_node(
+                        tx_store, CollectionNames.TOPICS.value, "name", topic
                     )
+                    topic_to = f"{CollectionNames.TOPICS.value}/{topic_key}"
+                    new_topic_tos[topic_to] = topic
 
-                    if topic_nodes:
-                        topic_doc = topic_nodes[0]
-                        topic_key = topic_doc.get("_key") or topic_doc.get("id")
-                    else:
-                        topic_key = str(uuid.uuid4())
-                        # Create topic node
-                        topic_node = {
-                            "id": topic_key,
-                            "name": topic,
-                        }
-                        await tx_store.batch_upsert_nodes(
-                            [topic_node],
-                            CollectionNames.TOPICS.value
-                        )
-
-                    # Create relationship if it doesn't exist
-                    existing_topic_edge = await tx_store.get_edge(
-                        from_id=record_id,
-                        from_collection=CollectionNames.RECORDS.value,
-                        to_id=topic_key,
-                        to_collection=CollectionNames.TOPICS.value,
-                        collection=CollectionNames.BELONGS_TO_TOPIC.value
-                    )
-
-                    if not existing_topic_edge:
-                        topic_edge = {
-                            "from_id": record_id,
-                            "from_collection": CollectionNames.RECORDS.value,
-                            "to_id": topic_key,
-                            "to_collection": CollectionNames.TOPICS.value,
-                            "createdAtTimestamp": get_epoch_timestamp_in_ms(),
-                        }
-                        await tx_store.batch_create_edges(
-                            [topic_edge],
-                            CollectionNames.BELONGS_TO_TOPIC.value
-                        )
+                await self._reconcile_edges(
+                    tx_store, record_id, record_from,
+                    CollectionNames.BELONGS_TO_TOPIC.value,
+                    new_topic_tos, "topic",
+                )
 
                 self.logger.info(
                     "🚀 Metadata saved successfully for document"
@@ -326,7 +264,6 @@ class Arango(Transformer):
 
                 # Update extraction status for the record
                 timestamp = get_epoch_timestamp_in_ms()
-                # Update extraction status for the record
                 status_doc = {
                     "id": record_id,
                     "extractionStatus": "COMPLETED",
@@ -346,7 +283,6 @@ class Arango(Transformer):
                 await tx_store.batch_upsert_nodes(
                     [status_doc], CollectionNames.RECORDS.value
                 )
-
 
             except Exception as e:
                 self.logger.error(f"❌ Error saving metadata to graph database: {str(e)}")
