@@ -3016,6 +3016,18 @@ async def update_connector_instance_filters_sync_config(
             logger.error(f"Error deleting sync points for connector {connector_id} after filter change: {sp_error}")
             # Non-fatal — continue with the config update response
 
+        # Delete connector sync edges so the next sync re-creates edges with the new filter
+        try:
+            deleted_edges, success = await graph_provider.delete_connector_sync_edges(
+                connector_id=connector_id
+            )
+            if success:
+                logger.info(f"Deleted {deleted_edges} sync edges for connector {connector_id} after filter change")
+            else:
+                logger.warning(f"Failed to delete some sync edges for connector {connector_id} after filter change, continuing anyway")
+        except Exception as edge_error:
+            logger.error(f"Error deleting connector sync edges for {connector_id} after filter change: {edge_error}")
+
         # For filters/sync updates, keep connector status as is
         # Only update the timestamp
         updates = {

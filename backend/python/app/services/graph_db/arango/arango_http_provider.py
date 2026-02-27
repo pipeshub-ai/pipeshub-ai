@@ -6056,6 +6056,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
             collection=CollectionNames.SYNC_POINTS.value
         )
 
+    async def delete_connector_sync_edges(
+        self,
+        connector_id: str,
+        transaction: Optional[str] = None
+    ) -> Tuple[int, bool]:
+        """
+        Delete only sync-created edges for this connector. Leaves nodes and
+        isOfType/indexing data intact.
+        """
+        try:
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            node_ids = collected.get("all_node_ids") or []
+            if not node_ids:
+                self.logger.info(f"No connector entities found for {connector_id}, nothing to delete")
+                return (0, True)
+
+            sync_edge_collections = [
+                CollectionNames.BELONGS_TO.value,
+                CollectionNames.RECORD_RELATIONS.value,
+                CollectionNames.PERMISSION.value,
+                CollectionNames.INHERIT_PERMISSIONS.value,
+                CollectionNames.USER_APP_RELATION.value,
+            ]
+            deleted_count, failed = await self._delete_all_edges_for_nodes(
+                transaction, node_ids, sync_edge_collections
+            )
+            if failed:
+                self.logger.warning(f"Failed to delete edges from collections: {failed}")
+                return (deleted_count, False)
+            self.logger.info(f"Deleted {deleted_count} sync edges for connector {connector_id}")
+            return (deleted_count, True)
+        except Exception as e:
+            self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
+            return (0, False)
+
     async def delete_connector_instance(
         self,
         connector_id: str,
