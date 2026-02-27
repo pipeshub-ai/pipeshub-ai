@@ -557,8 +557,8 @@ export class Application {
     const logger = Logger.getInstance(loggerConfig);
     const configurationManagerConfig = loadConfigurationManagerConfig();
 
-    if (configurationManagerConfig.storeType !== StoreType.Redis) {
-      logger.debug('KV store is not Redis, skipping pre-init migration check');
+    if (configurationManagerConfig.storeType !== StoreType.Redis || !process.env.ETCD_URL) {
+      logger.debug('KV store is not Redis or etcd not available, skipping pre-init migration check');
       return;
     }
 
