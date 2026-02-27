@@ -25,6 +25,8 @@ interface ConvertOptions {
     preserveLinks?: boolean;
     /** Custom bullet character (default: "•") */
     bulletChar?: string;
+    /** Preserve trailing whitespace/newlines for streaming conversion. */
+    preserveTrailingWhitespace?: boolean;
     /**
      * How to render tables in Slack:
      * - "code"   → monospaced code block with aligned columns (default)
@@ -182,9 +184,18 @@ interface ConvertOptions {
     markdown: string,
     options: ConvertOptions = {}
   ): string {
-    const { preserveLinks = false, bulletChar = "•", tableMode = "code" } = options;
+
+
+    const {
+      preserveLinks = false,
+      bulletChar = "•",
+      tableMode = "code",
+      preserveTrailingWhitespace = false,
+    } = options;
   
     if (!markdown) return "";
+    markdown = markdown.replace(/\\n/g, "\n");
+
   
     // ── Step 1: Extract and protect code blocks & inline code ──────────
     // We replace them with placeholders so regex transforms don't touch them.
@@ -308,8 +319,7 @@ interface ConvertOptions {
   
     text = text.replace(/\n{3,}/g, "\n\n");
   
-    return text.trim();
+    return preserveTrailingWhitespace ? text : text.trim();
   }
   
   export default markdownToSlackMrkdwn;
-  
