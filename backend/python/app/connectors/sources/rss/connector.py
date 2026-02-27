@@ -144,6 +144,10 @@ class RSSConnector(BaseConnector):
         self.processed_urls: Set[str] = set()
         self.batch_size: int = 50
 
+        # Scope and creator (set from config in init())
+        self.connector_scope: Optional[str] = None
+        self.created_by: Optional[str] = None
+
     async def init(self) -> bool:
         """Initialize the RSS connector with configuration from etcd."""
         try:
@@ -178,6 +182,10 @@ class RSSConnector(BaseConnector):
             # Handle string "true"/"false" from config
             if isinstance(self.fetch_full_content, str):
                 self.fetch_full_content = self.fetch_full_content.lower() == "true"
+
+            scope_from_config = config.get("scope")
+            self.connector_scope = scope_from_config if scope_from_config else ConnectorScope.PERSONAL.value
+            self.created_by = config.get("createdBy") or config.get("created_by")
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
@@ -310,9 +318,31 @@ class RSSConnector(BaseConnector):
         try:
             self.logger.info(f"🚀 Starting RSS sync for {len(self.feed_urls)} feed(s)")
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.connector_scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+                app_users = []
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                        app_users = []
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
+                    app_users = []
 
             # Step 2: Process each feed
             total_articles = 0

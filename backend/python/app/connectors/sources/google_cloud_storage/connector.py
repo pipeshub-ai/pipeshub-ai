@@ -378,7 +378,7 @@ class GCSConnector(BaseConnector):
 
         # Get connector scope
         self.connector_scope = ConnectorScope.PERSONAL.value
-        self.created_by = config.get("created_by")
+        self.created_by = config.get("createdBy") or config.get("created_by")
 
         scope_from_config = config.get("scope")
         if scope_from_config:
@@ -426,9 +426,28 @@ class GCSConnector(BaseConnector):
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
 
-            all_active_users = await self.data_entities_processor.get_all_active_users()
-            app_users = self.get_app_users(all_active_users)
-            await self.data_entities_processor.on_new_app_users(app_users)
+            if self.connector_scope == ConnectorScope.TEAM.value:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.ensure_team_app_edge(
+                        self.connector_id,
+                        self.data_entities_processor.org_id,
+                    )
+            else:
+                # Personal: create user-app edge only for the creator
+                if self.created_by:
+                    creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
+                    if creator_user and getattr(creator_user, "email", None):
+                        app_users = self.get_app_users([creator_user])
+                        await self.data_entities_processor.on_new_app_users(app_users)
+                    else:
+                        self.logger.warning(
+                            "Creator user not found or has no email for created_by %s; skipping user-app edges.",
+                            self.created_by,
+                        )
+                else:
+                    self.logger.warning(
+                        "Personal connector has no created_by; skipping user-app edges."
+                    )
 
             # Get sync filters
             sync_filters = self.sync_filters if hasattr(self, 'sync_filters') and self.sync_filters else FilterCollection()
@@ -497,7 +516,7 @@ class GCSConnector(BaseConnector):
         if self.created_by and self.connector_scope != ConnectorScope.TEAM.value:
             try:
                 async with self.data_store_provider.transaction() as tx_store:
-                    user = await tx_store.get_user_by_id(self.created_by)
+                    user = await tx_store.get_user_by_user_id(self.created_by)
                     if user and user.get("email"):
                         creator_email = user.get("email")
             except Exception as e:
@@ -1172,7 +1191,7 @@ class GCSConnector(BaseConnector):
                 if self.created_by:
                     try:
                         async with self.data_store_provider.transaction() as tx_store:
-                            user = await tx_store.get_user_by_id(self.created_by)
+                            user = await tx_store.get_user_by_user_id(self.created_by)
                             if user and user.get("email"):
                                 permissions.append(
                                     Permission(

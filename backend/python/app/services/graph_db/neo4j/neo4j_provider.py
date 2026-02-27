@@ -3359,11 +3359,16 @@ class Neo4jProvider(IGraphDBProvider):
             return False
 
     async def get_user_apps(self, user_id: str) -> list:
-        """Get all apps associated with a user"""
+        """Get all apps associated with a user: direct User->App and via User->Team->App."""
         try:
             query = """
-            MATCH (user:User {id: $user_id})-[:USER_APP_RELATION]->(app:App)
-            RETURN app
+            MATCH (user:User {id: $user_id})
+            OPTIONAL MATCH (user)-[:USER_APP_RELATION]->(app1:App)
+            OPTIONAL MATCH (user)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            UNWIND app_list AS app
+            WITH app WHERE app IS NOT NULL
+            RETURN DISTINCT app
             """
             results = await self.client.execute_query(
                 query,
@@ -4294,6 +4299,40 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
+            raise
+
+    async def ensure_team_app_edge(
+        self,
+        connector_id: str,
+        org_id: str,
+        transaction: Optional[str] = None
+    ) -> None:
+        """
+        Ensure the org's "All" team has an edge to the app in userAppRelation.
+        Idempotent: creates (Teams all_{org_id})-[:USER_APP_RELATION]->(App) if not present.
+        """
+        try:
+            team_id = f"all_{org_id}"
+            ts = get_epoch_timestamp_in_ms()
+            query = """
+            MERGE (t:Teams {id: $team_id})
+            MERGE (a:App {id: $connector_id})
+            MERGE (t)-[r:USER_APP_RELATION]->(a)
+            ON CREATE SET r.sourceUserId = $team_id, r.syncState = 'NOT_STARTED', r.lastSyncUpdate = $ts,
+                r.createdAtTimestamp = $ts, r.updatedAtTimestamp = $ts
+            """
+            await self.client.execute_query(
+                query,
+                parameters={
+                    "team_id": team_id,
+                    "connector_id": connector_id,
+                    "ts": ts,
+                },
+                txn_id=transaction
+            )
+            self.logger.debug(f"Ensured team->app edge: Teams {team_id} -> App {connector_id}")
+        except Exception as e:
+            self.logger.error(f"ensure_team_app_edge failed: {e}", exc_info=True)
             raise
 
     async def batch_upsert_user_groups(
@@ -12944,12 +12983,16 @@ class Neo4jProvider(IGraphDBProvider):
         user_key: str,
         transaction: Optional[str] = None
     ) -> List[str]:
-        """Get list of app IDs the user has access to."""
+        """Get list of app IDs the user has access to: direct User->App and via User->Team->App."""
         try:
             query = """
-            MATCH (u:User {id: $user_key})-[:USER_APP_RELATION]->(app:App)
-            WHERE app IS NOT NULL
-            RETURN app.id AS app_id
+            MATCH (u:User {id: $user_key})
+            OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app1:App)
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app2:App)
+            WITH collect(DISTINCT app1) + collect(DISTINCT app2) AS app_list
+            UNWIND app_list AS app
+            WITH app WHERE app IS NOT NULL
+            RETURN DISTINCT app.id AS app_id
             """
             results = await self.client.execute_query(
                 query,
@@ -13369,10 +13412,13 @@ class Neo4jProvider(IGraphDBProvider):
             // Collect and combine all KBs (nulls automatically excluded by DISTINCT on node)
             WITH u, collect(DISTINCT kb) + collect(DISTINCT kb_team) + collect(DISTINCT kb_group) AS all_kbs_raw
 
-            // Get apps via USER_APP_RELATION
+            // Get apps via USER_APP_RELATION (direct and via team)
             OPTIONAL MATCH (u)-[:USER_APP_RELATION]->(app:App)
-
-            WITH all_kbs_raw, collect(DISTINCT app) AS all_apps_raw
+            OPTIONAL MATCH (u)-[:PERMISSION {type: 'USER'}]->(team:Teams)-[:USER_APP_RELATION]->(app_team:App)
+            WITH all_kbs_raw, collect(DISTINCT app) + collect(DISTINCT app_team) AS apps_with_nulls
+            UNWIND apps_with_nulls AS a
+            WITH all_kbs_raw, a WHERE a IS NOT NULL
+            WITH all_kbs_raw, collect(DISTINCT a) AS all_apps_raw
 
             // Filter nulls and transform using list comprehensions (avoids UNWIND empty list issue)
             WITH
@@ -14160,28 +14206,30 @@ class Neo4jProvider(IGraphDBProvider):
             // Check if user has USER_APP_RELATION to app
             OPTIONAL MATCH ({user_var})-[user_app_rel:USER_APP_RELATION]->({node_var})
 
+            // Check if user has path User->Team->App (user in team, team has USER_APP_RELATION to app)
+            OPTIONAL MATCH ({user_var})-[:PERMISSION {{type: 'USER'}}]->(team:Teams)-[team_app_rel:USER_APP_RELATION]->({node_var})
+
             // Check if user is admin
-            WITH {node_var}, {user_var}, user_app_rel,
+            WITH {node_var}, {user_var}, user_app_rel, team_app_rel,
                 (coalesce({user_var}.role, '') = 'ADMIN' OR coalesce({user_var}.orgRole, '') = 'ADMIN') AS is_admin
 
             // Get app scope and check if user is creator
             // createdBy stores MongoDB userId, so compare with user.userId (not user.id)
-            WITH {node_var}, {user_var}, user_app_rel, is_admin,
+            WITH {node_var}, {user_var}, user_app_rel, team_app_rel, is_admin,
                 coalesce({node_var}.scope, 'personal') AS app_scope,
                 ({node_var}.createdBy = {user_var}.userId OR {node_var}.createdBy = {user_var}.id) AS is_creator
 
             // Determine role based on conditions
             RETURN CASE
-                // If no USER_APP_RELATION, no access
-                WHEN user_app_rel IS NULL THEN null
-
+                // No direct user->app and no team->app: no access
+                WHEN user_app_rel IS NULL AND team_app_rel IS NULL THEN null
+                // Access via team (All)->app: READER; admin gets EDITOR
+                WHEN user_app_rel IS NULL AND team_app_rel IS NOT NULL THEN (CASE WHEN is_admin THEN 'EDITOR' ELSE 'READER' END)
                 // Admin users: EDITOR for team apps, OWNER for personal apps
                 WHEN is_admin AND app_scope = 'team' THEN 'EDITOR'
                 WHEN is_admin AND app_scope = 'personal' THEN 'OWNER'
-
                 // Team app creator gets OWNER role
                 WHEN app_scope = 'team' AND is_creator THEN 'OWNER'
-
                 // Default: READER for regular users with USER_APP_RELATION
                 ELSE 'READER'
             END AS permission_role

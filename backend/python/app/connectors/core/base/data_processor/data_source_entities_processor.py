@@ -1326,6 +1326,13 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_users(self.org_id, active=True)
 
+    async def get_user_by_user_id(self, user_id: str) -> Optional[User]:
+        async with self.data_store_provider.transaction() as tx_store:
+            raw = await tx_store.get_user_by_user_id(user_id)
+        if not raw:
+            return None
+        return User.from_arango_user(raw) if isinstance(raw, dict) else raw
+
     async def get_all_app_users(self, connector_id: str) -> List[AppUser]:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_users(self.org_id, connector_id)
