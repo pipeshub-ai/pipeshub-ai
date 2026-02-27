@@ -34,6 +34,7 @@ class Connectors(Enum):
     GOOGLE_MAIL = "GMAIL"
     GOOGLE_MAIL_WORKSPACE = "GMAIL WORKSPACE"
     GOOGLE_CALENDAR = "CALENDAR"
+    GOOGLE_SITES = "GOOGLE SITES"
 
     ONEDRIVE = "ONEDRIVE"
     SHAREPOINT_ONLINE = "SHAREPOINT ONLINE"
@@ -228,6 +229,7 @@ class MimeTypes(Enum):
     GOOGLE_DOCS = "application/vnd.google-apps.document"
     GOOGLE_SHEETS = "application/vnd.google-apps.spreadsheet"
     GOOGLE_DRIVE_FOLDER = "application/vnd.google-apps.folder"
+    GOOGLE_SITES = "application/vnd.google-apps.site"
     FOLDER = "text/directory"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     DOC = "application/msword"

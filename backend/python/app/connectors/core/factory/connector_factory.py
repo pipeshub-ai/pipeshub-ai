@@ -39,6 +39,7 @@ from app.connectors.sources.google.gmail.individual.connector import (
     GoogleGmailIndividualConnector,
 )
 from app.connectors.sources.google.gmail.team.connector import GoogleGmailTeamConnector
+from app.connectors.sources.google.sites.connector import GoogleSitesConnector
 from app.connectors.sources.google_cloud_storage.connector import GCSConnector
 from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.localKB.connector import KnowledgeBaseConnector
@@ -72,6 +73,7 @@ class ConnectorFactory:
         "driveworkspace": GoogleDriveTeamConnector,
         "gmail": GoogleGmailIndividualConnector,
         "gmailworkspace": GoogleGmailTeamConnector,
+        "googlesites": GoogleSitesConnector,
         "dropbox": DropboxConnector,
         "dropboxpersonal": DropboxIndividualConnector,
         "nextcloud": NextcloudConnector,
