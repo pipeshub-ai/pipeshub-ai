@@ -11,9 +11,10 @@ import { SESSION_TOKEN_KEY } from 'src/auth/context/jwt';
 
 interface SamlSignInProps {
   email: string;
+  providerName: string;
 }
 
-export default function SamlSignIn({ email }: SamlSignInProps) {
+export default function SamlSignIn({ email, providerName }: SamlSignInProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -38,9 +39,12 @@ export default function SamlSignIn({ email }: SamlSignInProps) {
         </Alert>
       )}
 
-      <Typography variant="body2" color="text.secondary" mb={3}>
+      {providerName === "SSO" && (<Typography variant="body2" color="text.secondary" mb={3}>
         Continue to sign in with your organization&apos;s SSO provider
-      </Typography>
+      </Typography>)}
+      {providerName !== "SSO" && (<Typography variant="body2" color="text.secondary" mb={3}>
+        {`Continue to sign in with your ${providerName} account`}
+      </Typography>)}
 
       <LoadingButton
         fullWidth
@@ -49,7 +53,7 @@ export default function SamlSignIn({ email }: SamlSignInProps) {
         loading={loading}
         onClick={handleSamlLogin}
       >
-        Continue with SSO
+        {`Continue with ${providerName}`}
       </LoadingButton>
     </Box>
   );

@@ -107,6 +107,7 @@ export const ssoConfigSchema = z.object({
     certificate: z.string().min(1, { message: 'SSO certificate is required' }),
     emailKey: z.string().min(1, { message: 'SSO Email Key is required' }),
     enableJit: z.boolean().optional().default(true),
+    samlPlatform: z.string().optional(),
   }),
 });
 
@@ -421,7 +422,7 @@ export const metricsCollectionRemoteServerSchema = z.object({
 // Enum definitions
 export const modelType = z.enum([
   'llm',
-  'embedding', 
+  'embedding',
   'ocr',
   'slm',
   'reasoning',
@@ -432,7 +433,7 @@ export const embeddingProvider = z.enum([
   'anthropic',
   'bedrock',
   'azureAI',
-  'azureOpenAI', 
+  'azureOpenAI',
   'cohere',
   'default',
   'fireworks',

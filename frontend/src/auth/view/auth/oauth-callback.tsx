@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 import Box from '@mui/material/Box';
 import Alert from '@mui/material/Alert';
@@ -11,27 +11,24 @@ export default function OAuthCallback() {
   const [error, setError] = useState<string>('');
   const [processing, setProcessing] = useState(true);
 
+
+  const hasExchanged = useRef(false);
+
   useEffect(() => {
     const handleCallback = async () => {
+      if (hasExchanged.current) return;
+      hasExchanged.current = true;
+
       try {
         const urlParams = new URLSearchParams(window.location.search);
         const code = urlParams.get('code');
         const state = urlParams.get('state');
         const oauthError = urlParams.get('error');
 
-        if (oauthError) {
-          throw new Error(`OAuth error: ${oauthError}`);
-        }
+        if (oauthError) throw new Error(`OAuth error: ${oauthError}`);
+        if (!code) throw new Error('No authorization code received');
+        if (!state) throw new Error('No state parameter received');
 
-        if (!code) {
-          throw new Error('No authorization code received');
-        }
-
-        if (!state) {
-          throw new Error('No state parameter received');
-        }
-
-        // Parse and validate state parameter
         let stateData;
         try {
           stateData = JSON.parse(atob(state));
@@ -40,35 +37,26 @@ export default function OAuthCallback() {
         }
 
         const { email, provider } = stateData;
-        
-        if (!email || !provider || typeof email !== 'string' || typeof provider !== 'string') {
-          throw new Error('Invalid state data');
-        }
 
-        // Exchange code for tokens
         const requestBody = {
           code,
-          email,
           provider,
           redirectUri: `${window.location.origin}/auth/oauth/callback`,
         };
 
         const response = await fetch(`${CONFIG.backendUrl}/api/v1/userAccount/oauth/exchange`, {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(requestBody),
         });
 
         if (!response.ok) {
-          const errorText = await response.text();
-          throw new Error(`Failed to exchange authorization code for tokens: ${response.status} - ${errorText}`);
+          const errorData = await response.json().catch(() => ({}));
+          throw new Error(errorData.message || `Exchange failed: ${response.status}`);
         }
 
         const tokens = await response.json();
 
-        // Send tokens to parent window
         if (window.opener) {
           window.opener.postMessage({
             type: 'OAUTH_SUCCESS',
@@ -76,14 +64,12 @@ export default function OAuthCallback() {
           }, window.location.origin);
         }
 
-        // Close the popup
         window.close();
 
       } catch (err) {
         setError(err instanceof Error ? err.message : 'OAuth authentication failed');
         setProcessing(false);
-        
-        // Send error to parent window
+
         if (window.opener) {
           window.opener.postMessage({
             type: 'OAUTH_ERROR',
@@ -98,14 +84,14 @@ export default function OAuthCallback() {
 
   if (error) {
     return (
-      <Box 
-        sx={{ 
-          display: 'flex', 
-          flexDirection: 'column', 
-          alignItems: 'center', 
-          justifyContent: 'center', 
+      <Box
+        sx={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
           minHeight: '100vh',
-          p: 3 
+          p: 3
         }}
       >
         <Alert severity="error" sx={{ mb: 2, maxWidth: 400 }}>
@@ -119,13 +105,13 @@ export default function OAuthCallback() {
   }
 
   return (
-    <Box 
-      sx={{ 
-        display: 'flex', 
-        flexDirection: 'column', 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        minHeight: '100vh' 
+    <Box
+      sx={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minHeight: '100vh'
       }}
     >
       <CircularProgress size={40} sx={{ mb: 2 }} />

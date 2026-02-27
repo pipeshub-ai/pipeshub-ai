@@ -64,6 +64,7 @@ import {
 import { ensureKafkaTopicsExist, REQUIRED_KAFKA_TOPICS } from './libs/services/kafka-admin.service';
 import { ToolsetsContainer } from './modules/toolsets/container/toolsets.container';
 import { createToolsetsRouter } from './modules/toolsets/routes/toolsets_routes';
+import { SamlController } from './modules/auth/controller/saml.controller';
 
 const loggerConfig = {
   service: 'Application',
@@ -254,6 +255,7 @@ export class Application {
       });
 
       this.logger.info('Application initialized successfully');
+      await this.updateSamlStrategies()
     } catch (error: any) {
       this.logger.error(
         `Failed to initialize application: ${error.message}`,
@@ -494,7 +496,7 @@ export class Application {
           .get<NotificationService>(NotificationService)
           .shutdown();
       } catch (err) {
-        this.logger.warn('NotificationService not available during shutdown', 
+        this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
       await NotificationContainer.dispose();
@@ -639,5 +641,17 @@ export class Application {
       });
     }
   }
+  async updateSamlStrategies(): Promise<void> {
+    try {
+      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
+      samlController.updateSamlStrategiesWithCallback()
+      this.logger.info('OAuth token service registered for AuthMiddleware factory');
+    } catch (error) {
+      this.logger.warn('Failed to register OAuth token service', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
 }
+
 
