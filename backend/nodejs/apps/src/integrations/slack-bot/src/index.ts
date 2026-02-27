@@ -11,10 +11,9 @@ import receiver from "./receiver";
 import { ConfigService } from "../../../modules/tokens_manager/services/cm.service";
 import { slackJwtGenerator } from "../../../libs/utils/createJwt";
 import { markdownToSlackMrkdwn } from "./utils/md_to_mrkdwn";
+
 import {
   type SlackBotConfig,
-  // findSlackBotByIdentity,
-  // getCachedSlackBots,
   getCurrentMatchedSlackBot,
   refreshSlackBotRegistry,
 } from "./botRegistry";
@@ -388,14 +387,28 @@ function buildFinalStreamOverwriteMessage(
   return `${truncateFromEnd(answerBody, bodyLimit)}${sourcesLine}`;
 }
 
-function splitByLength(text: string, limit: number): string[] {
+function splitByLengthPreferringNewlines(text: string, limit: number): string[] {
   if (!text) {
     return [];
   }
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += limit) {
-    chunks.push(text.slice(i, i + limit));
+  if (limit <= 0) {
+    return [text];
   }
+
+  const chunks: string[] = [];
+  let remaining = text;
+  while (remaining.length > limit) {
+    const candidate = remaining.slice(0, limit);
+    const lastNewlineIndex = candidate.lastIndexOf("\n");
+    const splitIndex = lastNewlineIndex > 0 ? lastNewlineIndex + 1 : limit;
+    chunks.push(remaining.slice(0, splitIndex));
+    remaining = remaining.slice(splitIndex);
+  }
+
+  if (remaining.length > 0) {
+    chunks.push(remaining);
+  }
+
   return chunks;
 }
 
@@ -616,22 +629,6 @@ function buildCitationSources(citations?: CitationData[]): string[] {
   return citationLinks;
 }
 
-
-
-function toMrkdwn(input: string): string {
-  if (!input) return "";
-
-  return input
-    // convert escaped newlines (\\n) into actual newlines
-    .replace(/\\n/g, "\n")
-    // normalize CRLF -> LF
-    .replace(/\r\n/g, "\n")
-    // trim spaces around lines
-    .split("\n")
-    .map(line => line.trim())
-    .join("\n")
-    .trim();
-}
 
 function buildChatStreamUrl(
   conversationId: string | null,
@@ -868,25 +865,28 @@ async function processSlackMessage(
     let queuedStreamAppend: Promise<void> = Promise.resolve();
 
     const pushTextToSlackStream = async (text: string): Promise<void> => {
-      if (!text || !text.trim()) {
+      if (text.length === 0) {
         return;
       }
 
-      const markdownChunks = splitByLength(text, SLACK_STREAM_MARKDOWN_LIMIT);
+      const renderedDeltaText = markdownToSlackMrkdwn(text, {
+        preserveTrailingWhitespace: true,
+      });
+      if (renderedDeltaText.length === 0) {
+        return;
+      }
+
+      const markdownChunks = splitByLengthPreferringNewlines(
+        renderedDeltaText,
+        SLACK_STREAM_MARKDOWN_LIMIT,
+      );
       if (markdownChunks.length === 0) {
         return;
       }
 
-      const processedChunks = markdownChunks
-        .map(chunk => toMrkdwn(chunk))
-        .filter(chunk => chunk.length > 0);
-      if (processedChunks.length === 0) {
-        return;
-      }
-
-      let chunksToAppend = processedChunks;
+      let chunksToAppend = markdownChunks;
       if (!streamTs) {
-        const [firstChunk, ...restChunks] = processedChunks;
+        const [firstChunk, ...restChunks] = markdownChunks;
         if (!firstChunk) {
           return;
         }
@@ -955,7 +955,7 @@ async function processSlackMessage(
         for (const evt of events) {
           if (evt.event === "answer_chunk" || evt.event === "chunk") {
             const nextChunk = extractStreamChunk(evt.data);
-            if (!nextChunk || !nextChunk.trim()) {
+            if (nextChunk.length === 0) {
               continue;
             }
 

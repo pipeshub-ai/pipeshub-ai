@@ -25,6 +25,8 @@ interface ConvertOptions {
     preserveLinks?: boolean;
     /** Custom bullet character (default: "•") */
     bulletChar?: string;
+    /** Preserve trailing whitespace/newlines for streaming conversion. */
+    preserveTrailingWhitespace?: boolean;
     /**
      * How to render tables in Slack:
      * - "code"   → monospaced code block with aligned columns (default)
@@ -182,7 +184,15 @@ interface ConvertOptions {
     markdown: string,
     options: ConvertOptions = {}
   ): string {
-    const { preserveLinks = false, bulletChar = "•", tableMode = "code" } = options;
+
+
+    const {
+      preserveLinks = false,
+      bulletChar = "•",
+      tableMode = "code",
+      preserveTrailingWhitespace = false,
+    } = options;
+    markdown = processMarkdownContent(markdown, { preserveTrailingWhitespace });
   
     if (!markdown) return "";
   
@@ -308,8 +318,26 @@ interface ConvertOptions {
   
     text = text.replace(/\n{3,}/g, "\n\n");
   
-    return text.trim();
+    return preserveTrailingWhitespace ? text : text.trim();
   }
   
   export default markdownToSlackMrkdwn;
   
+
+  interface ProcessMarkdownContentOptions {
+    preserveTrailingWhitespace?: boolean;
+  }
+
+  export const processMarkdownContent = (
+    content: string,
+    options: ProcessMarkdownContentOptions = {},
+  ): string => {
+    if (!content) return '';
+    const { preserveTrailingWhitespace = false } = options;
+
+    const processedContent = content
+      // Fix escaped newlines
+      .replace(/\\n/g, '\n');
+  
+    return preserveTrailingWhitespace ? processedContent : processedContent.trim();
+  };
