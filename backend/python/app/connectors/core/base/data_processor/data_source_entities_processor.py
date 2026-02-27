@@ -556,14 +556,10 @@ class DataSourceEntitiesProcessor:
             self.logger.warning(f"Failed to create LEAD_BY edge for project {project.id}: {str(e)}")
 
     async def _handle_new_record(self, record: Record, tx_store: TransactionStore) -> None:
-        # Set org_id for the record
-        record.org_id = self.org_id
         self.logger.info("Upserting new record: %s", record.record_name)
         await tx_store.batch_upsert_records([record])
 
     async def _handle_updated_record(self, record: Record, existing_record: Record, tx_store: TransactionStore) -> None:
-        # Set org_id for the record
-        record.org_id = self.org_id
         self.logger.info("Updating existing record: %s, version %d -> %d",
         record.record_name, existing_record.version, record.version)
 
@@ -727,6 +723,9 @@ class DataSourceEntitiesProcessor:
         self.logger.info(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+
+        # Set org_id for the record
+        record.org_id = self.org_id
 
         # Prepare record group BEFORE saving (so record_group_id is included in first save)
         record_group_id = await self._handle_record_group(record, tx_store)
