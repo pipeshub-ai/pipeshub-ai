@@ -1,0 +1,51 @@
+name: Sync OpenAPI Spec to open-api repo
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  sync-openapi:
+    name: Sync OpenAPI Spec
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+
+      - name: Checkout open-api repo
+        uses: actions/checkout@v4
+        with:
+          repository: pipeshub-ai/open-api
+          token: ${{ secrets.PAT_GITHUB_TOKEN }}
+          path: open-api-repo
+
+      - name: Copy OpenAPI spec
+        run: cp backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml open-api-repo/source_specs/pipeshub-openapi.yaml
+
+      - name: Check for changes
+        id: diff
+        working-directory: open-api-repo
+        run: |
+          git diff --quiet && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create Pull Request
+        if: steps.diff.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.PAT_GITHUB_TOKEN }}
+          path: open-api-repo
+          branch: update-openapi-spec
+          commit-message: 'chore: update pipeshub-openapi.yaml from pipeshub-ai'
+          title: 'chore: update OpenAPI spec'
+          body: |
+            Automated PR to sync the OpenAPI spec from [pipeshub-ai](https://github.com/pipeshub-ai/pipeshub-ai).
+
+            Triggered by commit: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          delete-branch: true
