@@ -192,9 +192,10 @@ interface ConvertOptions {
       tableMode = "code",
       preserveTrailingWhitespace = false,
     } = options;
-    markdown = processMarkdownContent(markdown, { preserveTrailingWhitespace });
   
     if (!markdown) return "";
+    markdown = markdown.replace(/\\n/g, "\n");
+
   
     // ── Step 1: Extract and protect code blocks & inline code ──────────
     // We replace them with placeholders so regex transforms don't touch them.
@@ -322,22 +323,3 @@ interface ConvertOptions {
   }
   
   export default markdownToSlackMrkdwn;
-  
-
-  interface ProcessMarkdownContentOptions {
-    preserveTrailingWhitespace?: boolean;
-  }
-
-  export const processMarkdownContent = (
-    content: string,
-    options: ProcessMarkdownContentOptions = {},
-  ): string => {
-    if (!content) return '';
-    const { preserveTrailingWhitespace = false } = options;
-
-    const processedContent = content
-      // Fix escaped newlines
-      .replace(/\\n/g, '\n');
-  
-    return preserveTrailingWhitespace ? processedContent : processedContent.trim();
-  };

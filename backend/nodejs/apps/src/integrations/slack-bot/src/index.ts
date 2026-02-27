@@ -400,7 +400,7 @@ function splitByLengthPreferringNewlines(text: string, limit: number): string[] 
   while (remaining.length > limit) {
     const candidate = remaining.slice(0, limit);
     const lastNewlineIndex = candidate.lastIndexOf("\n");
-    const splitIndex = lastNewlineIndex > 0 ? lastNewlineIndex + 1 : limit;
+    const splitIndex = lastNewlineIndex > -1 ? lastNewlineIndex + 1 : limit;
     chunks.push(remaining.slice(0, splitIndex));
     remaining = remaining.slice(splitIndex);
   }
