@@ -551,6 +551,26 @@ class BlobStorage(Transformer):
                         form_data.add_field('isVersionedFile', 'true')
                         form_data.add_field('extension', 'json')
                         form_data.add_field('recordId', record_id)
+                        if use_compression:
+                            compression_metadata = [
+                                {
+                                    "key": "compression",
+                                    "value": {
+                                        "algorithm": "zstd",
+                                        "level": 10,
+                                        "format": "msgspec",
+                                        "version": "v1",
+                                        "compressed": True,
+                                    },
+                                },
+                            ]
+                            for i, meta in enumerate(compression_metadata):
+                                form_data.add_field(f'customMetadata[{i}][key]', meta['key'])
+                                form_data.add_field(f'customMetadata[{i}][value][algorithm]', meta['value']['algorithm'])
+                                form_data.add_field(f'customMetadata[{i}][value][level]', str(meta['value']['level']))
+                                form_data.add_field(f'customMetadata[{i}][value][format]', meta['value']['format'])
+                                form_data.add_field(f'customMetadata[{i}][value][version]', meta['value']['version'])
+                                form_data.add_field(f'customMetadata[{i}][value][compressed]', str(meta['value']['compressed']).lower())
 
                         # Make upload request
                         upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
@@ -1119,6 +1139,26 @@ class BlobStorage(Transformer):
                     form_data.add_field('isVersionedFile', 'true')
                     form_data.add_field('extension', 'json')
                     form_data.add_field('recordId', record_id)
+                    if use_compression:
+                        compression_metadata = [
+                            {
+                                "key": "compression",
+                                "value": {
+                                    "algorithm": "zstd",
+                                    "level": 10,
+                                    "format": "msgspec",
+                                    "version": "v1",
+                                    "compressed": True,
+                                },
+                            },
+                        ]
+                        for i, meta in enumerate(compression_metadata):
+                            form_data.add_field(f'customMetadata[{i}][key]', meta['key'])
+                            form_data.add_field(f'customMetadata[{i}][value][algorithm]', meta['value']['algorithm'])
+                            form_data.add_field(f'customMetadata[{i}][value][level]', str(meta['value']['level']))
+                            form_data.add_field(f'customMetadata[{i}][value][format]', meta['value']['format'])
+                            form_data.add_field(f'customMetadata[{i}][value][version]', meta['value']['version'])
+                            form_data.add_field(f'customMetadata[{i}][value][compressed]', str(meta['value']['compressed']).lower())
 
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                     self.logger.info("📤 Creating metadata document (local) for record: %s", record_id)
