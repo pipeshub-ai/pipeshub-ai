@@ -6,7 +6,6 @@ object storage systems. The base classes and utilities here are used by both
 S3Connector and MinIOConnector to avoid code duplication.
 """
 
-import asyncio
 import mimetypes
 import uuid
 from abc import abstractmethod
@@ -399,34 +398,17 @@ class S3CompatibleBaseConnector(BaseConnector):
             raise
 
     async def _create_record_groups_for_buckets(self, bucket_names: List[str]) -> None:
-        """Create record groups for buckets with appropriate permissions.
-        Only creates record groups for buckets that do not already have one,
-        to avoid duplicate BELONGS_TO edges in the graph on every sync.
+        """Create or upsert record groups for buckets with appropriate permissions.
+        Always processes all buckets so that edges (e.g. recordGroup->app) are
+        re-created after full sync when only edges were deleted.
         """
         if not bucket_names:
             return
 
-        # Only create record groups for buckets that don't already have one
-        new_bucket_names: List[str] = []
-        async with self.data_store_provider.transaction() as tx_store:
-            for bucket_name in bucket_names:
-                if not bucket_name:
-                    continue
-                existing = await tx_store.get_record_group_by_external_id(
-                    connector_id=self.connector_id,
-                    external_id=bucket_name,
-                )
-                if existing is None:
-                    new_bucket_names.append(bucket_name)
-
-        if not new_bucket_names:
-            self.logger.info(
-                "All buckets already have record groups; skipping record group creation"
-            )
-            return
-
         record_groups = []
-        for bucket_name in new_bucket_names:
+        for bucket_name in bucket_names:
+            if not bucket_name:
+                continue
             permissions = []
             if self.connector_scope == ConnectorScope.TEAM.value:
                 permissions.append(
@@ -778,33 +760,18 @@ class S3CompatibleBaseConnector(BaseConnector):
     async def _ensure_parent_folders_exist(
         self, bucket_name: str, path_segments: List[str]
     ) -> None:
-        """Ensure folder records exist for each path segment (root to leaf). No duplicates.
+        """Ensure folder records exist for each path segment (root to leaf).
 
         S3 list_objects only returns object keys; there are no separate folder objects.
-        For each segment (e.g. 'a', 'a/b', 'a/b/c'), create a folder record if one does not
-        already exist (by external_id = bucket_name/segment). Process in order so parent
-        exists before child. Aligns with Box _ensure_parent_folders_exist pattern.
+        For each segment (e.g. 'a', 'a/b', 'a/b/c'), upsert a folder record and its edges.
+        Always processes all segments so that edges are re-created after full sync.
+        Process in order so parent exists before child. Aligns with Box _ensure_parent_folders_exist pattern.
         """
         if not path_segments:
             return
         timestamp_ms = get_epoch_timestamp_in_ms()
-        external_ids = [f"{bucket_name}/{segment}" for segment in path_segments]
-        async with self.data_store_provider.transaction() as tx_store:
-            results = await asyncio.gather(
-                *[
-                    tx_store.get_record_by_external_id(
-                        connector_id=self.connector_id, external_id=eid
-                    )
-                    for eid in external_ids
-                ]
-            )
-        existing_external_ids = {
-            eid for eid, rec in zip(external_ids, results) if rec is not None
-        }
         for i, segment in enumerate(path_segments):
             external_id = f"{bucket_name}/{segment}"
-            if external_id in existing_external_ids:
-                continue
             # Root folder: first segment has no parent. Others: parent is previous segment.
             parent_external_id = (
                 f"{bucket_name}/{path_segments[i - 1]}" if i > 0 else None
@@ -898,13 +865,6 @@ class S3CompatibleBaseConnector(BaseConnector):
             if existing_record:
                 # Found by path - check if revision (composite) changed (content change)
                 stored_revision = existing_record.external_revision_id or ""
-
-                # If composite external_revision_id unchanged, skip
-                if composite_revision and stored_revision and composite_revision == stored_revision:
-                    self.logger.debug(
-                        f"Skipping {normalized_key}: externalRecordId and externalRevisionId unchanged"
-                    )
-                    return None, []
 
                 # Content changed or missing - sync properly from S3
                 if composite_revision and stored_revision and composite_revision != stored_revision:

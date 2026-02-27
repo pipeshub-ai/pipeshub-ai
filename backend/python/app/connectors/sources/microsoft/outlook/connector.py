@@ -667,7 +667,7 @@ class OutlookConnector(BaseConnector):
             while True:
                 response = await self.external_users_client.groups_list_groups(
                     next_url=next_url,
-                    select=['id', 'displayName', 'description', 'mail', 'mailNickname', 'groupTypes', 'createdDateTime']
+                    select=['id', 'displayName', 'description', 'mail', 'mailNickname', 'groupTypes', 'createdDateTime', 'mailEnabled']
                 )
 
                 if not response.success:
@@ -684,13 +684,14 @@ class OutlookConnector(BaseConnector):
 
                 page_num += 1
 
-            # Filter for Microsoft 365 groups (Unified groups) client-side
+            # Filter: Microsoft 365 (Unified) groups with a mailbox (SDK: mail_enabled; dict: mailEnabled)
             microsoft_365_groups = [
                 group for group in all_groups
                 if self._safe_get_attr(group, 'group_types', []) and 'Unified' in self._safe_get_attr(group, 'group_types', [])
+                and (self._safe_get_attr(group, 'mail_enabled') or self._safe_get_attr(group, 'mailEnabled')) is True
             ]
 
-            self.logger.info(f"Retrieved {len(all_groups)} total groups across {page_num} page(s), filtered to {len(microsoft_365_groups)} Microsoft 365 groups")
+            self.logger.info(f"Retrieved {len(all_groups)} total groups across {page_num} page(s), filtered to {len(microsoft_365_groups)} Microsoft 365 groups with mailbox")
             return microsoft_365_groups
 
         except Exception as e:

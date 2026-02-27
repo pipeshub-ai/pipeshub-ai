@@ -2251,6 +2251,26 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def delete_connector_sync_edges(
+        self,
+        connector_id: str,
+        transaction: Optional[str] = None
+    ) -> Tuple[int, bool]:
+        """
+        Delete only sync-created edges for a connector (belongsTo, recordRelations,
+        permission, inheritPermissions, userAppRelation). Does not delete nodes or
+        isOfType/indexing data. Used for full sync reset.
+
+        Args:
+            connector_id: The connector ID (app _key).
+            transaction: Optional transaction context.
+
+        Returns:
+            Tuple of (total_deleted_edges_count, success_flag).
+        """
+        pass
+
     # ==================== Batch/Bulk Operations ====================
 
     @abstractmethod
