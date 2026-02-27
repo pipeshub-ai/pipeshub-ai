@@ -3,6 +3,8 @@ import json
 from typing import Any, AsyncGenerator, Dict
 from uuid import uuid4
 
+from bs4 import BeautifulSoup
+
 import fitz
 
 from app.config.configuration_service import ConfigurationService
@@ -64,6 +66,31 @@ class EventProcessor:
     def _normalize_content_for_dedup(self, content: bytes, record_type: str) -> bytes:
         if record_type not in {"SQL_TABLE", "SQL_VIEW", "WEBPAGE", "DATASOURCE", "TICKET", "PROJECT", "COMMENT", "INLINE_COMMENT", "CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST"}:
             return content
+        # TODO : This normalization still does not work, not able to dedup html pages(Tested with confluence)
+        # html normalise
+        if record_type in {"CONFLUENCE_PAGE", "CONFLUENCE_BLOGPOST", "COMMENT", "INLINE_COMMENT"}:
+            try: 
+                # self.logger.info(f"🔍 Normalizing HTML for dedup: {content}")
+                html_str = content.decode("utf-8") if isinstance(content, bytes) else content
+                # self.logger.info(f"🔍 HTML string: {html_str}")
+                soup = BeautifulSoup(html_str, "html.parser")
+                for tag in soup(["script", "style", "noscript"]):
+                    tag.decompose()
+                for tag in soup.find_all(True):
+                    tag.attrs.pop("local-id", None)
+                    tag.attrs.pop("id", None)
+                    tag.attrs.pop("src", None)
+                    tag.attrs.pop("href", None)
+                    tag.attrs.pop("data-emoji-id", None)
+                    tag.attrs.pop("data-emoji-fallback", None)
+                text = soup.get_text(separator="\n", strip=True)
+                if text:
+                    return text.encode("utf-8")
+                # self.info(f"🔍 HTML normalized for dedup: {text}")  
+                return content    
+            except Exception as e:
+                self.logger.error(f"❌ Error normalizing HTML for dedup: {repr(e)}")
+                return content
         try:
             parsed = json.loads(content)
             if not isinstance(parsed, dict):
@@ -106,7 +133,6 @@ class EventProcessor:
         md5_checksum = doc.get("md5Checksum")
         size_in_bytes = doc.get("sizeInBytes")
         record_type = doc.get("recordType")
-
         if md5_checksum is None and content:
             if isinstance(content, str):
                 content = content.encode('utf-8')
