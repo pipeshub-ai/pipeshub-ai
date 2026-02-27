@@ -28,6 +28,7 @@ from app.connectors.core.registry.connector_builder import (
     DocumentationLink,
 )
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -64,6 +65,16 @@ FILE_MIME_TYPES = {
     '.html': MimeTypes.HTML,
     '.htm': MimeTypes.HTML,
 }
+
+RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+RETRYABLE_EXCEPTIONS = (
+    aiohttp.ClientConnectorError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ServerTimeoutError,
+    asyncio.TimeoutError,
+)
+
 
 class WebApp(App):
     def __init__(self, connector_id: str) -> None:
@@ -248,18 +259,34 @@ class WebConnector(BaseConnector):
             return False
 
     async def test_connection_and_access(self) -> bool:
-        """Test if the website is accessible."""
+        """Test if the website is accessible using the multi-strategy fallback."""
         if not self.url or not self.session:
             return False
 
         try:
-            async with self.session.head(self.url, allow_redirects=True) as response:
-                if response.status < HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.info(f"✅ Website accessible: {self.url} (status: {response.status})")
-                    return True
-                else:
-                    self.logger.warning(f"⚠️ Website returned status {response.status}: {self.url}")
-                    return False
+            result = await fetch_url_with_fallback(
+                url=self.url,
+                session=self.session,
+                logger=self.logger,
+                max_retries_per_strategy=1,  # keep it fast for a connection test
+            )
+
+            if result is None:
+                self.logger.warning(f"⚠️ Website not accessible: {self.url}")
+                return False
+
+            if result.status_code < HttpStatusCode.BAD_REQUEST.value:
+                self.logger.info(
+                    f"✅ Website accessible: {self.url} "
+                    f"(status: {result.status_code}, via {result.strategy})"
+                )
+                return True
+            else:
+                self.logger.warning(
+                    f"⚠️ Website returned status {result.status_code}: {self.url}"
+                )
+                return False
+
         except Exception as e:
             self.logger.error(f"❌ Failed to access website: {e}")
             return False
@@ -488,9 +515,14 @@ class WebConnector(BaseConnector):
 
             try:
                 # Fetch and process the page with referer
-                file_record, permissions = await self._fetch_and_process_url(
+                file_record_with_permissions = await self._fetch_and_process_url(
                     current_url, current_depth, referer=referer
                 )
+
+                if file_record_with_permissions is None:
+                    continue
+
+                file_record, permissions = file_record_with_permissions
 
                 if file_record:
                     self.visited_urls.add(normalized_url)
@@ -523,101 +555,113 @@ class WebConnector(BaseConnector):
     async def _fetch_and_process_url(
         self, url: str, depth: int, referer: Optional[str] = None
     ) -> Optional[Tuple[FileRecord, List[Permission]]]:
-        """Fetch URL content and create a FileRecord."""
+        """Fetch URL content using multi-strategy fallback and create a FileRecord."""
         try:
-            # Add referer header if provided (mimics browser behavior)
-            headers = {}
-            if referer:
-                headers["Referer"] = referer
 
-            async with self.session.get(url, headers=headers, allow_redirects=True) as response:
-                if response.status >= HttpStatusCode.BAD_REQUEST.value:
-                    self.logger.warning(f"⚠️ HTTP {response.status} for {url}")
-                    return None
+            result = await fetch_url_with_fallback(
+                url=url,
+                session=self.session,
+                logger=self.logger,
+                referer=referer,
+                timeout=15,
+            )
 
-                content_type = response.headers.get("Content-Type", "").lower()
-                final_url = str(response.url)
+            if result is None:
+                return None
 
-                # Read content
-                content_bytes = await response.read()
+            if result.status_code >= HttpStatusCode.BAD_REQUEST.value:
+                # Already logged inside fetch_url_with_fallback
+                return None
 
-                # Determine MIME type and file extension
-                mime_type, extension = self._determine_mime_type(url, content_type)
+            content_type = result.headers.get("Content-Type", "").lower()
+            final_url = result.final_url
+            content_bytes = result.content_bytes
 
-                # Generate unique ID
-                record_id = str(uuid.uuid4())
-                external_id = final_url
+            # Determine MIME type and file extension
+            mime_type, extension = self._determine_mime_type(url, content_type)
 
-                # Get title and clean content for HTML
+            # Generate unique ID
+            record_id = str(uuid.uuid4())
+            external_id = final_url
+
+            # Get title and clean content for HTML
+            title = self._extract_title_from_url(final_url)
+            size_in_bytes = len(content_bytes)
+            timestamp = get_epoch_timestamp_in_ms()
+
+            # For HTML pages, extract clean content
+            if mime_type == MimeTypes.HTML:
+                try:
+                    soup = BeautifulSoup(content_bytes, "html.parser")
+                    title = self._extract_title(soup, final_url)
+
+                    # Remove script and style elements
+                    for script in soup(["script", "style", "noscript", "iframe"]):
+                        script.decompose()
+
+                    # Get text content
+                    text_content = soup.get_text(separator="\n", strip=True)
+
+                    # Store cleaned HTML for indexing
+                    content_bytes = text_content.encode("utf-8")
+                    size_in_bytes = len(content_bytes)
+
+                except Exception as e:
+                    self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
+
+            # Calculate MD5 hash once
+            content_md5_hash = hashlib.md5(content_bytes).hexdigest()
+
+            # Ensure title is never empty (schema requirement)
+            if not title or not title.strip():
                 title = self._extract_title_from_url(final_url)
-                size_in_bytes = len(content_bytes)
-                timestamp = get_epoch_timestamp_in_ms()
+                # Final fallback: use URL if title extraction still fails
+                if not title or not title.strip():
+                    parsed = urlparse(final_url)
+                    title = parsed.netloc or final_url
 
-                # For HTML pages, extract clean content
-                if mime_type == MimeTypes.HTML:
-                    try:
-                        soup = BeautifulSoup(content_bytes, 'html.parser')
-                        title = self._extract_title(soup, final_url)
+            # Create FileRecord
+            file_record = FileRecord(
+                id=record_id,
+                record_name=title,
+                record_type=RecordType.FILE,
+                record_group_type=RecordGroupType.WEB,
+                external_record_id=external_id,
+                external_revision_id=content_md5_hash,
+                external_record_group_id=self.url,
+                version=0,
+                origin=OriginTypes.CONNECTOR.value,
+                connector_name=self.connector_name,
+                connector_id=self.connector_id,
+                created_at=timestamp,
+                updated_at=timestamp,
+                source_created_at=timestamp,
+                source_updated_at=timestamp,
+                weburl=final_url,
+                size_in_bytes=size_in_bytes,
+                is_file=True,
+                extension=extension,
+                path=urlparse(final_url).path,
+                mime_type=mime_type.value,
+                md5_hash=content_md5_hash,
+                preview_renderable=False,
+            )
 
-                        # Remove script and style elements
-                        for script in soup(["script", "style", "noscript", "iframe"]):
-                            script.decompose()
-
-                        # Get text content
-                        text_content = soup.get_text(separator='\n', strip=True)
-
-                        # Store cleaned HTML for indexing
-                        content_bytes = text_content.encode('utf-8')
-                        size_in_bytes = len(content_bytes)
-
-                    except Exception as e:
-                        self.logger.warning(f"⚠️ Failed to parse HTML for {url}: {e}")
-
-                # Calculate MD5 hash once
-                content_md5_hash = hashlib.md5(content_bytes).hexdigest()
-
-                # Create FileRecord
-                file_record = FileRecord(
-                    id=record_id,
-                    record_name=title,
-                    record_type=RecordType.FILE,
-                    record_group_type=RecordGroupType.WEB,
-                    external_record_id=external_id,
-                    external_revision_id=content_md5_hash,
-                    external_record_group_id=self.url,
-                    version=0,
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    created_at=timestamp,
-                    updated_at=timestamp,
-                    source_created_at=timestamp,
-                    source_updated_at=timestamp,
-                    weburl=final_url,
-                    size_in_bytes=size_in_bytes,
-                    is_file=True,
-                    extension=extension,
-                    path=urlparse(final_url).path,
-                    mime_type=mime_type.value,
-                    md5_hash=content_md5_hash,
-                    preview_renderable=False,
+            # Create permissions (org-level access for web pages)
+            permissions = [
+                Permission(
+                    external_id=self.data_entities_processor.org_id,
+                    type=PermissionType.READ,
+                    entity_type=EntityType.ORG,
                 )
+            ]
 
-                # Create permissions (org-level access for web pages)
-                permissions = [
-                    Permission(
-                        external_id=self.data_entities_processor.org_id,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
+            self.logger.debug(
+                "✅ Processed: %s (%s, %s bytes) via %s",
+                title, mime_type.value, size_in_bytes, result.strategy
+            )
 
-                    )
-                ]
-
-                self.logger.debug(
-                    f"✅ Processed: {title} ({mime_type.value}, {size_in_bytes} bytes)"
-                )
-
-                return file_record, permissions
+            return file_record, permissions
 
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
@@ -738,17 +782,23 @@ class WebConnector(BaseConnector):
         """Extract page title from BeautifulSoup object."""
         # Try <title> tag
         if soup.title and soup.title.string:
-            return soup.title.string.strip()
+            title = soup.title.string.strip()
+            if title:
+                return title
 
         # Try <h1> tag
         h1 = soup.find('h1')
         if h1:
-            return h1.get_text(strip=True)
+            title = h1.get_text(strip=True)
+            if title:
+                return title
 
         # Try og:title meta tag
         og_title = soup.find('meta', property='og:title')
         if og_title and og_title.get('content'):
-            return og_title['content'].strip()
+            title = og_title['content'].strip()
+            if title:
+                return title
 
         # Fallback to URL
         return self._extract_title_from_url(url)

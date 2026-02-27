@@ -24,3 +24,4 @@ class HttpStatusCode(Enum):
     # 5xx Server Errors
     INTERNAL_SERVER_ERROR = 500
     UNHEALTHY = 503
+    CLOUDFLARE_NETWORK_ERROR = 520
