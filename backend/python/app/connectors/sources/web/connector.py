@@ -33,8 +33,6 @@ from app.connectors.core.registry.connector_builder import (
     CustomField,
     DocumentationLink,
 )
-from app.connectors.core.registry.filters import FilterOptionsResponse
-from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.connectors.core.registry.filters import (
     FilterCategory,
     FilterCollection,
@@ -46,6 +44,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.web.fetch_strategy import fetch_url_with_fallback
 from app.models.entities import (
     AppUser,
     FileRecord,
