@@ -45,9 +45,7 @@ import sparklesIcon from '@iconify-icons/mdi/auto-awesome';
 import timeIcon from '@iconify-icons/mdi/clock-outline';
 import clearIcon from '@iconify-icons/mdi/close';
 import folderIcon from '@iconify-icons/mdi/folder-multiple';
-import databaseIcon from '@iconify-icons/mdi/database';
 import flowIcon from '@iconify-icons/mdi/graph';
-import permissionsIcon from '@iconify-icons/mdi/account-key';
 
 import type { Agent, AgentTemplate, AgentFilterOptions } from 'src/types/agent';
 import { paths } from 'src/routes/paths';
@@ -55,7 +53,6 @@ import AgentApiService from './services/api';
 import { filterAgents, sortAgents, formatTimestamp } from './utils/agent';
 import TemplateBuilder from './components/template-builder';
 import TemplateSelector from './components/template-selector';
-import AgentPermissionsDialog from './components/agent-builder/agent-permissions-dialog';
 import { AgentGridSkeleton, HeaderSkeleton } from './components/skeleton-loader';
 
 interface AgentsManagementProps {
@@ -101,12 +98,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   }>({
     open: false,
     template: null,
-  });
-
-  // Permissions dialog state
-  const [permissionsDialog, setPermissionsDialog] = useState<{ open: boolean; agent: Agent | null }>({
-    open: false,
-    agent: null,
   });
 
   // Enhanced color scheme
@@ -250,11 +241,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
   const handleMenuClose = () => {
     setAnchorEl(null);
     setActiveAgent(null);
-  };
-
-  const handleOpenPermissions = (agent: Agent) => {
-    setPermissionsDialog({ open: true, agent });
-    handleMenuClose();
   };
 
   const handleTemplateSelect = useCallback(
@@ -1083,34 +1069,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
           />
         </MenuItem>
         <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} />
-        {/* <MenuItem
-          onClick={() => {
-            if (activeAgent) handleOpenPermissions(activeAgent);
-            handleMenuClose();
-          }}
-          sx={{
-            py: 1.5,
-            px: 2,
-            mx: 0.5,
-            borderRadius: 1,
-            '&:hover': {
-              bgcolor: alpha(theme.palette.info.main, 0.08),
-              transform: 'translateX(2px)',
-            },
-            transition: 'all 0.15s ease',
-          }}
-        >
-          <ListItemIcon sx={{ minWidth: 36 }}>
-            <Icon icon={permissionsIcon} width={18} height={18} />
-          </ListItemIcon>
-          <ListItemText 
-            primary="Manage Permissions"
-            primaryTypographyProps={{
-              sx: { fontSize: '0.875rem', fontWeight: 500 }
-            }}
-          />
-        </MenuItem>
-        <Divider sx={{ my: 0.5, borderColor: alpha(theme.palette.divider, 0.08) }} /> */}
         <MenuItem
           onClick={() => {
             if (activeAgent) setDeleteDialog({ open: true, agent: activeAgent });
@@ -1243,12 +1201,6 @@ const AgentsManagement: React.FC<AgentsManagementProps> = ({ onAgentSelect }) =>
         templates={Array.isArray(templates) ? templates : []}
       /> */}
 
-      <AgentPermissionsDialog
-        open={permissionsDialog.open}
-        onClose={() => setPermissionsDialog({ open: false, agent: null })}
-        agentId={permissionsDialog.agent?._key || ''}
-        agentName={permissionsDialog.agent?.name || ''}
-      />
     </Box>
   );
 };
