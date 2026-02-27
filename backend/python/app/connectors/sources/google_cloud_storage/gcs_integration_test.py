@@ -75,7 +75,8 @@ logging.basicConfig(
 logger = create_logger("gcs-lifecycle-test")
 
 # ── Credentials / Paths ───────────────────────────────────────────────────────
-SERVICE_ACCOUNT_JSON_PATH: str = '/Users/kushagratiwari/src/intern/Pipeshub/pipeshub-ai/hallowed-air-488712-v5-a9806a22121c.json'
+# Path to the service account JSON key is read from backend/python/.env
+SERVICE_ACCOUNT_JSON_PATH: str = os.getenv("GCS_SERVICE_ACCOUNT_JSON_PATH", "")
 
 # ── Sample-data roots ─────────────────────────────────────────────────────────
 _BACKEND_PYTHON_ROOT = Path(__file__).resolve().parents[4]
