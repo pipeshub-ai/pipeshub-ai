@@ -1,23 +1,34 @@
 import asyncio
 import json
 import logging
-from typing import Dict, Optional
+from typing import Dict, Optional, Union
 
-from redis import asyncio as aioredis  # type: ignore
+from redis.asyncio import Redis
+from redis.asyncio.cluster import RedisCluster
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.services.key_value.interface.key_value import IKeyValueService
-from app.utils.redis_util import build_redis_url
+from app.utils.redis_util import create_redis_client, is_cluster_mode
 
 
 class RedisService(IKeyValueService):
-    """Service for handling Redis operations"""
+    """Service for handling Redis operations.
+    
+    Supports both standalone Redis and Redis Cluster modes.
+    """
 
-    def __init__(self, logger: logging.Logger, redis_client, config: ConfigurationService) -> None:
+    def __init__(
+        self,
+        logger: logging.Logger,
+        redis_client: Union[Redis, RedisCluster],
+        config: ConfigurationService,
+        cluster_mode: bool = False,
+    ) -> None:
         self.logger = logger
         self.config = config
         self.redis_client = redis_client
+        self.cluster_mode = cluster_mode
         self.prefix = "redis_service:"  # Namespace for our keys
         self._state_lock = asyncio.Lock()
 
@@ -25,6 +36,9 @@ class RedisService(IKeyValueService):
     async def create(cls, logger: logging.Logger, config_service: ConfigurationService) -> 'RedisService':
         """
         Factory method to create and initialize a RedisService instance.
+        
+        Supports both standalone Redis and Redis Cluster modes based on configuration.
+        
         Args:
             logger: Logger instance
             config_service: ConfigurationService instance
@@ -36,14 +50,22 @@ class RedisService(IKeyValueService):
             redis_config = await config_service.get_config(config_node_constants.REDIS.value)
             if not redis_config or not isinstance(redis_config, dict):
                 raise ValueError("Redis configuration not found")
-            # Build Redis URL with password if provided
-            redis_url = build_redis_url(redis_config)
-            redis_client = await aioredis.from_url(redis_url, encoding="utf-8", decode_responses=True) # type: ignore
-            service = cls(logger, redis_client, config_service)
+            
+            # Create Redis client (handles both standalone and cluster)
+            cluster_mode = is_cluster_mode(redis_config)
+            redis_client = await create_redis_client(
+                redis_config,
+                decode_responses=True,
+                encoding="utf-8",
+            )
+            
+            service = cls(logger, redis_client, config_service, cluster_mode)
             connected = await service.connect()
             if not connected:
                 raise Exception("Failed to connect to Redis")
 
+            mode_str = "Cluster" if cluster_mode else "Standalone"
+            logger.info(f"✅ RedisService created in {mode_str} mode")
             return service
 
         except Exception as e:
@@ -122,3 +144,4 @@ class RedisService(IKeyValueService):
         if progress:
             return json.loads(progress)
         return None
+

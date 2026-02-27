@@ -1,4 +1,4 @@
-import { Redis } from 'ioredis';
+import { Cluster } from 'ioredis';
 import { DistributedKeyValueStore } from '../keyValueStore';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../errors/etcd.errors';
 import { RedisConfig } from '../../types/redis.types';
@@ -12,34 +12,72 @@ const CACHE_INVALIDATION_CHANNEL = 'pipeshub:cache:invalidate';
 
 
 export class RedisDistributedKeyValueStore<T> implements DistributedKeyValueStore<T> {
-  private client: Redis;
+  private client: Cluster;
   private serializer: (value: T) => Buffer;
   private deserializer: (buffer: Buffer) => T;
   private keyPrefix: string;
   private watchers: Map<string, Array<(value: T | null) => void>> = new Map();
+  private logger: Logger;
+  private config: RedisStoreConfig;
 
   constructor(
     config: RedisStoreConfig,
+    logger: Logger,
     serializer: (value: T) => Buffer,
     deserializer: (buffer: Buffer) => T,
   ) {
     this.keyPrefix = config.keyPrefix || 'pipeshub:kv:';
     this.serializer = serializer;
     this.deserializer = deserializer;
-
-    this.client = new Redis({
-      host: config.host,
-      port: config.port,
-      password: config.password,
-      db: config.db || 0,
-      connectTimeout: config.connectTimeout || 10000,
-      maxRetriesPerRequest: config.maxRetriesPerRequest || 3,
-      enableOfflineQueue: config.enableOfflineQueue ?? true,
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
+    this.logger = logger;
+    this.config = config;
+    this.client = new Cluster(
+    [
+      {
+        host: this.config.host, // clustercfg.redis-test.bdswez.memorydb.us-east-1.amazonaws.com
+        port: this.config.port || 6379,
       },
+    ],
+    {
+      // MemoryDB specific settings
+      dnsLookup: (address, callback) => callback(null, address),
+
+      redisOptions: {
+        username: this.config.username || 'default', // MemoryDB ACL username
+        password: this.config.password,
+        tls: {},
+        connectTimeout: this.config.connectTimeout || 10000,
+        maxRetriesPerRequest: this.config.maxRetriesPerRequest || 3,
+      },
+
+      // Cluster-specific options
+      slotsRefreshTimeout: 2000,
+      slotsRefreshInterval: 5000,
+    }
+  );
+
+  this.client.on('connect', () => {
+    this.logger.info('Redis client connected');
+  });
+
+  this.client.on('error', (error) => {
+    this.logger.error('Redis client error', {
+      message: error.message,
+      code: (error as any).code,
+      lastNodeError: (error as any).lastNodeError?.message,
     });
+  });
+
+  this.client.on('node error', (error, address) => {
+    this.logger.error('Redis node error', {
+      message: error.message,
+      address,
+    });
+  });
+    this.client.on('ready', () => {
+      this.logger.info('Redis client ready');
+    });
+
   }
 
   private buildKey(key: string): string {

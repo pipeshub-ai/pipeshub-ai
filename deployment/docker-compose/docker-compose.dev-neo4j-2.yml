@@ -1,0 +1,193 @@
+services:
+  pipeshub-ai:
+    image: pipeshub-ai:latest
+    restart: always
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+      args:
+        - BUILDKIT_INLINE_CACHE=1
+      shm_size: 4gb
+      ulimits:
+        memlock:
+          soft: -1
+          hard: -1
+    ports:
+      - "3001:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+    shm_size: 2gb
+    init: true
+    environment:
+      # Core environment settings
+      - NODE_ENV=${NODE_ENV:-development}
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
+      - STRICT_MODE=${STRICT_MODE:-false}
+      - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-true}
+
+      # Security settings - allow override with custom secret
+      - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
+
+      # Public endpoints
+      - FRONTEND_PUBLIC_URL=${FRONTEND_PUBLIC_URL:-}
+
+      # Internal service URLs
+      - QUERY_BACKEND=http://localhost:8000
+      - CONNECTOR_BACKEND=http://localhost:8088
+      - INDEXING_BACKEND=http://localhost:8091
+
+      # Key-Value Store Configuration
+      - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
+
+      # Graph Database config
+      - GRAPH_DB_TYPE=neo4j
+      - DATA_STORE=neo4j
+
+      # Neo4j config
+      - NEO4J_URI=bolt://neo4j:7687
+      - NEO4J_USERNAME=neo4j
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-your_password}
+      - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+
+      # Kafka config
+      - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
+      - KAFKA_SSL=${KAFKA_SSL:-false}
+      - KAFKA_USERNAME=${KAFKA_USERNAME:-}
+      - KAFKA_PASSWORD=${KAFKA_PASSWORD:-}
+      - KAFKA_SASL_MECHANISM=${KAFKA_SASL_MECHANISM:-}
+
+      # Redis config
+      - REDIS_HOST=${REDIS_HOST:-}
+      - REDIS_PORT=6379
+      - REDIS_USERNAME=holinapai
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+      - REDIS_URL=redis://${REDIS_USERNAME:-}:${REDIS_PASSWORD:-}@{REDIS_HOST:-}
+      - REDIS_KV_PREFIX=${REDIS_KV_PREFIX:-pipeshub:kv2:}
+      - REDIS_TIMEOUT=${REDIS_TIMEOUT:-10000}
+      - REDIS_DB=${REDIS_DB:-10}
+      - REDIS_CLUSTER_MODE=true
+
+      # MongoDB config
+      - MONGO_URI=mongodb://${MONGO_USERNAME:-admin}:${MONGO_PASSWORD:-password}@${MONGO_HOST:-}
+      - MONGO_DB_NAME=es2
+
+      # Qdrant config
+      - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      - QDRANT_HOST=qdrant
+      - QDRANT_GRPC_PORT=6334
+      - QDRANT_PORT=6333
+
+      - OLLAMA_API_URL=http://host.docker.internal:11434
+
+      # Rate limit config
+      - MAX_REQUESTS_PER_MINUTE=${MAX_REQUESTS_PER_MINUTE:-500}
+
+      # Token config
+      - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
+      - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+      - AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN:-}
+      - AWS_DEFAULT_REGION=${AWS_DEFAULT_REGION:-}
+
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+    volumes:
+      - pipeshub_data:/data/pipeshub
+      - pipeshub_root_local:/root/.local
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  neo4j:
+    image: neo4j:5.26.0
+    restart: always
+    ports:
+      - "7475:7474"
+      - "7688:7687"
+    environment:
+      - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:-your_password}
+      - NEO4J_PLUGINS=["apoc"]
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+      - NEO4J_dbms_memory_heap_initial__size=2G
+      - NEO4J_dbms_memory_heap_max__size=4G
+      - NEO4J_dbms_memory_pagecache_size=2G
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:v1.15
+    ports:
+      - "6335:6333"
+      - "6336:6334"
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
+      # Performance optimizations
+      - QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=64
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+      - QDRANT__STORAGE__PERFORMANCE__MAX_SEARCH_THREADS=0  # Use all available CPUs
+      - QDRANT__STORAGE__OPTIMIZERS__DEFAULT_SEGMENT_NUMBER=8
+      - QDRANT__STORAGE__OPTIMIZERS__MEMMAP_THRESHOLD=50000
+      - QDRANT__STORAGE__WAL__WAL_CAPACITY_MB=256
+      - QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE=1000
+      - QDRANT__STORAGE__PERFORMANCE__MAX_OPTIMIZATION_THREADS=4
+      - QDRANT__STORAGE__HNSW_INDEX__M=16
+      - QDRANT__STORAGE__HNSW_INDEX__EF_CONSTRUCT=100
+      - QDRANT__SERVICE__MAX_CONCURRENT_REQUESTS=1000
+    volumes:
+      - qdrant_storage:/qdrant/storage
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 4G
+        reservations:
+          cpus: '2'
+          memory: 2G
+    ulimits:
+      nofile:
+        soft: 50000
+        hard: 50000
+    restart: always
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  neo4j_data:
+    driver: local
+  neo4j_logs:
+    driver: local
+  qdrant_storage:
+    driver: local
+  pipeshub_data:
+    driver: local
+  pipeshub_root_local:
+    driver: local

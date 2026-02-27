@@ -69,10 +69,11 @@ export class KeyValueStoreService implements IKVStoreConnection {
         this.store = KeyValueStoreFactory.createStore(
           storeType,
           storeConfig,
+	  this.logger,
           (value: any) => Buffer.from(value),
           (buffer: Buffer) => buffer.toString(),
         );
-
+	console.log("Created key valye store")
         // Verify connection by performing a health check
         const isHealthy = await this.store.healthCheck();
         if (!isHealthy) {

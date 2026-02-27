@@ -697,17 +697,17 @@ class RetrievalService:
                     models.Prefetch(
                         query=dense_embedding,
                         using="dense",
-                        limit=limit * 2,  # Fetch more candidates
+                        limit=limit * 4,  # Fetch more candidates
                     ),
                     models.Prefetch(
                         query=self.to_qdrant_sparse(sparse_embedding),
                         using="sparse",
-                        limit=limit * 2,
+                        limit=limit * 4,
                     ),
                 ],
                 query=models.FusionQuery(fusion=models.Fusion.RRF),  # Reciprocal Rank Fusion
                 with_payload=True,
-                limit=limit,
+                limit=limit * 2,
                 filter=filter,
             )
             for dense_embedding, sparse_embedding in zip(dense_query_embeddings, sparse_query_embeddings)

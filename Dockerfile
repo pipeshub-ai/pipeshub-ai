@@ -196,7 +196,8 @@ COPY --from=nodejs-backend /app/backend/src/modules/mail ./backend/src/modules/m
 COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
 COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
 
-# Copy frontend build (normalized to /out by the selected frontend stage)
+COPY global-bundle.pem ./backend/global-bundle.pem
+# Copy frontend build
 COPY --from=frontend-build /out ./backend/dist/public
 
 # Copy Python application code

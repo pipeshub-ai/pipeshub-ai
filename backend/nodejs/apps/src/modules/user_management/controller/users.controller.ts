@@ -68,45 +68,26 @@ export class UserController {
   ): Promise<void> {
     const { blocked } = req.query;
     if (blocked === 'true') {
+      const blockedCredentials = await UserCredentials.find({
+        orgId: req.user?.orgId,
+        isBlocked: true,
+        isDeleted: false,
+      }).lean().exec();
 
-      const blockedUsers = await UserCredentials.aggregate([
-        {
-          $match: {
-            orgId: req.user?.orgId,
-            isBlocked: true,
-            isDeleted: false,
-          },
-        },
-        {
-          $lookup: {
-            from: 'users',
-            let: { credUserId: '$userId' },
-            pipeline: [
-              {
-                $match: {
-                  $expr: {
-                    $eq: ['$_id', { $toObjectId: '$$credUserId' }],
-                  },
-                },
-              },
-            ],
-            as: 'userProfile',
-          },
-        },
-        { $unwind: '$userProfile' },
-        {
-          $project: {
-            _id: '$userProfile._id',
-            email: '$userProfile.email',
-            orgId: '$userProfile.orgId',
-            fullName: '$userProfile.fullName',
-            hasLoggedIn: '$userProfile.hasLoggedIn',
-            slug: '$userProfile.slug',
-            createdAt: '$userProfile.createdAt',
-            updatedAt: '$userProfile.updatedAt',
-          },
-        },
-      ]);
+      const blockedUserIds = blockedCredentials
+        .map((cred) => cred.userId)
+        .filter(Boolean)
+        .map((id) => new mongoose.Types.ObjectId(id as string));
+
+      const blockedUsers = blockedUserIds.length > 0
+        ? await Users.find({
+            _id: { $in: blockedUserIds },
+          })
+            .select('email orgId fullName hasLoggedIn slug createdAt updatedAt')
+            .lean()
+            .exec()
+        : [];
+
 
       res.status(200).json(blockedUsers);
       return;
@@ -275,6 +256,7 @@ export class UserController {
       .select('-email')
       .lean()
       .exec();
+    
     res.json(users);
   }
 

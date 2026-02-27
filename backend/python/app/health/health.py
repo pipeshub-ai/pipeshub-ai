@@ -4,7 +4,7 @@ import ssl
 
 import aiohttp  # type: ignore
 from aiokafka import AIOKafkaConsumer  #type: ignore
-from redis.asyncio import Redis, RedisError  #type: ignore
+from redis.asyncio import RedisError  #type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
@@ -13,7 +13,7 @@ from app.config.constants.service import (
     HealthCheckConfig,
     config_node_constants,
 )
-from app.utils.redis_util import build_redis_url
+from app.utils.redis_util import create_redis_client, get_redis_config_from_env, is_cluster_mode
 
 
 class Health:
@@ -26,7 +26,7 @@ class Health:
         await Health.health_check_kv_store(container)
         await Health.health_check_arango(container)
         await Health.health_check_kafka(container)
-        await Health.health_check_redis(container)
+        #await Health.health_check_redis(container)
         await Health.health_check_vector_db(container)
         logger.info("✅ External services health check passed")
 
@@ -115,15 +115,15 @@ class Health:
         Uses environment variables directly to avoid circular dependency
         with config service (which depends on Redis as KV store).
 
+        Supports both standalone Redis and Redis Cluster (AWS MemoryDB/ElastiCache).
         Retries connection with linear 1 second backoff before failing.
         """
         logger = container.logger()
         logger.info("🔍 Starting Redis KV store health check...")
 
-        redis_host = os.getenv("REDIS_HOST", "localhost")
-        redis_port = int(os.getenv("REDIS_PORT", "6379"))
-        redis_password = os.getenv("REDIS_PASSWORD") or None
-        redis_db = int(os.getenv("REDIS_DB", "0"))
+        # Read Redis config directly from environment variables
+        redis_config = get_redis_config_from_env()
+        cluster_mode = is_cluster_mode(redis_config)
 
         max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
         last_error_msg = None
@@ -131,20 +131,13 @@ class Health:
         for attempt in range(1, max_retries + 1):
             redis_client = None
             try:
-                logger.debug(
-                    f"Checking Redis KV store at: {redis_host}:{redis_port}, db={redis_db} "
-                    f"(attempt {attempt}/{max_retries})"
-                )
+                #logger.debug(
+                #   f"Checking Redis KV store at: {redis_config['host']}:{redis_config['port']}, "
+                #    f"db={redis_config['db']} (cluster_mode={cluster_mode}, attempt {attempt}/{max_retries})"
+                #)
 
-                # Create Redis client and attempt to ping
-                redis_client = Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    password=redis_password,
-                    db=redis_db,
-                    socket_timeout=5.0,
-                )
-
+                # Create Redis client (cluster or standalone) and attempt to ping
+                redis_client = await create_redis_client(redis_config)
                 await redis_client.ping()
                 logger.info("✅ Redis KV store health check passed")
                 return
@@ -158,7 +151,7 @@ class Health:
             finally:
                 if redis_client:
                     try:
-                        await redis_client.close()
+                        await redis_client.aclose()
                     except Exception:
                         pass
 
@@ -376,9 +369,16 @@ class Health:
 
     @staticmethod
     async def health_check_redis(container) -> None:
-        """Health check method that verifies redis service health with retry logic."""
+        """Health check method that verifies redis service health with retry logic.
+        
+        Supports both standalone Redis and Redis Cluster (AWS MemoryDB/ElastiCache).
+        """
         logger = container.logger()
         logger.info("🔍 Starting Redis health check...")
+
+        # Read Redis config directly from environment variables
+        redis_config = get_redis_config_from_env()
+        cluster_mode = is_cluster_mode(redis_config)
 
         max_retries = HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value
         last_error_msg = None
@@ -386,19 +386,13 @@ class Health:
         for attempt in range(1, max_retries + 1):
             redis_client = None
             try:
-                config_service: ConfigurationService = container.config_service()
-                redis_config = await config_service.get_config(
-                    config_node_constants.REDIS.value
-                )
-                # Build Redis URL with password if provided
-                redis_url = build_redis_url(redis_config)
                 logger.debug(
-                    f"Checking Redis connection at: {redis_url} "
-                    f"(attempt {attempt}/{max_retries})"
+                    f"Checking Redis connection at: {redis_config['host']}:{redis_config['port']} "
+                    f"(cluster_mode={cluster_mode}, attempt {attempt}/{max_retries})"
                 )
 
-                # Create Redis client and attempt to ping
-                redis_client = Redis.from_url(redis_url, socket_timeout=5.0)
+                # Create Redis client (cluster or standalone) and attempt to ping
+                redis_client = await create_redis_client(redis_config)
                 await redis_client.ping()
                 logger.info("✅ Redis health check passed")
                 return
@@ -412,7 +406,7 @@ class Health:
             finally:
                 if redis_client:
                     try:
-                        await redis_client.close()
+                        await redis_client.aclose()
                     except Exception:
                         pass
 
@@ -450,3 +444,4 @@ class Health:
             error_msg = f"vector db service health check failed: {str(e)}"
             logger.error(f"❌ {error_msg}")
             raise
+

@@ -111,8 +111,11 @@ def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "b
     Tries credentials in this order:
       1. Explicit keys from configuration (awsAccessKeyId / awsAccessSecretKey)
       2. boto3 default credential chain (env vars, ~/.aws, EC2 IAM role, ECS task role)
+      3. Direct EC2 instance metadata fetch via IMDSv1 (works inside Docker
+         even when the IMDSv2 hop limit is 1)
     """
     import boto3
+    from botocore.credentials import InstanceMetadataProvider, InstanceMetadataFetcher
 
     region = configuration.get("region") or os.environ.get("AWS_DEFAULT_REGION")
     aws_access_key = (configuration.get("awsAccessKeyId") or "").strip()
@@ -125,14 +128,47 @@ def _create_bedrock_client(configuration: dict[str, Any], service_name: str = "b
             aws_secret_access_key=aws_secret_key,
             region_name=region,
         )
-    else:
-        logger.info(
-            "No explicit AWS credentials provided for Bedrock; "
-            "using default credential chain (env vars AWS_ACCESS_KEY_ID / "
-            "AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, EC2 IAM role, ECS task role)"
-        )
-        session = boto3.Session(region_name=region)
+        return session.client(service_name)
 
+    logger.info(
+        "No explicit AWS credentials provided for Bedrock; "
+        "using default credential chain (env vars AWS_ACCESS_KEY_ID / "
+        "AWS_SECRET_ACCESS_KEY, ~/.aws/credentials, EC2 IAM role, ECS task role)"
+    )
+    session = boto3.Session(region_name=region)
+
+    if session.get_credentials() is not None:
+        logger.info("Credentials resolved via default chain")
+        return session.client(service_name)
+
+    # Default chain returned None — likely running inside a Docker container
+    # on an EC2 instance with IMDSv2 hop limit = 1. Fall back to fetching
+    # credentials directly from the instance metadata service.
+    logger.warning(
+        "Default credential chain returned no credentials; "
+        "attempting direct instance metadata fetch (IMDSv1 fallback)"
+    )
+    provider = InstanceMetadataProvider(
+        iam_role_fetcher=InstanceMetadataFetcher(timeout=2, num_attempts=3)
+    )
+    creds = provider.load()
+    if creds is None:
+        raise RuntimeError(
+            "Unable to obtain AWS credentials: no explicit keys in configuration, "
+            "default credential chain found nothing, and EC2 instance metadata "
+            "is unreachable. Ensure the EC2 instance has an IAM role attached and "
+            "that the metadata service is accessible (try increasing the IMDSv2 "
+            "http-put-response-hop-limit to 2 for containerised workloads)."
+        )
+
+    frozen = creds.get_frozen_credentials()
+    logger.info("Credentials resolved via direct instance metadata fetch")
+    session = boto3.Session(
+        aws_access_key_id=frozen.access_key,
+        aws_secret_access_key=frozen.secret_key,
+        aws_session_token=frozen.token,
+        region_name=region,
+    )
     return session.client(service_name)
 
 def is_multimodal_llm(config: dict[str, Any]) -> bool:
@@ -435,7 +471,6 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == LLMProvider.AWS_BEDROCK.value:
         from langchain_aws import ChatBedrock
 
-        # Determine the actual provider based on model name if not explicitly set
         provider_in_bedrock = configuration.get("provider")
 
         # Handle custom provider (when user selects "other")
@@ -480,7 +515,7 @@ def get_generator_model(provider: str, config: dict[str, Any], model_name: str |
             }
         else:
             model_kwargs = {}
-
+        
         bedrock_client = _create_bedrock_client(configuration)
 
         bedrock_kwargs: Dict[str, Any] = dict(

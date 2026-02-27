@@ -1,5 +1,5 @@
 import { injectable } from 'inversify';
-import { Redis, RedisOptions } from 'ioredis';
+import { Cluster } from 'ioredis';
 import { Logger } from './logger.service';
 
 import { RedisCacheError } from '../errors/redis.errors';
@@ -7,7 +7,7 @@ import { CacheOptions, RedisConfig } from '../types/redis.types';
 
 @injectable()
 export class RedisService {
-  private client!: Redis;
+  private client!: Cluster;
   private connected = false;
   private readonly logger: Logger;
   private readonly defaultTTL = 3600; // 1 hour
@@ -22,39 +22,51 @@ export class RedisService {
   }
 
   private initializeClient(): void {
-    const redisOptions: RedisOptions = {
-      host: this.config.host,
-      port: this.config.port,
-      username: this.config.username,
-      password: this.config.password,
-      db: this.config.db ?? 0,
-      connectTimeout: this.config.connectTimeout ?? 10000,
-      maxRetriesPerRequest: this.config.maxRetriesPerRequest ?? 3,
-      enableOfflineQueue: this.config.enableOfflineQueue ?? true,
-      retryStrategy: (times: number) => {
-        const delay = Math.min(times * 50, 2000);
-        return delay;
+  this.client = new Cluster(
+    [
+      {
+        host: this.config.host, // clustercfg.redis-test.bdswez.memorydb.us-east-1.amazonaws.com
+        port: this.config.port || 6379,
       },
-    };
+    ],
+    {
+      // MemoryDB specific settings
+      dnsLookup: (address, callback) => callback(null, address),
 
-    // Add TLS configuration if enabled
-    if (this.config.tls) {
-      redisOptions.tls = {};
-      this.logger.info('Redis TLS enabled');
+      redisOptions: {
+        username: this.config.username || 'default', // MemoryDB ACL username
+        password: this.config.password,
+        tls: {},
+        connectTimeout: this.config.connectTimeout || 10000,
+        maxRetriesPerRequest: this.config.maxRetriesPerRequest || 3,
+      },
+
+      // Cluster-specific options
+      slotsRefreshTimeout: 2000,
+      slotsRefreshInterval: 5000,
     }
+  );
 
-    this.client = new Redis(redisOptions);
+  this.client.on('connect', () => {
+    this.connected = true;
+    this.logger.info('Redis client connected');
+  });
 
-    this.client.on('connect', () => {
-      this.connected = true;
-      this.logger.info('Redis client connected');
+  this.client.on('error', (error) => {
+    this.connected = false;
+    this.logger.error('Redis client error', {
+      message: error.message,
+      code: (error as any).code,
+      lastNodeError: (error as any).lastNodeError?.message,
     });
+  });
 
-    this.client.on('error', (error) => {
-      this.connected = false;
-      this.logger.error('Redis client error', { error });
+  this.client.on('node error', (error, address) => {
+    this.logger.error('Redis node error', {
+      message: error.message,
+      address,
     });
-
+  });
     this.client.on('ready', () => {
       this.logger.info('Redis client ready');
     });

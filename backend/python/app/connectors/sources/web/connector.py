@@ -66,7 +66,6 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from PIL import Image
 
-
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
     """Wrap raw bytes as an async generator for StreamingResponse."""
     yield data
@@ -2228,7 +2227,6 @@ class WebConnector(BaseConnector):
         if "data:image" in src:
             if "," in src:
                 header, existing_b64 = src.split(",", 1)
-
                 # Extract and validate the mime type from the data URI header
                 mime_match = re.match(r'data:([^;,]+)', header)
                 mime_type = mime_match.group(1).lower() if mime_match else ''

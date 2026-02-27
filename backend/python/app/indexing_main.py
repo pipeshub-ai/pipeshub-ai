@@ -331,7 +331,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await recover_in_progress_records(app_container, graph_provider)
     except Exception as e:
         logger.error(f"❌ Error during record recovery: {str(e)}")
-        # Continue even if recovery fails
+    
+    # Continue even if recovery fails
 
     # Start all message consumers centrally
     try:

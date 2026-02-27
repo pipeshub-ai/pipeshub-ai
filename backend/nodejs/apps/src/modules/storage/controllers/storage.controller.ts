@@ -849,7 +849,6 @@ export class StorageController {
 
       const document = await DocumentModel.findOne({
         _id: documentId,
-        orgId: req.user?.orgId,
       });
 
       if (!document || !document.documentPath) {

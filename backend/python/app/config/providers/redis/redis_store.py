@@ -3,13 +3,19 @@ import json
 import random
 import threading
 import uuid
+import ssl
+import socket
+import os
 from typing import Callable, Dict, Generic, List, Optional, TypeVar
 
 import redis.asyncio as redis  # type: ignore
+from redis.asyncio import Redis as StandaloneRedis  # Standalone client for Pub/Sub
 from redis.asyncio.retry import Retry  # type: ignore
 from redis.backoff import ExponentialBackoff  # type: ignore
 from redis.exceptions import ConnectionError as RedisConnectionError  # type: ignore
 from redis.exceptions import TimeoutError as RedisTimeoutError  # type: ignore
+from redis.asyncio.cluster import RedisCluster, ClusterNode
+
 
 from app.config.key_value_store import KeyValueStore
 from app.utils.logger import create_logger
@@ -24,12 +30,36 @@ RETRY_BASE_DELAY = 0.5  # seconds
 RETRY_MAX_DELAY = 30.0  # seconds
 
 
+def address_remap(address) -> tuple[str, int]:
+    """Custom DNS resolution callback for debugging"""
+    print(f"🔍 Resolving DNS for {address}")
+    try:
+        # address is a tuple (host, port)
+        host, port = address
+
+        # Resolve hostname to IP addresses
+        results = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)
+        if results:
+            ip = results[0][4][0]
+            print(f"✅ Resolved {host} -> {ip}")
+            return (ip, port)  # Return resolved IP with port
+    except Exception as e:
+        print(f"❌ DNS resolution failed for {address}: {e}")
+
+    return address  # Fallback to original
+
+
 class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     """
     Redis-based implementation of the distributed key-value store.
 
     This implementation provides a persistent key-value store using Redis
     as the backend, with support for TTL and prefix-based key operations.
+
+    All clients are stored in ``_clients`` as ``(client, event_loop)`` tuples
+    keyed by a string that encodes both the purpose (cluster / pubsub) and
+    the thread id, so cluster and pub/sub clients never collide and stale
+    clients are detected reliably.
 
     Attributes:
         client: Redis async client
@@ -82,37 +112,53 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Store connection parameters for reconnection and lazy client creation
         self._host = host
         self._port = port
+        self._username = os.getenv("REDIS_USERNAME")
         self._password = password
         self._db = db
         self._connect_timeout = connect_timeout
 
-        # Per-thread Redis clients dict: thread_id → (client, event_loop_ref)
-        # The event_loop_ref lets us detect stale clients bound to a closed
-        # event loop (e.g. after asyncio.run() finishes in a thread pool).
-        self._clients: Dict[int, tuple[redis.Redis, Optional[asyncio.AbstractEventLoop]]] = {}
+        # Per-key Redis clients dict:
+        #   key   → "cluster_{thread_id}" or "pubsub_{thread_id}"
+        #   value → (client, event_loop | None)
+        # The event_loop lets us detect stale clients bound to a closed loop.
+        self._clients: Dict[
+            str, tuple[redis.Redis | RedisCluster | StandaloneRedis, Optional[asyncio.AbstractEventLoop]]
+        ] = {}
         self._clients_lock = threading.Lock()
 
         logger.debug("Redis store initialized with lazy client creation")
 
-    def _get_client(self) -> redis.Redis:
-        """Get or create a Redis client for the current thread/event loop.
+    # ------------------------------------------------------------------
+    # Internal helpers for resolving the current event loop
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _current_loop() -> Optional[asyncio.AbstractEventLoop]:
+        """Return the running event loop, or *None* if there isn't one."""
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError:
+            return None
+
+    # ------------------------------------------------------------------
+    # Client factories
+    # ------------------------------------------------------------------
+
+    def _get_client(self) -> RedisCluster:
+        """Get or create a Redis Cluster client for the current thread/event loop.
 
         This ensures each event loop has its own Redis client to avoid
-        'Future attached to a different loop' errors. Stale clients whose
-        event loop has been closed (e.g. after asyncio.run() finishes in a
+        'Future attached to a different loop' errors.  Stale clients whose
+        event loop has been closed (e.g. after ``asyncio.run()`` finishes in a
         thread-pool thread) are automatically discarded and replaced.
         """
         thread_id = threading.get_ident()
-
-        # Determine the current running event loop, if any
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
+        client_key = f"cluster_{thread_id}"
+        current_loop = self._current_loop()
 
         with self._clients_lock:
-            if thread_id in self._clients:
-                client, bound_loop = self._clients[thread_id]
+            if client_key in self._clients:
+                client, bound_loop = self._clients[client_key]
                 # Discard if the loop the client was created on has been closed,
                 # or if a different loop is now running on this thread.
                 loop_closed = bound_loop is not None and bound_loop.is_closed()
@@ -123,16 +169,16 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 )
                 if loop_closed or loop_changed:
                     logger.debug(
-                        "Discarding stale Redis client for thread %s "
+                        "Discarding stale Redis cluster client for thread %s "
                         "(loop_closed=%s, loop_changed=%s)",
                         thread_id,
                         loop_closed,
                         loop_changed,
                     )
-                    del self._clients[thread_id]
+                    del self._clients[client_key]
 
-            if thread_id not in self._clients:
-                logger.debug("Creating new Redis client for thread %s", thread_id)
+            if client_key not in self._clients:
+                logger.debug("Creating new Redis cluster client for thread %s", thread_id)
 
                 # Configure retry with exponential backoff
                 retry = Retry(
@@ -140,28 +186,86 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                     retries=MAX_RETRIES,
                 )
 
-                # Create a new Redis client for this thread/event loop
-                client = redis.Redis(
+                startup_nodes = [
+                    ClusterNode(host=self._host, port=self._port),
+                ]
+
+                # Get username – default to 'default' for MemoryDB ACL
+                username = self._username
+                if not username or not username.strip():
+                    username = "default"
+
+                client = RedisCluster(
+                    startup_nodes=startup_nodes,
+                    password=self._password,
+                    username=username,
+                    ssl=True,
+                    retry=retry,
+                    address_remap=address_remap,
+                )
+
+                self._clients[client_key] = (client, current_loop)
+
+            return self._clients[client_key][0]
+
+    def _get_pubsub_client(self) -> StandaloneRedis:
+        """Get or create a standalone Redis client for Pub/Sub operations.
+
+        ``RedisCluster`` (async) doesn't support ``pubsub()`` directly, so we
+        connect to a single node using a standalone client for pub/sub.
+        Stale-loop detection mirrors :meth:`_get_client`.
+        """
+        thread_id = threading.get_ident()
+        pubsub_key = f"pubsub_{thread_id}"
+        current_loop = self._current_loop()
+
+        with self._clients_lock:
+            if pubsub_key in self._clients:
+                client, bound_loop = self._clients[pubsub_key]
+                loop_closed = bound_loop is not None and bound_loop.is_closed()
+                loop_changed = (
+                    current_loop is not None
+                    and bound_loop is not None
+                    and current_loop is not bound_loop
+                )
+                if loop_closed or loop_changed:
+                    logger.debug(
+                        "Discarding stale Redis pubsub client for thread %s "
+                        "(loop_closed=%s, loop_changed=%s)",
+                        thread_id,
+                        loop_closed,
+                        loop_changed,
+                    )
+                    del self._clients[pubsub_key]
+
+            if pubsub_key not in self._clients:
+                logger.debug("Creating standalone Redis client for Pub/Sub on thread %s", thread_id)
+
+                username = self._username
+                if not username or not username.strip():
+                    username = "default"
+
+                client = StandaloneRedis(
                     host=self._host,
                     port=self._port,
                     password=self._password,
-                    db=self._db,
+                    username=username,
+                    ssl=True,
                     socket_connect_timeout=self._connect_timeout,
-                    socket_timeout=self._connect_timeout,
                     decode_responses=False,
-                    retry=retry,
-                    retry_on_error=[RedisConnectionError, RedisTimeoutError, ConnectionError, OSError],
-                    health_check_interval=30,
-                    single_connection_client=True,
                 )
-                self._clients[thread_id] = (client, current_loop)
+                self._clients[pubsub_key] = (client, current_loop)
 
-            return self._clients[thread_id][0]
+            return self._clients[pubsub_key][0]
 
     @property
-    def client(self) -> Optional[redis.Redis]:
+    def client(self) -> Optional[RedisCluster]:
         """Expose the underlying Redis client for watchers and diagnostics."""
         return self._get_client()
+
+    # ------------------------------------------------------------------
+    # Key helpers
+    # ------------------------------------------------------------------
 
     def _build_key(self, key: str) -> str:
         """Build the full Redis key with prefix."""
@@ -170,8 +274,12 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
     def _strip_prefix(self, key: str) -> str:
         """Strip the prefix from a Redis key."""
         if key.startswith(self.key_prefix):
-            return key[len(self.key_prefix):]
+            return key[len(self.key_prefix) :]
         return key
+
+    # ------------------------------------------------------------------
+    # Health / connection helpers
+    # ------------------------------------------------------------------
 
     async def health_check(self) -> bool:
         """
@@ -227,6 +335,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         logger.error("Failed to establish Redis connection within %.1f seconds", timeout)
         return False
 
+    # ------------------------------------------------------------------
+    # CRUD operations
+    # ------------------------------------------------------------------
+
     async def create_key(
         self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None
     ) -> bool:
@@ -249,7 +361,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 )
                 if not was_set:
                     logger.debug(
-                        "Key '%s' already exists, skipping creation as overwrite is False.", key
+                        "Key '%s' already exists, skipping creation as overwrite is False.",
+                        key,
                     )
                     return False  # Key was not created (already exists)
 
@@ -355,6 +468,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to get all keys: %s", str(e))
             raise ConnectionError(f"Failed to get all keys: {str(e)}")
 
+    # ------------------------------------------------------------------
+    # Watcher helpers
+    # ------------------------------------------------------------------
+
     async def _notify_watchers(self, key: str, value: Optional[T]) -> None:
         """Notify all watchers of a key about value changes."""
         if key in self._watchers:
@@ -418,7 +535,6 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         logger.debug("Listing keys in directory: %s (pattern: %s)", directory, pattern)
 
         try:
-
             keys = []
             async for key in self._get_client().scan_iter(match=pattern):
                 if isinstance(key, bytes):
@@ -432,6 +548,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to list keys in directory: %s", str(e))
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def close(self) -> None:
         """Clean up resources and close connection."""
         logger.debug("Closing Redis store")
@@ -439,13 +559,12 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Set closing flag to stop reconnection attempts
         self._is_closing = True
 
-        # Cancel Pub/Sub task (may be on a different event loop if started from a background thread)
+        # Cancel Pub/Sub task
         if self._pubsub_task and not self._pubsub_task.done():
             self._pubsub_task.cancel()
             try:
                 await self._pubsub_task
             except (asyncio.CancelledError, RuntimeError):
-                # RuntimeError if the task belongs to a different event loop
                 pass
         self._pubsub_task = None
         self._pubsub_callback = None
@@ -456,23 +575,25 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         self._watch_tasks.clear()
         self._watchers.clear()
 
-        # Close all Redis connections (one per thread/event loop).
+        # Close all Redis connections.
         # Snapshot and clear under the lock, then await outside the lock so
         # we never hold a threading.Lock across an await (deadlock risk).
         with self._clients_lock:
             clients_to_close = list(self._clients.items())
             self._clients.clear()
-        for thread_id, (client, _loop) in clients_to_close:
+
+        for client_key, (client, _loop) in clients_to_close:
             try:
                 await client.close()
-                logger.debug("Closed Redis client for thread %s", thread_id)
+                logger.debug("Closed Redis client %s", client_key)
             except Exception as e:
-                logger.warning("Error closing Redis client for thread %s: %s", thread_id, str(e))
+                logger.warning("Error closing Redis client %s: %s", client_key, str(e))
+
         logger.debug("Redis store closed successfully")
 
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
     # Pub/Sub methods for cache invalidation across processes
-    # -------------------------------------------------------------------------
+    # ------------------------------------------------------------------
 
     CACHE_INVALIDATION_CHANNEL = "pipeshub:cache:invalidate"
 
@@ -484,8 +605,10 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         while retry_count < max_retries:
             try:
-                await self._get_client().publish(self.CACHE_INVALIDATION_CHANNEL, key)
-                logger.info("Published cache invalidation for key: %s", key)
+                await self._get_pubsub_client().publish(
+                    self.CACHE_INVALIDATION_CHANNEL, key
+                )
+                logger.debug("Published cache invalidation for key: %s", key)
                 return
             except Exception as e:
                 retry_count += 1
@@ -513,7 +636,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         Subscribe to cache invalidation messages with automatic reconnection.
 
         Args:
-            callback: Function to call with the invalidated key when a message is received.
+            callback: Function to call with the invalidated key when a message
+                is received.
 
         Returns:
             The subscription task that can be cancelled to stop listening.
@@ -531,10 +655,11 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             while not self._is_closing:
                 pubsub = None
                 try:
-                    pubsub = self._get_client().pubsub()
+                    pubsub_client = self._get_pubsub_client()
+                    pubsub = pubsub_client.pubsub()
                     await pubsub.subscribe(self.CACHE_INVALIDATION_CHANNEL)
                     logger.info("Subscribed to cache invalidation channel")
-                    retry_count = 0  # Reset retry count on successful connection
+                    retry_count = 0  # Reset on successful connection
 
                     async for message in pubsub.listen():
                         if self._is_closing:
@@ -543,11 +668,16 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                             key = message["data"]
                             if isinstance(key, bytes):
                                 key = key.decode("utf-8")
-                            logger.debug("Received cache invalidation for key: %s", key)
+                            logger.debug(
+                                "Received cache invalidation for key: %s", key
+                            )
                             try:
                                 callback(key)
                             except Exception as e:
-                                logger.error("Error in cache invalidation callback: %s", str(e))
+                                logger.error(
+                                    "Error in cache invalidation callback: %s",
+                                    str(e),
+                                )
 
                 except asyncio.CancelledError:
                     logger.debug("Cache invalidation subscription cancelled")
@@ -557,13 +687,15 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                         break
 
                     retry_count += 1
-                    # Calculate delay with exponential backoff and jitter
-                    delay = min(base_delay * (2 ** (retry_count - 1)), max_retry_delay)
-                    # Add some jitter to prevent thundering herd
+                    delay = min(
+                        base_delay * (2 ** (retry_count - 1)), max_retry_delay
+                    )
+                    # Add jitter to prevent thundering herd
                     delay = delay * (0.5 + random.random())
 
                     logger.warning(
-                        "Redis Pub/Sub connection lost: %s. Reconnecting in %.1f seconds (attempt %d)...",
+                        "Redis Pub/Sub connection lost: %s. "
+                        "Reconnecting in %.1f seconds (attempt %d)...",
                         str(e),
                         delay,
                         retry_count,
@@ -576,7 +708,9 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
                 finally:
                     if pubsub:
                         try:
-                            await pubsub.unsubscribe(self.CACHE_INVALIDATION_CHANNEL)
+                            await pubsub.unsubscribe(
+                                self.CACHE_INVALIDATION_CHANNEL
+                            )
                             await pubsub.close()
                         except Exception:
                             pass  # Ignore errors during cleanup

@@ -21,6 +21,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
+from langchain_aws import ChatBedrock
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
@@ -1892,7 +1893,6 @@ def bind_tools_for_llm(llm, tools: list[object]) -> BaseChatModel|bool:
 
 def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock)):
-
         additional_kwargs = {}
         if isinstance(llm, ChatAnthropic):
             model_str = getattr(llm, 'model', None)

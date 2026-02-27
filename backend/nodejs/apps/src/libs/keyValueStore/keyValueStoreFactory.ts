@@ -39,6 +39,7 @@ export class KeyValueStoreFactory {
   static createStore<T>(
     type: StoreType,
     config: ConfigurationManagerStoreConfig | RedisStoreConfig,
+    logger: Logger,
     serializer?: (value: T) => Buffer,
     deserializer?: (buffer: Buffer) => T,
   ): DistributedKeyValueStore<T> {
@@ -77,6 +78,7 @@ export class KeyValueStoreFactory {
         this.logger.debug('Creating Redis distributed key-value store');
         return new RedisDistributedKeyValueStore<T>(
           config,
+	  logger,
           serializer,
           deserializer,
         );

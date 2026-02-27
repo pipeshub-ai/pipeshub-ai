@@ -72,8 +72,8 @@ export class MongoService {
       const connectOptions: ConnectOptions = {
         dbName: db,
         ...(options ?? defaultOptions),
-        autoCreate: true,
-        autoIndex: true,
+        autoCreate: false,
+        autoIndex: false,
       };
 
       // Connect to MongoDB

@@ -17,6 +17,7 @@ import {
   JobStatus,
   ICrawlingSchedule,
 } from '../schema/interface';
+import { Cluster } from 'ioredis';
 
 // Interface for storing paused job information
 interface PausedJobInfo {
@@ -35,18 +36,62 @@ export class CrawlingSchedulerService {
   private readonly logger: Logger;
   private repeatableJobMap: Map<string, string> = new Map(); // customJobId -> repeatableJobKey
   private pausedJobs: Map<string, PausedJobInfo> = new Map(); // jobId -> PausedJobInfo
+  private redisCluster?: Cluster;
 
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
+	let connection: any;
+          this.redisCluster = new Cluster(
+        [
+          {
+            host: redisConfig.host,
+            port: redisConfig.port || 6379,
+          },
+        ],
+        {
+          // MemoryDB specific settings
+          dnsLookup: (address, callback) => callback(null, address),
+          redisOptions: {
+            username: redisConfig.username || 'default',
+            password: redisConfig.password,
+            tls: {},
+            connectTimeout: redisConfig.connectTimeout || 10000,
+            maxRetriesPerRequest: redisConfig.maxRetriesPerRequest || 3,
+          },
+          // Cluster-specific options
+          slotsRefreshTimeout: 2000,
+          slotsRefreshInterval: 5000,
+        },
+      );
+
+      this.redisCluster.on('connect', () => {
+        this.logger.info('CrawlingSchedulerService Redis cluster client connected');
+      });
+
+      this.redisCluster.on('ready', () => {
+        this.logger.info('CrawlingSchedulerService Redis cluster client ready');
+      });
+
+      this.redisCluster.on('error', (error) => {
+        this.logger.error('CrawlingSchedulerService Redis cluster client error', {
+          message: error.message,
+          code: (error as any).code,
+          lastNodeError: (error as any).lastNodeError?.message,
+        });
+      });
+
+      this.redisCluster.on('node error', (error, address) => {
+        this.logger.error('CrawlingSchedulerService Redis cluster node error', {
+          message: error.message,
+          address,
+        });
+      });
+
+      connection = this.redisCluster;
 
     const queueOptions: QueueOptions = {
-      connection: {
-        host: redisConfig.host,
-        port: redisConfig.port,
-        username: redisConfig.username,
-        password: redisConfig.password,
-        db: redisConfig.db || 0,
-      },
+      prefix: '{crawling-scheduler}',
+      connection: connection,
       defaultJobOptions: {
         removeOnComplete: 10, // Keep only last 10 completed jobs per connector type
         removeOnFail: 10, // Keep only last 10 failed jobs per connector type
