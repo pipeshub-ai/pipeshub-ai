@@ -106,6 +106,14 @@ export function createSamlRouter(container: Container) {
         let user: any = null; // Defined here to be accessible at the end
         const cm = await configurationManagerService.getConfig(config.cmBackend, SSO_AUTH_CONFIG_PATH, samlProfile, config.scopedJwtSecret);
         const userDetails = jitProvisioningService.extractSamlUserDetails(samlProfile, verifiedEmail);
+        const orgAuthConfig = await OrgAuthConfig.findOne({ orgId, isDeleted: false });
+
+        const allowedMethods = orgAuthConfig?.authSteps?.[0]?.allowedMethods || [];
+        const hasSamlSso = allowedMethods.some(method => method.type === 'samlSso');
+
+        if (!hasSamlSso) {
+          return res.redirect(`${config.frontendUrl}/auth/sign-in?error=samlSso_Disabled`);
+        }
 
         if (!session) {
           const iamToken = iamJwtGenerator(verifiedEmail, config.scopedJwtSecret);
@@ -119,7 +127,6 @@ export function createSamlRouter(container: Container) {
             user = iamResponse.data;
           }
 
-          const orgAuthConfig = await OrgAuthConfig.findOne({ orgId, isDeleted: false });
           session = await sessionService.createSession({
             userId: user._id,
             email: user.email,
