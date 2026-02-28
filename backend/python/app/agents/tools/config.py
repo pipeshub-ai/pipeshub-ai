@@ -114,6 +114,10 @@ class ToolDiscoveryConfig:
             subdirectories=["one_drive", "sharepoint"],
             client_builder="MSGraphClient",
         ),
+        "outlook": AppConfiguration(
+            app_name="outlook",
+            client_builder="MSGraphClient",
+        ),
         # "discord": AppConfiguration(
         #     app_name="discord",
         #     client_builder="DiscordClient",
