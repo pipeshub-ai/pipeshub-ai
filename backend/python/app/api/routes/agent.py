@@ -71,7 +71,7 @@ class AgentNotFoundError(AgentError):
     """Agent not found"""
     def __init__(self, agent_id: str) -> None:
         super().__init__(
-            detail=f"Agent '{agent_id}' not found or you don't have access to it",
+            detail="Agent not found or you don't have access to it",
             status_code=404
         )
 

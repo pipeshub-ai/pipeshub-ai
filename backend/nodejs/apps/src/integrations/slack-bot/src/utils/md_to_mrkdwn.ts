@@ -323,3 +323,97 @@ interface ConvertOptions {
   }
   
   export default markdownToSlackMrkdwn;
+
+
+
+  /**
+ * Convert Markdown to simple plain text.
+ * - Keeps link text and appends URL in parentheses: [text](url) -> "text (url)"
+ * - Keeps image alt text: ![alt](url) -> "alt"
+ * - Removes Markdown markup: headings, emphasis, code fences/backticks, list bullets, blockquotes, tables, HTML tags
+ * - Decodes common HTML entities and numeric entities
+ */
+export function markdownToText(md: string): string {
+  if (!md) return "";
+
+  let s = md;
+
+  // 1) Normalize newlines
+  s = s.replace(/\r\n?/g, "\n");
+
+  // 2) Remove HTML comments
+  s = s.replace(/<!--[\s\S]*?-->/g, "");
+
+  // 3) Code fences: keep inner code but remove fence markers
+  s = s.replace(/```(?:[\w-]+\n)?([\s\S]*?)```/g, "$1");
+
+  // 4) Inline code: `code` -> code
+  s = s.replace(/`([^`]+)`/g, "$1");
+
+  // 5) Images: ![alt](url "title") -> alt
+  s = s.replace(/!\[([^\]]*?)\]\((?:\s*<?([^"\)>\s]+)>?(?:\s+["'][^"']*["'])?)\)/g, "$1");
+
+  // 6) Links: [text](url) -> text (url)
+  s = s.replace(/\[([^\]]+)\]\(\s*<?([^)\s>]+)>?(?:\s+["'][^"']*["'])?\s*\)/g, "$1 ($2)");
+
+  // 7) Reference-style links in text: [text][id] -> text
+  s = s.replace(/\[([^\]]+)\]\s*\[[^\]]*\]/g, "$1");
+
+  // 8) Remove reference link definitions: [id]: url
+  s = s.replace(/^\s*\[[^\]]+\]:\s*\S+\s*$/gm, "");
+
+  // 9) Setext-style headings (underlines) — keep the heading text
+  s = s.replace(/^(.+)\n[=-]{3,}\s*$/gm, "$1");
+
+  // 10) ATX headings (# ...) — remove leading #'s
+  s = s.replace(/^\s{0,3}#{1,6}\s*(.*?)\s*#*\s*$/gm, "$1");
+
+  // 11) Blockquotes: remove leading '>'
+  s = s.replace(/^\s{0,3}>\s?/gm, "");
+
+  // 12) Lists: remove bullets/numbers but keep content
+  s = s.replace(/^\s*[-+*]\s+/gm, "");
+  s = s.replace(/^\s*\d+\.\s+/gm, "");
+
+  // 13) Remove emphasis and strong markers bold/italic
+  s = s.replace(/(\*\*|__)(.*?)\1/g, "$2");
+  s = s.replace(/(\*|_)(.*?)\1/g, "$2");
+  s = s.replace(/~~(.*?)~~/g, "$1"); // strikethrough
+
+  // 14) Tables: remove separator lines and convert pipes to " | "
+  s = s.replace(/^\s*\|?(?:\s*:?-+:?\s*\|)+\s*$/gm, ""); // header separator row like |---|---|
+  s = s.replace(/\|/g, " | ");
+
+  // 15) Remove any remaining HTML tags
+  s = s.replace(/<\/?[^>]+(>|$)/g, "");
+
+  // 16) Decode HTML entities (common ones + numeric)
+  s = s.replace(/&(#?)(x?)([0-9a-zA-Z]+);/g, (_m, hash, hex, code) => {
+    if (!hash) {
+      // named entities
+      const named: Record<string, string> = {
+        amp: "&", lt: "<", gt: ">", quot: '"', apos: "'",
+        nbsp: " ", copy: "©", reg: "®", euro: "€",
+      };
+      return named[code.toLowerCase()] ?? `&${code};`;
+    }
+    // numeric entities
+    const num = hex ? parseInt(code, 16) : parseInt(code, 10);
+    if (Number.isFinite(num)) return String.fromCharCode(num);
+    return "";
+  });
+
+  // 17) Remove leftover backticks, tildes, and excessive punctuation leftover
+  s = s.replace(/[`~]{1,}/g, "");
+
+  // 18) Collapse multiple blank lines to maximum two
+  s = s.replace(/\n{3,}/g, "\n\n");
+
+  // 19) Trim whitespace on each line and overall
+  s = s.split("\n").map(line => line.trimEnd()).join("\n").trim();
+
+  // 20) Final cleanup: collapse multiple spaces
+  s = s.replace(/[ \t]{2,}/g, " ");
+
+  return s;
+}
