@@ -1,6 +1,6 @@
 from app.config.constants.arangodb import CollectionNames
-from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.blob_storage import BlobStorage
+from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
