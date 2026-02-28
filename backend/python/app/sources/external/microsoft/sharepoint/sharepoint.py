@@ -1,13 +1,16 @@
-
-
 import json
 import logging
-from dataclasses import asdict
+from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
 from kiota_abstractions.base_request_configuration import (  # type: ignore
     RequestConfiguration,
 )
+from msgraph.generated.models.entity_type import EntityType  # type: ignore
+from msgraph.generated.models.search_query import SearchQuery  # type: ignore
+from msgraph.generated.models.search_request import SearchRequest  # type: ignore
+from msgraph.generated.models.sort_property import SortProperty  # type: ignore
+from msgraph.generated.search.query.query_post_request_body import QueryPostRequestBody  # type: ignore
 from msgraph.generated.sites.item.columns.columns_request_builder import (  # type: ignore
     ColumnsRequestBuilder,
 )
@@ -20,8 +23,6 @@ from msgraph.generated.sites.item.lists.lists_request_builder import (  # type: 
 from msgraph.generated.sites.item.pages.pages_request_builder import (  # type: ignore
     PagesRequestBuilder,
 )
-
-# Import MS Graph specific query parameter classes for SharePoint
 from msgraph.generated.sites.sites_request_builder import (  # type: ignore
     SitesRequestBuilder,
 )
@@ -44,7 +45,12 @@ class SharePointResponse:
         self.message = message
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        return {
+            "success": self.success,
+            "data": self.data,
+            "error": self.error,
+            "message": self.message,
+        }
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict())
@@ -147,6 +153,376 @@ class SharePointDataSource:
     def get_data_source(self) -> 'SharePointDataSource':
         """Get the underlying SharePoint client."""
         return self
+
+    # ========== DELEGATED-AUTH OPTIMIZED METHODS ==========
+    # for delegated (user-consent) OAuth permissions.
+
+    async def list_sites_with_search_api(
+        self,
+        search_query: Optional[str] = None,
+        top: Optional[int] = None,
+        from_index: int = 0,
+        orderby: Optional[str] = None,
+    ) -> SharePointResponse:
+        """List ALL SharePoint sites the user can access using Microsoft Graph Search API.
+
+        Uses POST /search/query with entityTypes: ["site"] which is security-trimmed
+        to the authenticated user. This returns ALL sites the user has access to.
+
+        This is the RECOMMENDED approach for delegated permissions per Microsoft docs:
+        https://learn.microsoft.com/en-us/graph/api/search-query
+
+        The SDK handles authentication automatically - no manual token extraction needed.
+
+        Args:
+            search_query: Optional KQL search query to filter sites.
+                         If None, searches for all site collections and webs:
+                         "(contentclass:STS_Site OR contentclass:STS_Web)"
+            top: Maximum number of sites to return (default: 50, max: 500)
+            from_index: Offset for pagination (default: 0). Use multiples of top to
+                        paginate (e.g. from_index=20 to get the next page of 20).
+            orderby: Sort expression in "<field> <asc|desc>" format.
+                     Examples: "createdDateTime desc", "lastModifiedDateTime desc", "name asc".
+
+        Returns:
+            SharePointResponse with:
+                - success: True if search succeeded
+                - data: {"value": List[Dict], "count": int}
+                - error: Error message if search failed
+        """
+        try:
+            all_sites_dict = {}  # For deduplication by webUrl
+            page_size = min(top or 50, 500)  # Graph Search max is 500
+
+            # Build KQL query for site search
+            if search_query and search_query.strip():
+                kql_query = search_query
+            else:
+                # Default: search for all site collections and webs
+                kql_query = "(contentclass:STS_Site OR contentclass:STS_Web)"
+
+            logger.info(f"📍 Using Graph Search API (KQL: {kql_query!r}, size: {page_size}, from: {from_index})")
+
+            # Build search request using SDK
+            request_body = QueryPostRequestBody()
+            search_request = SearchRequest()
+            search_request.entity_types = [EntityType.Site]
+
+            query = SearchQuery()
+            query.query_string = kql_query
+            search_request.query = query
+            search_request.from_ = from_index
+            search_request.size = page_size
+
+            # Apply sort if provided — parse "<field> <asc|desc>"
+            if orderby and orderby.strip():
+                parts = orderby.strip().rsplit(" ", 1)
+                sort_field = parts[0].strip()
+                is_descending = len(parts) > 1 and parts[1].strip().lower() == "desc"
+                sort_prop = SortProperty()
+                sort_prop.name = sort_field
+                sort_prop.is_descending = is_descending
+                search_request.sort_properties = [sort_prop]
+            
+            request_body.requests = [search_request]
+
+            # Execute search
+            response = await self.client.search.query.post(request_body)
+            
+            # Parse results
+            if response and hasattr(response, 'value') and response.value:
+                for search_response in response.value:
+                    hits_containers = getattr(search_response, 'hits_containers', None)
+                    
+                    if hits_containers:
+                        for container in hits_containers:
+                            if hasattr(container, 'hits') and container.hits:
+                                for hit in container.hits:
+                                    if hasattr(hit, 'resource'):
+                                        site_dict = self._serialize_site(hit.resource)
+                                        web_url = site_dict.get("webUrl")
+                                        if web_url and web_url not in all_sites_dict:
+                                            all_sites_dict[web_url] = site_dict
+
+                logger.info(f"✅ Graph Search API returned {len(all_sites_dict)} unique sites")
+            else:
+                logger.warning("⚠️ No search results returned")
+
+            all_sites = list(all_sites_dict.values())
+            logger.info(f"✅ Total sites accessible to user: {len(all_sites)}")
+
+            return SharePointResponse(
+                success=True,
+                data={"sites": all_sites, "count": len(all_sites)},
+                message=f"Found {len(all_sites)} sites using Graph Search API (security-trimmed to user)",
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Graph Search API failed: {e}")
+            error_msg = "Failed to list sites"
+            if hasattr(e, 'error') and hasattr(e.error, 'message'):
+                error_msg = e.error.message
+            elif hasattr(e, 'message'):
+                error_msg = str(e.message)
+            else:
+                error_msg = str(e)
+            return SharePointResponse(
+                success=False,
+                error=error_msg,
+            )
+
+    async def search_pages_with_search_api(
+        self,
+        query: str,
+        top: Optional[int] = 10,
+        from_index: int = 0,
+    ) -> SharePointResponse:
+        """Search for SharePoint modern pages across ALL sites using the Graph Search API.
+
+        Uses POST /search/query with entityTypes: ["listItem"] and KQL filter
+        contentclass:STS_ListItem_WebPageLibrary — this correctly finds SharePoint
+        modern site pages across every site the user has access to without needing
+        a site ID.
+
+        Args:
+            query: Keyword or phrase to search (e.g. "pipeshub KT", "onboarding")
+            top:   Maximum pages to return (default 10, max 50)
+            from_index: Offset for pagination
+
+        Returns:
+            SharePointResponse with data={"pages": List[Dict], "count": int}
+            Each page dict contains: id (page_id for get_page), title, web_url,
+            site_id, list_item_id, last_modified, created
+        """
+        try:
+            page_size = min(top or 10, 50)
+            # contentclass:STS_ListItem_WebPageLibrary correctly targets SharePoint modern pages.
+            # Terms are AND-ed by default in Microsoft Search KQL.
+            kql_query = (
+                f'{query.strip()} AND contentclass:STS_ListItem_WebPageLibrary'
+                if query and query.strip()
+                else "contentclass:STS_ListItem_WebPageLibrary"
+            )
+
+            logger.info(f"📍 Searching pages via Graph Search API (KQL: {kql_query!r}, size: {page_size}, from: {from_index})")
+
+            request_body = QueryPostRequestBody()
+            search_request = SearchRequest()
+            search_request.entity_types = [EntityType.ListItem]
+
+            search_query = SearchQuery()
+            search_query.query_string = kql_query
+            search_request.query = search_query
+            search_request.from_ = from_index
+            search_request.size = page_size
+
+            request_body.requests = [search_request]
+
+            response = await self.client.search.query.post(request_body)
+
+            pages: List[Dict[str, Any]] = []
+            if response and hasattr(response, "value") and response.value:
+                for search_response in response.value:
+                    hits_containers = getattr(search_response, "hits_containers", None)
+                    if hits_containers:
+                        for container in hits_containers:
+                            if hasattr(container, "hits") and container.hits:
+                                for hit in container.hits:
+                                    resource = getattr(hit, "resource", None)
+                                    if resource:
+                                        page_dict = self._serialize_page_from_list_item(resource)
+                                        if page_dict.get("web_url"):
+                                            pages.append(page_dict)
+
+            logger.info(f"✅ Page search returned {len(pages)} results")
+            return SharePointResponse(
+                success=True,
+                data={"pages": pages, "count": len(pages)},
+                message=f"Found {len(pages)} pages matching '{query}'",
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Page search failed: {e}")
+            error_msg = str(e)
+            if hasattr(e, "error") and hasattr(e.error, "message"):
+                error_msg = e.error.message
+            return SharePointResponse(success=False, error=error_msg)
+
+    def _serialize_page_from_list_item(self, resource) -> Dict[str, Any]:
+        """Extract page metadata from a listItem search hit resource.
+
+        Expected resource shape (from Postman / Graph API):
+        {
+            "@odata.type": "#microsoft.graph.listItem",
+            "id": "<guid>",                      ← use as page_id in get_page
+            "webUrl": "https://.../SitePages/pipeshub-kt.aspx",
+            "parentReference": {
+                "siteId": "host,collection-guid,web-guid"
+            },
+            "sharepointIds": {
+                "listId": "<guid>",
+                "listItemId": "<int>"
+            },
+            "createdDateTime": "...",
+            "lastModifiedDateTime": "..."
+        }
+        """
+        # --- dict path (additional_data from Kiota or raw JSON) ---
+        if isinstance(resource, dict):
+            web_url = resource.get("webUrl") or resource.get("web_url", "")
+            parent_ref = resource.get("parentReference") or {}
+            sp_ids = resource.get("sharepointIds") or {}
+            filename = web_url.rstrip("/").split("/")[-1] if web_url else ""
+            return {
+                "id": resource.get("id"),
+                "title": self._title_from_aspx_name(filename),
+                "web_url": web_url,
+                "site_id": parent_ref.get("siteId"),
+                "list_item_id": sp_ids.get("listItemId"),
+                "last_modified": resource.get("lastModifiedDateTime"),
+                "created": resource.get("createdDateTime"),
+            }
+
+        # --- Kiota Parsable object path ---
+        item_id = getattr(resource, "id", None)
+        web_url = getattr(resource, "web_url", None) or getattr(resource, "webUrl", None)
+        last_modified = getattr(resource, "last_modified_date_time", None)
+        created = getattr(resource, "created_date_time", None)
+
+        site_id = None
+        list_item_id = None
+
+        parent_ref = getattr(resource, "parent_reference", None)
+        if parent_ref:
+            site_id = getattr(parent_ref, "site_id", None) or getattr(parent_ref, "siteId", None)
+
+        sp_ids = getattr(resource, "sharepoint_ids", None)
+        if sp_ids:
+            list_item_id = getattr(sp_ids, "list_item_id", None) or getattr(sp_ids, "listItemId", None)
+
+        # Fallback — look in additional_data for fields Kiota typed model may not expose
+        additional = getattr(resource, "additional_data", {}) or {}
+        if isinstance(additional, dict):
+            if not web_url:
+                web_url = additional.get("webUrl") or additional.get("web_url")
+            if not site_id:
+                pr = additional.get("parentReference") or {}
+                if isinstance(pr, dict):
+                    site_id = pr.get("siteId")
+            if not list_item_id:
+                sp = additional.get("sharepointIds") or {}
+                if isinstance(sp, dict):
+                    list_item_id = sp.get("listItemId")
+
+        filename = web_url.rstrip("/").split("/")[-1] if web_url else ""
+        return {
+            "id": item_id,
+            "title": self._title_from_aspx_name(filename),
+            "web_url": web_url,
+            "site_id": site_id,
+            "list_item_id": list_item_id,
+            "last_modified": str(last_modified) if last_modified else None,
+            "created": str(created) if created else None,
+        }
+
+    def _title_from_aspx_name(self, name: str) -> str:
+        """Convert an .aspx filename to a human-readable title.
+
+        e.g. 'KT-Session.aspx' → 'KT Session'
+             'deployment_guide.aspx' → 'deployment guide'
+        """
+        title = name.replace(".aspx", "")
+        title = title.replace("-", " ").replace("_", " ")
+        return title.strip()
+
+    def _serialize_site(self, site) -> Dict[str, Any]:
+        """Convert a Graph SDK site object to a dictionary."""
+        if isinstance(site, dict):
+            return site
+        
+        # Serialize using additional_data (Kiota backing store)
+        if hasattr(site, 'additional_data') and isinstance(site.additional_data, dict):
+            result = dict(site.additional_data)
+            
+            # Add common properties (check both camelCase and snake_case)
+            prop_map = {
+                'id': 'id',
+                'name': 'name', 
+                'displayName': 'display_name',
+                'webUrl': 'web_url',
+                'description': 'description',
+                'createdDateTime': 'created_date_time',
+                'lastModifiedDateTime': 'last_modified_date_time',
+            }
+            
+            for camel_case, snake_case in prop_map.items():
+                if camel_case not in result:
+                    val = None
+                    if hasattr(site, camel_case):
+                        val = getattr(site, camel_case)
+                    elif hasattr(site, snake_case):
+                        val = getattr(site, snake_case)
+                    
+                    if val is not None:
+                        if isinstance(val, datetime):
+                            val = val.isoformat()
+                        result[camel_case] = val
+            
+            return result
+        
+        # Fallback: extract all non-private attributes
+        result = {}
+        for attr in dir(site):
+            if not attr.startswith('_'):
+                try:
+                    val = getattr(site, attr)
+                    if not callable(val):
+                        if isinstance(val, datetime):
+                            val = val.isoformat()
+                        result[attr] = val
+                except Exception:
+                    pass
+        return result
+
+    async def get_site_by_id(
+        self,
+        site_id: str,
+        select: Optional[List[str]] = None,
+        expand: Optional[List[str]] = None,
+    ) -> SharePointResponse:
+        """Get a specific SharePoint site by its ID using delegated permissions.
+
+        Uses the SDK's GET /sites/{site-id} endpoint which works with delegated OAuth.
+
+        Args:
+            site_id: The site ID (e.g., 'contoso.sharepoint.com,guid1,guid2')
+            select: Select specific properties to return
+            expand: Expand related entities
+
+        Returns:
+            SharePointResponse with the site data or error
+        """
+        try:
+            response = await self.client.sites.by_site_id(site_id).get()
+            
+            if response:
+                site_dict = self._serialize_site(response)
+                logger.info(f"✅ Retrieved site: {site_id}")
+                return SharePointResponse(success=True, data=site_dict)
+            else:
+                logger.warning(f"⚠️ No site returned for ID: {site_id}")
+                return SharePointResponse(success=False, error="Site not found")
+
+        except Exception as e:
+            logger.error(f"❌ Error getting site by ID: {e}")
+            error_msg = "Failed to get site"
+            if hasattr(e, 'error') and hasattr(e.error, 'message'):
+                error_msg = e.error.message
+            elif hasattr(e, 'message'):
+                error_msg = str(e.message)
+            else:
+                error_msg = str(e)
+            return SharePointResponse(success=False, error=error_msg)
 
     # ========== SITES OPERATIONS (17 methods) ==========
 
