@@ -672,10 +672,9 @@ class WebConnector(BaseConnector):
             if existing_record:
                 if existing_record.record_name != title:
                     metadata_changed = True
-                    is_updated = True
                 if existing_record.external_revision_id != content_md5_hash:
                     content_changed = True
-                    is_updated = True
+                is_updated = metadata_changed or content_changed
             else:
                 is_new = True
 
@@ -745,9 +744,9 @@ class WebConnector(BaseConnector):
         """Handle record updates."""
         if record_update.is_deleted:
             await self.data_entities_processor.on_record_deleted(record_update.record.id)
-        elif record_update.metadata_changed:
+        if record_update.metadata_changed:
             await self.data_entities_processor.on_record_metadata_update(record_update.record)
-        elif record_update.content_changed:
+        if record_update.content_changed:
             await self.data_entities_processor.on_record_content_update(record_update.record)
 
     async def _extract_links_from_content(
