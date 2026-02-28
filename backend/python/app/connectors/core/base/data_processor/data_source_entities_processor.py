@@ -907,8 +907,8 @@ class DataSourceEntitiesProcessor:
             for record in records:
                 payload = record.to_kafka_record()
 
-                if payload.org_id is None or payload.org_id == "":
-                    payload.org_id = self.org_id
+                if payload.get("org_id") is None or payload.get("org_id") == "":
+                    payload["org_id"] = self.org_id
 
                 await self.messaging_producer.send_message(
                     "record-events",
