@@ -6442,10 +6442,12 @@ class Neo4jProvider(IGraphDBProvider):
         Returns:
             Dict: Statistics data with success status
         """
+        statuses = ["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "FAILED", "FILE_TYPE_NOT_SUPPORTED",
+                   "AUTO_INDEX_OFF", "ENABLE_MULTIMODAL_MODELS", "EMPTY", "QUEUED", "PAUSED", "CONNECTOR_DISABLED"]
         try:
             self.logger.info(f"🚀 Getting connector stats for org {org_id}, connector {connector_id}")
 
-            # Get all records for the connector (excluding folders)
+            # Aggregate: return counts by recordType and indexingStatus
             query = """
             MATCH (r:Record)
             WHERE r.orgId = $org_id
@@ -6456,7 +6458,7 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (r)-[:IS_OF_TYPE]->(f:File)
                 WHERE f.isFile = false
             }
-            RETURN r
+            RETURN r.recordType AS recordType, r.indexingStatus AS indexingStatus, count(*) AS cnt
             """
 
             results = await self.client.execute_query(
@@ -6465,31 +6467,30 @@ class Neo4jProvider(IGraphDBProvider):
                 txn_id=transaction
             )
 
-            records = [dict(r["r"]) for r in results] if results else []
+            rows = results or []
 
-            # Calculate stats
-            total = len(records)
-            indexing_status_counts = {}
+            # Build stats from aggregated rows
+            indexing_status_counts = {s: 0 for s in statuses}
             record_type_counts = {}
+            total = 0
 
-            statuses = ["NOT_STARTED", "IN_PROGRESS", "COMPLETED", "FAILED", "FILE_TYPE_NOT_SUPPORTED",
-                       "AUTO_INDEX_OFF", "ENABLE_MULTIMODAL_MODELS", "EMPTY", "QUEUED", "PAUSED"]
-
-            for status in statuses:
-                indexing_status_counts[status] = sum(1 for r in records if r.get("indexingStatus") == status)
-
-            # Group by record type
-            record_types = set(r.get("recordType") for r in records if r.get("recordType"))
-            for record_type in record_types:
-                type_records = [r for r in records if r.get("recordType") == record_type]
-                record_type_counts[record_type] = {
-                    "recordType": record_type,
-                    "total": len(type_records),
-                    "indexingStatus": {
-                        status: sum(1 for r in type_records if r.get("indexingStatus") == status)
-                        for status in statuses
-                    }
-                }
+            for row in rows:
+                cnt = row.get("cnt", 0)
+                total += cnt
+                st = row.get("indexingStatus")
+                if st in indexing_status_counts:
+                    indexing_status_counts[st] += cnt
+                rt = row.get("recordType")
+                if rt:
+                    if rt not in record_type_counts:
+                        record_type_counts[rt] = {
+                            "recordType": rt,
+                            "total": 0,
+                            "indexingStatus": {s: 0 for s in statuses}
+                        }
+                    record_type_counts[rt]["total"] += cnt
+                    if st in statuses:
+                        record_type_counts[rt]["indexingStatus"][st] += cnt
 
             result = {
                 "orgId": org_id,
