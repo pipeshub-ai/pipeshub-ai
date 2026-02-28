@@ -831,6 +831,9 @@ class DataSourceEntitiesProcessor:
                         )
                         continue
 
+                    if record.org_id is None or record.org_id == "":
+                        record.org_id = self.org_id
+
                     await self.messaging_producer.send_message(
                             "record-events",
                             {"eventType": "newRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": record.to_kafka_record()},
@@ -856,6 +859,9 @@ class DataSourceEntitiesProcessor:
             current_status = processed_record.indexing_status if hasattr(processed_record, 'indexing_status') else None
             if current_status not in [IndexingStatus.QUEUED.value, IndexingStatus.EMPTY.value]:
                 await self._reset_indexing_status_to_queued(record.id, tx_store)
+
+            if processed_record.org_id is None or processed_record.org_id == "":
+                processed_record.org_id = self.org_id
 
             await self.messaging_producer.send_message(
                 "record-events",
@@ -900,6 +906,9 @@ class DataSourceEntitiesProcessor:
             # Now send the reindex events
             for record in records:
                 payload = record.to_kafka_record()
+
+                if payload.org_id is None or payload.org_id == "":
+                    payload.org_id = self.org_id
 
                 await self.messaging_producer.send_message(
                     "record-events",
