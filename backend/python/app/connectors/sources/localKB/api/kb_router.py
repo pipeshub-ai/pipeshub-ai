@@ -437,6 +437,7 @@ async def upload_records_to_kb(
             try:
                 timestamp = get_epoch_timestamp_in_ms()
                 successful_events = 0
+                record_ids_queued = []
                 for payload in event_data["payloads"]:
                     try:
                         event = {
@@ -446,8 +447,13 @@ async def upload_records_to_kb(
                         }
                         await kafka_service.publish_event(event_data["topic"], event)
                         successful_events += 1
+                        record_id = payload.get("recordId")
+                        if record_id:
+                            record_ids_queued.append(record_id)
                     except Exception as e:
                         logger.error(f"❌ Failed to publish event for record: {str(e)}")
+                if record_ids_queued:
+                    await kb_service.set_records_indexing_status_queued(record_ids_queued)
                 logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish upload events: {str(e)}")
@@ -543,6 +549,7 @@ async def upload_records_to_folder(
             try:
                 timestamp = get_epoch_timestamp_in_ms()
                 successful_events = 0
+                record_ids_queued = []
                 for payload in event_data["payloads"]:
                     try:
                         event = {
@@ -552,8 +559,13 @@ async def upload_records_to_folder(
                         }
                         await kafka_service.publish_event(event_data["topic"], event)
                         successful_events += 1
+                        record_id = payload.get("recordId")
+                        if record_id:
+                            record_ids_queued.append(record_id)
                     except Exception as e:
                         logger.error(f"❌ Failed to publish event for record: {str(e)}")
+                if record_ids_queued:
+                    await kb_service.set_records_indexing_status_queued(record_ids_queued)
                 logger.info(f"✅ Published {successful_events}/{len(event_data['payloads'])} upload events")
             except Exception as e:
                 logger.error(f"❌ Failed to publish upload events: {str(e)}")
@@ -1279,6 +1291,8 @@ async def update_record(
                 }
                 await kafka_service.publish_event(event_data["topic"], event)
                 logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                # Set indexing status to QUEUED just after event is published
+                await kb_service.set_record_indexing_status_queued(record_id)
             except Exception as e:
                 logger.error(f"❌ Failed to publish update event: {str(e)}")
 
