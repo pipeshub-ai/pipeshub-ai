@@ -21,7 +21,7 @@ from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.pptx.pptx_parser import PPTXParser
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.arango import Arango
+from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
@@ -113,14 +113,14 @@ class ContainerUtils:
         vector_store = VectorStore(logger, config_service, graph_provider, collection_name, vector_db_service)
         return vector_store
 
-    async def create_arango(self, graph_provider, logger) -> Arango:
-        """Async factory for Arango transformer (uses graph_provider for transactions)"""
-        arango = Arango(graph_provider, logger)
-        return arango
+    async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
+        """Async factory for GraphDB transformer (uses graph_provider for transactions)"""
+        graphdb = GraphDBTransformer(graph_provider, logger)
+        return graphdb
 
-    async def create_sink_orchestrator(self, logger, arango, blob_storage, vector_store, graph_provider) -> SinkOrchestrator:
+    async def create_sink_orchestrator(self, logger: Logger, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider) -> SinkOrchestrator:
         """Async factory for SinkOrchestrator"""
-        orchestrator = SinkOrchestrator(arango=arango, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider)
+        orchestrator = SinkOrchestrator(graphdb=graphdb, blob_storage=blob_storage, vector_store=vector_store, graph_provider=graph_provider)
         return orchestrator
 
     async def create_document_extractor(self, logger, graph_provider: IGraphDBProvider, config_service) -> DocumentExtraction:

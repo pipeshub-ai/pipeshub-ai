@@ -1,5 +1,5 @@
 from app.config.constants.arangodb import CollectionNames
-from app.modules.transformers.arango import Arango
+from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
@@ -7,9 +7,9 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 class SinkOrchestrator(Transformer):
-    def __init__(self, arango: Arango, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider) -> None:
+    def __init__(self, graphdb: GraphDBTransformer, blob_storage: BlobStorage, vector_store: VectorStore, graph_provider: IGraphDBProvider) -> None:
         super().__init__()
-        self.arango = arango
+        self.graphdb = graphdb
         self.blob_storage = blob_storage
         self.vector_store = vector_store
         self.graph_provider = graph_provider
@@ -31,6 +31,6 @@ class SinkOrchestrator(Transformer):
             if result is False:
                 return
 
-            await self.arango.apply(ctx)
+            await self.graphdb.apply(ctx)
 
         return

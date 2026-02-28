@@ -1,3 +1,6 @@
+import base64
+import io
+import logging
 from typing import List, Literal, Optional
 
 from langchain_core.messages import HumanMessage
@@ -15,7 +18,78 @@ from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
+MAX_IMAGE_DIMENSION = 2000
 SentimentType = Literal["Positive", "Neutral", "Negative"]
+
+SUPPORTED_LLM_IMAGE_PREFIXES = (
+    "data:image/png",
+    "data:image/jpeg",
+    "data:image/jpg",
+    "data:image/gif",
+    "data:image/webp",
+)
+
+_MIME_TO_PIL_FORMAT = {
+    "image/png": "PNG",
+    "image/jpeg": "JPEG",
+    "image/jpg": "JPEG",
+    "image/gif": "GIF",
+    "image/webp": "WEBP",
+}
+
+logger = logging.getLogger(__name__)
+
+
+def _downscale_base64_image(
+    data_uri: str, max_dim: int = MAX_IMAGE_DIMENSION
+) -> str | None:
+    """Resize a base64 data-URI image so neither dimension exceeds *max_dim*.
+
+    Returns the (possibly resized) data URI on success, or ``None`` when the
+    image cannot be processed (PIL unavailable, corrupt data, etc.) so the
+    caller can decide to skip the image rather than forward an oversized one.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        logger.warning("Pillow is not installed – cannot downscale images for LLM")
+        return None
+
+    try:
+        header, b64_data = data_uri.split(",", 1)
+        mime = header.replace("data:", "").split(";")[0].strip().lower()
+        pil_fmt = _MIME_TO_PIL_FORMAT.get(mime)
+        if not pil_fmt:
+            logger.warning("Unsupported MIME type for downscaling: %s", mime)
+            return None
+
+        raw = base64.b64decode(b64_data)
+        img = Image.open(io.BytesIO(raw))
+        w, h = img.size
+
+        if w <= max_dim and h <= max_dim:
+            return data_uri
+
+        # RGBA / palette images must be converted before saving as JPEG
+        if pil_fmt == "JPEG" and img.mode in ("RGBA", "P", "LA"):
+            img = img.convert("RGB")
+
+        scale = min(max_dim / w, max_dim / h)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        buf = io.BytesIO()
+        save_kwargs = {}
+        if pil_fmt == "JPEG":
+            save_kwargs["quality"] = 85
+        img.save(buf, format=pil_fmt, **save_kwargs)
+        new_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+        logger.info("📐 Resized image from %dx%d to %dx%d for LLM", w, h, new_w, new_h)
+        return f"data:{mime};base64,{new_b64}"
+    except Exception as exc:
+        logger.warning("Failed to downscale base64 image: %s", exc)
+        return None
 
 class SubCategories(BaseModel):
     level1: str = Field(description="Level 1 subcategory")
@@ -125,24 +199,35 @@ class DocumentExtraction(Transformer):
                         image_data = block.data
                         image_data = image_data.get("uri")
 
-                        # Validate that the image URL is either a valid HTTP/HTTPS URL or a base64 data URL
-                        if image_data and (
-                            image_data.startswith("http://") or
-                            image_data.startswith("https://") or
-                            image_data.startswith("data:image/")
-                        ):
-                            candidate = {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": image_data
-                                }
-                            }
-                            # Images are provider-specific for token accounting; treat as zero-text here
-                            content.append(candidate)
-                            image_count += 1
-                        else:
-                            self.logger.warning(f"⚠️ Skipping invalid image URL format: {image_data[:100] if image_data else 'None'}")
+                        if not image_data:
                             continue
+
+                        if image_data.startswith("http://") or image_data.startswith("https://"):
+                            pass  # remote URLs are validated server-side
+                        elif image_data.startswith(SUPPORTED_LLM_IMAGE_PREFIXES):
+                            result = _downscale_base64_image(image_data)
+                            if result is None:
+                                self.logger.warning("⚠️ Skipping image that could not be downscaled")
+                                continue
+                            image_data = result
+                        elif image_data.startswith("data:image/"):
+                            self.logger.warning(
+                                f"⚠️ Skipping unsupported image format for LLM: "
+                                f"{image_data[:80]}..."
+                            )
+                            continue
+                        else:
+                            self.logger.warning(f"⚠️ Skipping invalid image URL format: {image_data[:100]}")
+                            continue
+
+                        candidate = {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": image_data
+                            }
+                        }
+                        content.append(candidate)
+                        image_count += 1
                     else:
                         continue
                 else:
@@ -228,13 +313,66 @@ class DocumentExtraction(Transformer):
             if parsed_response is not None:
                 self.logger.info("✅ Document classification parsed successfully")
                 return parsed_response
-            else:
-                self.logger.error("❌ Failed to parse document classification after all attempts")
-                raise ValueError("Failed to parse document classification after all attempts")
+
+            self.logger.warning(
+                "⚠️ Structured extraction failed after all attempts. "
+                "Falling back to plain LLM summary."
+            )
+            return await self._fallback_summary(message_content)
 
         except Exception as e:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
+
+    async def _fallback_summary(
+        self, message_content: List[dict]
+    ) -> Optional[DocumentClassification]:
+        """Plain LLM call to get a summary when structured extraction fails."""
+        try:
+            fallback_prompt = [
+                {
+                    "type": "text",
+                    "text": (
+                        "Provide a concise summary of the following document/record. "
+                        "Return only the summary text, nothing else."
+                    ),
+                },
+                {"type": "text", "text": "Document Content: "},
+            ]
+            fallback_prompt.extend(
+                item for item in message_content
+                if item.get("type") in ("text", "image_url")
+            )
+
+            response = await self.llm.ainvoke(
+                [HumanMessage(content=fallback_prompt)]
+            )
+
+            summary_text = ""
+            if hasattr(response, "content"):
+                summary_text = response.content
+            elif isinstance(response, str):
+                summary_text = response
+
+            summary_text = summary_text.strip()
+            if not summary_text:
+                self.logger.error("❌ Fallback summary returned empty response")
+                return None
+
+            self.logger.info("✅ Fallback summary obtained successfully")
+            return DocumentClassification(
+                departments=[],
+                category="",
+                subcategories=SubCategories(level1="", level2="", level3=""),
+                languages=[],
+                sentiment="Neutral",
+                confidence_score=0.0,
+                topics=[],
+                summary=summary_text,
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Fallback summary call failed: {e}")
+            return None
 
     async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
             self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
