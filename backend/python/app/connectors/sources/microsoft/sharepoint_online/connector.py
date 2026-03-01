@@ -2723,7 +2723,7 @@ class SharePointConnector(BaseConnector):
                     return [], True
                 permissions = await self._convert_to_permissions(perms_response.value, site_id)
 
-            return permissions, False
+            return permissions, should_inherit
 
         except Exception as e:
             self.logger.warning(f"❌ Could not get drive permissions for {drive_id}: {e}")
@@ -2954,8 +2954,6 @@ class SharePointConnector(BaseConnector):
                             )
             except Exception as e:
                 self.logger.debug(f"GUID filter lookup failed: {e}")
-
-            self.logger.warning(f"Could not resolve page GUID {page_id} to list item ID")
 
         finally:
             # Only close the session if we created it here (not the caller's session)
@@ -4673,7 +4671,8 @@ class SharePointConnector(BaseConnector):
                 return None
 
             # Get permissions
-            permissions = await self._get_page_permissions(site_id, page_id)
+            permissions, should_inherit = await self._get_page_permissions(site_id, page_id)
+            page_record.inherit_permissions = should_inherit
 
             # Ensure we keep the internal DB ID
             page_record.id = record.id
